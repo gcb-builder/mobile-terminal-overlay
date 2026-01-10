@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import Config
+from .config import Config, Repo
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.child_pid = None
     app.state.active_websocket = None
     app.state.read_task = None
+    app.state.current_session = config.session_name  # Track current session
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -81,6 +82,103 @@ def create_app(config: Config) -> FastAPI:
     async def health():
         """Health check endpoint."""
         return {"status": "ok", "version": "0.1.0"}
+
+    @app.get("/api/files/search")
+    async def search_files(q: str = Query(""), token: Optional[str] = Query(None), limit: int = Query(20)):
+        """
+        Search files in the current repo.
+        Uses git ls-files to respect .gitignore.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        if not q or len(q) < 1:
+            return {"files": []}
+
+        try:
+            import subprocess
+
+            # Get list of tracked files using git ls-files
+            result = subprocess.run(
+                ["git", "ls-files"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            if result.returncode != 0:
+                # Fallback to find if not a git repo
+                result = subprocess.run(
+                    ["find", ".", "-type", "f", "-name", f"*{q}*", "-not", "-path", "./.git/*"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                files = [f.lstrip("./") for f in result.stdout.strip().split("\n") if f][:limit]
+            else:
+                # Filter files by query (case-insensitive)
+                all_files = result.stdout.strip().split("\n")
+                q_lower = q.lower()
+                files = [f for f in all_files if q_lower in f.lower()][:limit]
+
+            return {"files": files, "query": q}
+
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Search timeout"}, status_code=504)
+        except Exception as e:
+            logger.error(f"File search error: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/current-session")
+    async def get_current_session(token: Optional[str] = Query(None)):
+        """Return current session name."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return {"session": app.state.current_session}
+
+    @app.post("/switch-repo")
+    async def switch_repo(session: str = Query(...), token: Optional[str] = Query(None)):
+        """
+        Switch to a different tmux session (repo).
+
+        This closes the current pty and prepares for a new connection.
+        The client should reconnect the WebSocket after this call.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate session is in configured repos (or is the default session)
+        valid_sessions = [r.session for r in config.repos] + [config.session_name]
+        if session not in valid_sessions:
+            return JSONResponse({"error": f"Unknown session: {session}"}, status_code=400)
+
+        # Close current WebSocket connection
+        if app.state.active_websocket is not None:
+            try:
+                await app.state.active_websocket.close(code=4003)  # 4003 = switching repos
+            except Exception:
+                pass
+            app.state.active_websocket = None
+
+        # Cancel read task
+        if app.state.read_task is not None:
+            app.state.read_task.cancel()
+            app.state.read_task = None
+
+        # Close current pty
+        if app.state.master_fd is not None:
+            try:
+                os.close(app.state.master_fd)
+            except Exception:
+                pass
+            app.state.master_fd = None
+            app.state.child_pid = None
+
+        # Update current session
+        app.state.current_session = session
+        logger.info(f"Switched to session: {session}")
+
+        return {"status": "ok", "session": session}
 
     @app.websocket("/ws/terminal")
     async def terminal_websocket(websocket: WebSocket, token: Optional[str] = Query(None)):
@@ -109,10 +207,11 @@ def create_app(config: Config) -> FastAPI:
         # Spawn tmux if not already running
         if app.state.master_fd is None:
             try:
-                master_fd, child_pid = spawn_tmux(config.session_name)
+                session_name = app.state.current_session
+                master_fd, child_pid = spawn_tmux(session_name)
                 app.state.master_fd = master_fd
                 app.state.child_pid = child_pid
-                logger.info(f"Spawned tmux session: {config.session_name}")
+                logger.info(f"Spawned tmux session: {session_name}")
             except Exception as e:
                 logger.error(f"Failed to spawn tmux: {e}")
                 await websocket.send_json({"type": "error", "message": str(e)})

@@ -37,6 +37,14 @@ class ContextButton:
 
 
 @dataclass
+class Repo:
+    """A repository/workspace configuration."""
+    label: str  # Display name
+    path: str  # Absolute path to repo
+    session: str  # tmux session name
+
+
+@dataclass
 class Config:
     """Configuration for Mobile Terminal Overlay."""
 
@@ -61,6 +69,9 @@ class Config:
 
     # Context buttons (prompt for values)
     context_buttons: List[ContextButton] = field(default_factory=list)
+
+    # Repositories/workspaces for switching
+    repos: List[Repo] = field(default_factory=list)
 
     # UI settings
     theme: str = "dark"  # dark | light | auto
@@ -87,6 +98,10 @@ class Config:
             "context_buttons": [
                 {"label": cb.label, "template": cb.template, "prompt_fields": cb.prompt_fields}
                 for cb in self.context_buttons
+            ],
+            "repos": [
+                {"label": r.label, "path": r.path, "session": r.session}
+                for r in self.repos
             ],
             "theme": self.theme,
             "font_size": self.font_size,
@@ -177,6 +192,17 @@ def load_config(path: Optional[Path] = None) -> Config:
             for cb in data["context_buttons"]
         ]
 
+    # Repos
+    if "repos" in data:
+        config.repos = [
+            Repo(
+                label=r["label"],
+                path=r["path"],
+                session=r["session"],
+            )
+            for r in data["repos"]
+        ]
+
     return config
 
 
@@ -190,6 +216,7 @@ def merge_configs(base: Config, override: Config) -> Config:
         quick_commands=override.quick_commands if override.quick_commands else base.quick_commands,
         role_prefixes=override.role_prefixes if override.role_prefixes else base.role_prefixes,
         context_buttons=override.context_buttons if override.context_buttons else base.context_buttons,
+        repos=override.repos if override.repos else base.repos,
         theme=override.theme if override.theme != "dark" else base.theme,
         font_size=override.font_size if override.font_size != 16 else base.font_size,
         scrollback=override.scrollback if override.scrollback != 20000 else base.scrollback,

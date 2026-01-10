@@ -4,20 +4,16 @@
  * Connects xterm.js to the WebSocket backend for tmux relay.
  */
 
-// Get token from URL
+// Get token from URL (may be null if --no-auth)
 const urlParams = new URLSearchParams(window.location.search);
-const token = urlParams.get('token');
-
-if (!token) {
-    document.getElementById('statusText').textContent = 'No token provided';
-    throw new Error('No token in URL');
-}
+const token = urlParams.get('token') || '';
 
 // State
 let terminal = null;
 let socket = null;
 let isControlUnlocked = false;
 let config = null;
+let currentSession = null;
 
 // DOM elements
 const terminalContainer = document.getElementById('terminal-container');
@@ -28,6 +24,14 @@ const roleBar = document.getElementById('roleBar');
 const quickBar = document.getElementById('quickBar');
 const statusOverlay = document.getElementById('statusOverlay');
 const statusText = document.getElementById('statusText');
+const repoBtn = document.getElementById('repoBtn');
+const repoLabel = document.getElementById('repoLabel');
+const repoDropdown = document.getElementById('repoDropdown');
+const searchBtn = document.getElementById('searchBtn');
+const searchModal = document.getElementById('searchModal');
+const searchInput = document.getElementById('searchInput');
+const searchClose = document.getElementById('searchClose');
+const searchResults = document.getElementById('searchResults');
 
 /**
  * Initialize the terminal
@@ -282,6 +286,21 @@ async function loadConfig() {
 }
 
 /**
+ * Load current session from server
+ */
+async function loadCurrentSession() {
+    try {
+        const response = await fetch(`/current-session?token=${token}`);
+        if (response.ok) {
+            const data = await response.json();
+            currentSession = data.session;
+        }
+    } catch (error) {
+        console.error('Error loading current session:', error);
+    }
+}
+
+/**
  * Populate UI from config
  */
 function populateUI() {
@@ -304,7 +323,232 @@ function populateUI() {
         });
     }
 
-    // Quick commands are now static in HTML, no dynamic population needed
+    // Populate repo dropdown
+    populateRepoDropdown();
+}
+
+/**
+ * Populate repo dropdown from config
+ */
+function populateRepoDropdown() {
+    if (!config || !config.repos || config.repos.length === 0) {
+        // No repos configured, hide the dropdown arrow
+        repoBtn.querySelector('.repo-arrow').style.display = 'none';
+        repoLabel.textContent = config?.session_name || 'Terminal';
+        return;
+    }
+
+    // Show dropdown arrow
+    repoBtn.querySelector('.repo-arrow').style.display = '';
+
+    // Update label to show current repo
+    const currentRepo = config.repos.find(r => r.session === currentSession);
+    if (currentRepo) {
+        repoLabel.textContent = currentRepo.label;
+    } else {
+        repoLabel.textContent = config.session_name || 'Terminal';
+    }
+
+    // Populate dropdown options
+    repoDropdown.innerHTML = '';
+
+    // Add default session option if not in repos list
+    const defaultInRepos = config.repos.some(r => r.session === config.session_name);
+    if (!defaultInRepos) {
+        const defaultOpt = document.createElement('button');
+        defaultOpt.className = 'repo-option' + (currentSession === config.session_name ? ' active' : '');
+        defaultOpt.innerHTML = `<span>${config.session_name}</span><span class="repo-path">Default</span>`;
+        defaultOpt.addEventListener('click', () => switchRepo(config.session_name));
+        repoDropdown.appendChild(defaultOpt);
+    }
+
+    // Add configured repos
+    config.repos.forEach((repo) => {
+        const opt = document.createElement('button');
+        opt.className = 'repo-option' + (currentSession === repo.session ? ' active' : '');
+        opt.innerHTML = `<span>${repo.label}</span><span class="repo-path">${repo.path}</span>`;
+        opt.addEventListener('click', () => switchRepo(repo.session));
+        repoDropdown.appendChild(opt);
+    });
+}
+
+/**
+ * Switch to a different repo/session
+ */
+async function switchRepo(session) {
+    if (session === currentSession) {
+        repoDropdown.classList.add('hidden');
+        return;
+    }
+
+    statusText.textContent = 'Switching...';
+    statusOverlay.classList.remove('hidden');
+    repoDropdown.classList.add('hidden');
+
+    try {
+        const response = await fetch(`/switch-repo?session=${encodeURIComponent(session)}&token=${token}`, {
+            method: 'POST',
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to switch repo');
+        }
+
+        currentSession = session;
+
+        // Update UI
+        const currentRepo = config.repos.find(r => r.session === session);
+        if (currentRepo) {
+            repoLabel.textContent = currentRepo.label;
+        } else {
+            repoLabel.textContent = session;
+        }
+
+        // Reconnect WebSocket
+        if (socket) {
+            socket.close();
+        }
+        setTimeout(connect, 500);
+
+    } catch (error) {
+        console.error('Error switching repo:', error);
+        statusText.textContent = 'Switch failed';
+        setTimeout(() => {
+            statusOverlay.classList.add('hidden');
+        }, 2000);
+    }
+}
+
+/**
+ * Toggle repo dropdown visibility
+ */
+function toggleRepoDropdown() {
+    if (!config || !config.repos || config.repos.length === 0) {
+        return; // No repos to show
+    }
+    repoDropdown.classList.toggle('hidden');
+}
+
+/**
+ * Setup repo dropdown event listeners
+ */
+function setupRepoDropdown() {
+    // Toggle dropdown on button click
+    repoBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleRepoDropdown();
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!repoDropdown.contains(e.target) && e.target !== repoBtn) {
+            repoDropdown.classList.add('hidden');
+        }
+    });
+}
+
+/**
+ * File Search Functions
+ */
+let searchDebounceTimer = null;
+
+function openSearchModal() {
+    searchModal.classList.remove('hidden');
+    searchInput.value = '';
+    searchResults.innerHTML = '<div class="search-empty">Type to search files...</div>';
+    setTimeout(() => searchInput.focus(), 100);
+}
+
+function closeSearchModal() {
+    searchModal.classList.add('hidden');
+    searchInput.blur();
+}
+
+async function performSearch(query) {
+    if (!query || query.length < 1) {
+        searchResults.innerHTML = '<div class="search-empty">Type to search files...</div>';
+        return;
+    }
+
+    searchResults.innerHTML = '<div class="search-empty">Searching...</div>';
+
+    try {
+        const response = await fetch(`/api/files/search?q=${encodeURIComponent(query)}&token=${token}`);
+        if (!response.ok) {
+            throw new Error('Search failed');
+        }
+
+        const data = await response.json();
+
+        if (!data.files || data.files.length === 0) {
+            searchResults.innerHTML = '<div class="search-empty">No files found</div>';
+            return;
+        }
+
+        // Render results
+        searchResults.innerHTML = '';
+        data.files.forEach((filePath) => {
+            const btn = document.createElement('button');
+            btn.className = 'search-result';
+
+            // Split into path and filename for highlighting
+            const lastSlash = filePath.lastIndexOf('/');
+            const fileName = lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath;
+            const dirPath = lastSlash >= 0 ? filePath.slice(0, lastSlash + 1) : '';
+
+            btn.innerHTML = `<span class="file-path">${dirPath}</span><span class="file-name">${fileName}</span>`;
+
+            btn.addEventListener('click', () => {
+                insertFilePath(filePath);
+            });
+
+            searchResults.appendChild(btn);
+        });
+
+    } catch (error) {
+        console.error('Search error:', error);
+        searchResults.innerHTML = '<div class="search-empty">Search failed</div>';
+    }
+}
+
+function insertFilePath(filePath) {
+    closeSearchModal();
+
+    // Insert the file path into the terminal
+    if (isControlUnlocked && socket && socket.readyState === WebSocket.OPEN) {
+        sendInput(filePath);
+        terminal.focus();
+    }
+}
+
+function setupFileSearch() {
+    // Open modal on search button click
+    searchBtn.addEventListener('click', openSearchModal);
+
+    // Close modal on close button click
+    searchClose.addEventListener('click', closeSearchModal);
+
+    // Close modal on backdrop click
+    searchModal.addEventListener('click', (e) => {
+        if (e.target === searchModal) {
+            closeSearchModal();
+        }
+    });
+
+    // Debounced search on input
+    searchInput.addEventListener('input', (e) => {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => {
+            performSearch(e.target.value);
+        }, 200);
+    });
+
+    // Close on Escape key
+    searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            closeSearchModal();
+        }
+    });
 }
 
 /**
@@ -414,12 +658,18 @@ function setupClipboard() {
 }
 
 // Initialize
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     initTerminal();
     setupEventListeners();
     setupTerminalFocus();
     setupViewportHandler();
     setupClipboard();
-    loadConfig();
+    setupRepoDropdown();
+    setupFileSearch();
+
+    // Load current session first, then config
+    await loadCurrentSession();
+    await loadConfig();
+
     connect();
 });

@@ -20,15 +20,34 @@
         <!-- Header with control toggle -->
         <header class="header">
             <div class="header-left">
-                <span class="logo">Terminal</span>
+                <button id="repoBtn" class="repo-btn">
+                    <span id="repoLabel">Terminal</span>
+                    <span class="repo-arrow">&#x25BC;</span>
+                </button>
+                <!-- Repo dropdown (hidden by default) -->
+                <div id="repoDropdown" class="repo-dropdown hidden"></div>
             </div>
             <div class="header-right">
+                <button id="searchBtn" class="icon-btn" aria-label="Search files">
+                    <span>&#x1F50D;</span>
+                </button>
                 <span id="controlIndicator" class="control-indicator locked">View</span>
                 <button id="controlBtn" class="control-btn-small locked">
                     <span class="lock-icon">&#x1F512;</span>
                 </button>
             </div>
         </header>
+
+        <!-- File search modal -->
+        <div id="searchModal" class="search-modal hidden">
+            <div class="search-modal-content">
+                <div class="search-header">
+                    <input type="text" id="searchInput" placeholder="Search files..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                    <button id="searchClose" class="search-close">&times;</button>
+                </div>
+                <div id="searchResults" class="search-results"></div>
+            </div>
+        </div>
 
         <!-- Control keys bar (visible when unlocked) - TOP position, scrollable -->
         <div id="controlBar" class="control-bar hidden">

@@ -1,0 +1,21 @@
+# Mobile Terminal Overlay Configuration
+# Place this file in your home directory or project root
+
+session_name: claude
+
+# Repos for quick switching (each gets its own tmux session)
+repos:
+  - label: "geo-cv"
+    path: "/home/gbons/dev/geo-cv"
+    session: "claude"  # Current session - already in geo-cv
+  - label: "mobile-terminal"
+    path: "/home/gbons/dev/mobile-terminal-overlay"
+    session: "claude-mobile"
+
+# Role prefixes (from CLAUDE.md discovery)
+role_prefixes: []
+
+# UI settings
+theme: dark
+font_size: 13
+scrollback: 5000

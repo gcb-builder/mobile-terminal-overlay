@@ -58,11 +58,84 @@ html, body {
     display: flex;
     align-items: center;
     gap: 8px;
+    position: relative;
 }
 
 .logo {
     font-weight: 600;
     font-size: 16px;
+}
+
+/* Repo switcher button */
+.repo-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.repo-btn:active {
+    background: var(--bg-secondary);
+}
+
+.repo-arrow {
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+
+/* Repo dropdown */
+.repo-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    min-width: 180px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px var(--shadow);
+    z-index: 200;
+    overflow: hidden;
+}
+
+.repo-dropdown.hidden {
+    display: none;
+}
+
+.repo-option {
+    display: block;
+    width: 100%;
+    padding: 12px 16px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.repo-option:hover,
+.repo-option:active {
+    background: var(--bg-tertiary);
+}
+
+.repo-option.active {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.repo-option .repo-path {
+    display: block;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
 }
 
 .header-right {
@@ -312,4 +385,124 @@ html, body {
 
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-secondary);
+}
+
+/* Search button in header */
+.icon-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 18px;
+    padding: 8px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.icon-btn:active {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+/* File search modal */
+.search-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.8);
+    z-index: 300;
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    padding-top: 60px;
+}
+
+.search-modal.hidden {
+    display: none;
+}
+
+.search-modal-content {
+    background: var(--bg-secondary);
+    border-radius: 12px;
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.search-header {
+    display: flex;
+    align-items: center;
+    padding: 8px;
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+}
+
+#searchInput {
+    flex: 1;
+    padding: 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 16px;
+    outline: none;
+}
+
+#searchInput:focus {
+    border-color: var(--accent);
+}
+
+.search-close {
+    width: 40px;
+    height: 40px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 24px;
+    cursor: pointer;
+    border-radius: 8px;
+}
+
+.search-close:active {
+    background: var(--bg-tertiary);
+}
+
+.search-results {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+}
+
+.search-result {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 6px;
+    word-break: break-all;
+}
+
+.search-result:active {
+    background: var(--bg-tertiary);
+}
+
+.search-result .file-name {
+    color: var(--accent);
+    font-weight: 500;
+}
+
+.search-result .file-path {
+    color: var(--text-secondary);
+}
+
+.search-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 14px;
 }
