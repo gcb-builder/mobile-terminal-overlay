@@ -49,9 +49,12 @@ def create_app(config: Config) -> FastAPI:
 
     # Store config and state on app
     app.state.config = config
-    app.state.token = config.token or secrets.token_urlsafe(16)
+    app.state.no_auth = config.no_auth
+    app.state.token = None if config.no_auth else (config.token or secrets.token_urlsafe(16))
     app.state.master_fd = None
     app.state.child_pid = None
+    app.state.active_websocket = None
+    app.state.read_task = None
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -60,7 +63,7 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/")
     async def index(token: Optional[str] = Query(None)):
         """Serve the main HTML page."""
-        if token != app.state.token:
+        if not app.state.no_auth and token != app.state.token:
             return HTMLResponse(
                 content="<h1>401 Unauthorized</h1><p>Invalid or missing token.</p>",
                 status_code=401,
@@ -70,7 +73,7 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/config")
     async def get_config(token: Optional[str] = Query(None)):
         """Return client configuration as JSON."""
-        if token != app.state.token:
+        if not app.state.no_auth and token != app.state.token:
             return {"error": "Unauthorized"}, 401
         return app.state.config.to_dict()
 
@@ -80,15 +83,28 @@ def create_app(config: Config) -> FastAPI:
         return {"status": "ok", "version": "0.1.0"}
 
     @app.websocket("/ws/terminal")
-    async def terminal_websocket(websocket: WebSocket, token: str = Query(...)):
+    async def terminal_websocket(websocket: WebSocket, token: Optional[str] = Query(None)):
         """WebSocket endpoint for terminal I/O."""
-        # Validate token
-        if token != app.state.token:
+        # Validate token (skip if no_auth)
+        if not app.state.no_auth and token != app.state.token:
             await websocket.close(code=4001)
             return
 
         await websocket.accept()
         logger.info("WebSocket connection accepted")
+
+        # Close any existing connection (single client mode)
+        if app.state.active_websocket is not None:
+            try:
+                await app.state.active_websocket.close(code=4002)
+                logger.info("Closed previous WebSocket connection")
+            except Exception:
+                pass
+        if app.state.read_task is not None:
+            app.state.read_task.cancel()
+            app.state.read_task = None
+
+        app.state.active_websocket = websocket
 
         # Spawn tmux if not already running
         if app.state.master_fd is None:
@@ -109,53 +125,67 @@ def create_app(config: Config) -> FastAPI:
         async def read_from_terminal():
             """Read from terminal and send to WebSocket."""
             loop = asyncio.get_event_loop()
-            while True:
+            while app.state.active_websocket == websocket:
                 try:
                     data = await loop.run_in_executor(
                         None, lambda: os.read(master_fd, 4096)
                     )
                     if not data:
                         break
-                    await websocket.send_bytes(data)
+                    if app.state.active_websocket == websocket:
+                        await websocket.send_bytes(data)
                 except Exception as e:
-                    logger.error(f"Error reading from terminal: {e}")
+                    if app.state.active_websocket == websocket:
+                        logger.error(f"Error reading from terminal: {e}")
                     break
 
         async def write_to_terminal():
             """Read from WebSocket and write to terminal."""
-            while True:
+            while app.state.active_websocket == websocket:
                 try:
                     message = await websocket.receive()
 
-                    if message["type"] == "websocket.disconnect":
+                    # Check message type safely
+                    if not isinstance(message, dict):
+                        continue
+
+                    msg_type = message.get("type", "")
+                    if msg_type == "websocket.disconnect":
                         break
 
                     if "bytes" in message:
                         os.write(master_fd, message["bytes"])
                     elif "text" in message:
-                        # Handle JSON messages (resize, etc.)
+                        text = message["text"]
+                        # Handle JSON messages (resize, input)
                         try:
-                            data = json.loads(message["text"])
-                            if data.get("type") == "resize":
-                                set_terminal_size(
-                                    master_fd,
-                                    data.get("cols", 80),
-                                    data.get("rows", 24),
-                                )
-                            elif data.get("type") == "input":
-                                os.write(master_fd, data["data"].encode())
-                        except json.JSONDecodeError:
+                            data = json.loads(text)
+                            if isinstance(data, dict):
+                                if data.get("type") == "resize":
+                                    set_terminal_size(
+                                        master_fd,
+                                        data.get("cols", 80),
+                                        data.get("rows", 24),
+                                    )
+                                elif data.get("type") == "input":
+                                    os.write(master_fd, data["data"].encode())
+                            else:
+                                # JSON but not dict, treat as plain text
+                                os.write(master_fd, text.encode())
+                        except (json.JSONDecodeError, TypeError):
                             # Plain text input
-                            os.write(master_fd, message["text"].encode())
+                            os.write(master_fd, text.encode())
 
                 except WebSocketDisconnect:
                     break
                 except Exception as e:
-                    logger.error(f"Error writing to terminal: {e}")
+                    if app.state.active_websocket == websocket:
+                        logger.error(f"Error writing to terminal: {e}")
                     break
 
         # Run both tasks concurrently
         read_task = asyncio.create_task(read_from_terminal())
+        app.state.read_task = read_task
         write_task = asyncio.create_task(write_to_terminal())
 
         try:
@@ -165,19 +195,32 @@ def create_app(config: Config) -> FastAPI:
         finally:
             read_task.cancel()
             write_task.cancel()
+            if app.state.active_websocket == websocket:
+                app.state.active_websocket = None
+                app.state.read_task = None
             logger.info("WebSocket connection closed")
 
     @app.on_event("startup")
     async def startup():
         """Print access URL on startup."""
-        url = f"http://localhost:{config.port}/?token={app.state.token}"
-        print(f"\n{'=' * 60}")
-        print(f"Mobile Terminal Overlay v0.1.0")
-        print(f"{'=' * 60}")
-        print(f"Session: {config.session_name}")
-        print(f"Token:   {app.state.token}")
-        print(f"URL:     {url}")
-        print(f"{'=' * 60}\n")
+        if app.state.no_auth:
+            url = f"http://localhost:{config.port}/"
+            print(f"\n{'=' * 60}")
+            print(f"Mobile Terminal Overlay v0.1.0")
+            print(f"{'=' * 60}")
+            print(f"Session: {config.session_name}")
+            print(f"Auth:    DISABLED (--no-auth)")
+            print(f"URL:     {url}")
+            print(f"{'=' * 60}\n")
+        else:
+            url = f"http://localhost:{config.port}/?token={app.state.token}"
+            print(f"\n{'=' * 60}")
+            print(f"Mobile Terminal Overlay v0.1.0")
+            print(f"{'=' * 60}")
+            print(f"Session: {config.session_name}")
+            print(f"Token:   {app.state.token}")
+            print(f"URL:     {url}")
+            print(f"{'=' * 60}\n")
 
     @app.on_event("shutdown")
     async def shutdown():

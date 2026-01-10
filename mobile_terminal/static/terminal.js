@@ -15,7 +15,6 @@ if (!token) {
 
 // State
 let terminal = null;
-let fitAddon = null;
 let socket = null;
 let isControlUnlocked = false;
 let config = null;
@@ -23,29 +22,35 @@ let config = null;
 // DOM elements
 const terminalContainer = document.getElementById('terminal-container');
 const controlBtn = document.getElementById('controlBtn');
-const controlBtnText = document.getElementById('controlBtnText');
 const controlIndicator = document.getElementById('controlIndicator');
 const controlBar = document.getElementById('controlBar');
 const roleBar = document.getElementById('roleBar');
 const quickBar = document.getElementById('quickBar');
-const inputArea = document.getElementById('inputArea');
-const inputField = document.getElementById('inputField');
-const sendBtn = document.getElementById('sendBtn');
 const statusOverlay = document.getElementById('statusOverlay');
 const statusText = document.getElementById('statusText');
 
 /**
  * Initialize the terminal
+ * Uses fixed size to prevent resize-triggered redraws from Claude Code
  */
 function initTerminal() {
+    // Fixed terminal size - prevents resize events that cause duplications
+    const FIXED_COLS = 80;
+    const FIXED_ROWS = 30;
+
     terminal = new Terminal({
-        cursorBlink: true,
-        fontSize: 14,
+        cursorBlink: false,
+        cursorStyle: 'bar',
+        cursorInactiveStyle: 'none',
+        fontSize: 13,
         fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+        cols: FIXED_COLS,
+        rows: FIXED_ROWS,
+        scrollback: 5000,
         theme: {
             background: '#0b0f14',
             foreground: '#e6edf3',
-            cursor: '#58a6ff',
+            cursor: '#0b0f14',  // Same as background = invisible
             cursorAccent: '#0b0f14',
             selection: 'rgba(88, 166, 255, 0.3)',
             black: '#0b0f14',
@@ -68,31 +73,60 @@ function initTerminal() {
         allowProposedApi: true,
     });
 
-    fitAddon = new FitAddon.FitAddon();
-    terminal.loadAddon(fitAddon);
-
+    // Web links addon for clickable URLs
     const webLinksAddon = new WebLinksAddon.WebLinksAddon();
     terminal.loadAddon(webLinksAddon);
 
     terminal.open(terminalContainer);
-    fitAddon.fit();
 
     // Handle terminal input (only when unlocked)
+    // Send as binary for faster processing (bypasses JSON parsing on server)
+    const encoder = new TextEncoder();
+
+    // Track composition to avoid double-sending
+    let compositionText = '';
+    let isComposing = false;
+
+    // Send characters immediately during IME composition (mobile keyboards)
+    terminal.textarea.addEventListener('compositionstart', () => {
+        isComposing = true;
+        compositionText = '';
+    });
+
+    terminal.textarea.addEventListener('compositionupdate', (e) => {
+        if (!isControlUnlocked || !socket || socket.readyState !== WebSocket.OPEN) return;
+
+        // Send only new characters added to composition
+        const newText = e.data || '';
+        if (newText.length > compositionText.length) {
+            const newChars = newText.slice(compositionText.length);
+            socket.send(encoder.encode(newChars));
+        }
+        compositionText = newText;
+    });
+
+    terminal.textarea.addEventListener('compositionend', () => {
+        isComposing = false;
+        // Small delay before clearing to let onData check
+        setTimeout(() => { compositionText = ''; }, 50);
+    });
+
     terminal.onData((data) => {
         if (isControlUnlocked && socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(data);
+            // Skip if this text was already sent during composition
+            if (compositionText && data === compositionText) {
+                return;
+            }
+            // Skip during active composition (compositionupdate handles it)
+            if (isComposing) {
+                return;
+            }
+            socket.send(encoder.encode(data));
         }
     });
 
-    // Handle resize
-    window.addEventListener('resize', () => {
-        fitAddon.fit();
-        sendResize();
-    });
-
-    // Initial resize after a short delay
+    // Send fixed size once after short delay (no dynamic resizing)
     setTimeout(() => {
-        fitAddon.fit();
         sendResize();
     }, 100);
 }
@@ -174,24 +208,22 @@ function toggleControl() {
     if (isControlUnlocked) {
         controlBtn.classList.remove('locked');
         controlBtn.classList.add('unlocked');
-        controlBtnText.textContent = 'Release Control';
         controlBtn.querySelector('.lock-icon').innerHTML = '&#x1F513;';
 
         controlIndicator.classList.remove('locked');
         controlIndicator.classList.add('unlocked');
-        controlIndicator.textContent = 'Control';
+        controlIndicator.textContent = 'Tap terminal';
 
         controlBar.classList.remove('hidden');
         roleBar.classList.remove('hidden');
         quickBar.classList.remove('hidden');
-        inputArea.classList.remove('hidden');
 
-        // Focus terminal
+        // Focus terminal for direct input
         terminal.focus();
+        terminalContainer.classList.add('focusable');
     } else {
         controlBtn.classList.remove('unlocked');
         controlBtn.classList.add('locked');
-        controlBtnText.textContent = 'Take Control';
         controlBtn.querySelector('.lock-icon').innerHTML = '&#x1F512;';
 
         controlIndicator.classList.remove('unlocked');
@@ -201,8 +233,35 @@ function toggleControl() {
         controlBar.classList.add('hidden');
         roleBar.classList.add('hidden');
         quickBar.classList.add('hidden');
-        inputArea.classList.add('hidden');
+        terminalContainer.classList.remove('focusable');
     }
+}
+
+/**
+ * Setup terminal focus handling
+ */
+function setupTerminalFocus() {
+    // Disable mobile IME composition - send characters directly without preview
+    terminal.textarea.setAttribute('autocomplete', 'off');
+    terminal.textarea.setAttribute('autocorrect', 'off');
+    terminal.textarea.setAttribute('autocapitalize', 'off');
+    terminal.textarea.setAttribute('spellcheck', 'false');
+    terminal.textarea.setAttribute('inputmode', 'text');
+
+    // Tap terminal to focus and show keyboard
+    terminalContainer.addEventListener('click', () => {
+        if (isControlUnlocked) {
+            terminal.focus();
+            controlIndicator.textContent = 'Typing';
+        }
+    });
+
+    // Update indicator when terminal loses focus
+    terminal.textarea.addEventListener('blur', () => {
+        if (isControlUnlocked) {
+            controlIndicator.textContent = 'Tap terminal';
+        }
+    });
 }
 
 /**
@@ -228,7 +287,7 @@ async function loadConfig() {
 function populateUI() {
     if (!config) return;
 
-    // Populate role buttons
+    // Populate role buttons - send directly to terminal
     if (config.role_prefixes && config.role_prefixes.length > 0) {
         roleBar.innerHTML = '';
         config.role_prefixes.forEach((role) => {
@@ -236,28 +295,16 @@ function populateUI() {
             btn.className = 'role-btn';
             btn.textContent = role.label;
             btn.addEventListener('click', () => {
-                inputField.value = role.insert + inputField.value;
-                inputField.focus();
+                if (isControlUnlocked) {
+                    sendInput(role.insert);
+                    terminal.focus();
+                }
             });
             roleBar.appendChild(btn);
         });
     }
 
-    // Populate quick commands
-    if (config.quick_commands && config.quick_commands.length > 0) {
-        quickBar.innerHTML = '';
-        config.quick_commands.forEach((cmd) => {
-            const btn = document.createElement('button');
-            btn.className = 'quick-btn';
-            btn.textContent = cmd.label;
-            btn.addEventListener('click', () => {
-                if (isControlUnlocked) {
-                    sendInput(cmd.command);
-                }
-            });
-            quickBar.appendChild(btn);
-        });
-    }
+    // Quick commands are now static in HTML, no dynamic population needed
 }
 
 /**
@@ -267,45 +314,64 @@ function setupEventListeners() {
     // Control toggle button
     controlBtn.addEventListener('click', toggleControl);
 
-    // Control key buttons
+    // Key mapping for control and quick buttons
+    const keyMap = {
+        'ctrl-c': '\x03',     // Interrupt
+        'ctrl-d': '\x04',     // EOF
+        'ctrl-l': '\x0C',     // Clear screen
+        'ctrl-z': '\x1A',     // Suspend
+        'ctrl-a': '\x01',     // Beginning of line
+        'ctrl-e': '\x05',     // End of line
+        'ctrl-w': '\x17',     // Delete word backward
+        'ctrl-u': '\x15',     // Delete to start of line
+        'ctrl-k': '\x0B',     // Delete to end of line
+        'ctrl-r': '\x12',     // Reverse search history
+        'tab': '\t',
+        'enter': '\r',
+        'esc': '\x1b',
+        'up': '\x1b[A',
+        'down': '\x1b[B',
+        'left': '\x1b[D',
+        'right': '\x1b[C',
+        '1': '1\r',
+        '2': '2\r',
+        '3': '3\r',
+        'y': 'y\r',
+        'n': 'n\r',
+        'slash': '/',
+    };
+
+    // Control key buttons - use pointerup for better mobile support
     controlBar.querySelectorAll('.ctrl-key').forEach((btn) => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('pointerup', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             if (isControlUnlocked) {
-                const key = btn.dataset.key;
+                const keyName = btn.dataset.key;
+                const key = keyMap[keyName] || keyName;
                 sendInput(key);
-                terminal.focus();
             }
         });
     });
 
-    // Send button
-    sendBtn.addEventListener('click', () => {
-        if (isControlUnlocked && inputField.value) {
-            sendInput(inputField.value + '\n');
-            inputField.value = '';
-            terminal.focus();
-        }
-    });
-
-    // Input field enter key
-    inputField.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
+    // Quick buttons (numbers, arrows, y/n/enter) - use pointerup for better mobile support
+    quickBar.querySelectorAll('.quick-btn').forEach((btn) => {
+        btn.addEventListener('pointerup', (e) => {
             e.preventDefault();
-            if (isControlUnlocked && inputField.value) {
-                sendInput(inputField.value + '\n');
-                inputField.value = '';
+            e.stopPropagation();
+            if (isControlUnlocked) {
+                const keyName = btn.dataset.key;
+                const key = keyMap[keyName] || keyName;
+                sendInput(key);
             }
-        }
+        });
     });
 
-    // Auto-resize textarea
-    inputField.addEventListener('input', () => {
-        inputField.style.height = 'auto';
-        inputField.style.height = Math.min(inputField.scrollHeight, 120) + 'px';
-    });
-
-    // Prevent zoom on double-tap
+    // Prevent zoom on double-tap (but not on buttons)
     document.addEventListener('touchend', (e) => {
+        // Don't interfere with button taps
+        if (e.target.closest('button')) return;
+
         const now = Date.now();
         if (now - lastTouchEnd <= 300) {
             e.preventDefault();
@@ -316,10 +382,44 @@ function setupEventListeners() {
 
 let lastTouchEnd = 0;
 
+// Setup viewport - no resize events, just back button handling
+function setupViewportHandler() {
+    // Disable Android back button navigation
+    history.pushState(null, '', window.location.href);
+    window.addEventListener('popstate', (e) => {
+        history.pushState(null, '', window.location.href);
+    });
+
+    // Scroll terminal into view when keyboard opens (don't resize)
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', () => {
+            // Just scroll to keep cursor visible, don't resize terminal
+            terminal.scrollToBottom();
+        });
+    }
+}
+
+// Enable paste from clipboard
+function setupClipboard() {
+    document.addEventListener('paste', (e) => {
+        if (!isControlUnlocked) return;
+
+        const text = e.clipboardData.getData('text');
+        if (text) {
+            e.preventDefault();
+            sendInput(text);
+            terminal.focus();
+        }
+    });
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     initTerminal();
     setupEventListeners();
+    setupTerminalFocus();
+    setupViewportHandler();
+    setupClipboard();
     loadConfig();
     connect();
 });

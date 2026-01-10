@@ -47,6 +47,7 @@ class Config:
 
     # Authentication
     token: Optional[str] = None  # Auto-generated if not set
+    no_auth: bool = False  # Disable token authentication
 
     # Quick commands (sent on tap)
     quick_commands: List[QuickCommand] = field(default_factory=lambda: [

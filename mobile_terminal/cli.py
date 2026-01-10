@@ -50,6 +50,11 @@ def parse_args() -> argparse.Namespace:
         help="Auth token (default: auto-generated)",
     )
     parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Disable token authentication (use with caution)",
+    )
+    parser.add_argument(
         "--no-discovery",
         action="store_true",
         help="Disable auto-discovery of project context",
@@ -97,6 +102,8 @@ def main() -> int:
         config.host = args.host
     if args.token:
         config.token = args.token
+    if args.no_auth:
+        config.no_auth = True
 
     # Print config and exit if requested
     if args.print_config:
