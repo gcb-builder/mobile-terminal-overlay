@@ -88,10 +88,43 @@
         <!-- Terminal container -->
         <div id="terminal-container" class="terminal-container"></div>
 
+        <!-- Bottom action bar (right-hand friendly) -->
+        <div id="bottomBar" class="bottom-bar hidden">
+            <button id="composeBtn" class="compose-btn" aria-label="Compose with keyboard">
+                <span class="compose-icon">&#x1F4AC;</span>
+                <span class="compose-label">Compose</span>
+            </button>
+        </div>
+
         <!-- Jump to bottom FAB (hidden when at bottom) -->
-        <button id="jumpToBottomBtn" class="fab hidden" aria-label="Jump to bottom">
+        <button id="jumpToBottomBtn" class="fab fab-left hidden" aria-label="Jump to bottom">
             <span>&#x2193;</span>
         </button>
+
+        <!-- Compose modal (predictive text + speech enabled) -->
+        <div id="composeModal" class="compose-modal hidden">
+            <div class="compose-modal-content">
+                <div class="compose-header">
+                    <span class="compose-title">Compose Message</span>
+                    <button id="composeClose" class="compose-close">&times;</button>
+                </div>
+                <textarea
+                    id="composeInput"
+                    class="compose-input"
+                    placeholder="Type with predictive text or use voice input..."
+                    autocomplete="on"
+                    autocorrect="on"
+                    autocapitalize="sentences"
+                    spellcheck="true"
+                    rows="4"
+                ></textarea>
+                <div class="compose-footer">
+                    <button id="composeClear" class="compose-action secondary">Clear</button>
+                    <button id="composeInsert" class="compose-action primary">Send to Terminal</button>
+                </div>
+                <p class="compose-hint">Tip: Use your keyboard's microphone button for speech-to-text</p>
+            </div>
+        </div>
 
         <!-- Connection status overlay -->
         <div id="statusOverlay" class="status-overlay">

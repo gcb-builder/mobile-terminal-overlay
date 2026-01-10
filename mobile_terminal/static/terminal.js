@@ -44,6 +44,13 @@ const searchInput = document.getElementById('searchInput');
 const searchClose = document.getElementById('searchClose');
 const searchResults = document.getElementById('searchResults');
 const jumpToBottomBtn = document.getElementById('jumpToBottomBtn');
+const bottomBar = document.getElementById('bottomBar');
+const composeBtn = document.getElementById('composeBtn');
+const composeModal = document.getElementById('composeModal');
+const composeInput = document.getElementById('composeInput');
+const composeClose = document.getElementById('composeClose');
+const composeClear = document.getElementById('composeClear');
+const composeInsert = document.getElementById('composeInsert');
 
 /**
  * Initialize the terminal
@@ -236,6 +243,7 @@ function toggleControl() {
         controlBar.classList.remove('hidden');
         roleBar.classList.remove('hidden');
         quickBar.classList.remove('hidden');
+        bottomBar.classList.remove('hidden');
 
         // Focus terminal for direct input
         terminal.focus();
@@ -252,6 +260,7 @@ function toggleControl() {
         controlBar.classList.add('hidden');
         roleBar.classList.add('hidden');
         quickBar.classList.add('hidden');
+        bottomBar.classList.add('hidden');
         terminalContainer.classList.remove('focusable');
     }
 }
@@ -709,6 +718,63 @@ function setupJumpToBottom() {
 }
 
 /**
+ * Setup compose mode (predictive text + speech-to-text)
+ */
+function setupComposeMode() {
+    // Open compose modal
+    composeBtn.addEventListener('click', () => {
+        composeModal.classList.remove('hidden');
+        composeInput.value = '';
+        // Small delay to ensure modal is visible before focusing
+        setTimeout(() => {
+            composeInput.focus();
+        }, 100);
+    });
+
+    // Close compose modal
+    composeClose.addEventListener('click', closeComposeModal);
+
+    // Close on backdrop click
+    composeModal.addEventListener('click', (e) => {
+        if (e.target === composeModal) {
+            closeComposeModal();
+        }
+    });
+
+    // Clear input
+    composeClear.addEventListener('click', () => {
+        composeInput.value = '';
+        composeInput.focus();
+    });
+
+    // Send to terminal
+    composeInsert.addEventListener('click', () => {
+        const text = composeInput.value;
+        if (text && socket && socket.readyState === WebSocket.OPEN) {
+            sendInput(text);
+            closeComposeModal();
+            terminal.focus();
+        }
+    });
+
+    // Send on Ctrl+Enter or Cmd+Enter
+    composeInput.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            e.preventDefault();
+            composeInsert.click();
+        }
+        if (e.key === 'Escape') {
+            closeComposeModal();
+        }
+    });
+}
+
+function closeComposeModal() {
+    composeModal.classList.add('hidden');
+    composeInput.blur();
+}
+
+/**
  * Setup local command history
  */
 function setupCommandHistory() {
@@ -778,6 +844,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupFileSearch();
     setupJumpToBottom();
     setupCommandHistory();
+    setupComposeMode();
 
     // Load current session first, then config
     await loadCurrentSession();

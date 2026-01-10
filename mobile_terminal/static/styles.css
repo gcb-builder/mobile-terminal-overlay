@@ -537,3 +537,171 @@ html, body {
     pointer-events: none;
     transform: scale(0.8);
 }
+
+.fab.fab-left {
+    right: auto;
+    left: 24px;
+}
+
+/* Bottom action bar (right-hand friendly) */
+.bottom-bar {
+    position: fixed;
+    bottom: 0;
+    right: 0;
+    padding: 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    z-index: 140;
+}
+
+.bottom-bar.hidden {
+    display: none;
+}
+
+.compose-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 20px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 24px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 12px var(--shadow);
+    transition: transform 0.2s;
+}
+
+.compose-btn:active {
+    transform: scale(0.95);
+}
+
+.compose-icon {
+    font-size: 18px;
+}
+
+/* Compose modal */
+.compose-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.85);
+    z-index: 400;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding: 16px;
+    padding-bottom: env(safe-area-inset-bottom);
+}
+
+.compose-modal.hidden {
+    display: none;
+}
+
+.compose-modal-content {
+    width: 100%;
+    max-width: 500px;
+    background: var(--bg-secondary);
+    border-radius: 16px 16px 0 0;
+    overflow: hidden;
+    animation: slideUp 0.2s ease-out;
+}
+
+@keyframes slideUp {
+    from {
+        transform: translateY(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+.compose-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.compose-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.compose-close {
+    width: 32px;
+    height: 32px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 24px;
+    cursor: pointer;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.compose-close:active {
+    background: var(--bg-tertiary);
+}
+
+.compose-input {
+    width: 100%;
+    min-height: 120px;
+    padding: 16px;
+    background: var(--bg-primary);
+    border: none;
+    color: var(--text-primary);
+    font-size: 16px;
+    font-family: inherit;
+    resize: none;
+    outline: none;
+}
+
+.compose-input::placeholder {
+    color: var(--text-secondary);
+}
+
+.compose-footer {
+    display: flex;
+    gap: 12px;
+    padding: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.compose-action {
+    flex: 1;
+    padding: 14px;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.1s;
+}
+
+.compose-action:active {
+    transform: scale(0.98);
+}
+
+.compose-action.primary {
+    background: var(--accent);
+    color: white;
+}
+
+.compose-action.secondary {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.compose-hint {
+    padding: 0 16px 16px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-align: center;
+}
