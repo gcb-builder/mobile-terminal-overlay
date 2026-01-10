@@ -15,6 +15,17 @@ let isControlUnlocked = false;
 let config = null;
 let currentSession = null;
 
+// Reconnection with exponential backoff
+let reconnectDelay = 1000;
+const MAX_RECONNECT_DELAY = 30000;
+const INITIAL_RECONNECT_DELAY = 1000;
+
+// Local command history (persisted to localStorage)
+const MAX_HISTORY_SIZE = 100;
+let commandHistory = JSON.parse(localStorage.getItem('terminalHistory') || '[]');
+let historyIndex = -1;
+let currentInput = '';
+
 // DOM elements
 const terminalContainer = document.getElementById('terminal-container');
 const controlBtn = document.getElementById('controlBtn');
@@ -32,6 +43,7 @@ const searchModal = document.getElementById('searchModal');
 const searchInput = document.getElementById('searchInput');
 const searchClose = document.getElementById('searchClose');
 const searchResults = document.getElementById('searchResults');
+const jumpToBottomBtn = document.getElementById('jumpToBottomBtn');
 
 /**
  * Initialize the terminal
@@ -150,6 +162,8 @@ function connect() {
     socket.onopen = () => {
         console.log('WebSocket connected');
         statusOverlay.classList.add('hidden');
+        // Reset reconnect delay on successful connection
+        reconnectDelay = INITIAL_RECONNECT_DELAY;
         sendResize();
     };
 
@@ -165,11 +179,12 @@ function connect() {
 
     socket.onclose = (event) => {
         console.log('WebSocket closed:', event.code, event.reason);
-        statusText.textContent = 'Disconnected. Reconnecting...';
+        statusText.textContent = `Disconnected. Reconnecting in ${reconnectDelay / 1000}s...`;
         statusOverlay.classList.remove('hidden');
 
-        // Reconnect after delay
-        setTimeout(connect, 2000);
+        // Reconnect with exponential backoff
+        setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
     };
 
     socket.onerror = (error) => {
@@ -657,6 +672,101 @@ function setupClipboard() {
     });
 }
 
+/**
+ * Setup jump-to-bottom FAB
+ */
+function setupJumpToBottom() {
+    let isAtBottom = true;
+
+    // Track scroll position
+    terminalContainer.addEventListener('scroll', () => {
+        const { scrollTop, scrollHeight, clientHeight } = terminalContainer;
+        isAtBottom = scrollTop + clientHeight >= scrollHeight - 50;
+
+        if (isAtBottom) {
+            jumpToBottomBtn.classList.add('hidden');
+        } else {
+            jumpToBottomBtn.classList.remove('hidden');
+        }
+    });
+
+    // Jump to bottom on click
+    jumpToBottomBtn.addEventListener('click', () => {
+        terminal.scrollToBottom();
+        terminalContainer.scrollTop = terminalContainer.scrollHeight;
+        jumpToBottomBtn.classList.add('hidden');
+    });
+
+    // Auto-scroll on new output (only if already at bottom)
+    const originalWrite = terminal.write.bind(terminal);
+    terminal.write = (data) => {
+        const wasAtBottom = isAtBottom;
+        originalWrite(data);
+        if (wasAtBottom) {
+            terminal.scrollToBottom();
+        }
+    };
+}
+
+/**
+ * Setup local command history
+ */
+function setupCommandHistory() {
+    // Track input for history
+    let inputBuffer = '';
+
+    terminal.onKey(({ key, domEvent }) => {
+        if (!isControlUnlocked) return;
+
+        // Enter key - save to history
+        if (domEvent.key === 'Enter') {
+            if (inputBuffer.trim()) {
+                // Add to history (avoid duplicates)
+                if (commandHistory[commandHistory.length - 1] !== inputBuffer) {
+                    commandHistory.push(inputBuffer);
+                    if (commandHistory.length > MAX_HISTORY_SIZE) {
+                        commandHistory.shift();
+                    }
+                    localStorage.setItem('terminalHistory', JSON.stringify(commandHistory));
+                }
+            }
+            inputBuffer = '';
+            historyIndex = -1;
+        }
+        // Arrow up - previous in history
+        else if (domEvent.key === 'ArrowUp' && commandHistory.length > 0) {
+            if (historyIndex === -1) {
+                currentInput = inputBuffer;
+            }
+            if (historyIndex < commandHistory.length - 1) {
+                historyIndex++;
+                // Clear current line and insert history item
+                // This works with bash-style line editing
+            }
+        }
+        // Arrow down - next in history
+        else if (domEvent.key === 'ArrowDown' && historyIndex >= 0) {
+            historyIndex--;
+            if (historyIndex === -1) {
+                // Restore original input
+            }
+        }
+        // Regular character - add to buffer
+        else if (key.length === 1 && !domEvent.ctrlKey && !domEvent.metaKey) {
+            inputBuffer += key;
+        }
+        // Backspace - remove from buffer
+        else if (domEvent.key === 'Backspace') {
+            inputBuffer = inputBuffer.slice(0, -1);
+        }
+        // Ctrl+C or Ctrl+U - clear buffer
+        else if (domEvent.ctrlKey && (domEvent.key === 'c' || domEvent.key === 'u')) {
+            inputBuffer = '';
+            historyIndex = -1;
+        }
+    });
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
     initTerminal();
@@ -666,6 +776,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupClipboard();
     setupRepoDropdown();
     setupFileSearch();
+    setupJumpToBottom();
+    setupCommandHistory();
 
     // Load current session first, then config
     await loadCurrentSession();

@@ -506,3 +506,34 @@ html, body {
     color: var(--text-secondary);
     font-size: 14px;
 }
+
+/* Jump to bottom FAB */
+.fab {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px var(--shadow);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 150;
+    transition: transform 0.2s, opacity 0.2s;
+}
+
+.fab:active {
+    transform: scale(0.9);
+}
+
+.fab.hidden {
+    opacity: 0;
+    pointer-events: none;
+    transform: scale(0.8);
+}

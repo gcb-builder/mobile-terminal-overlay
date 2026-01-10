@@ -8,12 +8,14 @@ Provides:
 """
 
 import asyncio
+import atexit
 import fcntl
 import json
 import logging
 import os
 import pty
 import secrets
+import signal
 import struct
 import termios
 from pathlib import Path
@@ -29,6 +31,22 @@ logger = logging.getLogger(__name__)
 
 # Directory containing static files
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _sigchld_handler(signum, frame):
+    """Reap zombie child processes."""
+    try:
+        while True:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+            if pid == 0:
+                break
+            logger.debug(f"Reaped child process {pid} with status {status}")
+    except ChildProcessError:
+        pass  # No child processes
+
+
+# Install SIGCHLD handler to prevent zombie processes
+signal.signal(signal.SIGCHLD, _sigchld_handler)
 
 
 def create_app(config: Config) -> FastAPI:
