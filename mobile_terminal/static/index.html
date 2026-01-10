@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Mobile Terminal</title>
+
+    <!-- xterm.js from CDN -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
+
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <span class="logo">Terminal</span>
+            </div>
+            <div class="header-right">
+                <span id="controlIndicator" class="control-indicator locked">View</span>
+                <button id="settingsBtn" class="icon-btn" aria-label="Settings">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Terminal container -->
+        <div id="terminal-container" class="terminal-container"></div>
+
+        <!-- Control toggle -->
+        <div class="control-toggle">
+            <button id="controlBtn" class="control-btn locked">
+                <span class="lock-icon">&#x1F512;</span>
+                <span id="controlBtnText">Take Control</span>
+            </button>
+        </div>
+
+        <!-- Control keys bar (visible when unlocked) -->
+        <div id="controlBar" class="control-bar hidden">
+            <button class="ctrl-key" data-key="\x03">^C</button>
+            <button class="ctrl-key" data-key="\x04">^D</button>
+            <button class="ctrl-key" data-key="\x0C">^L</button>
+            <button class="ctrl-key" data-key="\t">Tab</button>
+            <button class="ctrl-key" data-key="\x1b[A">&#x2191;</button>
+            <button class="ctrl-key" data-key="\x1b[B">&#x2193;</button>
+            <button class="ctrl-key" data-key="\x1b">Esc</button>
+        </div>
+
+        <!-- Role prefixes bar (visible when unlocked, populated from config) -->
+        <div id="roleBar" class="role-bar hidden"></div>
+
+        <!-- Quick commands bar (visible when unlocked, populated from config) -->
+        <div id="quickBar" class="quick-bar hidden"></div>
+
+        <!-- Text input (visible when unlocked) -->
+        <div id="inputArea" class="input-area hidden">
+            <textarea id="inputField" placeholder="Type message..." rows="1"></textarea>
+            <button id="sendBtn" class="send-btn">&#x23CE;</button>
+        </div>
+
+        <!-- Connection status overlay -->
+        <div id="statusOverlay" class="status-overlay">
+            <div class="status-content">
+                <div class="spinner"></div>
+                <p id="statusText">Connecting...</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/terminal.js"></script>
+</body>
+</html>
