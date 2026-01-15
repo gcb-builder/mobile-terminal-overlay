@@ -192,6 +192,66 @@ def create_app(config: Config) -> FastAPI:
             logger.error(f"File search error: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.get("/api/transcript")
+    async def get_transcript(token: Optional[str] = Query(None)):
+        """
+        Get terminal transcript using tmux capture-pane.
+        Returns clean text history (10000 lines) for searchable viewing.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        try:
+            import subprocess
+            session_name = app.state.current_session
+            result = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-J", "-S", "-10000", "-t", session_name],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return JSONResponse(
+                    {"error": f"tmux capture-pane failed: {result.stderr}"},
+                    status_code=500,
+                )
+            return {"text": result.stdout, "session": session_name}
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Capture timeout"}, status_code=504)
+        except Exception as e:
+            logger.error(f"Transcript error: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/refresh")
+    async def refresh_terminal(token: Optional[str] = Query(None)):
+        """
+        Get current terminal snapshot for refresh (without full history).
+        Uses capture-pane with visible content only.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        try:
+            import subprocess
+            session_name = app.state.current_session
+            result = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-J", "-S", "-5000", "-t", session_name],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return JSONResponse(
+                    {"error": f"tmux capture-pane failed: {result.stderr}"},
+                    status_code=500,
+                )
+            return {"text": result.stdout, "session": session_name}
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Refresh timeout"}, status_code=504)
+        except Exception as e:
+            logger.error(f"Refresh error: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.post("/api/upload")
     async def upload_image(
         file: UploadFile = File(...),
@@ -354,19 +414,24 @@ def create_app(config: Config) -> FastAPI:
         master_fd = app.state.master_fd
         output_buffer = app.state.output_buffer
 
-        # Replay buffered history to new client
-        history = output_buffer.read_all()
-        if history:
-            logger.info(f"Replaying {len(history)} bytes of history to new client")
-            try:
-                # Send in chunks to avoid overwhelming the client
-                chunk_size = 32 * 1024  # 32KB chunks
-                for i in range(0, len(history), chunk_size):
-                    chunk = history[i:i + chunk_size]
-                    await websocket.send_bytes(chunk)
-                    await asyncio.sleep(0.01)  # Small delay between chunks
-            except Exception as e:
-                logger.error(f"Error replaying history: {e}")
+        # Send history snapshot using tmux capture-pane (cleaner than raw buffer replay)
+        try:
+            import subprocess
+            session_name = app.state.current_session
+            result = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-J", "-S", "-5000", "-t", session_name],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout:
+                history_text = result.stdout
+                logger.info(f"Sending {len(history_text)} chars of capture-pane history")
+                await websocket.send_text(history_text)
+        except subprocess.TimeoutExpired:
+            logger.warning("tmux capture-pane timed out")
+        except Exception as e:
+            logger.error(f"Error getting capture-pane history: {e}")
 
         # Create tasks for bidirectional I/O
         async def read_from_terminal():

@@ -48,6 +48,17 @@ mobile-terminal --print-config
 
 For remote access, use a tunnel like Cloudflare Tunnel or ngrok.
 
+## tmux Configuration
+
+For best scrollback history in the Transcript view, increase tmux's history limit:
+
+```bash
+# Add to ~/.tmux.conf
+set -g history-limit 50000
+```
+
+Then reload tmux config: `tmux source-file ~/.tmux.conf`
+
 ## Configuration
 
 Create `.mobile-terminal.yaml` in your project root:

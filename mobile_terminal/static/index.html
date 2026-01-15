@@ -37,6 +37,11 @@
                 </button>
             </div>
             <div class="header-right">
+                <!-- View toggle: Terminal | Transcript -->
+                <div id="viewToggle" class="view-toggle">
+                    <button id="terminalViewBtn" class="view-toggle-btn active">Term</button>
+                    <button id="transcriptViewBtn" class="view-toggle-btn">Log</button>
+                </div>
                 <button id="searchBtn" class="icon-btn" aria-label="Search files">
                     <span>&#x1F50D;</span>
                 </button>
@@ -78,10 +83,8 @@
                     <button class="ctrl-key" data-key="esc">Esc</button>
                 </div>
 
-                <!-- Input bar: select/copy + arrows, numbers, y/n/enter, slash (Control mode only) -->
+                <!-- Input bar: arrows, numbers, y/n/enter, slash (Control mode only) -->
                 <div id="inputBar" class="input-bar">
-                    <button id="selectModeBtnAlt" class="quick-btn select-btn">Select</button>
-                    <button id="copyBtnAlt" class="quick-btn copy-btn">Copy</button>
                     <button class="quick-btn" data-key="up">&#x2191;</button>
                     <button class="quick-btn" data-key="down">&#x2193;</button>
                     <button class="quick-btn" data-key="1">1</button>
@@ -100,19 +103,22 @@
         <!-- Terminal container -->
         <div id="terminal-container" class="terminal-container"></div>
 
-        <!-- View bar: View mode only - scroll/select/copy -->
-        <div id="viewBar" class="view-bar hidden">
+        <!-- Transcript view (hidden by default) -->
+        <div id="transcriptContainer" class="transcript-container hidden">
+            <div class="transcript-search">
+                <input type="text" id="transcriptSearch" placeholder="Search transcript..." autocomplete="off">
+                <span id="transcriptSearchCount" class="search-count"></span>
+            </div>
+            <div id="transcriptContent" class="transcript-content"></div>
+        </div>
+
+        <!-- Action bar: always visible -->
+        <div id="viewBar" class="view-bar">
             <button id="selectModeBtn" class="view-btn select-btn">Select</button>
             <button id="copyBtn" class="view-btn copy-btn">Copy</button>
             <button id="tmuxScrollBtn" class="view-btn scroll-btn">Scroll</button>
-        </div>
-
-        <!-- Bottom action bar (Control mode only) -->
-        <div id="bottomBar" class="bottom-bar hidden">
-            <button id="composeBtn" class="compose-btn" aria-label="Compose with keyboard">
-                <span class="compose-icon">&#x1F4AC;</span>
-                <span class="compose-label">Compose</span>
-            </button>
+            <button id="refreshBtn" class="view-btn refresh-btn">Refresh</button>
+            <button id="composeBtn" class="view-btn compose-btn">Compose</button>
         </div>
 
         <!-- Compose modal (predictive text + speech enabled) -->

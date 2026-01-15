@@ -42,10 +42,15 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - Terminal sized once at init with all bars visible (prevents size changes on toggle)
 - Fixed scrollback corruption: track size in localStorage, clear buffer only when size changes
 - Preserve scrollback on same-size reconnect (improves UX)
+- Added PgUp/PgDn buttons for programmatic scrolling on mobile
+- Increased scrollback buffer to 10000 lines
+- Improved touch scrolling with `touch-action: pan-y` CSS
+- Added RingBuffer (2MB) for server-side history replay on reconnect
+- Terminal resize working correctly (sends JSON resize messages)
 
 ## Known Issues / In Testing
 
-- None currently
+- Touch scrolling on Android Chrome may require PgUp/PgDn buttons instead of swipe
 
 ## Key Files
 

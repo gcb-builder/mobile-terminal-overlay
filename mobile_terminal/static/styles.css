@@ -929,3 +929,106 @@ html, body {
     align-items: center;
     justify-content: center;
 }
+
+/* View toggle (Terminal | Transcript) */
+.view-toggle {
+    display: flex;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.view-toggle-btn {
+    padding: 4px 10px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.view-toggle-btn.active {
+    background: var(--accent);
+    color: white;
+}
+
+.view-toggle-btn:not(.active):active {
+    background: var(--bg-secondary);
+}
+
+/* Transcript container */
+.transcript-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-primary);
+}
+
+.transcript-container.hidden {
+    display: none;
+}
+
+.transcript-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.transcript-search input {
+    flex: 1;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.transcript-search input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.search-count {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.transcript-content {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 12px;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    color: var(--text-primary);
+    -webkit-overflow-scrolling: touch;
+}
+
+.transcript-content .highlight {
+    background: var(--warning);
+    color: var(--bg-primary);
+    border-radius: 2px;
+    padding: 0 2px;
+}
+
+.transcript-content .highlight.current {
+    background: var(--accent);
+}
+
+/* Refresh button style */
+.refresh-btn {
+    background: var(--bg-tertiary) !important;
+}

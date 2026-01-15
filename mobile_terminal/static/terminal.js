@@ -36,11 +36,11 @@ let terminalContainer, controlBtn, controlIndicator, controlBarsContainer;
 let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
-let bottomBar, composeBtn, composeModal;
+let composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composeInsert;
 let composeCamera, composeGallery, composeCameraInput, composeGalleryInput, composeAttachments;
-let copyBtn, selectModeBtn, tmuxScrollBtn;
-let copyBtnAlt, selectModeBtnAlt;  // Alternate buttons in inputBar
+let copyBtn, selectModeBtn, tmuxScrollBtn, refreshBtn;
+let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 
 // Attachments state for compose modal
 let pendingAttachments = [];
@@ -65,7 +65,6 @@ function initDOMElements() {
     searchInput = document.getElementById('searchInput');
     searchClose = document.getElementById('searchClose');
     searchResults = document.getElementById('searchResults');
-    bottomBar = document.getElementById('bottomBar');
     composeBtn = document.getElementById('composeBtn');
     composeModal = document.getElementById('composeModal');
     composeInput = document.getElementById('composeInput');
@@ -80,8 +79,13 @@ function initDOMElements() {
     copyBtn = document.getElementById('copyBtn');
     selectModeBtn = document.getElementById('selectModeBtn');
     tmuxScrollBtn = document.getElementById('tmuxScrollBtn');
-    copyBtnAlt = document.getElementById('copyBtnAlt');
-    selectModeBtnAlt = document.getElementById('selectModeBtnAlt');
+    refreshBtn = document.getElementById('refreshBtn');
+    terminalViewBtn = document.getElementById('terminalViewBtn');
+    transcriptViewBtn = document.getElementById('transcriptViewBtn');
+    transcriptContainer = document.getElementById('transcriptContainer');
+    transcriptContent = document.getElementById('transcriptContent');
+    transcriptSearch = document.getElementById('transcriptSearch');
+    transcriptSearchCount = document.getElementById('transcriptSearchCount');
 }
 
 /**
@@ -330,8 +334,6 @@ function toggleControl() {
         controlBarsContainer.classList.remove('collapsed');
         collapseToggle.classList.remove('hidden');
         collapseToggle.classList.remove('collapsed');
-        bottomBar.classList.remove('hidden');
-        viewBar.classList.add('hidden');  // Hide viewBar in Control mode (Select/Copy in inputBar)
 
         // Focus terminal for direct input
         terminal.focus();
@@ -349,8 +351,6 @@ function toggleControl() {
 
         controlBarsContainer.classList.add('hidden');
         collapseToggle.classList.add('hidden');
-        bottomBar.classList.add('hidden');
-        viewBar.classList.remove('hidden');  // Show viewBar in View mode
         terminalContainer.classList.remove('focusable');
 
         // Clear any selection when locking
@@ -864,12 +864,15 @@ function setupJumpToBottom() {
  * Setup compose mode (predictive text + speech-to-text + image upload)
  */
 function setupComposeMode() {
-    // Open compose modal
+    // Open compose modal and unlock control mode
     composeBtn.addEventListener('click', () => {
+        // Unlock control mode if locked (so compose can send input)
+        if (!isControlUnlocked) {
+            toggleControl();
+        }
         composeModal.classList.remove('hidden');
         composeInput.value = '';
         clearAttachments();
-        // Small delay to ensure modal is visible before focusing
         setTimeout(() => {
             composeInput.focus();
         }, 100);
@@ -1098,39 +1101,26 @@ let isSelectMode = false;
 let selectStart = null;  // {row, col}
 
 function setupCopyButton() {
-    // Toggle select mode - shared handler for both buttons
+    // Toggle select mode
     const toggleSelectMode = (e) => {
         e.preventDefault();
 
         isSelectMode = !isSelectMode;
         selectStart = null;
 
-        // Update both buttons
-        const btns = [selectModeBtn, selectModeBtnAlt].filter(Boolean);
-        btns.forEach(btn => {
-            if (isSelectMode) {
-                btn.classList.add('active');
-                btn.textContent = 'Tap start';
-            } else {
-                btn.classList.remove('active');
-                btn.textContent = 'Select';
-            }
-        });
-
         if (isSelectMode) {
+            selectModeBtn.classList.add('active');
+            selectModeBtn.textContent = 'Tap start';
             terminal.clearSelection();
         } else {
-            // Restore focus when canceling select mode
+            selectModeBtn.classList.remove('active');
+            selectModeBtn.textContent = 'Select';
             setTimeout(() => terminal.focus(), 100);
         }
     };
 
-    // Select mode buttons - both viewBar and inputBar
     if (selectModeBtn) {
         selectModeBtn.addEventListener('click', toggleSelectMode);
-    }
-    if (selectModeBtnAlt) {
-        selectModeBtnAlt.addEventListener('click', toggleSelectMode);
     }
 
     // Handle taps on terminal for selection - use click only to avoid double-firing
@@ -1208,52 +1198,39 @@ function setupCopyButton() {
         const resetCopyState = () => {
             isSelectMode = false;
             selectStart = null;
-            // Update both select buttons
-            [selectModeBtn, selectModeBtnAlt].filter(Boolean).forEach(btn => {
-                btn.classList.remove('active');
-                btn.textContent = 'Select';
-            });
-            // Always restore focus after a short delay
+            if (selectModeBtn) {
+                selectModeBtn.classList.remove('active');
+                selectModeBtn.textContent = 'Select';
+            }
             setTimeout(() => {
                 terminal.focus();
-                // Double-check focus was set
                 if (document.activeElement !== terminal.textarea) {
                     terminal.textarea.focus();
                 }
             }, 50);
         };
 
-        // Helper to update both copy buttons
-        const updateCopyBtns = (text) => {
-            [copyBtn, copyBtnAlt].filter(Boolean).forEach(btn => {
-                btn.textContent = text;
-            });
-        };
-
         const handleCopy = () => {
             const selection = terminal.getSelection();
 
             if (!selection) {
-                updateCopyBtns('Select first');
-                setTimeout(() => updateCopyBtns('Copy'), 1500);
+                copyBtn.textContent = 'Select first';
+                setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
                 resetCopyState();
                 return;
             }
 
-            // Try modern clipboard API first (async but we don't await)
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(selection).then(() => {
-                    updateCopyBtns('Copied!');
-                    setTimeout(() => updateCopyBtns('Copy'), 1500);
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
                 }).catch(() => {
-                    // Fallback failed silently, try execCommand
                     fallbackCopy(selection);
                 }).finally(() => {
                     terminal.clearSelection();
                     resetCopyState();
                 });
             } else {
-                // No clipboard API, use fallback
                 fallbackCopy(selection);
                 terminal.clearSelection();
                 resetCopyState();
@@ -1271,24 +1248,18 @@ function setupCopyButton() {
                 textarea.setSelectionRange(0, text.length);
                 const success = document.execCommand('copy');
                 document.body.removeChild(textarea);
-                updateCopyBtns(success ? 'Copied!' : 'Failed');
+                copyBtn.textContent = success ? 'Copied!' : 'Failed';
             } catch (e) {
-                updateCopyBtns('Failed');
+                copyBtn.textContent = 'Failed';
             }
-            setTimeout(() => updateCopyBtns('Copy'), 1500);
+            setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
         };
 
-        // Copy button handlers - both viewBar and inputBar
-        const copyHandler = (e) => {
+        copyBtn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
             handleCopy();
-        };
-
-        copyBtn.addEventListener('click', copyHandler);
-        if (copyBtnAlt) {
-            copyBtnAlt.addEventListener('click', copyHandler);
-        }
+        });
     }
 }
 
@@ -1413,6 +1384,158 @@ function setupCommandHistory() {
     });
 }
 
+/**
+ * View toggle: Terminal vs Transcript
+ */
+let currentView = 'terminal';  // 'terminal' or 'transcript'
+let transcriptText = '';  // Cached transcript text
+
+function setupViewToggle() {
+    terminalViewBtn.addEventListener('click', () => {
+        if (currentView !== 'terminal') {
+            switchToTerminalView();
+        }
+    });
+
+    transcriptViewBtn.addEventListener('click', () => {
+        if (currentView !== 'transcript') {
+            switchToTranscriptView();
+        }
+    });
+}
+
+function switchToTerminalView() {
+    currentView = 'terminal';
+    terminalViewBtn.classList.add('active');
+    transcriptViewBtn.classList.remove('active');
+    terminalContainer.classList.remove('hidden');
+    transcriptContainer.classList.add('hidden');
+}
+
+async function switchToTranscriptView() {
+    currentView = 'transcript';
+    transcriptViewBtn.classList.add('active');
+    terminalViewBtn.classList.remove('active');
+    transcriptContainer.classList.remove('hidden');
+    terminalContainer.classList.add('hidden');
+
+    // Fetch transcript
+    await fetchTranscript();
+}
+
+async function fetchTranscript() {
+    transcriptContent.textContent = 'Loading transcript...';
+    transcriptSearchCount.textContent = '';
+
+    try {
+        const response = await fetch(`/api/transcript?token=${token}`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch transcript');
+        }
+        const data = await response.json();
+        transcriptText = data.text || '';
+        renderTranscript(transcriptText);
+    } catch (error) {
+        console.error('Transcript error:', error);
+        transcriptContent.textContent = 'Error loading transcript: ' + error.message;
+    }
+}
+
+function renderTranscript(text, searchTerm = '') {
+    if (!searchTerm) {
+        transcriptContent.textContent = text;
+        transcriptSearchCount.textContent = '';
+        return;
+    }
+
+    // Escape HTML and highlight search matches
+    const escaped = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+
+    const regex = new RegExp(`(${escapeRegExp(searchTerm)})`, 'gi');
+    const matches = text.match(regex);
+    const count = matches ? matches.length : 0;
+
+    transcriptSearchCount.textContent = count > 0 ? `${count} match${count === 1 ? '' : 'es'}` : 'No matches';
+
+    const highlighted = escaped.replace(regex, '<span class="highlight">$1</span>');
+    transcriptContent.innerHTML = highlighted;
+
+    // Scroll to first match
+    const firstMatch = transcriptContent.querySelector('.highlight');
+    if (firstMatch) {
+        firstMatch.classList.add('current');
+        firstMatch.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+}
+
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function setupTranscriptSearch() {
+    let searchDebounce = null;
+
+    transcriptSearch.addEventListener('input', (e) => {
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(() => {
+            renderTranscript(transcriptText, e.target.value);
+        }, 200);
+    });
+
+    // Clear search on Escape
+    transcriptSearch.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            transcriptSearch.value = '';
+            renderTranscript(transcriptText, '');
+        }
+    });
+}
+
+/**
+ * Refresh button: re-fetch terminal snapshot via capture-pane
+ */
+async function refreshTerminal() {
+    if (refreshBtn) {
+        refreshBtn.textContent = '...';
+    }
+
+    try {
+        const response = await fetch(`/api/refresh?token=${token}`);
+        if (!response.ok) {
+            throw new Error('Refresh failed');
+        }
+        const data = await response.json();
+        if (data.text && terminal) {
+            // Clear terminal and write fresh content
+            terminal.clear();
+            terminal.write(data.text);
+            terminal.scrollToBottom();
+        }
+        if (refreshBtn) {
+            refreshBtn.textContent = 'Done!';
+            setTimeout(() => { refreshBtn.textContent = 'Refresh'; }, 1000);
+        }
+    } catch (error) {
+        console.error('Refresh error:', error);
+        if (refreshBtn) {
+            refreshBtn.textContent = 'Error';
+            setTimeout(() => { refreshBtn.textContent = 'Refresh'; }, 1500);
+        }
+    }
+}
+
+function setupRefreshButton() {
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            refreshTerminal();
+        });
+    }
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
     initDOMElements();
@@ -1420,16 +1543,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     // IMPORTANT: Size terminal with ALL bars visible to get the smallest size
     // This ensures tmux gets a consistent size regardless of View/Control mode
     controlBarsContainer.classList.remove('hidden');
-    bottomBar.classList.remove('hidden');
-    viewBar.classList.remove('hidden');
+    // viewBar is always visible (no toggle needed)
 
     initTerminal();  // Fits terminal to container (with all bars taking space)
 
     // Switch to View mode layout - start in View mode
-    // Terminal keeps the smaller size, so no size changes when toggling
     controlBarsContainer.classList.add('hidden');
-    bottomBar.classList.add('hidden');
-    // viewBar stays visible in View mode
 
     setupEventListeners();
     setupTerminalFocus();
@@ -1442,6 +1561,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupTmuxScroll();
     setupCommandHistory();
     setupComposeMode();
+    setupViewToggle();
+    setupTranscriptSearch();
+    setupRefreshButton();
 
     // Load current session first, then config
     await loadCurrentSession();
