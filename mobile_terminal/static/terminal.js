@@ -801,6 +801,22 @@ function setupViewportHandler() {
             terminal.scrollToBottom();
         });
     }
+
+    // Reconnect immediately when returning to app (visibility change)
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            // If disconnected, reconnect immediately instead of waiting for backoff
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                console.log('Page visible, reconnecting immediately');
+                if (reconnectTimer) {
+                    clearTimeout(reconnectTimer);
+                    reconnectTimer = null;
+                }
+                reconnectDelay = INITIAL_RECONNECT_DELAY;
+                connect();
+            }
+        }
+    });
 }
 
 // Enable paste from clipboard
