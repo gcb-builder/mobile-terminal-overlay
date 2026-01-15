@@ -3,8 +3,8 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Initial scaffold complete
-- **Last Updated:** 2026-01-10
+- **Stage:** Production-ready with PWA support
+- **Last Updated:** 2026-01-15
 
 ## Objective
 
@@ -14,26 +14,28 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 
 - [x] Project structure and pyproject.toml
 - [x] FastAPI server with WebSocket tmux relay
-- [x] Token-based authentication
+- [x] Token-based authentication (optional --no-auth)
 - [x] Static files (HTML, CSS, JS)
 - [x] xterm.js integration
-- [x] View/Control toggle
-- [x] Control keys bar
+- [x] View/Control toggle with lock indicator
+- [x] Control keys bar (^B, ^C, ^D, ^Z, ^L, ^A, ^E, ^W, ^U, ^K, ^R, Tab, Esc)
+- [x] Quick bar (Select, Copy, arrows, numbers, y/n/enter, slash)
 - [x] Role prefixes from config
-- [x] Quick commands from config
-- [x] Auto-discovery from CLAUDE.md
-- [x] README documentation
+- [x] Compose modal for predictive text / speech-to-text
+- [x] Repo switching dropdown
+- [x] File search modal
+- [x] Select mode with tap-to-select
+- [x] Copy to clipboard functionality
+- [x] PWA support (service worker, manifest, standalone mode)
+- [x] systemd service file for auto-start
+- [x] WebSocket resilience (handles malformed messages)
 
-## In Progress
+## Recent Fixes (2026-01-15)
 
-- [ ] Initial git commit
-
-## Next Steps
-
-1. Test installation with `pip install -e .`
-2. Test with actual tmux session
-3. Add unit tests
-4. Test auto-discovery from geo-cv CLAUDE.md
+- Fixed WebSocket disconnection after copy operation
+- Added focus restoration after copy/select
+- Added isComposing reset on focus to prevent stuck input
+- Server continues on malformed messages instead of disconnecting
 
 ## Key Files
 
@@ -41,12 +43,23 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 |------|---------|
 | `mobile_terminal/server.py` | FastAPI + WebSocket endpoint |
 | `mobile_terminal/config.py` | Config dataclass + YAML loading |
-| `mobile_terminal/discovery.py` | Auto-discovery from CLAUDE.md |
 | `mobile_terminal/cli.py` | CLI entrypoint |
 | `mobile_terminal/static/terminal.js` | xterm.js + WebSocket client |
+| `mobile_terminal/static/sw.js` | Service worker for PWA |
+| `mobile-terminal.service` | systemd unit file |
 
-## Notes
+## Deployment
 
-- Designed for cross-repo reusability
-- Auto-discovers role prefixes from CLAUDE.md
-- Uses URL-based token auth for simplicity
+```bash
+# Manual start
+mobile-terminal --session claude --no-auth --port 8765
+
+# systemd (auto-start on boot)
+sudo cp mobile-terminal.service /etc/systemd/system/
+sudo systemctl enable --now mobile-terminal
+```
+
+## Access
+
+- HTTP: `http://<hostname>:8765/`
+- PWA: Install from Chrome menu for standalone mode
