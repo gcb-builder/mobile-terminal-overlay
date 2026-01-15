@@ -38,7 +38,7 @@ let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let jumpToBottomBtn, bottomBar, composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composeInsert;
-let composeAttach, composeFileInput, composeAttachments;
+let composeCamera, composeGallery, composeCameraInput, composeGalleryInput, composeAttachments;
 let copyBtn, selectModeBtn, scrollUpBtn, scrollDownBtn;
 
 // Attachments state for compose modal
@@ -71,8 +71,10 @@ function initDOMElements() {
     composeClose = document.getElementById('composeClose');
     composeClear = document.getElementById('composeClear');
     composeInsert = document.getElementById('composeInsert');
-    composeAttach = document.getElementById('composeAttach');
-    composeFileInput = document.getElementById('composeFileInput');
+    composeCamera = document.getElementById('composeCamera');
+    composeGallery = document.getElementById('composeGallery');
+    composeCameraInput = document.getElementById('composeCameraInput');
+    composeGalleryInput = document.getElementById('composeGalleryInput');
     composeAttachments = document.getElementById('composeAttachments');
     copyBtn = document.getElementById('copyBtn');
     selectModeBtn = document.getElementById('selectModeBtn');
@@ -911,34 +913,70 @@ function setupComposeMode() {
         }
     });
 
-    // Attach button - trigger file input
-    if (composeAttach) {
-        composeAttach.addEventListener('click', () => {
-            composeFileInput.click();
+    // Camera button - trigger camera input
+    if (composeCamera) {
+        composeCamera.addEventListener('click', () => {
+            composeCameraInput.click();
         });
     }
 
-    // Handle file selection
-    if (composeFileInput) {
-        composeFileInput.addEventListener('change', async (e) => {
+    // Gallery button - trigger gallery input
+    if (composeGallery) {
+        composeGallery.addEventListener('click', () => {
+            composeGalleryInput.click();
+        });
+    }
+
+    // Handle camera file selection
+    if (composeCameraInput) {
+        composeCameraInput.addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
-
-            // Reset input so same file can be selected again
-            composeFileInput.value = '';
-
-            await uploadAttachment(file);
+            composeCameraInput.value = '';
+            await uploadAttachment(file, composeCamera);
         });
     }
+
+    // Handle gallery file selection
+    if (composeGalleryInput) {
+        composeGalleryInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            composeGalleryInput.value = '';
+            await uploadAttachment(file, composeGallery);
+        });
+    }
+
+    // Handle paste - detect images and auto-upload
+    composeInput.addEventListener('paste', async (e) => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+
+        for (const item of items) {
+            if (item.type.startsWith('image/')) {
+                e.preventDefault();
+                const file = item.getAsFile();
+                if (file) {
+                    await uploadAttachment(file);
+                }
+                return;
+            }
+        }
+        // Text paste proceeds normally
+    });
 }
 
 /**
  * Upload a file attachment
+ * @param {File} file - The file to upload
+ * @param {HTMLElement} [triggerBtn] - Optional button to show uploading state on
  */
-async function uploadAttachment(file) {
-    // Show uploading state
-    composeAttach.classList.add('uploading');
-    composeAttach.textContent = 'Uploading...';
+async function uploadAttachment(file, triggerBtn) {
+    // Show uploading state on the trigger button if provided
+    const originalContent = triggerBtn?.textContent;
+    if (triggerBtn) {
+        triggerBtn.classList.add('uploading');
+    }
 
     try {
         const formData = new FormData();
@@ -970,8 +1008,10 @@ async function uploadAttachment(file) {
         console.error('Upload error:', error);
         alert(`Upload failed: ${error.message}`);
     } finally {
-        composeAttach.classList.remove('uploading');
-        composeAttach.textContent = 'Attach';
+        if (triggerBtn) {
+            triggerBtn.classList.remove('uploading');
+            triggerBtn.textContent = originalContent;
+        }
     }
 }
 

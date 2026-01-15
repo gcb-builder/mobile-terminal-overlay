@@ -134,12 +134,14 @@
                 <!-- Attachment preview area -->
                 <div id="composeAttachments" class="compose-attachments hidden"></div>
                 <div class="compose-footer">
-                    <input type="file" id="composeFileInput" accept="image/*" capture="environment" hidden>
-                    <button id="composeAttach" class="compose-action attach">Attach</button>
+                    <input type="file" id="composeCameraInput" accept="image/*" capture="environment" hidden>
+                    <input type="file" id="composeGalleryInput" accept="image/*" hidden>
+                    <button id="composeCamera" class="compose-action attach-icon" title="Take photo">&#x1F4F7;</button>
+                    <button id="composeGallery" class="compose-action attach-icon" title="Choose from gallery">&#x1F5BC;</button>
                     <button id="composeClear" class="compose-action secondary">Clear</button>
-                    <button id="composeInsert" class="compose-action primary">Send to Terminal</button>
+                    <button id="composeInsert" class="compose-action primary">Send</button>
                 </div>
-                <p class="compose-hint">Tip: Use your keyboard's microphone button for speech-to-text</p>
+                <p class="compose-hint">Tip: Paste images directly or use voice input</p>
             </div>
         </div>
 
