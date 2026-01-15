@@ -1020,6 +1020,47 @@ html, body {
     touch-action: pan-y;  /* Explicitly allow vertical touch scroll */
 }
 
+/* Transcript line styling */
+.transcript-line {
+    padding: 2px 8px;
+    border-left: 3px solid transparent;
+    margin: 0;
+}
+
+.transcript-line.empty {
+    height: 0.5em;
+}
+
+.transcript-line.command {
+    background: rgba(88, 166, 255, 0.08);
+    border-left-color: var(--accent);
+    margin-top: 8px;
+}
+
+.transcript-line.output {
+    color: var(--text-secondary);
+    padding-left: 16px;
+}
+
+/* Syntax highlighting */
+.transcript-content .prompt {
+    color: var(--success);
+    font-weight: 600;
+}
+
+.transcript-content .path {
+    color: var(--accent);
+}
+
+.transcript-content .flag {
+    color: var(--warning);
+}
+
+.transcript-content .string {
+    color: var(--success);
+}
+
+/* Search highlighting */
 .transcript-content .highlight {
     background: var(--warning);
     color: var(--bg-primary);

@@ -1451,32 +1451,71 @@ async function fetchTranscript() {
 }
 
 function renderTranscript(text, searchTerm = '') {
-    if (!searchTerm) {
-        transcriptContent.textContent = text;
-        transcriptSearchCount.textContent = '';
-        return;
+    const lines = text.split('\n');
+    let html = '';
+    let searchCount = 0;
+
+    // Patterns for detecting different line types
+    const promptPattern = /^(\s*)([\$#>]|\w+@[\w.-]+[:\$#]|\([\w-]+\)\s*[\$#])/;
+    const pathPattern = /(\/[\w./-]+|~\/[\w./-]*)/g;
+    const flagPattern = /(\s--?[\w-]+)/g;
+    const stringPattern = /("[^"]*"|'[^']*')/g;
+
+    for (const line of lines) {
+        let escaped = line
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+        const isPromptLine = promptPattern.test(line);
+        const isEmpty = line.trim() === '';
+
+        if (isEmpty) {
+            html += '<div class="transcript-line empty"></div>';
+            continue;
+        }
+
+        // Apply syntax highlighting
+        if (isPromptLine) {
+            // Highlight the prompt itself
+            escaped = escaped.replace(
+                /^(\s*)([\$#&gt;]|[\w]+@[\w.-]+[:\$#]|\([\w-]+\)\s*[\$#])/,
+                '$1<span class="prompt">$2</span>'
+            );
+        }
+
+        // Highlight paths
+        escaped = escaped.replace(pathPattern, '<span class="path">$1</span>');
+
+        // Highlight flags (but not in paths)
+        escaped = escaped.replace(flagPattern, '<span class="flag">$1</span>');
+
+        // Highlight strings
+        escaped = escaped.replace(stringPattern, '<span class="string">$1</span>');
+
+        // Apply search highlighting if searching
+        if (searchTerm) {
+            const regex = new RegExp(`(${escapeRegExp(searchTerm)})`, 'gi');
+            const matches = escaped.match(regex);
+            if (matches) searchCount += matches.length;
+            escaped = escaped.replace(regex, '<span class="highlight">$1</span>');
+        }
+
+        const lineClass = isPromptLine ? 'transcript-line command' : 'transcript-line output';
+        html += `<div class="${lineClass}">${escaped}</div>`;
     }
 
-    // Escape HTML and highlight search matches
-    const escaped = text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
+    transcriptContent.innerHTML = html;
 
-    const regex = new RegExp(`(${escapeRegExp(searchTerm)})`, 'gi');
-    const matches = text.match(regex);
-    const count = matches ? matches.length : 0;
-
-    transcriptSearchCount.textContent = count > 0 ? `${count} match${count === 1 ? '' : 'es'}` : 'No matches';
-
-    const highlighted = escaped.replace(regex, '<span class="highlight">$1</span>');
-    transcriptContent.innerHTML = highlighted;
-
-    // Scroll to first match
-    const firstMatch = transcriptContent.querySelector('.highlight');
-    if (firstMatch) {
-        firstMatch.classList.add('current');
-        firstMatch.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (searchTerm) {
+        transcriptSearchCount.textContent = searchCount > 0 ? `${searchCount} match${searchCount === 1 ? '' : 'es'}` : 'No matches';
+        const firstMatch = transcriptContent.querySelector('.highlight');
+        if (firstMatch) {
+            firstMatch.classList.add('current');
+            firstMatch.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    } else {
+        transcriptSearchCount.textContent = '';
     }
 }
 
