@@ -694,6 +694,7 @@ function setupEventListeners() {
 
     // Key mapping for control and quick buttons
     const keyMap = {
+        'ctrl-b': '\x02',     // tmux prefix
         'ctrl-c': '\x03',     // Interrupt
         'ctrl-d': '\x04',     // EOF
         'ctrl-l': '\x0C',     // Clear screen
