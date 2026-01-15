@@ -724,6 +724,7 @@ function setupEventListeners() {
         'ctrl-u': '\x15',     // Delete to start of line
         'ctrl-k': '\x0B',     // Delete to end of line
         'ctrl-r': '\x12',     // Reverse search history
+        'ctrl-o': '\x0F',     // Operate-and-get-next / nano save
         'tab': '\t',
         'enter': '\r',
         'esc': '\x1b',
