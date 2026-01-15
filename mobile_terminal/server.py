@@ -18,6 +18,7 @@ import secrets
 import signal
 import struct
 import termios
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -74,10 +75,24 @@ def create_app(config: Config) -> FastAPI:
     app.state.active_websocket = None
     app.state.read_task = None
     app.state.current_session = config.session_name  # Track current session
+    app.state.last_ws_connect = 0  # Timestamp of last WebSocket connection
+    app.state.ws_connect_lock = asyncio.Lock()  # Prevent concurrent connection handling
 
     # Mount static files
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.get("/sw.js")
+    async def service_worker():
+        """Serve service worker from root with proper headers."""
+        sw_path = STATIC_DIR / "sw.js"
+        if sw_path.exists():
+            return FileResponse(
+                sw_path,
+                media_type="application/javascript",
+                headers={"Service-Worker-Allowed": "/"},
+            )
+        return HTMLResponse(status_code=404)
 
     @app.get("/")
     async def index(token: Optional[str] = Query(None)):
@@ -183,14 +198,19 @@ def create_app(config: Config) -> FastAPI:
             app.state.read_task.cancel()
             app.state.read_task = None
 
-        # Close current pty
+        # Kill child process and close pty
+        if app.state.child_pid is not None:
+            try:
+                os.kill(app.state.child_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass  # Process already dead
         if app.state.master_fd is not None:
             try:
                 os.close(app.state.master_fd)
             except Exception:
                 pass
-            app.state.master_fd = None
-            app.state.child_pid = None
+        app.state.master_fd = None
+        app.state.child_pid = None
 
         # Update current session
         app.state.current_session = session
@@ -206,21 +226,32 @@ def create_app(config: Config) -> FastAPI:
             await websocket.close(code=4001)
             return
 
-        await websocket.accept()
-        logger.info("WebSocket connection accepted")
+        # Use lock to prevent concurrent connection setup
+        async with app.state.ws_connect_lock:
+            # Rate limit connections - minimum 500ms between accepts
+            now = time.time()
+            elapsed = now - app.state.last_ws_connect
+            if elapsed < 0.5:
+                logger.info(f"Rate limiting WebSocket connection ({elapsed:.2f}s since last)")
+                await websocket.close(code=4004)  # 4004 = rate limited
+                return
+            app.state.last_ws_connect = now
 
-        # Close any existing connection (single client mode)
-        if app.state.active_websocket is not None:
-            try:
-                await app.state.active_websocket.close(code=4002)
-                logger.info("Closed previous WebSocket connection")
-            except Exception:
-                pass
-        if app.state.read_task is not None:
-            app.state.read_task.cancel()
-            app.state.read_task = None
+            await websocket.accept()
+            logger.info("WebSocket connection accepted")
 
-        app.state.active_websocket = websocket
+            # Close any existing connection (single client mode)
+            if app.state.active_websocket is not None:
+                try:
+                    await app.state.active_websocket.close(code=4002)
+                    logger.info("Closed previous WebSocket connection")
+                except Exception:
+                    pass
+            if app.state.read_task is not None:
+                app.state.read_task.cancel()
+                app.state.read_task = None
+
+            app.state.active_websocket = websocket
 
         # Spawn tmux if not already running
         if app.state.master_fd is None:
@@ -283,22 +314,31 @@ def create_app(config: Config) -> FastAPI:
                                         master_fd,
                                         data.get("cols", 80),
                                         data.get("rows", 24),
+                                        app.state.child_pid,
                                     )
                                 elif data.get("type") == "input":
-                                    os.write(master_fd, data["data"].encode())
+                                    input_data = data.get("data")
+                                    if input_data:
+                                        os.write(master_fd, input_data.encode())
                             else:
                                 # JSON but not dict, treat as plain text
                                 os.write(master_fd, text.encode())
-                        except (json.JSONDecodeError, TypeError):
+                        except (json.JSONDecodeError, TypeError, KeyError):
                             # Plain text input
                             os.write(master_fd, text.encode())
 
                 except WebSocketDisconnect:
                     break
-                except Exception as e:
+                except (OSError, IOError) as e:
+                    # Terminal write errors are fatal (terminal closed, etc.)
                     if app.state.active_websocket == websocket:
                         logger.error(f"Error writing to terminal: {e}")
                     break
+                except Exception as e:
+                    # Log but continue on other errors (malformed messages, etc.)
+                    if app.state.active_websocket == websocket:
+                        logger.warning(f"Ignoring malformed message: {e}")
+                    continue
 
         # Run both tasks concurrently
         read_task = asyncio.create_task(read_from_terminal())
@@ -307,6 +347,9 @@ def create_app(config: Config) -> FastAPI:
 
         try:
             await asyncio.gather(read_task, write_task)
+        except asyncio.CancelledError:
+            # Normal termination when connection is replaced or closed
+            pass
         except Exception as e:
             logger.error(f"WebSocket error: {e}")
         finally:
@@ -385,7 +428,7 @@ def spawn_tmux(session_name: str) -> tuple:
         return master_fd, pid
 
 
-def set_terminal_size(fd: int, cols: int, rows: int) -> None:
+def set_terminal_size(fd: int, cols: int, rows: int, child_pid: int = None) -> None:
     """
     Set terminal size using TIOCSWINSZ ioctl.
 
@@ -393,6 +436,14 @@ def set_terminal_size(fd: int, cols: int, rows: int) -> None:
         fd: File descriptor of the pty master.
         cols: Number of columns.
         rows: Number of rows.
+        child_pid: Optional child process ID to send SIGWINCH for redraw.
     """
     winsize = struct.pack("HHHH", rows, cols, 0, 0)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+
+    # Send SIGWINCH to trigger tmux redraw
+    if child_pid:
+        try:
+            os.kill(child_pid, signal.SIGWINCH)
+        except ProcessLookupError:
+            pass

@@ -12,10 +12,11 @@
     <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%230b0f14' width='100' height='100' rx='20'/><text x='50' y='68' font-size='50' text-anchor='middle' fill='%2358a6ff'>$_</text></svg>">
     <title>Mobile Terminal</title>
 
-    <!-- xterm.js from CDN (fixed size, no fit addon needed) -->
+    <!-- xterm.js from CDN -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 
     <link rel="stylesheet" href="/static/styles.css">
 </head>
@@ -30,6 +31,10 @@
                 </button>
                 <!-- Repo dropdown (hidden by default) -->
                 <div id="repoDropdown" class="repo-dropdown hidden"></div>
+                <!-- Collapse toggle for control bars (hidden when locked) -->
+                <button id="collapseToggle" class="collapse-toggle-btn hidden" aria-label="Toggle control bars">
+                    <span class="collapse-icon">&#x25B2;</span>
+                </button>
             </div>
             <div class="header-right">
                 <button id="searchBtn" class="icon-btn" aria-label="Search files">
@@ -53,37 +58,42 @@
             </div>
         </div>
 
-        <!-- Control keys bar (visible when unlocked) - TOP position, scrollable -->
-        <div id="controlBar" class="control-bar hidden">
-            <button class="ctrl-key" data-key="ctrl-c">^C</button>
-            <button class="ctrl-key" data-key="ctrl-d">^D</button>
-            <button class="ctrl-key" data-key="ctrl-z">^Z</button>
-            <button class="ctrl-key" data-key="ctrl-l">^L</button>
-            <button class="ctrl-key" data-key="ctrl-a">^A</button>
-            <button class="ctrl-key" data-key="ctrl-e">^E</button>
-            <button class="ctrl-key" data-key="ctrl-w">^W</button>
-            <button class="ctrl-key" data-key="ctrl-u">^U</button>
-            <button class="ctrl-key" data-key="ctrl-k">^K</button>
-            <button class="ctrl-key" data-key="ctrl-r">^R</button>
-            <button class="ctrl-key" data-key="tab">Tab</button>
-            <button class="ctrl-key" data-key="esc">Esc</button>
-        </div>
+        <!-- Collapsible control bars container -->
+        <div id="controlBarsContainer" class="control-bars-container hidden">
+                <!-- Control keys bar -->
+                <div id="controlBar" class="control-bar">
+                    <button class="ctrl-key" data-key="ctrl-c">^C</button>
+                    <button class="ctrl-key" data-key="ctrl-d">^D</button>
+                    <button class="ctrl-key" data-key="ctrl-z">^Z</button>
+                    <button class="ctrl-key" data-key="ctrl-l">^L</button>
+                    <button class="ctrl-key" data-key="ctrl-a">^A</button>
+                    <button class="ctrl-key" data-key="ctrl-e">^E</button>
+                    <button class="ctrl-key" data-key="ctrl-w">^W</button>
+                    <button class="ctrl-key" data-key="ctrl-u">^U</button>
+                    <button class="ctrl-key" data-key="ctrl-k">^K</button>
+                    <button class="ctrl-key" data-key="ctrl-r">^R</button>
+                    <button class="ctrl-key" data-key="tab">Tab</button>
+                    <button class="ctrl-key" data-key="esc">Esc</button>
+                </div>
 
-        <!-- Quick bar: numbers, arrows, y/n/enter, slash (visible when unlocked) -->
-        <div id="quickBar" class="quick-bar hidden">
-            <button class="quick-btn" data-key="1">1</button>
-            <button class="quick-btn" data-key="2">2</button>
-            <button class="quick-btn" data-key="3">3</button>
-            <button class="quick-btn" data-key="up">&#x2191;</button>
-            <button class="quick-btn" data-key="down">&#x2193;</button>
-            <button class="quick-btn" data-key="y">y</button>
-            <button class="quick-btn" data-key="n">n</button>
-            <button class="quick-btn" data-key="enter">&#x23CE;</button>
-            <button class="quick-btn" data-key="slash">/</button>
-        </div>
+                <!-- Quick bar: select, copy, arrows, numbers, y/n/enter, slash -->
+                <div id="quickBar" class="quick-bar">
+                    <button id="selectModeBtn" class="quick-btn select-btn">Select</button>
+                    <button id="copyBtn" class="quick-btn copy-btn">Copy</button>
+                    <button class="quick-btn" data-key="up">&#x2191;</button>
+                    <button class="quick-btn" data-key="down">&#x2193;</button>
+                    <button class="quick-btn" data-key="1">1</button>
+                    <button class="quick-btn" data-key="2">2</button>
+                    <button class="quick-btn" data-key="3">3</button>
+                    <button class="quick-btn" data-key="y">y</button>
+                    <button class="quick-btn" data-key="n">n</button>
+                    <button class="quick-btn" data-key="enter">&#x23CE;</button>
+                    <button class="quick-btn" data-key="slash">/</button>
+                </div>
 
-        <!-- Role prefixes bar (visible when unlocked) -->
-        <div id="roleBar" class="role-bar hidden"></div>
+                <!-- Role prefixes bar -->
+                <div id="roleBar" class="role-bar"></div>
+        </div>
 
         <!-- Terminal container -->
         <div id="terminal-container" class="terminal-container"></div>
@@ -136,5 +146,12 @@
     </div>
 
     <script src="/static/terminal.js"></script>
+    <script>
+        // Register service worker for PWA standalone mode
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js', { scope: '/' })
+                .catch(err => console.log('SW registration failed:', err));
+        }
+    </script>
 </body>
 </html>

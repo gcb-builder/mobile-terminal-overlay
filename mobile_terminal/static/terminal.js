@@ -19,6 +19,11 @@ let currentSession = null;
 let reconnectDelay = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 const INITIAL_RECONNECT_DELAY = 1000;
+const MIN_CONNECTION_INTERVAL = 1000;  // Minimum ms between connection attempts
+let intentionalClose = false;  // Track intentional closes to skip auto-reconnect
+let isConnecting = false;  // Prevent concurrent connection attempts
+let reconnectTimer = null;  // Track pending reconnect
+let lastConnectionAttempt = 0;  // Timestamp of last connection attempt
 
 // Local command history (persisted to localStorage)
 const MAX_HISTORY_SIZE = 100;
@@ -26,49 +31,59 @@ let commandHistory = JSON.parse(localStorage.getItem('terminalHistory') || '[]')
 let historyIndex = -1;
 let currentInput = '';
 
-// DOM elements
-const terminalContainer = document.getElementById('terminal-container');
-const controlBtn = document.getElementById('controlBtn');
-const controlIndicator = document.getElementById('controlIndicator');
-const controlBar = document.getElementById('controlBar');
-const roleBar = document.getElementById('roleBar');
-const quickBar = document.getElementById('quickBar');
-const statusOverlay = document.getElementById('statusOverlay');
-const statusText = document.getElementById('statusText');
-const repoBtn = document.getElementById('repoBtn');
-const repoLabel = document.getElementById('repoLabel');
-const repoDropdown = document.getElementById('repoDropdown');
-const searchBtn = document.getElementById('searchBtn');
-const searchModal = document.getElementById('searchModal');
-const searchInput = document.getElementById('searchInput');
-const searchClose = document.getElementById('searchClose');
-const searchResults = document.getElementById('searchResults');
-const jumpToBottomBtn = document.getElementById('jumpToBottomBtn');
-const bottomBar = document.getElementById('bottomBar');
-const composeBtn = document.getElementById('composeBtn');
-const composeModal = document.getElementById('composeModal');
-const composeInput = document.getElementById('composeInput');
-const composeClose = document.getElementById('composeClose');
-const composeClear = document.getElementById('composeClear');
-const composeInsert = document.getElementById('composeInsert');
+// DOM elements (initialized in DOMContentLoaded)
+let terminalContainer, controlBtn, controlIndicator, controlBarsContainer;
+let collapseToggle, controlBar, roleBar, quickBar;
+let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
+let searchBtn, searchModal, searchInput, searchClose, searchResults;
+let jumpToBottomBtn, bottomBar, composeBtn, composeModal;
+let composeInput, composeClose, composeClear, composeInsert;
+let copyBtn, selectModeBtn;
+
+function initDOMElements() {
+    terminalContainer = document.getElementById('terminal-container');
+    controlBtn = document.getElementById('controlBtn');
+    controlIndicator = document.getElementById('controlIndicator');
+    controlBarsContainer = document.getElementById('controlBarsContainer');
+    collapseToggle = document.getElementById('collapseToggle');
+    controlBar = document.getElementById('controlBar');
+    roleBar = document.getElementById('roleBar');
+    quickBar = document.getElementById('quickBar');
+    statusOverlay = document.getElementById('statusOverlay');
+    statusText = document.getElementById('statusText');
+    repoBtn = document.getElementById('repoBtn');
+    repoLabel = document.getElementById('repoLabel');
+    repoDropdown = document.getElementById('repoDropdown');
+    searchBtn = document.getElementById('searchBtn');
+    searchModal = document.getElementById('searchModal');
+    searchInput = document.getElementById('searchInput');
+    searchClose = document.getElementById('searchClose');
+    searchResults = document.getElementById('searchResults');
+    jumpToBottomBtn = document.getElementById('jumpToBottomBtn');
+    bottomBar = document.getElementById('bottomBar');
+    composeBtn = document.getElementById('composeBtn');
+    composeModal = document.getElementById('composeModal');
+    composeInput = document.getElementById('composeInput');
+    composeClose = document.getElementById('composeClose');
+    composeClear = document.getElementById('composeClear');
+    composeInsert = document.getElementById('composeInsert');
+    copyBtn = document.getElementById('copyBtn');
+    selectModeBtn = document.getElementById('selectModeBtn');
+}
 
 /**
  * Initialize the terminal
- * Uses fixed size to prevent resize-triggered redraws from Claude Code
+ * Uses fit addon to auto-size based on container width
  */
-function initTerminal() {
-    // Fixed terminal size - prevents resize events that cause duplications
-    const FIXED_COLS = 80;
-    const FIXED_ROWS = 30;
+let fitAddon = null;
 
+function initTerminal() {
     terminal = new Terminal({
         cursorBlink: false,
         cursorStyle: 'bar',
         cursorInactiveStyle: 'none',
-        fontSize: 13,
+        fontSize: 14,
         fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-        cols: FIXED_COLS,
-        rows: FIXED_ROWS,
         scrollback: 5000,
         theme: {
             background: '#0b0f14',
@@ -96,51 +111,47 @@ function initTerminal() {
         allowProposedApi: true,
     });
 
+    // Fit addon to auto-size terminal to container
+    fitAddon = new FitAddon.FitAddon();
+    terminal.loadAddon(fitAddon);
+
     // Web links addon for clickable URLs
     const webLinksAddon = new WebLinksAddon.WebLinksAddon();
     terminal.loadAddon(webLinksAddon);
 
     terminal.open(terminalContainer);
 
+    // Fit to container after opening
+    fitAddon.fit();
+
     // Handle terminal input (only when unlocked)
     // Send as binary for faster processing (bypasses JSON parsing on server)
     const encoder = new TextEncoder();
 
-    // Track composition to avoid double-sending
-    let compositionText = '';
+    // Simple composition handling - no incremental sending to avoid doubles
     let isComposing = false;
 
-    // Send characters immediately during IME composition (mobile keyboards)
     terminal.textarea.addEventListener('compositionstart', () => {
         isComposing = true;
-        compositionText = '';
-    });
-
-    terminal.textarea.addEventListener('compositionupdate', (e) => {
-        if (!isControlUnlocked || !socket || socket.readyState !== WebSocket.OPEN) return;
-
-        // Send only new characters added to composition
-        const newText = e.data || '';
-        if (newText.length > compositionText.length) {
-            const newChars = newText.slice(compositionText.length);
-            socket.send(encoder.encode(newChars));
-        }
-        compositionText = newText;
     });
 
     terminal.textarea.addEventListener('compositionend', () => {
         isComposing = false;
-        // Small delay before clearing to let onData check
-        setTimeout(() => { compositionText = ''; }, 50);
+    });
+
+    // Reset composition state on blur (prevents stuck state after focus changes)
+    terminal.textarea.addEventListener('blur', () => {
+        isComposing = false;
+    });
+
+    // Also reset on focus to ensure clean state
+    terminal.textarea.addEventListener('focus', () => {
+        isComposing = false;
     });
 
     terminal.onData((data) => {
         if (isControlUnlocked && socket && socket.readyState === WebSocket.OPEN) {
-            // Skip if this text was already sent during composition
-            if (compositionText && data === compositionText) {
-                return;
-            }
-            // Skip during active composition (compositionupdate handles it)
+            // Skip during active composition - wait for compositionend then onData fires
             if (isComposing) {
                 return;
             }
@@ -158,6 +169,38 @@ function initTerminal() {
  * Connect to WebSocket
  */
 function connect() {
+    // Prevent concurrent connection attempts
+    if (isConnecting) {
+        console.log('Connection already in progress, skipping');
+        return;
+    }
+
+    // Enforce minimum interval between connection attempts
+    const now = Date.now();
+    const elapsed = now - lastConnectionAttempt;
+    if (elapsed < MIN_CONNECTION_INTERVAL) {
+        console.log(`Throttling connection, waiting ${MIN_CONNECTION_INTERVAL - elapsed}ms`);
+        if (!reconnectTimer) {
+            reconnectTimer = setTimeout(connect, MIN_CONNECTION_INTERVAL - elapsed);
+        }
+        return;
+    }
+    lastConnectionAttempt = now;
+
+    // Clear any pending reconnect timer
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+
+    // Close existing socket if any (any state except CLOSED)
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+        intentionalClose = true;
+        socket.close();
+        socket = null;
+    }
+
+    isConnecting = true;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/terminal?token=${token}`;
 
@@ -168,6 +211,7 @@ function connect() {
 
     socket.onopen = () => {
         console.log('WebSocket connected');
+        isConnecting = false;
         statusOverlay.classList.add('hidden');
         // Reset reconnect delay on successful connection
         reconnectDelay = INITIAL_RECONNECT_DELAY;
@@ -186,16 +230,34 @@ function connect() {
 
     socket.onclose = (event) => {
         console.log('WebSocket closed:', event.code, event.reason);
+        isConnecting = false;
+
+        // Skip auto-reconnect for:
+        // - intentionalClose flag (client-initiated)
+        // - code 4002 (replaced by another connection)
+        // - code 4003 (repo switch in progress)
+        if (intentionalClose || event.code === 4002 || event.code === 4003) {
+            intentionalClose = false;
+            return;
+        }
+
+        // Rate limited (4004) - wait longer before retry
+        if (event.code === 4004) {
+            console.log('Rate limited by server, waiting before retry');
+            reconnectDelay = Math.max(reconnectDelay, 2000);
+        }
+
         statusText.textContent = `Disconnected. Reconnecting in ${reconnectDelay / 1000}s...`;
         statusOverlay.classList.remove('hidden');
 
         // Reconnect with exponential backoff
-        setTimeout(connect, reconnectDelay);
+        reconnectTimer = setTimeout(connect, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
     };
 
     socket.onerror = (error) => {
         console.error('WebSocket error:', error);
+        isConnecting = false;
         statusText.textContent = 'Connection error';
     };
 }
@@ -204,6 +266,10 @@ function connect() {
  * Send terminal resize
  */
 function sendResize() {
+    if (terminal && fitAddon) {
+        // Refit terminal to container
+        fitAddon.fit();
+    }
     if (socket && socket.readyState === WebSocket.OPEN && terminal) {
         socket.send(JSON.stringify({
             type: 'resize',
@@ -240,14 +306,18 @@ function toggleControl() {
         controlIndicator.classList.add('unlocked');
         controlIndicator.textContent = 'Tap terminal';
 
-        controlBar.classList.remove('hidden');
-        roleBar.classList.remove('hidden');
-        quickBar.classList.remove('hidden');
+        controlBarsContainer.classList.remove('hidden');
+        controlBarsContainer.classList.remove('collapsed');
+        collapseToggle.classList.remove('hidden');
+        collapseToggle.classList.remove('collapsed');
         bottomBar.classList.remove('hidden');
 
         // Focus terminal for direct input
         terminal.focus();
         terminalContainer.classList.add('focusable');
+
+        // Refit after showing bars
+        setTimeout(sendResize, 100);
     } else {
         controlBtn.classList.remove('unlocked');
         controlBtn.classList.add('locked');
@@ -257,12 +327,31 @@ function toggleControl() {
         controlIndicator.classList.add('locked');
         controlIndicator.textContent = 'View';
 
-        controlBar.classList.add('hidden');
-        roleBar.classList.add('hidden');
-        quickBar.classList.add('hidden');
+        controlBarsContainer.classList.add('hidden');
+        collapseToggle.classList.add('hidden');
         bottomBar.classList.add('hidden');
         terminalContainer.classList.remove('focusable');
+
+        // Clear any selection when locking
+        terminal.clearSelection();
+
+        // Refit after hiding bars
+        setTimeout(sendResize, 100);
     }
+}
+
+/**
+ * Toggle control bars collapse state
+ */
+function toggleControlBarsCollapse() {
+    if (!controlBarsContainer || !collapseToggle) return;
+
+    const isCollapsed = controlBarsContainer.classList.toggle('collapsed');
+    // Update button icon state
+    collapseToggle.classList.toggle('collapsed', isCollapsed);
+
+    // Refit terminal after collapse change
+    setTimeout(sendResize, 100);
 }
 
 /**
@@ -409,6 +498,14 @@ async function switchRepo(session) {
     statusOverlay.classList.remove('hidden');
     repoDropdown.classList.add('hidden');
 
+    // Set intentional close BEFORE API call - server will close WebSocket
+    intentionalClose = true;
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+    reconnectDelay = INITIAL_RECONNECT_DELAY;
+
     try {
         const response = await fetch(`/switch-repo?session=${encodeURIComponent(session)}&token=${token}`, {
             method: 'POST',
@@ -428,14 +525,12 @@ async function switchRepo(session) {
             repoLabel.textContent = session;
         }
 
-        // Reconnect WebSocket
-        if (socket) {
-            socket.close();
-        }
-        setTimeout(connect, 500);
+        // Server already closed WebSocket, reconnect after cleanup delay
+        setTimeout(connect, 1000);
 
     } catch (error) {
         console.error('Error switching repo:', error);
+        intentionalClose = false;  // Reset on error
         statusText.textContent = 'Switch failed';
         setTimeout(() => {
             statusOverlay.classList.add('hidden');
@@ -582,6 +677,21 @@ function setupEventListeners() {
     // Control toggle button
     controlBtn.addEventListener('click', toggleControl);
 
+    // Collapse toggle for control bars
+    if (collapseToggle) {
+        let collapseHandled = false;
+        const handleCollapseToggle = (e) => {
+            if (collapseHandled) return;
+            collapseHandled = true;
+            e.preventDefault();
+            e.stopPropagation();
+            toggleControlBarsCollapse();
+            setTimeout(() => { collapseHandled = false; }, 300);
+        };
+        collapseToggle.addEventListener('touchstart', handleCollapseToggle, { passive: false });
+        collapseToggle.addEventListener('click', handleCollapseToggle);
+    }
+
     // Key mapping for control and quick buttons
     const keyMap = {
         'ctrl-c': '\x03',     // Interrupt
@@ -650,7 +760,7 @@ function setupEventListeners() {
 
 let lastTouchEnd = 0;
 
-// Setup viewport - no resize events, just back button handling
+// Setup viewport and orientation handling
 function setupViewportHandler() {
     // Disable Android back button navigation
     history.pushState(null, '', window.location.href);
@@ -658,10 +768,21 @@ function setupViewportHandler() {
         history.pushState(null, '', window.location.href);
     });
 
-    // Scroll terminal into view when keyboard opens (don't resize)
+    // Refit on orientation change
+    window.addEventListener('orientationchange', () => {
+        setTimeout(sendResize, 100);
+    });
+
+    // Refit on window resize (debounced)
+    let resizeTimeout = null;
+    window.addEventListener('resize', () => {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(sendResize, 200);
+    });
+
+    // Scroll terminal into view when keyboard opens
     if (window.visualViewport) {
         window.visualViewport.addEventListener('resize', () => {
-            // Just scroll to keep cursor visible, don't resize terminal
             terminal.scrollToBottom();
         });
     }
@@ -687,10 +808,11 @@ function setupClipboard() {
 function setupJumpToBottom() {
     let isAtBottom = true;
 
-    // Track scroll position
-    terminalContainer.addEventListener('scroll', () => {
-        const { scrollTop, scrollHeight, clientHeight } = terminalContainer;
-        isAtBottom = scrollTop + clientHeight >= scrollHeight - 50;
+    // Track scroll position using xterm's onScroll event
+    terminal.onScroll((scrollPos) => {
+        // Check if at bottom: scrollPos is top line, buffer.length - rows = max scroll
+        const maxScroll = terminal.buffer.active.length - terminal.rows;
+        isAtBottom = scrollPos >= maxScroll - 1;
 
         if (isAtBottom) {
             jumpToBottomBtn.classList.add('hidden');
@@ -702,7 +824,6 @@ function setupJumpToBottom() {
     // Jump to bottom on click
     jumpToBottomBtn.addEventListener('click', () => {
         terminal.scrollToBottom();
-        terminalContainer.scrollTop = terminalContainer.scrollHeight;
         jumpToBottomBtn.classList.add('hidden');
     });
 
@@ -775,6 +896,179 @@ function closeComposeModal() {
 }
 
 /**
+ * Setup select mode and copy buttons for terminal
+ * Select mode: tap start point, tap end point to select text
+ */
+let isSelectMode = false;
+let selectStart = null;  // {row, col}
+
+function setupCopyButton() {
+    // Select mode button - simple click handler
+    if (selectModeBtn) {
+        selectModeBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+
+            isSelectMode = !isSelectMode;
+            selectStart = null;
+
+            if (isSelectMode) {
+                selectModeBtn.classList.add('active');
+                selectModeBtn.textContent = 'Tap start';
+                terminal.clearSelection();
+            } else {
+                selectModeBtn.classList.remove('active');
+                selectModeBtn.textContent = 'Select';
+                // Restore focus when canceling select mode
+                setTimeout(() => terminal.focus(), 100);
+            }
+        });
+    }
+
+    // Handle taps on terminal for selection - use click only to avoid double-firing
+    let lastSelectionTap = 0;
+    terminalContainer.addEventListener('click', (e) => {
+        if (!isSelectMode || !isControlUnlocked) return;
+
+        // Debounce to prevent double-firing
+        const now = Date.now();
+        if (now - lastSelectionTap < 300) return;
+        lastSelectionTap = now;
+
+        try {
+            const clientX = e.clientX;
+            const clientY = e.clientY;
+
+            // Get terminal cell dimensions
+            const cellWidth = terminal._core._renderService.dimensions.css.cell.width;
+            const cellHeight = terminal._core._renderService.dimensions.css.cell.height;
+
+            // Get position relative to terminal viewport
+            const screen = terminalContainer.querySelector('.xterm-screen');
+            if (!screen) return;
+            const rect = screen.getBoundingClientRect();
+            const x = clientX - rect.left;
+            const y = clientY - rect.top;
+
+            // Convert to row/col
+            const col = Math.floor(x / cellWidth);
+            const row = Math.floor(y / cellHeight) + terminal.buffer.active.viewportY;
+
+            if (!selectStart) {
+                // First tap - set start point
+                selectStart = { row, col };
+                if (selectModeBtn) selectModeBtn.textContent = 'Tap end';
+            } else {
+                // Second tap - set end point and select
+                const startRow = Math.min(selectStart.row, row);
+                const endRow = Math.max(selectStart.row, row);
+
+                if (startRow === endRow) {
+                    const startCol = Math.min(selectStart.col, col);
+                    const length = Math.abs(col - selectStart.col) + 1;
+                    terminal.select(startCol, startRow, length);
+                } else {
+                    terminal.selectLines(startRow, endRow);
+                }
+
+                // Exit select mode but keep selection visible for copy
+                isSelectMode = false;
+                selectStart = null;
+                if (selectModeBtn) {
+                    selectModeBtn.classList.remove('active');
+                    selectModeBtn.textContent = 'Select';
+                }
+                // Restore focus so user can type or tap Copy
+                setTimeout(() => terminal.focus(), 100);
+            }
+        } catch (err) {
+            console.error('Selection error:', err);
+            isSelectMode = false;
+            selectStart = null;
+            if (selectModeBtn) {
+                selectModeBtn.classList.remove('active');
+                selectModeBtn.textContent = 'Select';
+            }
+            // Restore focus on error too
+            setTimeout(() => terminal.focus(), 100);
+        }
+    });
+
+    // Copy button
+    if (copyBtn) {
+        const resetCopyState = () => {
+            isSelectMode = false;
+            selectStart = null;
+            if (selectModeBtn) {
+                selectModeBtn.classList.remove('active');
+                selectModeBtn.textContent = 'Select';
+            }
+            // Always restore focus after a short delay
+            setTimeout(() => {
+                terminal.focus();
+                // Double-check focus was set
+                if (document.activeElement !== terminal.textarea) {
+                    terminal.textarea.focus();
+                }
+            }, 50);
+        };
+
+        const handleCopy = () => {
+            const selection = terminal.getSelection();
+
+            if (!selection) {
+                copyBtn.textContent = 'Select first';
+                setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+                resetCopyState();
+                return;
+            }
+
+            // Try modern clipboard API first (async but we don't await)
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(selection).then(() => {
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+                }).catch(() => {
+                    // Fallback failed silently, try execCommand
+                    fallbackCopy(selection);
+                }).finally(() => {
+                    terminal.clearSelection();
+                    resetCopyState();
+                });
+            } else {
+                // No clipboard API, use fallback
+                fallbackCopy(selection);
+                terminal.clearSelection();
+                resetCopyState();
+            }
+        };
+
+        const fallbackCopy = (text) => {
+            try {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+                textarea.setAttribute('readonly', '');
+                document.body.appendChild(textarea);
+                textarea.select();
+                textarea.setSelectionRange(0, text.length);
+                const success = document.execCommand('copy');
+                document.body.removeChild(textarea);
+                copyBtn.textContent = success ? 'Copied!' : 'Failed';
+            } catch (e) {
+                copyBtn.textContent = 'Failed';
+            }
+            setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+        };
+
+        copyBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            handleCopy();
+        });
+    }
+}
+
+/**
  * Setup local command history
  */
 function setupCommandHistory() {
@@ -835,6 +1129,7 @@ function setupCommandHistory() {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
+    initDOMElements();
     initTerminal();
     setupEventListeners();
     setupTerminalFocus();
@@ -843,6 +1138,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupRepoDropdown();
     setupFileSearch();
     setupJumpToBottom();
+    setupCopyButton();
     setupCommandHistory();
     setupComposeMode();
 

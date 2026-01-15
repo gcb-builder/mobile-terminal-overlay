@@ -174,14 +174,12 @@ html, body {
     color: var(--text-primary);
 }
 
-/* Terminal container - scrollable with fixed-size terminal inside */
+/* Terminal container - let xterm handle its own scrolling */
 .terminal-container {
     flex: 1;
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
     padding: 4px;
-    touch-action: pan-y pinch-zoom;
-    -webkit-overflow-scrolling: touch;
 }
 
 .terminal-container.focusable {
@@ -190,9 +188,18 @@ html, body {
     border-radius: 4px;
 }
 
+/* xterm.js viewport - allow both scrolling and selection */
 .terminal-container .xterm {
-    /* Let xterm use its fixed size, container scrolls */
+    height: 100%;
 }
+
+.terminal-container .xterm-viewport {
+    touch-action: auto;
+    -webkit-overflow-scrolling: touch;
+    overflow-y: scroll !important;
+}
+
+
 
 /* Control toggle button (in header) */
 .control-btn-small {
@@ -226,22 +233,63 @@ html, body {
     font-size: 18px;
 }
 
-/* Control keys bar - sticky at top */
+/* Collapse toggle button in header */
+.collapse-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    margin-left: 8px;
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    user-select: none;
+}
+
+.collapse-toggle-btn:active {
+    background: var(--bg-secondary);
+}
+
+.collapse-toggle-btn.hidden {
+    display: none;
+}
+
+.collapse-toggle-btn .collapse-icon {
+    font-size: 12px;
+    transition: transform 0.2s;
+}
+
+.collapse-toggle-btn.collapsed .collapse-icon {
+    transform: rotate(180deg);
+}
+
+/* Collapsible control bars container */
+.control-bars-container {
+    flex-shrink: 0;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.control-bars-container.hidden {
+    display: none;
+}
+
+.control-bars-container.collapsed {
+    display: none;
+}
+
+/* Control keys bar */
 .control-bar {
     display: flex;
     gap: 6px;
     padding: 8px 12px;
-    background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border);
     overflow-x: auto;
     flex-shrink: 0;
-    position: sticky;
-    top: 0;
-    z-index: 50;
-}
-
-.control-bar.hidden {
-    display: none;
 }
 
 .ctrl-key {
@@ -256,6 +304,9 @@ html, body {
     font-weight: 500;
     cursor: pointer;
     flex-shrink: 0;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
 }
 
 .ctrl-key:active {
@@ -268,13 +319,11 @@ html, body {
     display: flex;
     gap: 6px;
     padding: 8px 12px;
-    background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border);
     overflow-x: auto;
     flex-shrink: 0;
 }
 
-.role-bar.hidden {
+.role-bar:empty {
     display: none;
 }
 
@@ -300,14 +349,8 @@ html, body {
     display: flex;
     gap: 6px;
     padding: 8px 12px;
-    background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border);
     overflow-x: auto;
     flex-shrink: 0;
-}
-
-.quick-bar.hidden {
-    display: none;
 }
 
 .quick-btn {
@@ -321,12 +364,30 @@ html, body {
     cursor: pointer;
     flex-shrink: 0;
     white-space: nowrap;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
 }
 
 .quick-btn:active {
     background: rgba(88, 166, 255, 0.2);
 }
 
+/* Select button - highlighted when active */
+.quick-btn.select-btn.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+/* Copy button - green tint */
+.quick-btn.copy-btn {
+    color: var(--success);
+}
+
+.quick-btn.copy-btn:active {
+    background: rgba(63, 185, 80, 0.2);
+}
 
 /* Status overlay */
 .status-overlay {
