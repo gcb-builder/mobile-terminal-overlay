@@ -39,7 +39,7 @@ let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let bottomBar, composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composeInsert;
 let composeCamera, composeGallery, composeCameraInput, composeGalleryInput, composeAttachments;
-let copyBtn, selectModeBtn, tmuxScrollBtn, tmuxScrollExitBtn;
+let copyBtn, selectModeBtn, tmuxScrollBtn;
 let copyBtnAlt, selectModeBtnAlt;  // Alternate buttons in inputBar
 
 // Attachments state for compose modal
@@ -80,7 +80,6 @@ function initDOMElements() {
     copyBtn = document.getElementById('copyBtn');
     selectModeBtn = document.getElementById('selectModeBtn');
     tmuxScrollBtn = document.getElementById('tmuxScrollBtn');
-    tmuxScrollExitBtn = document.getElementById('tmuxScrollExitBtn');
     copyBtnAlt = document.getElementById('copyBtnAlt');
     selectModeBtnAlt = document.getElementById('selectModeBtnAlt');
 }
@@ -1293,8 +1292,7 @@ function setupCopyButton() {
 }
 
 /**
- * Setup tmux scroll mode (copy mode) buttons
- * Scroll enters tmux copy mode, Exit leaves it
+ * Setup tmux scroll mode (copy mode) toggle button
  */
 let inTmuxScrollMode = false;
 
@@ -1302,21 +1300,19 @@ function setupTmuxScroll() {
     if (tmuxScrollBtn) {
         tmuxScrollBtn.addEventListener('click', (e) => {
             e.preventDefault();
-            // Enter tmux copy mode: Ctrl+B [
-            sendInput('\x02[');
-            inTmuxScrollMode = true;
-            tmuxScrollBtn.classList.add('hidden');
-            tmuxScrollExitBtn.classList.remove('hidden');
-        });
-    }
-    if (tmuxScrollExitBtn) {
-        tmuxScrollExitBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            // Exit tmux copy mode: q
-            sendInput('q');
-            inTmuxScrollMode = false;
-            tmuxScrollExitBtn.classList.add('hidden');
-            tmuxScrollBtn.classList.remove('hidden');
+            if (!inTmuxScrollMode) {
+                // Enter tmux copy mode: Ctrl+B [
+                sendInput('\x02[');
+                inTmuxScrollMode = true;
+                tmuxScrollBtn.textContent = 'Exit';
+                tmuxScrollBtn.classList.add('active');
+            } else {
+                // Exit tmux copy mode: q
+                sendInput('q');
+                inTmuxScrollMode = false;
+                tmuxScrollBtn.textContent = 'Scroll';
+                tmuxScrollBtn.classList.remove('active');
+            }
         });
     }
 }
