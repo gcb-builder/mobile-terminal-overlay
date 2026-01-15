@@ -47,12 +47,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--token", "-t",
-        help="Auth token (default: auto-generated)",
+        help="Auth token (implies --require-token, auto-generated if not set)",
     )
     parser.add_argument(
-        "--no-auth",
+        "--require-token",
         action="store_true",
-        help="Disable token authentication (use with caution)",
+        help="Enable token authentication (disabled by default for Tailscale use)",
     )
     parser.add_argument(
         "--no-discovery",
@@ -102,8 +102,9 @@ def main() -> int:
         config.host = args.host
     if args.token:
         config.token = args.token
-    if args.no_auth:
-        config.no_auth = True
+        config.no_auth = False  # --token implies auth required
+    if args.require_token:
+        config.no_auth = False
 
     # Print config and exit if requested
     if args.print_config:

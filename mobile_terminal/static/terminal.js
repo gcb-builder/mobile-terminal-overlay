@@ -38,7 +38,11 @@ let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let jumpToBottomBtn, bottomBar, composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composeInsert;
-let copyBtn, selectModeBtn;
+let composeAttach, composeFileInput, composeAttachments;
+let copyBtn, selectModeBtn, scrollUpBtn, scrollDownBtn;
+
+// Attachments state for compose modal
+let pendingAttachments = [];
 
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
@@ -67,8 +71,13 @@ function initDOMElements() {
     composeClose = document.getElementById('composeClose');
     composeClear = document.getElementById('composeClear');
     composeInsert = document.getElementById('composeInsert');
+    composeAttach = document.getElementById('composeAttach');
+    composeFileInput = document.getElementById('composeFileInput');
+    composeAttachments = document.getElementById('composeAttachments');
     copyBtn = document.getElementById('copyBtn');
     selectModeBtn = document.getElementById('selectModeBtn');
+    scrollUpBtn = document.getElementById('scrollUpBtn');
+    scrollDownBtn = document.getElementById('scrollDownBtn');
 }
 
 /**
@@ -84,7 +93,9 @@ function initTerminal() {
         cursorInactiveStyle: 'none',
         fontSize: 14,
         fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-        scrollback: 5000,
+        scrollback: 10000,
+        smoothScrollDuration: 100,
+        overviewRulerWidth: 0,
         theme: {
             background: '#0b0f14',
             foreground: '#e6edf3',
@@ -746,10 +757,11 @@ function setupEventListeners() {
         });
     });
 
-    // Prevent zoom on double-tap (but not on buttons)
+    // Prevent zoom on double-tap (but not on terminal or buttons)
     document.addEventListener('touchend', (e) => {
-        // Don't interfere with button taps
+        // Don't interfere with button taps or terminal scrolling
         if (e.target.closest('button')) return;
+        if (e.target.closest('.terminal-container')) return;
 
         const now = Date.now();
         if (now - lastTouchEnd <= 300) {
@@ -840,13 +852,14 @@ function setupJumpToBottom() {
 }
 
 /**
- * Setup compose mode (predictive text + speech-to-text)
+ * Setup compose mode (predictive text + speech-to-text + image upload)
  */
 function setupComposeMode() {
     // Open compose modal
     composeBtn.addEventListener('click', () => {
         composeModal.classList.remove('hidden');
         composeInput.value = '';
+        clearAttachments();
         // Small delay to ensure modal is visible before focusing
         setTimeout(() => {
             composeInput.focus();
@@ -863,15 +876,23 @@ function setupComposeMode() {
         }
     });
 
-    // Clear input
+    // Clear input and attachments
     composeClear.addEventListener('click', () => {
         composeInput.value = '';
+        clearAttachments();
         composeInput.focus();
     });
 
-    // Send to terminal
+    // Send to terminal (text + attachment paths)
     composeInsert.addEventListener('click', () => {
-        const text = composeInput.value;
+        let text = composeInput.value;
+
+        // Append attachment paths to the message
+        if (pendingAttachments.length > 0) {
+            const paths = pendingAttachments.map(a => a.path).join(' ');
+            text = text ? `${text} ${paths}` : paths;
+        }
+
         if (text && socket && socket.readyState === WebSocket.OPEN) {
             sendInput(text);
             closeComposeModal();
@@ -889,11 +910,137 @@ function setupComposeMode() {
             closeComposeModal();
         }
     });
+
+    // Attach button - trigger file input
+    if (composeAttach) {
+        composeAttach.addEventListener('click', () => {
+            composeFileInput.click();
+        });
+    }
+
+    // Handle file selection
+    if (composeFileInput) {
+        composeFileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            // Reset input so same file can be selected again
+            composeFileInput.value = '';
+
+            await uploadAttachment(file);
+        });
+    }
+}
+
+/**
+ * Upload a file attachment
+ */
+async function uploadAttachment(file) {
+    // Show uploading state
+    composeAttach.classList.add('uploading');
+    composeAttach.textContent = 'Uploading...';
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch(`/api/upload?token=${token}`, {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Upload failed');
+        }
+
+        const data = await response.json();
+
+        // Add to pending attachments
+        pendingAttachments.push({
+            path: data.path,
+            filename: data.filename,
+            size: data.size,
+            localUrl: URL.createObjectURL(file),
+        });
+
+        renderAttachments();
+
+    } catch (error) {
+        console.error('Upload error:', error);
+        alert(`Upload failed: ${error.message}`);
+    } finally {
+        composeAttach.classList.remove('uploading');
+        composeAttach.textContent = 'Attach';
+    }
+}
+
+/**
+ * Render attachment previews
+ */
+function renderAttachments() {
+    if (!composeAttachments) return;
+
+    if (pendingAttachments.length === 0) {
+        composeAttachments.classList.add('hidden');
+        composeAttachments.innerHTML = '';
+        return;
+    }
+
+    composeAttachments.classList.remove('hidden');
+    composeAttachments.innerHTML = pendingAttachments.map((att, idx) => `
+        <div class="attachment-item">
+            <img src="${att.localUrl}" alt="" class="attachment-thumb">
+            <div class="attachment-info">
+                <span class="attachment-path">${att.path}</span>
+                <span class="attachment-size">${formatFileSize(att.size)}</span>
+            </div>
+            <button class="attachment-remove" data-idx="${idx}">&times;</button>
+        </div>
+    `).join('');
+
+    // Add remove handlers
+    composeAttachments.querySelectorAll('.attachment-remove').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const idx = parseInt(e.target.dataset.idx, 10);
+            removeAttachment(idx);
+        });
+    });
+}
+
+/**
+ * Remove an attachment by index
+ */
+function removeAttachment(idx) {
+    if (pendingAttachments[idx]) {
+        URL.revokeObjectURL(pendingAttachments[idx].localUrl);
+        pendingAttachments.splice(idx, 1);
+        renderAttachments();
+    }
+}
+
+/**
+ * Clear all attachments
+ */
+function clearAttachments() {
+    pendingAttachments.forEach(att => URL.revokeObjectURL(att.localUrl));
+    pendingAttachments = [];
+    renderAttachments();
+}
+
+/**
+ * Format file size for display
+ */
+function formatFileSize(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function closeComposeModal() {
     composeModal.classList.add('hidden');
     composeInput.blur();
+    // Note: Don't clear attachments here - user might reopen modal
 }
 
 /**
@@ -1070,6 +1217,24 @@ function setupCopyButton() {
 }
 
 /**
+ * Setup scroll buttons for page up/down
+ */
+function setupScrollButtons() {
+    if (scrollUpBtn) {
+        scrollUpBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            terminal.scrollPages(-1);  // Scroll up one page
+        });
+    }
+    if (scrollDownBtn) {
+        scrollDownBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            terminal.scrollPages(1);  // Scroll down one page
+        });
+    }
+}
+
+/**
  * Setup local command history
  */
 function setupCommandHistory() {
@@ -1140,6 +1305,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupFileSearch();
     setupJumpToBottom();
     setupCopyButton();
+    setupScrollButtons();
     setupCommandHistory();
     setupComposeMode();
 

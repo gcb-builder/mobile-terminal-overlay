@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -161,6 +161,57 @@ def create_app(config: Config) -> FastAPI:
         except Exception as e:
             logger.error(f"File search error: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/api/upload")
+    async def upload_image(
+        file: UploadFile = File(...),
+        token: Optional[str] = Query(None),
+    ):
+        """
+        Upload an image file for use in terminal prompts.
+
+        Saves to .claude/uploads/ directory (git-ignored).
+        Returns the relative path for insertion into terminal.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate content type
+        allowed_types = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
+        if file.content_type not in allowed_types:
+            return JSONResponse(
+                {"error": f"Invalid file type: {file.content_type}. Allowed: png, jpeg, webp, gif"},
+                status_code=400,
+            )
+
+        # Read file content and check size (max 5MB)
+        max_size = 5 * 1024 * 1024  # 5MB
+        content = await file.read()
+        if len(content) > max_size:
+            return JSONResponse(
+                {"error": f"File too large: {len(content)} bytes. Max: {max_size} bytes"},
+                status_code=400,
+            )
+
+        # Create uploads directory
+        uploads_dir = Path(".claude/uploads")
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate filename with timestamp
+        ext = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "png"
+        timestamp = int(time.time() * 1000)
+        filename = f"img-{timestamp}.{ext}"
+        filepath = uploads_dir / filename
+
+        # Write file
+        try:
+            with open(filepath, "wb") as f:
+                f.write(content)
+            logger.info(f"Uploaded image: {filepath}")
+            return {"path": str(filepath), "filename": filename, "size": len(content)}
+        except Exception as e:
+            logger.error(f"Failed to save upload: {e}")
+            return JSONResponse({"error": "Failed to save file"}, status_code=500)
 
     @app.get("/current-session")
     async def get_current_session(token: Optional[str] = Query(None)):

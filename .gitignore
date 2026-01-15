@@ -43,3 +43,6 @@ htmlcov/
 
 # Logs
 *.log
+
+# Mobile terminal uploads (user-uploaded images)
+.claude/uploads/

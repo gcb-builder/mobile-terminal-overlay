@@ -14,7 +14,7 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 
 - [x] Project structure and pyproject.toml
 - [x] FastAPI server with WebSocket tmux relay
-- [x] Token-based authentication (optional --no-auth)
+- [x] Auth disabled by default (Tailscale-friendly), opt-in via --require-token
 - [x] Static files (HTML, CSS, JS)
 - [x] xterm.js integration
 - [x] View/Control toggle with lock indicator
@@ -22,6 +22,7 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] Quick bar (Select, Copy, arrows, numbers, y/n/enter, slash)
 - [x] Role prefixes from config
 - [x] Compose modal for predictive text / speech-to-text
+- [x] Image upload in compose modal (saves to .claude/uploads/)
 - [x] Repo switching dropdown
 - [x] File search modal
 - [x] Select mode with tap-to-select
@@ -30,12 +31,11 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] systemd service file for auto-start
 - [x] WebSocket resilience (handles malformed messages)
 
-## Recent Fixes (2026-01-15)
+## Recent Changes (2026-01-15)
 
-- Fixed WebSocket disconnection after copy operation
-- Added focus restoration after copy/select
-- Added isComposing reset on focus to prevent stuck input
-- Server continues on malformed messages instead of disconnecting
+- Added image upload feature in compose modal
+- Auth disabled by default (use --require-token to enable)
+- Removed --no-auth flag (now the default behavior)
 
 ## Key Files
 
@@ -51,8 +51,11 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 ## Deployment
 
 ```bash
-# Manual start
-mobile-terminal --session claude --no-auth --port 8765
+# Manual start (auth disabled by default for Tailscale)
+mobile-terminal --session claude --port 8765
+
+# With token auth (for non-Tailscale networks)
+mobile-terminal --session claude --require-token
 
 # systemd (auto-start on boot)
 sudo cp mobile-terminal.service /etc/systemd/system/

@@ -53,9 +53,9 @@ class Config:
     port: int = 8765
     host: str = "0.0.0.0"
 
-    # Authentication
+    # Authentication (disabled by default, use --require-token to enable)
     token: Optional[str] = None  # Auto-generated if not set
-    no_auth: bool = False  # Disable token authentication
+    no_auth: bool = True  # Auth disabled by default (Tailscale-friendly)
 
     # Quick commands (sent on tap)
     quick_commands: List[QuickCommand] = field(default_factory=lambda: [

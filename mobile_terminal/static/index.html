@@ -77,10 +77,12 @@
                     <button class="ctrl-key" data-key="esc">Esc</button>
                 </div>
 
-                <!-- Quick bar: select, copy, arrows, numbers, y/n/enter, slash -->
+                <!-- Quick bar: select, copy, scroll, arrows, numbers, y/n/enter, slash -->
                 <div id="quickBar" class="quick-bar">
                     <button id="selectModeBtn" class="quick-btn select-btn">Select</button>
                     <button id="copyBtn" class="quick-btn copy-btn">Copy</button>
+                    <button id="scrollUpBtn" class="quick-btn scroll-btn">PgUp</button>
+                    <button id="scrollDownBtn" class="quick-btn scroll-btn">PgDn</button>
                     <button class="quick-btn" data-key="up">&#x2191;</button>
                     <button class="quick-btn" data-key="down">&#x2193;</button>
                     <button class="quick-btn" data-key="1">1</button>
@@ -129,7 +131,11 @@
                     spellcheck="true"
                     rows="4"
                 ></textarea>
+                <!-- Attachment preview area -->
+                <div id="composeAttachments" class="compose-attachments hidden"></div>
                 <div class="compose-footer">
+                    <input type="file" id="composeFileInput" accept="image/*" capture="environment" hidden>
+                    <button id="composeAttach" class="compose-action attach">Attach</button>
                     <button id="composeClear" class="compose-action secondary">Clear</button>
                     <button id="composeInsert" class="compose-action primary">Send to Terminal</button>
                 </div>

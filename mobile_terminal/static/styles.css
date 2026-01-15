@@ -180,6 +180,7 @@ html, body {
     min-height: 0;
     overflow: hidden;
     padding: 4px;
+    touch-action: pan-y;
 }
 
 .terminal-container.focusable {
@@ -188,15 +189,20 @@ html, body {
     border-radius: 4px;
 }
 
-/* xterm.js viewport - allow both scrolling and selection */
+/* xterm.js viewport - enable touch scrolling */
 .terminal-container .xterm {
     height: 100%;
+    touch-action: pan-y;
 }
 
 .terminal-container .xterm-viewport {
-    touch-action: auto;
+    touch-action: pan-y !important;
     -webkit-overflow-scrolling: touch;
     overflow-y: scroll !important;
+}
+
+.terminal-container .xterm-screen {
+    touch-action: pan-y !important;
 }
 
 
@@ -765,4 +771,89 @@ html, body {
     font-size: 12px;
     color: var(--text-secondary);
     text-align: center;
+}
+
+/* Attach button in compose footer */
+.compose-action.attach {
+    background: var(--bg-tertiary);
+    color: var(--warning);
+    border: 1px solid var(--border);
+}
+
+.compose-action.attach:active {
+    background: rgba(210, 153, 34, 0.2);
+}
+
+.compose-action.attach.uploading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+/* Attachments preview area */
+.compose-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-primary);
+}
+
+.compose-attachments.hidden {
+    display: none;
+}
+
+.attachment-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    max-width: 100%;
+}
+
+.attachment-thumb {
+    width: 40px;
+    height: 40px;
+    object-fit: cover;
+    border-radius: 4px;
+}
+
+.attachment-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.attachment-path {
+    font-size: 12px;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    color: var(--accent);
+    word-break: break-all;
+}
+
+.attachment-size {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.attachment-remove {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 20px;
+    height: 20px;
+    background: var(--danger);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
