@@ -18,9 +18,38 @@ import secrets
 import signal
 import struct
 import termios
+import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
+
+
+class RingBuffer:
+    """Thread-safe ring buffer for storing PTY output."""
+
+    def __init__(self, max_size: int = 1024 * 1024):  # 1MB default
+        self._buffer = deque(maxlen=max_size)
+        self._lock = threading.Lock()
+
+    def write(self, data: bytes) -> None:
+        """Append data to buffer."""
+        with self._lock:
+            self._buffer.extend(data)
+
+    def read_all(self) -> bytes:
+        """Read all buffered data without clearing."""
+        with self._lock:
+            return bytes(self._buffer)
+
+    def clear(self) -> None:
+        """Clear the buffer."""
+        with self._lock:
+            self._buffer.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._buffer)
 
 from fastapi import FastAPI, File, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -77,6 +106,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.current_session = config.session_name  # Track current session
     app.state.last_ws_connect = 0  # Timestamp of last WebSocket connection
     app.state.ws_connect_lock = asyncio.Lock()  # Prevent concurrent connection handling
+    app.state.output_buffer = RingBuffer(max_size=2 * 1024 * 1024)  # 2MB scrollback buffer
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -263,6 +293,9 @@ def create_app(config: Config) -> FastAPI:
         app.state.master_fd = None
         app.state.child_pid = None
 
+        # Clear output buffer (don't replay old session's content)
+        app.state.output_buffer.clear()
+
         # Update current session
         app.state.current_session = session
         logger.info(f"Switched to session: {session}")
@@ -319,24 +352,64 @@ def create_app(config: Config) -> FastAPI:
                 return
 
         master_fd = app.state.master_fd
+        output_buffer = app.state.output_buffer
+
+        # Replay buffered history to new client
+        history = output_buffer.read_all()
+        if history:
+            logger.info(f"Replaying {len(history)} bytes of history to new client")
+            try:
+                # Send in chunks to avoid overwhelming the client
+                chunk_size = 32 * 1024  # 32KB chunks
+                for i in range(0, len(history), chunk_size):
+                    chunk = history[i:i + chunk_size]
+                    await websocket.send_bytes(chunk)
+                    await asyncio.sleep(0.01)  # Small delay between chunks
+            except Exception as e:
+                logger.error(f"Error replaying history: {e}")
 
         # Create tasks for bidirectional I/O
         async def read_from_terminal():
-            """Read from terminal and send to WebSocket."""
+            """Read from terminal and send to WebSocket with batching."""
             loop = asyncio.get_event_loop()
+            batch = bytearray()
+            last_flush = time.time()
+            flush_interval = 0.03  # 30ms batching window
+
             while app.state.active_websocket == websocket:
                 try:
+                    # Non-blocking read with select-like behavior
                     data = await loop.run_in_executor(
                         None, lambda: os.read(master_fd, 4096)
                     )
                     if not data:
                         break
-                    if app.state.active_websocket == websocket:
-                        await websocket.send_bytes(data)
+
+                    # Store in ring buffer for future reconnects
+                    output_buffer.write(data)
+
+                    # Add to batch
+                    batch.extend(data)
+
+                    # Flush if batch is large or enough time has passed
+                    now = time.time()
+                    if len(batch) >= 8192 or (now - last_flush) >= flush_interval:
+                        if app.state.active_websocket == websocket and batch:
+                            await websocket.send_bytes(bytes(batch))
+                            batch.clear()
+                            last_flush = now
+
                 except Exception as e:
                     if app.state.active_websocket == websocket:
                         logger.error(f"Error reading from terminal: {e}")
                     break
+
+            # Flush remaining data
+            if batch and app.state.active_websocket == websocket:
+                try:
+                    await websocket.send_bytes(bytes(batch))
+                except Exception:
+                    pass
 
         async def write_to_terminal():
             """Read from WebSocket and write to terminal."""

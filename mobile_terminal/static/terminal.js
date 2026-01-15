@@ -233,20 +233,9 @@ function connect() {
         // Reset reconnect delay on successful connection
         reconnectDelay = INITIAL_RECONNECT_DELAY;
 
-        // Fit terminal and check if size changed
+        // Fit terminal to container (don't clear buffer - server will replay history)
         if (terminal && fitAddon) {
             fitAddon.fit();
-            const currentSize = `${terminal.cols}x${terminal.rows}`;
-            const lastSize = localStorage.getItem('terminalSize_v2');
-
-            if (!lastSize || lastSize !== currentSize) {
-                // No saved size (fresh start) or size changed - clear buffer
-                console.log(`Clearing buffer: last=${lastSize}, current=${currentSize}`);
-                terminal.clear();
-            }
-
-            // Save current size
-            localStorage.setItem('terminalSize_v2', currentSize);
         }
 
         sendResize();

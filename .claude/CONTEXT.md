@@ -37,14 +37,15 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - Auth disabled by default (use --require-token to enable)
 - Removed --no-auth flag (now the default behavior)
 - Added instant reconnect on visibility change (returning to app)
-- Fixed viewBar visibility bug (missing `.view-bar.hidden` CSS rule)
-- Made viewBar position:fixed to avoid layout shifts affecting terminal size
-- Terminal now sized once at init and never resized (prevents tmux reflow corruption)
-- Removed dynamic resize handlers (orientation/window) for stability
+- Fixed viewBar visibility bug (added `.view-bar.hidden { display: none }`)
+- Reverted viewBar to normal flow (position:fixed caused issues)
+- Terminal sized once at init with all bars visible (prevents size changes on toggle)
+- Fixed scrollback corruption: track size in localStorage, clear buffer only when size changes
+- Preserve scrollback on same-size reconnect (improves UX)
 
 ## Known Issues / In Testing
 
-- None currently - terminal sizing fix needs user verification
+- None currently
 
 ## Key Files
 
