@@ -33,9 +33,17 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 
 ## Recent Changes (2026-01-15)
 
-- Added image upload feature in compose modal
+- Added image upload feature in compose modal (camera, gallery, paste)
 - Auth disabled by default (use --require-token to enable)
 - Removed --no-auth flag (now the default behavior)
+- Added instant reconnect on visibility change (returning to app)
+- **TESTING:** Removed resize on View/Control toggle to prevent tmux reflow corruption
+
+## Known Issues / In Testing
+
+- **Terminal history corruption in Control mode:** When toggling View/Control, the terminal
+  would resize, causing tmux to reflow content and partially overwrite display. Fix attempted
+  by removing `sendResize()` calls on toggle. Needs user testing to confirm fix works.
 
 ## Key Files
 

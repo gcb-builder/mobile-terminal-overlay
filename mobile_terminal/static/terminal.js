@@ -329,8 +329,7 @@ function toggleControl() {
         terminal.focus();
         terminalContainer.classList.add('focusable');
 
-        // Refit after showing bars
-        setTimeout(sendResize, 100);
+        // Don't resize - keeps terminal stable, prevents tmux reflow/corruption
     } else {
         controlBtn.classList.remove('unlocked');
         controlBtn.classList.add('locked');
@@ -348,8 +347,7 @@ function toggleControl() {
         // Clear any selection when locking
         terminal.clearSelection();
 
-        // Refit after hiding bars
-        setTimeout(sendResize, 100);
+        // Don't resize - keeps terminal stable, prevents tmux reflow/corruption
     }
 }
 
@@ -363,8 +361,7 @@ function toggleControlBarsCollapse() {
     // Update button icon state
     collapseToggle.classList.toggle('collapsed', isCollapsed);
 
-    // Refit terminal after collapse change
-    setTimeout(sendResize, 100);
+    // Don't resize - keeps terminal stable, prevents tmux reflow/corruption
 }
 
 /**
