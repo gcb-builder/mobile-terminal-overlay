@@ -280,13 +280,11 @@ function connect() {
 }
 
 /**
- * Send terminal resize
+ * Send terminal dimensions to server (without re-fitting)
+ * Terminal is sized once at init with Control mode layout and never resized
+ * to prevent tmux reflow corruption when switching modes.
  */
 function sendResize() {
-    if (terminal && fitAddon) {
-        // Refit terminal to container
-        fitAddon.fit();
-    }
     if (socket && socket.readyState === WebSocket.OPEN && terminal) {
         socket.send(JSON.stringify({
             type: 'resize',
@@ -786,17 +784,9 @@ function setupViewportHandler() {
         history.pushState(null, '', window.location.href);
     });
 
-    // Refit on orientation change
-    window.addEventListener('orientationchange', () => {
-        setTimeout(sendResize, 100);
-    });
-
-    // Refit on window resize (debounced)
-    let resizeTimeout = null;
-    window.addEventListener('resize', () => {
-        clearTimeout(resizeTimeout);
-        resizeTimeout = setTimeout(sendResize, 200);
-    });
+    // Terminal is sized once at init - no dynamic resize on orientation/window change
+    // This prevents tmux reflow corruption when switching modes.
+    // If user needs different size, reload the page.
 
     // Scroll terminal into view when keyboard opens
     if (window.visualViewport) {

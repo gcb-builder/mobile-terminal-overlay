@@ -404,15 +404,24 @@ html, body {
     flex-shrink: 0;
 }
 
-/* View bar - always visible at bottom */
+/* View bar - View mode only, fixed at bottom */
 .view-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
     display: flex;
     gap: 8px;
     padding: 10px 12px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
     background: var(--bg-secondary);
     border-top: 1px solid var(--border);
-    flex-shrink: 0;
     justify-content: center;
+    z-index: 140;
+}
+
+.view-bar.hidden {
+    display: none;
 }
 
 .view-btn {
