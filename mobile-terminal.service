@@ -7,7 +7,7 @@ Type=simple
 User=gbons
 WorkingDirectory=/home/gbons/dev/mobile-terminal-overlay
 Environment=PATH=/home/gbons/dev/mobile-terminal-overlay/venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/gbons/dev/mobile-terminal-overlay/venv/bin/mobile-terminal --session claude --no-auth --port 8765
+ExecStart=/home/gbons/dev/mobile-terminal-overlay/venv/bin/mobile-terminal --session claude --port 8765
 Restart=on-failure
 RestartSec=5
 
