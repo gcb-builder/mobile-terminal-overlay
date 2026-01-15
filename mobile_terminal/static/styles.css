@@ -962,6 +962,7 @@ html, body {
 /* Transcript container */
 .transcript-container {
     flex: 1;
+    min-height: 0;  /* Allow shrinking below content - enables child overflow */
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -1005,6 +1006,7 @@ html, body {
 
 .transcript-content {
     flex: 1;
+    min-height: 0;  /* Allow shrinking below content - enables overflow scroll */
     overflow-y: auto;
     overflow-x: hidden;
     padding: 12px;
@@ -1015,6 +1017,7 @@ html, body {
     word-wrap: break-word;
     color: var(--text-primary);
     -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;  /* Explicitly allow vertical touch scroll */
 }
 
 .transcript-content .highlight {
