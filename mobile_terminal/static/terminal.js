@@ -1293,6 +1293,7 @@ function setupCopyButton() {
 
 /**
  * Setup tmux scroll mode (copy mode) toggle button
+ * Also captures touch swipes and translates to arrow keys when in scroll mode
  */
 let inTmuxScrollMode = false;
 
@@ -1315,6 +1316,41 @@ function setupTmuxScroll() {
             }
         });
     }
+
+    // Touch-to-scroll: translate swipes to arrow keys in scroll mode
+    let touchStartY = 0;
+    let lastScrollSend = 0;
+    const scrollThreshold = 30;  // pixels before triggering scroll
+    const scrollCooldown = 50;   // ms between scroll sends
+
+    terminalContainer.addEventListener('touchstart', (e) => {
+        if (inTmuxScrollMode) {
+            touchStartY = e.touches[0].clientY;
+        }
+    }, { passive: true });
+
+    terminalContainer.addEventListener('touchmove', (e) => {
+        if (!inTmuxScrollMode) return;
+
+        const now = Date.now();
+        if (now - lastScrollSend < scrollCooldown) return;
+
+        const touchY = e.touches[0].clientY;
+        const deltaY = touchStartY - touchY;
+
+        if (Math.abs(deltaY) >= scrollThreshold) {
+            if (deltaY > 0) {
+                // Swiped up - scroll up (show older content)
+                sendInput('\x1b[A');  // Up arrow
+            } else {
+                // Swiped down - scroll down (show newer content)
+                sendInput('\x1b[B');  // Down arrow
+            }
+            touchStartY = touchY;  // Reset for continuous scrolling
+            lastScrollSend = now;
+            e.preventDefault();
+        }
+    }, { passive: false });
 }
 
 /**
