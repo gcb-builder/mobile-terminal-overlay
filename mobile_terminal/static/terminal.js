@@ -36,10 +36,10 @@ let terminalContainer, controlBtn, controlIndicator, controlBarsContainer;
 let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
-let jumpToBottomBtn, bottomBar, composeBtn, composeModal;
+let bottomBar, composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composeInsert;
 let composeCamera, composeGallery, composeCameraInput, composeGalleryInput, composeAttachments;
-let copyBtn, selectModeBtn, scrollUpBtn, scrollDownBtn;
+let copyBtn, selectModeBtn, tmuxScrollBtn, tmuxScrollExitBtn;
 let copyBtnAlt, selectModeBtnAlt;  // Alternate buttons in inputBar
 
 // Attachments state for compose modal
@@ -65,7 +65,6 @@ function initDOMElements() {
     searchInput = document.getElementById('searchInput');
     searchClose = document.getElementById('searchClose');
     searchResults = document.getElementById('searchResults');
-    jumpToBottomBtn = document.getElementById('jumpToBottomBtn');
     bottomBar = document.getElementById('bottomBar');
     composeBtn = document.getElementById('composeBtn');
     composeModal = document.getElementById('composeModal');
@@ -80,8 +79,8 @@ function initDOMElements() {
     composeAttachments = document.getElementById('composeAttachments');
     copyBtn = document.getElementById('copyBtn');
     selectModeBtn = document.getElementById('selectModeBtn');
-    scrollUpBtn = document.getElementById('scrollUpBtn');
-    scrollDownBtn = document.getElementById('scrollDownBtn');
+    tmuxScrollBtn = document.getElementById('tmuxScrollBtn');
+    tmuxScrollExitBtn = document.getElementById('tmuxScrollExitBtn');
     copyBtnAlt = document.getElementById('copyBtnAlt');
     selectModeBtnAlt = document.getElementById('selectModeBtnAlt');
 }
@@ -838,25 +837,16 @@ function setupClipboard() {
  * Setup jump-to-bottom FAB
  */
 function setupJumpToBottom() {
+    // Note: xterm.js scrollback doesn't work while tmux is running
+    // (tmux manages its own scrollback via copy mode)
+    // This just tracks position for auto-scroll behavior
+
     let isAtBottom = true;
 
     // Track scroll position using xterm's onScroll event
     terminal.onScroll((scrollPos) => {
-        // Check if at bottom: scrollPos is top line, buffer.length - rows = max scroll
         const maxScroll = terminal.buffer.active.length - terminal.rows;
         isAtBottom = scrollPos >= maxScroll - 1;
-
-        if (isAtBottom) {
-            jumpToBottomBtn.classList.add('hidden');
-        } else {
-            jumpToBottomBtn.classList.remove('hidden');
-        }
-    });
-
-    // Jump to bottom on click
-    jumpToBottomBtn.addEventListener('click', () => {
-        terminal.scrollToBottom();
-        jumpToBottomBtn.classList.add('hidden');
     });
 
     // Auto-scroll on new output (only if already at bottom)
@@ -1303,19 +1293,30 @@ function setupCopyButton() {
 }
 
 /**
- * Setup scroll buttons for page up/down
+ * Setup tmux scroll mode (copy mode) buttons
+ * Scroll enters tmux copy mode, Exit leaves it
  */
-function setupScrollButtons() {
-    if (scrollUpBtn) {
-        scrollUpBtn.addEventListener('click', (e) => {
+let inTmuxScrollMode = false;
+
+function setupTmuxScroll() {
+    if (tmuxScrollBtn) {
+        tmuxScrollBtn.addEventListener('click', (e) => {
             e.preventDefault();
-            terminal.scrollPages(-1);  // Scroll up one page
+            // Enter tmux copy mode: Ctrl+B [
+            sendInput('\x02[');
+            inTmuxScrollMode = true;
+            tmuxScrollBtn.classList.add('hidden');
+            tmuxScrollExitBtn.classList.remove('hidden');
         });
     }
-    if (scrollDownBtn) {
-        scrollDownBtn.addEventListener('click', (e) => {
+    if (tmuxScrollExitBtn) {
+        tmuxScrollExitBtn.addEventListener('click', (e) => {
             e.preventDefault();
-            terminal.scrollPages(1);  // Scroll down one page
+            // Exit tmux copy mode: q
+            sendInput('q');
+            inTmuxScrollMode = false;
+            tmuxScrollExitBtn.classList.add('hidden');
+            tmuxScrollBtn.classList.remove('hidden');
         });
     }
 }
@@ -1405,7 +1406,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupFileSearch();
     setupJumpToBottom();
     setupCopyButton();
-    setupScrollButtons();
+    setupTmuxScroll();
     setupCommandHistory();
     setupComposeMode();
 
