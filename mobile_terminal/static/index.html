@@ -58,7 +58,7 @@
             </div>
         </div>
 
-        <!-- Collapsible control bars container -->
+        <!-- Control bars container (Control mode only) -->
         <div id="controlBarsContainer" class="control-bars-container hidden">
                 <!-- Control keys bar -->
                 <div id="controlBar" class="control-bar">
@@ -77,12 +77,8 @@
                     <button class="ctrl-key" data-key="esc">Esc</button>
                 </div>
 
-                <!-- Quick bar: select, copy, scroll, arrows, numbers, y/n/enter, slash -->
-                <div id="quickBar" class="quick-bar">
-                    <button id="selectModeBtn" class="quick-btn select-btn">Select</button>
-                    <button id="copyBtn" class="quick-btn copy-btn">Copy</button>
-                    <button id="scrollUpBtn" class="quick-btn scroll-btn">PgUp</button>
-                    <button id="scrollDownBtn" class="quick-btn scroll-btn">PgDn</button>
+                <!-- Input bar: arrows, numbers, y/n/enter, slash (Control mode only) -->
+                <div id="inputBar" class="input-bar">
                     <button class="quick-btn" data-key="up">&#x2191;</button>
                     <button class="quick-btn" data-key="down">&#x2193;</button>
                     <button class="quick-btn" data-key="1">1</button>
@@ -101,18 +97,22 @@
         <!-- Terminal container -->
         <div id="terminal-container" class="terminal-container"></div>
 
-        <!-- Bottom action bar (right-hand friendly) -->
+        <!-- View bar: Always visible - scroll/select/copy (works in both modes) -->
+        <div id="viewBar" class="view-bar">
+            <button id="selectModeBtn" class="view-btn select-btn">Select</button>
+            <button id="copyBtn" class="view-btn copy-btn">Copy</button>
+            <button id="scrollUpBtn" class="view-btn scroll-btn">PgUp</button>
+            <button id="scrollDownBtn" class="view-btn scroll-btn">PgDn</button>
+            <button id="jumpToBottomBtn" class="view-btn jump-btn">&#x2B07; Bottom</button>
+        </div>
+
+        <!-- Bottom action bar (Control mode only) -->
         <div id="bottomBar" class="bottom-bar hidden">
             <button id="composeBtn" class="compose-btn" aria-label="Compose with keyboard">
                 <span class="compose-icon">&#x1F4AC;</span>
                 <span class="compose-label">Compose</span>
             </button>
         </div>
-
-        <!-- Jump to bottom FAB (hidden when at bottom) -->
-        <button id="jumpToBottomBtn" class="fab fab-left hidden" aria-label="Jump to bottom">
-            <span>&#x2193;</span>
-        </button>
 
         <!-- Compose modal (predictive text + speech enabled) -->
         <div id="composeModal" class="compose-modal hidden">

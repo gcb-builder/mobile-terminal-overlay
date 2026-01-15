@@ -33,7 +33,7 @@ let currentInput = '';
 
 // DOM elements (initialized in DOMContentLoaded)
 let terminalContainer, controlBtn, controlIndicator, controlBarsContainer;
-let collapseToggle, controlBar, roleBar, quickBar;
+let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let jumpToBottomBtn, bottomBar, composeBtn, composeModal;
@@ -52,7 +52,8 @@ function initDOMElements() {
     collapseToggle = document.getElementById('collapseToggle');
     controlBar = document.getElementById('controlBar');
     roleBar = document.getElementById('roleBar');
-    quickBar = document.getElementById('quickBar');
+    inputBar = document.getElementById('inputBar');
+    viewBar = document.getElementById('viewBar');
     statusOverlay = document.getElementById('statusOverlay');
     statusText = document.getElementById('statusText');
     repoBtn = document.getElementById('repoBtn');
@@ -743,8 +744,8 @@ function setupEventListeners() {
         });
     });
 
-    // Quick buttons (numbers, arrows, y/n/enter) - use pointerup for better mobile support
-    quickBar.querySelectorAll('.quick-btn').forEach((btn) => {
+    // Input buttons (numbers, arrows, y/n/enter) - use pointerup for better mobile support
+    inputBar.querySelectorAll('.quick-btn').forEach((btn) => {
         btn.addEventListener('pointerup', (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -1126,9 +1127,10 @@ function setupCopyButton() {
     }
 
     // Handle taps on terminal for selection - use click only to avoid double-firing
+    // Note: Works in both View and Control mode (viewBar is always visible)
     let lastSelectionTap = 0;
     terminalContainer.addEventListener('click', (e) => {
-        if (!isSelectMode || !isControlUnlocked) return;
+        if (!isSelectMode) return;
 
         // Debounce to prevent double-firing
         const now = Date.now();
@@ -1349,7 +1351,19 @@ function setupCommandHistory() {
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
     initDOMElements();
-    initTerminal();
+
+    // IMPORTANT: Size terminal with ALL bars visible to get the smallest size
+    // This ensures tmux gets a consistent size regardless of View/Control mode
+    controlBarsContainer.classList.remove('hidden');
+    bottomBar.classList.remove('hidden');
+
+    initTerminal();  // Fits terminal to container (with bars taking space)
+
+    // Hide bars again - start in View mode
+    // Terminal keeps the smaller size, so no corruption when toggling
+    controlBarsContainer.classList.add('hidden');
+    bottomBar.classList.add('hidden');
+
     setupEventListeners();
     setupTerminalFocus();
     setupViewportHandler();

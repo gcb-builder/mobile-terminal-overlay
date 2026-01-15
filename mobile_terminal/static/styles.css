@@ -395,6 +395,69 @@ html, body {
     background: rgba(63, 185, 80, 0.2);
 }
 
+/* Input bar (Control mode - arrows, numbers, etc.) */
+.input-bar {
+    display: flex;
+    gap: 6px;
+    padding: 8px 12px;
+    overflow-x: auto;
+    flex-shrink: 0;
+}
+
+/* View bar - always visible at bottom */
+.view-bar {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+    justify-content: center;
+}
+
+.view-btn {
+    padding: 10px 16px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--accent);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    flex-shrink: 0;
+    white-space: nowrap;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+    min-height: 44px;
+}
+
+.view-btn:active {
+    background: rgba(88, 166, 255, 0.2);
+}
+
+.view-btn.select-btn.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+.view-btn.copy-btn {
+    color: var(--success);
+}
+
+.view-btn.copy-btn:active {
+    background: rgba(63, 185, 80, 0.2);
+}
+
+.view-btn.jump-btn {
+    color: var(--warning);
+}
+
+.view-btn.jump-btn.hidden {
+    display: none;
+}
+
 /* Status overlay */
 .status-overlay {
     position: fixed;
