@@ -766,11 +766,13 @@ function setupEventListeners() {
         });
     });
 
-    // Prevent zoom on double-tap (but not on terminal or buttons)
+    // Prevent zoom on double-tap (but not on scrollable areas or buttons)
     document.addEventListener('touchend', (e) => {
-        // Don't interfere with button taps or terminal scrolling
+        // Don't interfere with button taps or scrollable areas
         if (e.target.closest('button')) return;
         if (e.target.closest('.terminal-container')) return;
+        if (e.target.closest('.transcript-content')) return;
+        if (e.target.closest('.search-results')) return;
 
         const now = Date.now();
         if (now - lastTouchEnd <= 300) {
