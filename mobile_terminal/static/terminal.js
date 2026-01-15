@@ -797,10 +797,17 @@ function setupViewportHandler() {
         setTimeout(sendResize, 100);
     });
 
-    // Scroll terminal into view when keyboard opens
+    // Scroll terminal into view when keyboard opens (only if already at bottom)
     if (window.visualViewport) {
         window.visualViewport.addEventListener('resize', () => {
-            terminal.scrollToBottom();
+            // Only auto-scroll if user was already at bottom (don't interrupt reading)
+            const viewport = terminal.element?.querySelector('.xterm-viewport');
+            if (viewport) {
+                const nearBottom = (viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight) < 50;
+                if (nearBottom) {
+                    terminal.scrollToBottom();
+                }
+            }
         });
     }
 
