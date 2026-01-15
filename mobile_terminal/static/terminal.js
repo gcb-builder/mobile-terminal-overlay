@@ -40,6 +40,7 @@ let jumpToBottomBtn, bottomBar, composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composeInsert;
 let composeCamera, composeGallery, composeCameraInput, composeGalleryInput, composeAttachments;
 let copyBtn, selectModeBtn, scrollUpBtn, scrollDownBtn;
+let copyBtnAlt, selectModeBtnAlt;  // Alternate buttons in inputBar
 
 // Attachments state for compose modal
 let pendingAttachments = [];
@@ -81,6 +82,8 @@ function initDOMElements() {
     selectModeBtn = document.getElementById('selectModeBtn');
     scrollUpBtn = document.getElementById('scrollUpBtn');
     scrollDownBtn = document.getElementById('scrollDownBtn');
+    copyBtnAlt = document.getElementById('copyBtnAlt');
+    selectModeBtnAlt = document.getElementById('selectModeBtnAlt');
 }
 
 /**
@@ -1105,25 +1108,39 @@ let isSelectMode = false;
 let selectStart = null;  // {row, col}
 
 function setupCopyButton() {
-    // Select mode button - simple click handler
-    if (selectModeBtn) {
-        selectModeBtn.addEventListener('click', (e) => {
-            e.preventDefault();
+    // Toggle select mode - shared handler for both buttons
+    const toggleSelectMode = (e) => {
+        e.preventDefault();
 
-            isSelectMode = !isSelectMode;
-            selectStart = null;
+        isSelectMode = !isSelectMode;
+        selectStart = null;
 
+        // Update both buttons
+        const btns = [selectModeBtn, selectModeBtnAlt].filter(Boolean);
+        btns.forEach(btn => {
             if (isSelectMode) {
-                selectModeBtn.classList.add('active');
-                selectModeBtn.textContent = 'Tap start';
-                terminal.clearSelection();
+                btn.classList.add('active');
+                btn.textContent = 'Tap start';
             } else {
-                selectModeBtn.classList.remove('active');
-                selectModeBtn.textContent = 'Select';
-                // Restore focus when canceling select mode
-                setTimeout(() => terminal.focus(), 100);
+                btn.classList.remove('active');
+                btn.textContent = 'Select';
             }
         });
+
+        if (isSelectMode) {
+            terminal.clearSelection();
+        } else {
+            // Restore focus when canceling select mode
+            setTimeout(() => terminal.focus(), 100);
+        }
+    };
+
+    // Select mode buttons - both viewBar and inputBar
+    if (selectModeBtn) {
+        selectModeBtn.addEventListener('click', toggleSelectMode);
+    }
+    if (selectModeBtnAlt) {
+        selectModeBtnAlt.addEventListener('click', toggleSelectMode);
     }
 
     // Handle taps on terminal for selection - use click only to avoid double-firing
@@ -1201,10 +1218,11 @@ function setupCopyButton() {
         const resetCopyState = () => {
             isSelectMode = false;
             selectStart = null;
-            if (selectModeBtn) {
-                selectModeBtn.classList.remove('active');
-                selectModeBtn.textContent = 'Select';
-            }
+            // Update both select buttons
+            [selectModeBtn, selectModeBtnAlt].filter(Boolean).forEach(btn => {
+                btn.classList.remove('active');
+                btn.textContent = 'Select';
+            });
             // Always restore focus after a short delay
             setTimeout(() => {
                 terminal.focus();
@@ -1215,12 +1233,19 @@ function setupCopyButton() {
             }, 50);
         };
 
+        // Helper to update both copy buttons
+        const updateCopyBtns = (text) => {
+            [copyBtn, copyBtnAlt].filter(Boolean).forEach(btn => {
+                btn.textContent = text;
+            });
+        };
+
         const handleCopy = () => {
             const selection = terminal.getSelection();
 
             if (!selection) {
-                copyBtn.textContent = 'Select first';
-                setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+                updateCopyBtns('Select first');
+                setTimeout(() => updateCopyBtns('Copy'), 1500);
                 resetCopyState();
                 return;
             }
@@ -1228,8 +1253,8 @@ function setupCopyButton() {
             // Try modern clipboard API first (async but we don't await)
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(selection).then(() => {
-                    copyBtn.textContent = 'Copied!';
-                    setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+                    updateCopyBtns('Copied!');
+                    setTimeout(() => updateCopyBtns('Copy'), 1500);
                 }).catch(() => {
                     // Fallback failed silently, try execCommand
                     fallbackCopy(selection);
@@ -1256,18 +1281,24 @@ function setupCopyButton() {
                 textarea.setSelectionRange(0, text.length);
                 const success = document.execCommand('copy');
                 document.body.removeChild(textarea);
-                copyBtn.textContent = success ? 'Copied!' : 'Failed';
+                updateCopyBtns(success ? 'Copied!' : 'Failed');
             } catch (e) {
-                copyBtn.textContent = 'Failed';
+                updateCopyBtns('Failed');
             }
-            setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+            setTimeout(() => updateCopyBtns('Copy'), 1500);
         };
 
-        copyBtn.addEventListener('click', (e) => {
+        // Copy button handlers - both viewBar and inputBar
+        const copyHandler = (e) => {
             e.preventDefault();
             e.stopPropagation();
             handleCopy();
-        });
+        };
+
+        copyBtn.addEventListener('click', copyHandler);
+        if (copyBtnAlt) {
+            copyBtnAlt.addEventListener('click', copyHandler);
+        }
     }
 }
 
