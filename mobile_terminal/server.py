@@ -356,17 +356,22 @@ def create_app(config: Config) -> FastAPI:
                         os.write(master_fd, message["bytes"])
                     elif "text" in message:
                         text = message["text"]
+                        logger.info(f"Received text message: {text[:100]}")
                         # Handle JSON messages (resize, input)
                         try:
                             data = json.loads(text)
                             if isinstance(data, dict):
                                 if data.get("type") == "resize":
+                                    cols = data.get("cols", 80)
+                                    rows = data.get("rows", 24)
+                                    logger.info(f"Resize request: {cols}x{rows}, fd={master_fd}, pid={app.state.child_pid}")
                                     set_terminal_size(
                                         master_fd,
-                                        data.get("cols", 80),
-                                        data.get("rows", 24),
+                                        cols,
+                                        rows,
                                         app.state.child_pid,
                                     )
+                                    logger.info(f"Terminal resized to {cols}x{rows}")
                                 elif data.get("type") == "input":
                                     input_data = data.get("data")
                                     if input_data:

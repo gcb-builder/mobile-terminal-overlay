@@ -232,6 +232,23 @@ function connect() {
         statusOverlay.classList.add('hidden');
         // Reset reconnect delay on successful connection
         reconnectDelay = INITIAL_RECONNECT_DELAY;
+
+        // Fit terminal and check if size changed
+        if (terminal && fitAddon) {
+            fitAddon.fit();
+            const currentSize = `${terminal.cols}x${terminal.rows}`;
+            const lastSize = localStorage.getItem('terminalSize_v2');
+
+            if (!lastSize || lastSize !== currentSize) {
+                // No saved size (fresh start) or size changed - clear buffer
+                console.log(`Clearing buffer: last=${lastSize}, current=${currentSize}`);
+                terminal.clear();
+            }
+
+            // Save current size
+            localStorage.setItem('terminalSize_v2', currentSize);
+        }
+
         sendResize();
     };
 
@@ -280,11 +297,12 @@ function connect() {
 }
 
 /**
- * Send terminal dimensions to server (without re-fitting)
- * Terminal is sized once at init with Control mode layout and never resized
- * to prevent tmux reflow corruption when switching modes.
+ * Send terminal dimensions to server
  */
 function sendResize() {
+    if (terminal && fitAddon) {
+        fitAddon.fit();
+    }
     if (socket && socket.readyState === WebSocket.OPEN && terminal) {
         socket.send(JSON.stringify({
             type: 'resize',
@@ -784,9 +802,10 @@ function setupViewportHandler() {
         history.pushState(null, '', window.location.href);
     });
 
-    // Terminal is sized once at init - no dynamic resize on orientation/window change
-    // This prevents tmux reflow corruption when switching modes.
-    // If user needs different size, reload the page.
+    // Resize on orientation change
+    window.addEventListener('orientationchange', () => {
+        setTimeout(sendResize, 100);
+    });
 
     // Scroll terminal into view when keyboard opens
     if (window.visualViewport) {
@@ -1375,20 +1394,19 @@ function setupCommandHistory() {
 document.addEventListener('DOMContentLoaded', async () => {
     initDOMElements();
 
-    // IMPORTANT: Size terminal with Control mode bars visible to get consistent size
-    // Control mode: controlBarsContainer + bottomBar visible, viewBar hidden
-    // View mode: viewBar visible, controlBarsContainer + bottomBar hidden
+    // IMPORTANT: Size terminal with ALL bars visible to get the smallest size
+    // This ensures tmux gets a consistent size regardless of View/Control mode
     controlBarsContainer.classList.remove('hidden');
     bottomBar.classList.remove('hidden');
-    viewBar.classList.add('hidden');
+    viewBar.classList.remove('hidden');
 
-    initTerminal();  // Fits terminal to container (with Control mode bars taking space)
+    initTerminal();  // Fits terminal to container (with all bars taking space)
 
     // Switch to View mode layout - start in View mode
-    // Terminal keeps the Control mode size for consistency
+    // Terminal keeps the smaller size, so no size changes when toggling
     controlBarsContainer.classList.add('hidden');
     bottomBar.classList.add('hidden');
-    viewBar.classList.remove('hidden');
+    // viewBar stays visible in View mode
 
     setupEventListeners();
     setupTerminalFocus();
