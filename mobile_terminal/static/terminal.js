@@ -328,6 +328,7 @@ function toggleControl() {
         collapseToggle.classList.remove('hidden');
         collapseToggle.classList.remove('collapsed');
         bottomBar.classList.remove('hidden');
+        viewBar.classList.add('hidden');  // Hide viewBar in Control mode (Select/Copy in inputBar)
 
         // Focus terminal for direct input
         terminal.focus();
@@ -346,6 +347,7 @@ function toggleControl() {
         controlBarsContainer.classList.add('hidden');
         collapseToggle.classList.add('hidden');
         bottomBar.classList.add('hidden');
+        viewBar.classList.remove('hidden');  // Show viewBar in View mode
         terminalContainer.classList.remove('focusable');
 
         // Clear any selection when locking
@@ -1383,17 +1385,20 @@ function setupCommandHistory() {
 document.addEventListener('DOMContentLoaded', async () => {
     initDOMElements();
 
-    // IMPORTANT: Size terminal with ALL bars visible to get the smallest size
-    // This ensures tmux gets a consistent size regardless of View/Control mode
+    // IMPORTANT: Size terminal with Control mode bars visible to get consistent size
+    // Control mode: controlBarsContainer + bottomBar visible, viewBar hidden
+    // View mode: viewBar visible, controlBarsContainer + bottomBar hidden
     controlBarsContainer.classList.remove('hidden');
     bottomBar.classList.remove('hidden');
+    viewBar.classList.add('hidden');
 
-    initTerminal();  // Fits terminal to container (with bars taking space)
+    initTerminal();  // Fits terminal to container (with Control mode bars taking space)
 
-    // Hide bars again - start in View mode
-    // Terminal keeps the smaller size, so no corruption when toggling
+    // Switch to View mode layout - start in View mode
+    // Terminal keeps the Control mode size for consistency
     controlBarsContainer.classList.add('hidden');
     bottomBar.classList.add('hidden');
+    viewBar.classList.remove('hidden');
 
     setupEventListeners();
     setupTerminalFocus();
