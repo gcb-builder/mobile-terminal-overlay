@@ -18,7 +18,7 @@
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=30">
+    <link rel="stylesheet" href="/static/styles.css?v=31">
 </head>
 <body>
     <div class="app">
@@ -45,7 +45,6 @@
                 <button id="searchBtn" class="icon-btn" aria-label="Search files">
                     <span>&#x1F50D;</span>
                 </button>
-                <span id="controlIndicator" class="control-indicator locked">View</span>
                 <button id="controlBtn" class="control-btn-small locked">
                     <span class="lock-icon">&#x1F512;</span>
                 </button>
@@ -116,6 +115,7 @@
         <div id="viewBar" class="view-bar">
             <button id="selectModeBtn" class="view-btn select-btn">Select</button>
             <button id="copyBtn" class="view-btn copy-btn">Copy</button>
+            <button id="stopBtn" class="view-btn stop-btn">Stop</button>
             <button id="composeBtn" class="view-btn compose-btn">Compose</button>
         </div>
 
@@ -159,7 +159,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=30"></script>
+    <script src="/static/terminal.js?v=34"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

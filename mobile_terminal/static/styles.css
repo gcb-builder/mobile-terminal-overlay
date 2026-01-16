@@ -144,22 +144,6 @@ html, body {
     gap: 8px;
 }
 
-.control-indicator {
-    font-size: 12px;
-    padding: 4px 8px;
-    border-radius: 4px;
-    background: var(--bg-tertiary);
-}
-
-.control-indicator.locked {
-    color: var(--text-secondary);
-}
-
-.control-indicator.unlocked {
-    color: var(--success);
-    background: rgba(63, 185, 80, 0.15);
-}
-
 .icon-btn {
     background: transparent;
     border: none;
@@ -457,6 +441,14 @@ html, body {
 
 .view-btn.copy-btn:active {
     background: rgba(63, 185, 80, 0.2);
+}
+
+.view-btn.stop-btn {
+    color: var(--danger);
+}
+
+.view-btn.stop-btn:active {
+    background: rgba(248, 81, 73, 0.2);
 }
 
 .view-btn.jump-btn {

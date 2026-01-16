@@ -32,14 +32,14 @@ let historyIndex = -1;
 let currentInput = '';
 
 // DOM elements (initialized in DOMContentLoaded)
-let terminalContainer, controlBtn, controlIndicator, controlBarsContainer;
+let terminalContainer, controlBtn, controlBarsContainer;
 let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composeInsert;
 let composeCamera, composeGallery, composeCameraInput, composeGalleryInput, composeAttachments;
-let copyBtn, selectModeBtn;
+let copyBtn, selectModeBtn, stopBtn;
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 
 // Attachments state for compose modal
@@ -48,7 +48,6 @@ let pendingAttachments = [];
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
     controlBtn = document.getElementById('controlBtn');
-    controlIndicator = document.getElementById('controlIndicator');
     controlBarsContainer = document.getElementById('controlBarsContainer');
     collapseToggle = document.getElementById('collapseToggle');
     controlBar = document.getElementById('controlBar');
@@ -78,6 +77,7 @@ function initDOMElements() {
     composeAttachments = document.getElementById('composeAttachments');
     copyBtn = document.getElementById('copyBtn');
     selectModeBtn = document.getElementById('selectModeBtn');
+    stopBtn = document.getElementById('stopBtn');
     terminalViewBtn = document.getElementById('terminalViewBtn');
     transcriptViewBtn = document.getElementById('transcriptViewBtn');
     transcriptContainer = document.getElementById('transcriptContainer');
@@ -324,10 +324,6 @@ function toggleControl() {
         controlBtn.classList.add('unlocked');
         controlBtn.querySelector('.lock-icon').innerHTML = '&#x1F513;';
 
-        controlIndicator.classList.remove('locked');
-        controlIndicator.classList.add('unlocked');
-        controlIndicator.textContent = 'Tap terminal';
-
         controlBarsContainer.classList.remove('hidden');
         controlBarsContainer.classList.remove('collapsed');
         collapseToggle.classList.remove('hidden');
@@ -342,10 +338,6 @@ function toggleControl() {
         controlBtn.classList.remove('unlocked');
         controlBtn.classList.add('locked');
         controlBtn.querySelector('.lock-icon').innerHTML = '&#x1F512;';
-
-        controlIndicator.classList.remove('unlocked');
-        controlIndicator.classList.add('locked');
-        controlIndicator.textContent = 'View';
 
         controlBarsContainer.classList.add('hidden');
         collapseToggle.classList.add('hidden');
@@ -386,14 +378,6 @@ function setupTerminalFocus() {
     terminalContainer.addEventListener('click', () => {
         if (isControlUnlocked) {
             terminal.focus();
-            controlIndicator.textContent = 'Typing';
-        }
-    });
-
-    // Update indicator when terminal loses focus
-    terminal.textarea.addEventListener('blur', () => {
-        if (isControlUnlocked) {
-            controlIndicator.textContent = 'Tap terminal';
         }
     });
 }
@@ -903,7 +887,13 @@ function setupComposeMode() {
     });
 
     // Send to terminal (text + attachment paths)
-    composeInsert.addEventListener('click', () => {
+    // Short tap: insert text only
+    // Long press (500ms): insert text + Enter
+    let longPressTimer = null;
+    let isLongPress = false;
+    const LONG_PRESS_DURATION = 500;
+
+    function sendComposedText(withEnter = false) {
         let text = composeInput.value;
 
         // Append attachment paths to the message
@@ -913,10 +903,57 @@ function setupComposeMode() {
         }
 
         if (text && socket && socket.readyState === WebSocket.OPEN) {
-            sendInput(text);
+            sendInput(withEnter ? text + '\r' : text);
             closeComposeModal();
             terminal.focus();
         }
+    }
+
+    // Touch events for long press detection
+    let touchHandled = false;
+
+    composeInsert.addEventListener('touchstart', (e) => {
+        isLongPress = false;
+        touchHandled = false;
+        longPressTimer = setTimeout(() => {
+            isLongPress = true;
+            // Visual feedback
+            composeInsert.style.transform = 'scale(0.95)';
+            composeInsert.textContent = 'Send + Enter';
+        }, LONG_PRESS_DURATION);
+    }, { passive: true });
+
+    composeInsert.addEventListener('touchend', (e) => {
+        clearTimeout(longPressTimer);
+        composeInsert.style.transform = '';
+        composeInsert.textContent = 'Send';
+
+        if (isLongPress) {
+            e.preventDefault();
+            touchHandled = true;
+            sendComposedText(true);  // With Enter
+        } else {
+            // Short tap - handle here instead of click to avoid timing issues
+            touchHandled = true;
+            sendComposedText(false);  // Without Enter
+        }
+        isLongPress = false;
+    });
+
+    composeInsert.addEventListener('touchcancel', () => {
+        clearTimeout(longPressTimer);
+        composeInsert.style.transform = '';
+        composeInsert.textContent = 'Send';
+        isLongPress = false;
+        touchHandled = false;
+    });
+
+    // Click for mouse/desktop only (touch is handled above)
+    composeInsert.addEventListener('click', (e) => {
+        if (!touchHandled) {
+            sendComposedText(false);  // Without Enter
+        }
+        touchHandled = false;
     });
 
     // Send on Ctrl+Enter or Cmd+Enter
@@ -1268,6 +1305,16 @@ function setupCopyButton() {
             handleCopy();
         });
     }
+
+    // Stop button (Ctrl+C)
+    if (stopBtn) {
+        stopBtn.addEventListener('click', () => {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                sendInput('\x03');  // Ctrl+C
+                terminal.focus();
+            }
+        });
+    }
 }
 
 /**
@@ -1383,7 +1430,8 @@ async function fetchTranscript() {
     transcriptSearchCount.textContent = '';
 
     try {
-        const response = await fetch(`/api/transcript?token=${token}`);
+        // Use capture-pane for cleaner output (pipe-pane log has screen redraws)
+        const response = await fetch(`/api/transcript?token=${token}&source=capture`);
         if (!response.ok) {
             throw new Error('Failed to fetch transcript');
         }
@@ -1405,20 +1453,20 @@ async function fetchTranscript() {
 // Strip ANSI escape codes from text
 function stripAnsi(text) {
     return text
-        // Full ANSI CSI sequences: ESC [ ... letter
-        .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
-        // Orphaned/partial sequences (missing ESC prefix)
-        .replace(/\[[0-9;]*[a-zA-Z]/g, (match, offset, str) => {
-            // Only strip if it looks like an escape sequence fragment
-            if (/^\[([0-9;]+)?[a-zA-Z]$/.test(match)) return '';
-            return match;
-        })
+        // Full ANSI CSI sequences: ESC [ (optional ?) ... letter
+        .replace(/\x1b\[\??[0-9;]*[a-zA-Z]/g, '')
+        // Orphaned CSI sequences (missing ESC): [?2026l, [0m, etc.
+        .replace(/\[\??[0-9;]*[a-zA-Z]/g, '')
+        // Standalone DEC sequences: ?2026l, ?2026h, etc.
+        .replace(/\?[0-9]+[a-zA-Z]/g, '')
         // RGB color codes that got split: 38;2;R;G;Bm or 48;2;R;G;Bm
         .replace(/\b[34]8;2;[0-9;]+m/g, '')
         // Simple color codes: 0m, 1m, 32m, etc.
         .replace(/\b[0-9;]+m\b/g, '')
-        // OSC sequences
+        // OSC sequences (ESC ] ... BEL)
         .replace(/\x1b\][^\x07]*\x07/g, '')
+        // OSC sequences with ST terminator
+        .replace(/\x1b\][^\x1b]*\x1b\\/g, '')
         // Other escape sequences
         .replace(/\x1b[PX^_][^\x1b]*\x1b\\/g, '')
         .replace(/\x1b[\x40-\x5F]/g, '')
