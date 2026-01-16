@@ -18,7 +18,7 @@
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=31">
+    <link rel="stylesheet" href="/static/styles.css?v=35">
 </head>
 <body>
     <div class="app">
@@ -45,6 +45,7 @@
                 <button id="searchBtn" class="icon-btn" aria-label="Search files">
                     <span>&#x1F50D;</span>
                 </button>
+                <span id="connectionIndicator" class="connection-indicator connected" title="Connected"></span>
                 <button id="controlBtn" class="control-btn-small locked">
                     <span class="lock-icon">&#x1F512;</span>
                 </button>
@@ -155,11 +156,12 @@
             <div class="status-content">
                 <div class="spinner"></div>
                 <p id="statusText">Connecting...</p>
+                <button id="reconnectBtn" class="reconnect-btn hidden" onclick="manualReconnect()">Reconnect Now</button>
             </div>
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=34"></script>
+    <script src="/static/terminal.js?v=35"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

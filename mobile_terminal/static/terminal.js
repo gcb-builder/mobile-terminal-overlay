@@ -16,14 +16,21 @@ let config = null;
 let currentSession = null;
 
 // Reconnection with exponential backoff
-let reconnectDelay = 1000;
+let reconnectDelay = 500;
 const MAX_RECONNECT_DELAY = 30000;
-const INITIAL_RECONNECT_DELAY = 1000;
-const MIN_CONNECTION_INTERVAL = 1000;  // Minimum ms between connection attempts
+const INITIAL_RECONNECT_DELAY = 500;  // Fast initial reconnect for mobile
+const MIN_CONNECTION_INTERVAL = 500;  // Minimum ms between connection attempts
 let intentionalClose = false;  // Track intentional closes to skip auto-reconnect
 let isConnecting = false;  // Prevent concurrent connection attempts
 let reconnectTimer = null;  // Track pending reconnect
 let lastConnectionAttempt = 0;  // Timestamp of last connection attempt
+
+// Heartbeat for connection health monitoring
+const HEARTBEAT_INTERVAL = 30000;  // Send ping every 30s
+const HEARTBEAT_TIMEOUT = 10000;   // Expect pong within 10s
+let heartbeatTimer = null;
+let heartbeatTimeoutTimer = null;
+let lastPongTime = 0;
 
 // Local command history (persisted to localStorage)
 const MAX_HISTORY_SIZE = 100;
@@ -183,6 +190,79 @@ function initTerminal() {
 }
 
 /**
+ * Start heartbeat ping/pong for connection health monitoring
+ */
+function startHeartbeat() {
+    stopHeartbeat();
+    lastPongTime = Date.now();
+
+    heartbeatTimer = setInterval(() => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            // Send ping
+            socket.send(JSON.stringify({ type: 'ping' }));
+
+            // Set timeout for pong response
+            heartbeatTimeoutTimer = setTimeout(() => {
+                console.log('Heartbeat timeout - no pong received, reconnecting');
+                // Connection is dead, force reconnect
+                if (socket) {
+                    socket.close();
+                }
+            }, HEARTBEAT_TIMEOUT);
+        }
+    }, HEARTBEAT_INTERVAL);
+}
+
+/**
+ * Stop heartbeat timers
+ */
+function stopHeartbeat() {
+    if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+    }
+    if (heartbeatTimeoutTimer) {
+        clearTimeout(heartbeatTimeoutTimer);
+        heartbeatTimeoutTimer = null;
+    }
+}
+
+/**
+ * Handle pong response from server
+ */
+function handlePong() {
+    lastPongTime = Date.now();
+    if (heartbeatTimeoutTimer) {
+        clearTimeout(heartbeatTimeoutTimer);
+        heartbeatTimeoutTimer = null;
+    }
+    updateConnectionIndicator('connected');
+}
+
+/**
+ * Update connection status indicator in header
+ */
+function updateConnectionIndicator(status) {
+    const indicator = document.getElementById('connectionIndicator');
+    if (!indicator) return;
+
+    indicator.className = 'connection-indicator ' + status;
+    indicator.title = status === 'connected' ? 'Connected' : 'Disconnected';
+}
+
+/**
+ * Manual reconnect triggered by user
+ */
+function manualReconnect() {
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+    reconnectDelay = INITIAL_RECONNECT_DELAY;
+    connect();
+}
+
+/**
  * Connect to WebSocket
  */
 function connect() {
@@ -224,6 +304,10 @@ function connect() {
     statusText.textContent = 'Connecting...';
     statusOverlay.classList.remove('hidden');
 
+    // Hide reconnect button while connecting
+    const reconnectBtn = document.getElementById('reconnectBtn');
+    if (reconnectBtn) reconnectBtn.classList.add('hidden');
+
     socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
@@ -239,6 +323,8 @@ function connect() {
         }
 
         sendResize();
+        startHeartbeat();
+        updateConnectionIndicator('connected');
     };
 
     socket.onmessage = (event) => {
@@ -247,6 +333,18 @@ function connect() {
                 terminal.write(new Uint8Array(buffer));
             });
         } else {
+            // Check for JSON messages (pong, etc.)
+            if (event.data.startsWith('{')) {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'pong') {
+                        handlePong();
+                        return;
+                    }
+                } catch (e) {
+                    // Not JSON, treat as terminal data
+                }
+            }
             terminal.write(event.data);
         }
     };
@@ -254,6 +352,8 @@ function connect() {
     socket.onclose = (event) => {
         console.log('WebSocket closed:', event.code, event.reason);
         isConnecting = false;
+        stopHeartbeat();
+        updateConnectionIndicator('disconnected');
 
         // Skip auto-reconnect for:
         // - intentionalClose flag (client-initiated)
@@ -272,6 +372,10 @@ function connect() {
 
         statusText.textContent = `Disconnected. Reconnecting in ${reconnectDelay / 1000}s...`;
         statusOverlay.classList.remove('hidden');
+
+        // Show reconnect button
+        const reconnectBtn = document.getElementById('reconnectBtn');
+        if (reconnectBtn) reconnectBtn.classList.remove('hidden');
 
         // Reconnect with exponential backoff
         reconnectTimer = setTimeout(connect, reconnectDelay);

@@ -649,6 +649,9 @@ def create_app(config: Config) -> FastAPI:
                                     input_data = data.get("data")
                                     if input_data:
                                         os.write(master_fd, input_data.encode())
+                                elif data.get("type") == "ping":
+                                    # Respond to heartbeat ping with pong
+                                    await websocket.send_json({"type": "pong"})
                             else:
                                 # JSON but not dict, treat as plain text
                                 os.write(master_fd, text.encode())

@@ -158,6 +158,30 @@ html, body {
     color: var(--text-primary);
 }
 
+/* Connection health indicator */
+.connection-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin: 0 4px;
+}
+
+.connection-indicator.connected {
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
+}
+
+.connection-indicator.disconnected {
+    background: var(--danger);
+    box-shadow: 0 0 6px var(--danger);
+    animation: pulse-red 1.5s infinite;
+}
+
+@keyframes pulse-red {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
 /* Terminal container - let xterm handle its own scrolling */
 .terminal-container {
     flex: 1;
@@ -497,6 +521,28 @@ html, body {
 #statusText {
     color: var(--text-secondary);
     font-size: 14px;
+}
+
+.reconnect-btn {
+    margin-top: 16px;
+    padding: 10px 24px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.reconnect-btn:active {
+    transform: scale(0.95);
+    background: var(--accent-hover);
+}
+
+.reconnect-btn.hidden {
+    display: none;
 }
 
 /* Scrollbar styling */
