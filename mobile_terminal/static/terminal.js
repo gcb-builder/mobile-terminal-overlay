@@ -1432,6 +1432,8 @@ async function switchToTranscriptView() {
     await fetchTranscript();
 }
 
+let transcriptSource = '';  // 'log' or 'capture'
+
 async function fetchTranscript() {
     transcriptContent.textContent = 'Loading transcript...';
     transcriptSearchCount.textContent = '';
@@ -1443,6 +1445,12 @@ async function fetchTranscript() {
         }
         const data = await response.json();
         transcriptText = data.text || '';
+        transcriptSource = data.source || 'capture';
+
+        // Show source indicator
+        const sourceLabel = transcriptSource === 'log' ? 'Live Log' : 'Snapshot';
+        transcriptSearchCount.textContent = sourceLabel;
+
         renderTranscript(transcriptText);
     } catch (error) {
         console.error('Transcript error:', error);
@@ -1515,7 +1523,9 @@ function renderTranscript(text, searchTerm = '') {
             firstMatch.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
     } else {
-        transcriptSearchCount.textContent = '';
+        // Show source indicator when not searching
+        const sourceLabel = transcriptSource === 'log' ? 'Live Log' : 'Snapshot';
+        transcriptSearchCount.textContent = sourceLabel;
     }
 }
 

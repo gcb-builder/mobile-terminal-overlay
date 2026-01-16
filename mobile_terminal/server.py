@@ -62,6 +62,67 @@ logger = logging.getLogger(__name__)
 # Directory containing static files
 STATIC_DIR = Path(__file__).parent / "static"
 
+# Directory for transcript logs (pipe-pane output)
+TRANSCRIPT_DIR = Path.home() / ".cache" / "mobile-overlay" / "transcripts"
+
+
+def get_transcript_log_path(session_name: str, window: int = 0, pane: int = 0) -> Path:
+    """Get the transcript log file path for a session/window/pane."""
+    TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+    return TRANSCRIPT_DIR / f"{session_name}_w{window}_p{pane}.log"
+
+
+def enable_pipe_pane(session_name: str, window: int = 0, pane: int = 0) -> Optional[Path]:
+    """
+    Enable tmux pipe-pane for a session to capture output to a log file.
+    Returns the log file path if successful, None otherwise.
+    """
+    import subprocess
+
+    log_path = get_transcript_log_path(session_name, window, pane)
+    target = f"{session_name}:{window}.{pane}"
+
+    try:
+        # -o = don't double-pipe if already enabled
+        result = subprocess.run(
+            ["tmux", "pipe-pane", "-o", "-t", target, f"cat >> {log_path}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            logger.info(f"Enabled pipe-pane for {target} -> {log_path}")
+            return log_path
+        else:
+            logger.warning(f"pipe-pane failed for {target}: {result.stderr}")
+            return None
+    except Exception as e:
+        logger.error(f"Error enabling pipe-pane: {e}")
+        return None
+
+
+def list_tmux_sessions(prefix: str = "") -> list:
+    """List tmux sessions, optionally filtered by prefix."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+
+        sessions = [s.strip() for s in result.stdout.strip().split("\n") if s.strip()]
+        if prefix:
+            sessions = [s for s in sessions if s.startswith(prefix)]
+        return sessions
+    except Exception as e:
+        logger.error(f"Error listing tmux sessions: {e}")
+        return []
+
 
 def _sigchld_handler(signum, frame):
     """Reap zombie child processes."""
@@ -146,6 +207,25 @@ def create_app(config: Config) -> FastAPI:
         """Health check endpoint."""
         return {"status": "ok", "version": "0.1.0"}
 
+    @app.get("/api/tmux/sessions")
+    async def get_tmux_sessions(
+        token: Optional[str] = Query(None),
+        prefix: str = Query(""),
+    ):
+        """
+        List available tmux sessions.
+        Optionally filter by prefix (e.g., 'claude-' for Claude sessions).
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        sessions = list_tmux_sessions(prefix)
+        return {
+            "sessions": sessions,
+            "current": app.state.current_session,
+            "prefix": prefix,
+        }
+
     @app.get("/api/files/search")
     async def search_files(q: str = Query(""), token: Optional[str] = Query(None), limit: int = Query(20)):
         """
@@ -193,19 +273,52 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/api/transcript")
-    async def get_transcript(token: Optional[str] = Query(None)):
+    async def get_transcript(
+        token: Optional[str] = Query(None),
+        lines: int = Query(10000),
+        source: str = Query("auto"),  # "auto", "log", or "capture"
+    ):
         """
-        Get terminal transcript using tmux capture-pane.
-        Returns clean text history (10000 lines) for searchable viewing.
+        Get terminal transcript.
+
+        Sources:
+        - "log": Read from pipe-pane log file (cleanest, if available)
+        - "capture": Use tmux capture-pane (fallback)
+        - "auto": Try log first, fall back to capture-pane
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
+        session_name = app.state.current_session
+        log_path = get_transcript_log_path(session_name)
+
+        # Try reading from log file first (if source is auto or log)
+        if source in ("auto", "log") and log_path.exists():
+            try:
+                with open(log_path, "r", errors="replace") as f:
+                    # Read last N lines efficiently
+                    content = f.read()
+                    all_lines = content.split("\n")
+                    if len(all_lines) > lines:
+                        all_lines = all_lines[-lines:]
+                    text = "\n".join(all_lines)
+                return {
+                    "text": text,
+                    "session": session_name,
+                    "source": "log",
+                    "log_path": str(log_path),
+                }
+            except Exception as e:
+                logger.warning(f"Error reading log file: {e}")
+                if source == "log":
+                    return JSONResponse({"error": f"Log file error: {e}"}, status_code=500)
+                # Fall through to capture-pane
+
+        # Fallback to tmux capture-pane
         try:
             import subprocess
-            session_name = app.state.current_session
             result = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-J", "-S", "-10000", "-t", session_name],
+                ["tmux", "capture-pane", "-p", "-J", "-S", f"-{lines}", "-t", session_name],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -215,7 +328,11 @@ def create_app(config: Config) -> FastAPI:
                     {"error": f"tmux capture-pane failed: {result.stderr}"},
                     status_code=500,
                 )
-            return {"text": result.stdout, "session": session_name}
+            return {
+                "text": result.stdout,
+                "session": session_name,
+                "source": "capture",
+            }
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "Capture timeout"}, status_code=504)
         except Exception as e:
@@ -405,11 +522,21 @@ def create_app(config: Config) -> FastAPI:
                 app.state.master_fd = master_fd
                 app.state.child_pid = child_pid
                 logger.info(f"Spawned tmux session: {session_name}")
+
+                # Enable pipe-pane for transcript logging (after short delay for tmux to be ready)
+                await asyncio.sleep(0.5)
+                log_path = enable_pipe_pane(session_name)
+                if log_path:
+                    logger.info(f"Transcript logging enabled: {log_path}")
             except Exception as e:
                 logger.error(f"Failed to spawn tmux: {e}")
                 await websocket.send_json({"type": "error", "message": str(e)})
                 await websocket.close()
                 return
+        else:
+            # Existing session - ensure pipe-pane is enabled
+            session_name = app.state.current_session
+            enable_pipe_pane(session_name)
 
         master_fd = app.state.master_fd
         output_buffer = app.state.output_buffer
