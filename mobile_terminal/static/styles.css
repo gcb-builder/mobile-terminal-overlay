@@ -205,6 +205,10 @@ html, body {
     touch-action: pan-y !important;
 }
 
+.terminal-container.hidden {
+    display: none !important;
+}
+
 
 
 /* Control toggle button (in header) */

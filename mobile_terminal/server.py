@@ -181,7 +181,10 @@ def create_app(config: Config) -> FastAPI:
             return FileResponse(
                 sw_path,
                 media_type="application/javascript",
-                headers={"Service-Worker-Allowed": "/"},
+                headers={
+                    "Service-Worker-Allowed": "/",
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                },
             )
         return HTMLResponse(status_code=404)
 
@@ -193,7 +196,10 @@ def create_app(config: Config) -> FastAPI:
                 content="<h1>401 Unauthorized</h1><p>Invalid or missing token.</p>",
                 status_code=401,
             )
-        return FileResponse(STATIC_DIR / "index.html")
+        return FileResponse(
+            STATIC_DIR / "index.html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     @app.get("/config")
     async def get_config(token: Optional[str] = Query(None)):
@@ -541,12 +547,13 @@ def create_app(config: Config) -> FastAPI:
         master_fd = app.state.master_fd
         output_buffer = app.state.output_buffer
 
-        # Send history snapshot using tmux capture-pane (cleaner than raw buffer replay)
+        # Send history snapshot using tmux capture-pane with escape sequences
         try:
             import subprocess
             session_name = app.state.current_session
+            # Use -e to preserve escape sequences for proper rendering
             result = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-J", "-S", "-5000", "-t", session_name],
+                ["tmux", "capture-pane", "-p", "-e", "-S", "-5000", "-t", session_name],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -554,7 +561,8 @@ def create_app(config: Config) -> FastAPI:
             if result.returncode == 0 and result.stdout:
                 history_text = result.stdout
                 logger.info(f"Sending {len(history_text)} chars of capture-pane history")
-                await websocket.send_text(history_text)
+                # Clear screen and move cursor home before sending history
+                await websocket.send_text("\x1b[2J\x1b[H" + history_text)
         except subprocess.TimeoutExpired:
             logger.warning("tmux capture-pane timed out")
         except Exception as e:
