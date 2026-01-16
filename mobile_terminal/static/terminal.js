@@ -39,7 +39,7 @@ let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composeInsert;
 let composeCamera, composeGallery, composeCameraInput, composeGalleryInput, composeAttachments;
-let copyBtn, selectModeBtn, tmuxScrollBtn, refreshBtn;
+let copyBtn, selectModeBtn;
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 
 // Attachments state for compose modal
@@ -78,8 +78,6 @@ function initDOMElements() {
     composeAttachments = document.getElementById('composeAttachments');
     copyBtn = document.getElementById('copyBtn');
     selectModeBtn = document.getElementById('selectModeBtn');
-    tmuxScrollBtn = document.getElementById('tmuxScrollBtn');
-    refreshBtn = document.getElementById('refreshBtn');
     terminalViewBtn = document.getElementById('terminalViewBtn');
     transcriptViewBtn = document.getElementById('transcriptViewBtn');
     transcriptContainer = document.getElementById('transcriptContainer');
@@ -1273,68 +1271,6 @@ function setupCopyButton() {
 }
 
 /**
- * Setup tmux scroll mode (copy mode) toggle button
- * Also captures touch swipes and translates to arrow keys when in scroll mode
- */
-let inTmuxScrollMode = false;
-
-function setupTmuxScroll() {
-    if (tmuxScrollBtn) {
-        tmuxScrollBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            if (!inTmuxScrollMode) {
-                // Enter tmux copy mode: Ctrl+B [
-                sendInput('\x02[');
-                inTmuxScrollMode = true;
-                tmuxScrollBtn.textContent = 'Exit';
-                tmuxScrollBtn.classList.add('active');
-            } else {
-                // Exit tmux copy mode: q
-                sendInput('q');
-                inTmuxScrollMode = false;
-                tmuxScrollBtn.textContent = 'Scroll';
-                tmuxScrollBtn.classList.remove('active');
-            }
-        });
-    }
-
-    // Touch-to-scroll: translate swipes to arrow keys in scroll mode
-    let touchStartY = 0;
-    let lastScrollSend = 0;
-    const scrollThreshold = 30;  // pixels before triggering scroll
-    const scrollCooldown = 50;   // ms between scroll sends
-
-    terminalContainer.addEventListener('touchstart', (e) => {
-        if (inTmuxScrollMode) {
-            touchStartY = e.touches[0].clientY;
-        }
-    }, { passive: true });
-
-    terminalContainer.addEventListener('touchmove', (e) => {
-        if (!inTmuxScrollMode) return;
-
-        const now = Date.now();
-        if (now - lastScrollSend < scrollCooldown) return;
-
-        const touchY = e.touches[0].clientY;
-        const deltaY = touchStartY - touchY;
-
-        if (Math.abs(deltaY) >= scrollThreshold) {
-            if (deltaY > 0) {
-                // Swiped up - scroll up (show older content)
-                sendInput('\x1b[A');  // Up arrow
-            } else {
-                // Swiped down - scroll down (show newer content)
-                sendInput('\x1b[B');  // Down arrow
-            }
-            touchStartY = touchY;  // Reset for continuous scrolling
-            lastScrollSend = now;
-            e.preventDefault();
-        }
-    }, { passive: false });
-}
-
-/**
  * Setup local command history
  */
 function setupCommandHistory() {
@@ -1419,6 +1355,11 @@ function switchToTerminalView() {
     transcriptViewBtn.classList.remove('active');
     terminalContainer.classList.remove('hidden');
     transcriptContainer.classList.add('hidden');
+    viewBar.classList.remove('hidden');  // Show action bar in terminal view
+    // Only show control bars if unlocked
+    if (isControlUnlocked) {
+        controlBarsContainer.classList.remove('hidden');
+    }
 }
 
 async function switchToTranscriptView() {
@@ -1427,9 +1368,12 @@ async function switchToTranscriptView() {
     terminalViewBtn.classList.remove('active');
     transcriptContainer.classList.remove('hidden');
     terminalContainer.classList.add('hidden');
+    viewBar.classList.add('hidden');  // Hide action bar in log view
+    controlBarsContainer.classList.add('hidden');  // Hide control bars in log view
 
-    // Fetch transcript
+    // Fetch transcript and scroll to bottom
     await fetchTranscript();
+    transcriptContent.scrollTop = transcriptContent.scrollHeight;
 }
 
 let transcriptSource = '';  // 'log' or 'capture'
@@ -1582,47 +1526,6 @@ function setupTranscriptSearch() {
     });
 }
 
-/**
- * Refresh button: re-fetch terminal snapshot via capture-pane
- */
-async function refreshTerminal() {
-    if (refreshBtn) {
-        refreshBtn.textContent = '...';
-    }
-
-    try {
-        const response = await fetch(`/api/refresh?token=${token}`);
-        if (!response.ok) {
-            throw new Error('Refresh failed');
-        }
-        const data = await response.json();
-        if (data.text && terminal) {
-            // Clear terminal and write fresh content
-            terminal.clear();
-            terminal.write(data.text);
-            terminal.scrollToBottom();
-        }
-        if (refreshBtn) {
-            refreshBtn.textContent = 'Done!';
-            setTimeout(() => { refreshBtn.textContent = 'Refresh'; }, 1000);
-        }
-    } catch (error) {
-        console.error('Refresh error:', error);
-        if (refreshBtn) {
-            refreshBtn.textContent = 'Error';
-            setTimeout(() => { refreshBtn.textContent = 'Refresh'; }, 1500);
-        }
-    }
-}
-
-function setupRefreshButton() {
-    if (refreshBtn) {
-        refreshBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            refreshTerminal();
-        });
-    }
-}
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
@@ -1646,12 +1549,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupFileSearch();
     setupJumpToBottom();
     setupCopyButton();
-    setupTmuxScroll();
     setupCommandHistory();
     setupComposeMode();
     setupViewToggle();
     setupTranscriptSearch();
-    setupRefreshButton();
 
     // Load current session first, then config
     await loadCurrentSession();
