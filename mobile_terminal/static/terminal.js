@@ -1458,7 +1458,37 @@ async function fetchTranscript() {
     }
 }
 
+// Strip ANSI escape codes from text
+function stripAnsi(text) {
+    return text
+        // Full ANSI CSI sequences: ESC [ ... letter
+        .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+        // Orphaned/partial sequences (missing ESC prefix)
+        .replace(/\[[0-9;]*[a-zA-Z]/g, (match, offset, str) => {
+            // Only strip if it looks like an escape sequence fragment
+            if (/^\[([0-9;]+)?[a-zA-Z]$/.test(match)) return '';
+            return match;
+        })
+        // RGB color codes that got split: 38;2;R;G;Bm or 48;2;R;G;Bm
+        .replace(/\b[34]8;2;[0-9;]+m/g, '')
+        // Simple color codes: 0m, 1m, 32m, etc.
+        .replace(/\b[0-9;]+m\b/g, '')
+        // OSC sequences
+        .replace(/\x1b\][^\x07]*\x07/g, '')
+        // Other escape sequences
+        .replace(/\x1b[PX^_][^\x1b]*\x1b\\/g, '')
+        .replace(/\x1b[\x40-\x5F]/g, '')
+        // Control characters (except tab, newline, carriage return)
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+        // Normalize line endings
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n');
+}
+
 function renderTranscript(text, searchTerm = '') {
+    // Strip ANSI codes for clean display
+    text = stripAnsi(text);
+
     const lines = text.split('\n');
     let html = '';
     let searchCount = 0;
