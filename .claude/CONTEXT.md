@@ -18,8 +18,8 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] Static files (HTML, CSS, JS)
 - [x] xterm.js integration
 - [x] View/Control toggle with lock indicator
-- [x] Control keys bar (^B, ^C, ^D, ^Z, ^L, ^A, ^E, ^W, ^U, ^K, ^R, Tab, Esc)
-- [x] Quick bar (Select, Copy, arrows, numbers, y/n/enter, slash)
+- [x] Control keys bar (^B, ^C, ^D, ^Z, ^L, ^A, ^E, ^W, ^U, ^K, ^R, ^O, Tab, Esc)
+- [x] Quick bar (arrows, numbers, y/n/enter, slash)
 - [x] Role prefixes from config
 - [x] Compose modal for predictive text / speech-to-text
 - [x] Image upload in compose modal (saves to .claude/uploads/)
@@ -30,38 +30,62 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] PWA support (service worker, manifest, standalone mode)
 - [x] systemd service file for auto-start
 - [x] WebSocket resilience (handles malformed messages)
+- [x] Transcript view with syntax highlighting
+- [x] tmux capture-pane history on connect
 
 ## Recent Changes (2026-01-15)
 
-- Added image upload feature in compose modal (camera, gallery, paste)
-- Auth disabled by default (use --require-token to enable)
-- Removed --no-auth flag (now the default behavior)
-- Added instant reconnect on visibility change (returning to app)
-- Fixed viewBar visibility bug (added `.view-bar.hidden { display: none }`)
-- Reverted viewBar to normal flow (position:fixed caused issues)
-- Terminal sized once at init with all bars visible (prevents size changes on toggle)
-- Fixed scrollback corruption: track size in localStorage, clear buffer only when size changes
-- Preserve scrollback on same-size reconnect (improves UX)
-- Added PgUp/PgDn buttons for programmatic scrolling on mobile
-- Increased scrollback buffer to 10000 lines
-- Improved touch scrolling with `touch-action: pan-y` CSS
-- Added RingBuffer (2MB) for server-side history replay on reconnect
-- Terminal resize working correctly (sends JSON resize messages)
+### UI Simplification
+- Unified action bar (viewBar) always visible: Select | Copy | Scroll | Refresh | Compose
+- Removed duplicate Select/Copy buttons from inputBar
+- Compose button now auto-unlocks control mode
+- Removed bottomBar (merged into viewBar)
+
+### Transcript View
+- Added Term/Log toggle in header to switch views
+- Transcript fetches clean history via `tmux capture-pane -p -J -S -10000`
+- Syntax highlighting: prompts (green), paths (blue), flags (yellow), strings (green)
+- Visual separation: command lines have blue border, output is indented/muted
+- Search with match highlighting
+- Proper flexbox scrolling (min-height: 0 fix)
+
+### History & Scrolling
+- WebSocket connect now uses `tmux capture-pane` for clean history (not raw buffer)
+- Added `/api/transcript` endpoint for full transcript fetch
+- Added `/api/refresh` endpoint for manual terminal refresh
+- Fixed auto-scroll hijacking (only scroll to bottom if user was already there)
+- Fixed touchend preventDefault blocking scroll on transcript
+
+### Endpoints
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/transcript` | Returns 10000 lines of tmux history |
+| `GET /api/refresh` | Returns 5000 lines for terminal refresh |
 
 ## Known Issues / In Testing
 
-- Touch scrolling on Android Chrome may require PgUp/PgDn buttons instead of swipe
+- Terminal native scroll doesn't work with tmux (use Scroll button for tmux copy mode)
+- Transcript view is the recommended way to read history
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `mobile_terminal/server.py` | FastAPI + WebSocket endpoint |
+| `mobile_terminal/server.py` | FastAPI + WebSocket endpoint + capture-pane APIs |
 | `mobile_terminal/config.py` | Config dataclass + YAML loading |
 | `mobile_terminal/cli.py` | CLI entrypoint |
-| `mobile_terminal/static/terminal.js` | xterm.js + WebSocket client |
+| `mobile_terminal/static/terminal.js` | xterm.js + WebSocket + transcript view |
+| `mobile_terminal/static/styles.css` | Mobile-first CSS with transcript styling |
 | `mobile_terminal/static/sw.js` | Service worker for PWA |
 | `mobile-terminal.service` | systemd unit file |
+
+## tmux Configuration
+
+For best scrollback in Transcript view:
+```bash
+# Add to ~/.tmux.conf
+set -g history-limit 50000
+```
 
 ## Deployment
 
