@@ -182,6 +182,14 @@ html, body {
     50% { opacity: 0.4; }
 }
 
+.last-activity {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    min-width: 24px;
+    text-align: right;
+}
+
 /* Terminal container - let xterm handle its own scrolling */
 .terminal-container {
     flex: 1;
@@ -1361,12 +1369,138 @@ html, body {
     overflow-y: auto;
     overflow-x: hidden;
     padding: 12px;
-    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-    font-size: 13px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
     line-height: 1.6;
-    white-space: pre-wrap;
+    white-space: normal;
     word-wrap: break-word;
     color: var(--text-primary);
     -webkit-overflow-scrolling: touch;
     touch-action: pan-y;
+}
+
+/* Markdown styles for context/touch views */
+.context-content h1,
+.touch-content h1 {
+    font-size: 1.5em;
+    font-weight: 600;
+    color: var(--accent-blue);
+    margin: 1em 0 0.5em 0;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.context-content h2,
+.touch-content h2 {
+    font-size: 1.25em;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 1em 0 0.5em 0;
+}
+
+.context-content h3,
+.touch-content h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin: 0.8em 0 0.4em 0;
+}
+
+.context-content p,
+.touch-content p {
+    margin: 0.5em 0;
+}
+
+.context-content ul,
+.context-content ol,
+.touch-content ul,
+.touch-content ol {
+    margin: 0.5em 0;
+    padding-left: 1.5em;
+}
+
+.context-content li,
+.touch-content li {
+    margin: 0.25em 0;
+}
+
+.context-content code,
+.touch-content code {
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 0.9em;
+    background: var(--bg-tertiary);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    color: var(--accent-cyan);
+}
+
+.context-content pre,
+.touch-content pre {
+    background: var(--bg-tertiary);
+    padding: 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 0.5em 0;
+}
+
+.context-content pre code,
+.touch-content pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.85em;
+    color: var(--text-primary);
+}
+
+.context-content blockquote,
+.touch-content blockquote {
+    border-left: 3px solid var(--accent-blue);
+    margin: 0.5em 0;
+    padding-left: 1em;
+    color: var(--text-secondary);
+}
+
+.context-content table,
+.touch-content table {
+    border-collapse: collapse;
+    margin: 0.5em 0;
+    width: 100%;
+}
+
+.context-content th,
+.context-content td,
+.touch-content th,
+.touch-content td {
+    border: 1px solid var(--border-color);
+    padding: 6px 10px;
+    text-align: left;
+}
+
+.context-content th,
+.touch-content th {
+    background: var(--bg-tertiary);
+    font-weight: 600;
+}
+
+.context-content hr,
+.touch-content hr {
+    border: none;
+    border-top: 1px solid var(--border-color);
+    margin: 1em 0;
+}
+
+.context-content a,
+.touch-content a {
+    color: var(--accent-blue);
+    text-decoration: none;
+}
+
+.context-content .no-content,
+.touch-content .no-content {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.context-content .error-content,
+.touch-content .error-content {
+    color: var(--accent-red);
 }

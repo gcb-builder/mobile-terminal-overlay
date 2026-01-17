@@ -452,6 +452,120 @@ def create_app(config: Config) -> FastAPI:
             logger.error(f"Error reading touch file: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.get("/api/log")
+    async def get_log(token: Optional[str] = Query(None), limit: int = Query(200)):
+        """
+        Get the Claude conversation log from ~/.claude/projects/.
+        Finds the most recently modified .jsonl file for the current repo.
+        Parses JSONL and returns readable conversation text.
+        """
+        import json
+        import re
+
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return {"exists": False, "content": "", "error": "No repo path found"}
+
+        # Convert repo path to Claude's project identifier format
+        # e.g., /home/user/dev/myproject -> -home-user-dev-myproject
+        project_id = str(repo_path.resolve()).replace("/", "-")
+        claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
+
+        if not claude_projects_dir.exists():
+            return {
+                "exists": False,
+                "content": "",
+                "path": str(claude_projects_dir),
+                "session": app.state.current_session,
+            }
+
+        # Find the most recently modified .jsonl file
+        jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
+        if not jsonl_files:
+            return {
+                "exists": False,
+                "content": "",
+                "path": str(claude_projects_dir),
+                "session": app.state.current_session,
+            }
+
+        # Sort by modification time, most recent first
+        jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        log_file = jsonl_files[0]
+
+        try:
+            raw_content = log_file.read_text(errors="replace")
+            lines = raw_content.strip().split('\n')
+
+            # Parse JSONL and extract conversation
+            conversation = []
+            for line in lines:
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                    msg_type = entry.get('type')
+                    message = entry.get('message', {})
+
+                    if msg_type == 'user':
+                        content = message.get('content', '')
+                        if isinstance(content, str) and content.strip():
+                            conversation.append(f"$ {content}")
+
+                    elif msg_type == 'assistant':
+                        content = message.get('content', [])
+                        if isinstance(content, str):
+                            conversation.append(content)
+                        elif isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict):
+                                    if block.get('type') == 'text':
+                                        text = block.get('text', '')
+                                        if text.strip():
+                                            conversation.append(text)
+                                    elif block.get('type') == 'tool_use':
+                                        tool_name = block.get('name', 'tool')
+                                        tool_input = block.get('input', {})
+                                        # Format tool call nicely
+                                        if tool_name == 'Bash':
+                                            cmd = tool_input.get('command', '')
+                                            conversation.append(f"• Bash: {cmd[:200]}")
+                                        elif tool_name in ('Read', 'Edit', 'Write', 'Glob', 'Grep'):
+                                            path = tool_input.get('file_path') or tool_input.get('path') or tool_input.get('pattern', '')
+                                            conversation.append(f"• {tool_name}: {path[:100]}")
+                                        else:
+                                            conversation.append(f"• {tool_name}")
+                except json.JSONDecodeError:
+                    continue
+
+            # Limit to last N messages
+            if len(conversation) > limit:
+                conversation = conversation[-limit:]
+                truncated = True
+            else:
+                truncated = False
+
+            content = '\n\n'.join(conversation)
+
+            # Redact potential secrets
+            content = re.sub(r'(sk-[a-zA-Z0-9]{20,})', '[REDACTED_API_KEY]', content)
+            content = re.sub(r'(ghp_[a-zA-Z0-9]{36,})', '[REDACTED_GITHUB_TOKEN]', content)
+
+            return {
+                "exists": True,
+                "content": content,
+                "path": str(log_file),
+                "session": app.state.current_session,
+                "modified": log_file.stat().st_mtime,
+                "truncated": truncated,
+            }
+        except Exception as e:
+            logger.error(f"Error reading log file: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.post("/api/upload")
     async def upload_image(
         file: UploadFile = File(...),

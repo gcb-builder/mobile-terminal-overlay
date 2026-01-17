@@ -18,7 +18,10 @@
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=47">
+    <!-- marked.js for markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+
+    <link rel="stylesheet" href="/static/styles.css?v=48">
 </head>
 <body>
     <div class="app">
@@ -37,6 +40,7 @@
                 </button>
             </div>
             <div class="header-right">
+                <span id="lastActivity" class="last-activity" title="Last activity">--</span>
                 <button id="searchBtn" class="icon-btn" aria-label="Search files">
                     <span>&#x1F50D;</span>
                 </button>
@@ -167,7 +171,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=47"></script>
+    <script src="/static/terminal.js?v=49"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

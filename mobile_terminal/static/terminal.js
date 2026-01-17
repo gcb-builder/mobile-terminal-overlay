@@ -53,6 +53,11 @@ let contextViewBtn, touchViewBtn, contextContainer, contextContent, touchContain
 // Attachments state for compose modal
 let pendingAttachments = [];
 
+// Last activity timestamp tracking
+let lastActivityTime = 0;
+let lastActivityElement = null;
+let activityUpdateTimer = null;
+
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
     controlBtn = document.getElementById('controlBtn');
@@ -99,6 +104,7 @@ function initDOMElements() {
     contextContent = document.getElementById('contextContent');
     touchContainer = document.getElementById('touchContainer');
     touchContent = document.getElementById('touchContent');
+    lastActivityElement = document.getElementById('lastActivity');
 }
 
 /**
@@ -248,6 +254,44 @@ function handlePong() {
 }
 
 /**
+ * Update last activity timestamp when terminal receives data
+ */
+function updateLastActivity() {
+    lastActivityTime = Date.now();
+    updateActivityDisplay();
+}
+
+/**
+ * Update the activity display with relative time
+ */
+function updateActivityDisplay() {
+    if (!lastActivityElement || !lastActivityTime) return;
+
+    const elapsed = Date.now() - lastActivityTime;
+    let display;
+
+    if (elapsed < 5000) {
+        display = 'now';
+    } else if (elapsed < 60000) {
+        display = Math.floor(elapsed / 1000) + 's';
+    } else if (elapsed < 3600000) {
+        display = Math.floor(elapsed / 60000) + 'm';
+    } else {
+        display = Math.floor(elapsed / 3600000) + 'h';
+    }
+
+    lastActivityElement.textContent = display;
+}
+
+/**
+ * Start periodic activity display updates
+ */
+function startActivityUpdates() {
+    if (activityUpdateTimer) return;
+    activityUpdateTimer = setInterval(updateActivityDisplay, 5000);
+}
+
+/**
  * Update connection status indicator in header
  */
 function updateConnectionIndicator(status) {
@@ -339,6 +383,7 @@ function connect() {
         if (event.data instanceof Blob) {
             event.data.arrayBuffer().then((buffer) => {
                 terminal.write(new Uint8Array(buffer));
+                updateLastActivity();
             });
         } else {
             // Check for JSON messages (pong, etc.)
@@ -354,6 +399,7 @@ function connect() {
                 }
             }
             terminal.write(event.data);
+            updateLastActivity();
         }
     };
 
@@ -541,8 +587,9 @@ function populateUI() {
             btn.textContent = role.label;
             btn.addEventListener('click', () => {
                 if (isControlUnlocked) {
+                    // Ensure terminal is focused/active before sending input
+                    if (terminal) terminal.focus();
                     sendInput(role.insert);
-                    terminal.focus();
                 }
             });
             roleBar.appendChild(btn);
@@ -840,6 +887,8 @@ function setupEventListeners() {
             e.preventDefault();
             e.stopPropagation();
             if (isControlUnlocked) {
+                // Ensure terminal is focused/active before sending input
+                if (terminal) terminal.focus();
                 const keyName = btn.dataset.key;
                 const key = keyMap[keyName] || keyName;
                 sendInput(key);
@@ -853,6 +902,8 @@ function setupEventListeners() {
             e.preventDefault();
             e.stopPropagation();
             if (isControlUnlocked) {
+                // Ensure terminal is focused/active before sending input
+                if (terminal) terminal.focus();
                 const keyName = btn.dataset.key;
                 const key = keyMap[keyName] || keyName;
                 sendInput(key);
@@ -1032,6 +1083,8 @@ function setupComposeMode() {
         }
 
         if (text && socket && socket.readyState === WebSocket.OPEN) {
+            // Ensure terminal is focused/active before sending input
+            if (terminal) terminal.focus();
             // Send text first
             sendInput(text);
             // Then send Enter separately (as terminal expects discrete keypress)
@@ -1039,7 +1092,6 @@ function setupComposeMode() {
                 sendInput('\r');
             }
             closeComposeModal();
-            terminal.focus();
         }
     }
 
@@ -1407,8 +1459,9 @@ function setupCopyButton() {
     if (stopBtn) {
         stopBtn.addEventListener('click', () => {
             if (socket && socket.readyState === WebSocket.OPEN) {
+                // Ensure terminal is focused/active before sending input
+                if (terminal) terminal.focus();
                 sendInput('\x03');  // Ctrl+C
-                terminal.focus();
             }
         });
     }
@@ -1716,7 +1769,20 @@ async function switchToTouchView() {
 }
 
 async function fetchContext() {
-    contextContent.textContent = 'Loading CONTEXT.md...';
+    const cacheKey = `cache_context_${currentSession || 'default'}`;
+    const cached = localStorage.getItem(cacheKey);
+
+    // Show cached content immediately if available
+    if (cached) {
+        try {
+            const { content } = JSON.parse(cached);
+            contextContent.innerHTML = marked.parse(content);
+        } catch (e) {
+            // Invalid cache, ignore
+        }
+    } else {
+        contextContent.textContent = 'Loading CONTEXT.md...';
+    }
 
     try {
         const response = await fetch(`/api/context?token=${token}`);
@@ -1726,19 +1792,39 @@ async function fetchContext() {
         const data = await response.json();
 
         if (!data.exists) {
-            contextContent.textContent = 'No CONTEXT.md file found in .claude/ directory.';
+            contextContent.innerHTML = '<p class="no-content">No CONTEXT.md file found in .claude/ directory.</p>';
+            localStorage.removeItem(cacheKey);
             return;
         }
 
-        contextContent.textContent = data.content;
+        contextContent.innerHTML = marked.parse(data.content);
+        localStorage.setItem(cacheKey, JSON.stringify({
+            content: data.content,
+            timestamp: Date.now()
+        }));
     } catch (error) {
         console.error('Context error:', error);
-        contextContent.textContent = 'Error loading context: ' + error.message;
+        if (!cached) {
+            contextContent.innerHTML = '<p class="error-content">Error loading context: ' + error.message + '</p>';
+        }
     }
 }
 
 async function fetchTouch() {
-    touchContent.textContent = 'Loading touch-summary.md...';
+    const cacheKey = `cache_touch_${currentSession || 'default'}`;
+    const cached = localStorage.getItem(cacheKey);
+
+    // Show cached content immediately if available
+    if (cached) {
+        try {
+            const { content } = JSON.parse(cached);
+            touchContent.innerHTML = marked.parse(content);
+        } catch (e) {
+            // Invalid cache, ignore
+        }
+    } else {
+        touchContent.textContent = 'Loading touch-summary.md...';
+    }
 
     try {
         const response = await fetch(`/api/touch?token=${token}`);
@@ -1748,41 +1834,77 @@ async function fetchTouch() {
         const data = await response.json();
 
         if (!data.exists) {
-            touchContent.textContent = 'No touch-summary.md file found in .claude/ directory.';
+            touchContent.innerHTML = '<p class="no-content">No touch-summary.md file found in .claude/ directory.</p>';
+            localStorage.removeItem(cacheKey);
             return;
         }
 
-        touchContent.textContent = data.content;
+        touchContent.innerHTML = marked.parse(data.content);
+        localStorage.setItem(cacheKey, JSON.stringify({
+            content: data.content,
+            timestamp: Date.now()
+        }));
     } catch (error) {
         console.error('Touch error:', error);
-        touchContent.textContent = 'Error loading touch summary: ' + error.message;
+        if (!cached) {
+            touchContent.innerHTML = '<p class="error-content">Error loading touch summary: ' + error.message + '</p>';
+        }
     }
 }
 
 let transcriptSource = '';  // 'log' or 'capture'
 
 async function fetchTranscript() {
-    transcriptContent.textContent = 'Loading transcript...';
+    const cacheKey = `cache_log_${currentSession || 'default'}`;
+    const cached = localStorage.getItem(cacheKey);
+
+    // Show cached content immediately if available
+    if (cached) {
+        try {
+            const { content } = JSON.parse(cached);
+            transcriptText = content;
+            renderTranscript(transcriptText);
+        } catch (e) {
+            // Invalid cache, ignore
+        }
+    } else {
+        transcriptContent.textContent = 'Loading Claude log...';
+    }
     transcriptSearchCount.textContent = '';
 
     try {
-        // Use capture-pane for cleaner output (pipe-pane log has screen redraws)
-        const response = await fetch(`/api/transcript?token=${token}&source=capture`);
+        // Use new /api/log endpoint for Claude conversation logs
+        const response = await fetch(`/api/log?token=${token}`);
         if (!response.ok) {
-            throw new Error('Failed to fetch transcript');
+            throw new Error('Failed to fetch log');
         }
         const data = await response.json();
-        transcriptText = data.text || '';
-        transcriptSource = data.source || 'capture';
 
-        // Show source indicator
-        const sourceLabel = transcriptSource === 'log' ? 'Live Log' : 'Snapshot';
-        transcriptSearchCount.textContent = sourceLabel;
+        if (!data.exists) {
+            transcriptContent.innerHTML = '<p class="no-content">No Claude log found for this project.</p>';
+            localStorage.removeItem(cacheKey);
+            return;
+        }
+
+        transcriptText = data.content || '';
+        transcriptSource = 'log';
+
+        // Show truncation indicator if applicable
+        const statusLabel = data.truncated ? 'Truncated' : 'Full';
+        transcriptSearchCount.textContent = statusLabel;
 
         renderTranscript(transcriptText);
+
+        // Cache the content
+        localStorage.setItem(cacheKey, JSON.stringify({
+            content: transcriptText,
+            timestamp: Date.now()
+        }));
     } catch (error) {
-        console.error('Transcript error:', error);
-        transcriptContent.textContent = 'Error loading transcript: ' + error.message;
+        console.error('Log error:', error);
+        if (!cached) {
+            transcriptContent.innerHTML = '<p class="error-content">Error loading log: ' + error.message + '</p>';
+        }
     }
 }
 
@@ -2095,6 +2217,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupViewToggle();
     setupSwipeNavigation();
     setupTranscriptSearch();
+    startActivityUpdates();
 
     // Load current session first, then config
     await loadCurrentSession();
