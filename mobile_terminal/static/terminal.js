@@ -1040,13 +1040,15 @@ function setupJumpToBottom() {
     });
 
     // Auto-scroll on new output (only if already at bottom, or force flag is set)
+    // Use write callback to ensure scroll happens AFTER data is rendered
     const originalWrite = terminal.write.bind(terminal);
     terminal.write = (data) => {
         const wasAtBottom = isAtBottom;
-        originalWrite(data);
-        if (wasAtBottom || forceScrollToBottom) {
-            terminal.scrollToBottom();
-        }
+        originalWrite(data, () => {
+            if (wasAtBottom || forceScrollToBottom) {
+                terminal.scrollToBottom();
+            }
+        });
     };
 }
 
