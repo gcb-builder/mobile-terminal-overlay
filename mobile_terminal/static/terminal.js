@@ -45,7 +45,7 @@ let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composeInsert, composeRun;
-let composeCamera, composeGallery, composeCameraInput, composeGalleryInput, composeAttachments;
+let composeAttach, composeFileInput, composeThinkMode, composeAttachments;
 let selectCopyBtn, stopBtn, challengeBtn;
 let challengeModal, challengeClose, challengeResult, challengeStatus, challengeRun;
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
@@ -85,10 +85,9 @@ function initDOMElements() {
     composeClear = document.getElementById('composeClear');
     composeInsert = document.getElementById('composeInsert');
     composeRun = document.getElementById('composeRun');
-    composeCamera = document.getElementById('composeCamera');
-    composeGallery = document.getElementById('composeGallery');
-    composeCameraInput = document.getElementById('composeCameraInput');
-    composeGalleryInput = document.getElementById('composeGalleryInput');
+    composeAttach = document.getElementById('composeAttach');
+    composeFileInput = document.getElementById('composeFileInput');
+    composeThinkMode = document.getElementById('composeThinkMode');
     composeAttachments = document.getElementById('composeAttachments');
     selectCopyBtn = document.getElementById('selectCopyBtn');
     stopBtn = document.getElementById('stopBtn');
@@ -1122,41 +1121,43 @@ function setupComposeMode() {
         }
     });
 
-    // Camera button - trigger camera input
-    if (composeCamera) {
-        composeCamera.addEventListener('click', () => {
-            composeCameraInput.click();
+    // Attach button - trigger file input (Android shows picker for camera/files/gallery)
+    if (composeAttach) {
+        composeAttach.addEventListener('click', () => {
+            composeFileInput.click();
         });
     }
 
-    // Gallery button - trigger gallery input
-    if (composeGallery) {
-        composeGallery.addEventListener('click', () => {
-            composeGalleryInput.click();
-        });
-    }
-
-    // Handle camera file selection
-    if (composeCameraInput) {
-        composeCameraInput.addEventListener('change', async (e) => {
+    // Handle file selection from attach button
+    if (composeFileInput) {
+        composeFileInput.addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
-            composeCameraInput.value = '';
-            await uploadAttachment(file, composeCamera);
+            composeFileInput.value = '';
+            await uploadAttachment(file, composeAttach);
         });
     }
 
-    // Handle gallery file selection
-    if (composeGalleryInput) {
-        composeGalleryInput.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            composeGalleryInput.value = '';
-            await uploadAttachment(file, composeGallery);
+    // Think mode dropdown - prepend selected mode to text
+    if (composeThinkMode) {
+        composeThinkMode.addEventListener('change', () => {
+            const mode = composeThinkMode.value;
+            if (!mode) return;
+
+            // Remove any existing mode prefix
+            let currentText = composeInput.value.trim();
+            currentText = currentText.replace(/^(ultrathink|think hard|think|plan):\s*/i, '');
+
+            // Prepend selected mode
+            composeInput.value = mode + ': ' + currentText;
+            composeInput.focus();
+
+            // Reset dropdown to show "Mode" again
+            composeThinkMode.value = '';
         });
     }
 
-    // Handle paste - detect images and auto-upload
+    // Handle paste - detect images and auto-upload, ensure text shows immediately
     composeInput.addEventListener('paste', async (e) => {
         const items = e.clipboardData?.items;
         if (!items) return;
@@ -1171,7 +1172,10 @@ function setupComposeMode() {
                 return;
             }
         }
-        // Text paste proceeds normally
+        // Text paste - ensure immediate display (fixes Android timing issues)
+        setTimeout(() => {
+            composeInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }, 0);
     });
 }
 

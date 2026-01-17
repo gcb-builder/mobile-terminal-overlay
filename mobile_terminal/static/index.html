@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=53">
+    <link rel="stylesheet" href="/static/styles.css?v=55">
 </head>
 <body>
     <div class="app">
@@ -134,6 +134,13 @@
             <div class="compose-modal-content">
                 <div class="compose-header">
                     <span class="compose-title">Compose Message</span>
+                    <select id="composeThinkMode" class="compose-think-select">
+                        <option value="">Mode</option>
+                        <option value="ultrathink">Ultrathink</option>
+                        <option value="think hard">Think Hard</option>
+                        <option value="think">Think</option>
+                        <option value="plan">Plan</option>
+                    </select>
                     <button id="composeClose" class="compose-close">&times;</button>
                 </div>
                 <textarea
@@ -149,15 +156,14 @@
                 <!-- Attachment preview area -->
                 <div id="composeAttachments" class="compose-attachments hidden"></div>
                 <div class="compose-footer">
-                    <input type="file" id="composeCameraInput" accept="image/*" capture="environment" hidden>
-                    <input type="file" id="composeGalleryInput" accept="image/*" hidden>
-                    <button id="composeCamera" class="compose-action attach-icon" title="Take photo">&#x1F4F7;</button>
-                    <button id="composeGallery" class="compose-action attach-icon" title="Choose from gallery">&#x1F5BC;</button>
+                    <input type="file" id="composeFileInput" accept="*/*" hidden>
+                    <button id="composeAttach" class="compose-action attach-icon" title="Attach file">&#x1F4CE;</button>
                     <button id="composeClear" class="compose-action secondary">Clear</button>
                     <button id="composeInsert" class="compose-action secondary">Insert</button>
-                    <button id="composeRun" class="compose-action primary">Run</button>
                 </div>
-                <p class="compose-hint">Tip: Paste images directly or use voice input</p>
+                <div class="compose-run-footer">
+                    <button id="composeRun" class="compose-run-btn">Run</button>
+                </div>
             </div>
         </div>
 
@@ -196,7 +202,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=53"></script>
+    <script src="/static/terminal.js?v=55"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

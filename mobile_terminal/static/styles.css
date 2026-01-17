@@ -883,15 +883,42 @@ html, body {
 
 .compose-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    gap: 12px;
     padding: 16px;
     border-bottom: 1px solid var(--border);
 }
 
 .compose-title {
+    flex: 1;
     font-size: 16px;
     font-weight: 600;
+    color: var(--text-primary);
+}
+
+.compose-think-select {
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 28px;
+}
+
+.compose-think-select:focus {
+    outline: none;
+    border-color: var(--accent-cyan);
+}
+
+.compose-think-select option {
+    background: var(--bg-secondary);
     color: var(--text-primary);
 }
 
@@ -907,6 +934,7 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
 }
 
 .compose-close:active {
@@ -962,11 +990,28 @@ html, body {
     color: var(--text-primary);
 }
 
-.compose-hint {
-    padding: 0 16px 16px;
-    font-size: 12px;
-    color: var(--text-secondary);
-    text-align: center;
+/* Run button footer */
+.compose-run-footer {
+    padding: 12px 16px 16px;
+    border-top: 1px solid var(--border);
+}
+
+.compose-run-btn {
+    width: 100%;
+    padding: 16px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    min-height: 52px;
+}
+
+.compose-run-btn:active {
+    background: #4a90d9;
+    transform: scale(0.99);
 }
 
 /* Attach icon buttons in compose footer */
