@@ -18,7 +18,7 @@
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=46">
+    <link rel="stylesheet" href="/static/styles.css?v=47">
 </head>
 <body>
     <div class="app">
@@ -58,32 +58,6 @@
             </div>
         </div>
 
-        <!-- Control bars container (Control mode only) -->
-        <div id="controlBarsContainer" class="control-bars-container hidden">
-                <!-- Single combined shortcut bar (right-hand optimized) -->
-                <div id="inputBar" class="input-bar">
-                    <button class="quick-btn" data-key="slash">/</button>
-                    <button class="quick-btn" data-key="1">1</button>
-                    <button class="quick-btn" data-key="2">2</button>
-                    <button class="quick-btn" data-key="3">3</button>
-                    <span class="bar-separator"></span>
-                    <button class="quick-btn" data-key="esc">Esc</button>
-                    <button class="quick-btn" data-key="tab">Tab</button>
-                    <button class="quick-btn btn-tmux" data-key="ctrl-b">^B</button>
-                    <span class="bar-separator"></span>
-                    <button class="quick-btn" data-key="down">&#x2193;</button>
-                    <button class="quick-btn" data-key="up">&#x2191;</button>
-                    <button class="quick-btn btn-stop" data-key="ctrl-c">^C</button>
-                    <button class="quick-btn btn-enter" data-key="enter">&#x23CE;</button>
-                </div>
-
-                <!-- Control bar kept for JS compatibility but hidden -->
-                <div id="controlBar" class="control-bar hidden"></div>
-
-                <!-- Role prefixes bar -->
-                <div id="roleBar" class="role-bar"></div>
-        </div>
-
         <!-- Terminal container -->
         <div id="terminal-container" class="terminal-container"></div>
 
@@ -120,6 +94,27 @@
             <span class="tab-dot" data-view="transcript"></span>
             <span class="tab-dot" data-view="context"></span>
             <span class="tab-dot" data-view="touch"></span>
+        </div>
+
+        <!-- Shortcut bar (Control mode only) -->
+        <div id="controlBarsContainer" class="control-bars-container hidden">
+            <div id="inputBar" class="input-bar">
+                <button class="quick-btn" data-key="slash">/</button>
+                <button class="quick-btn" data-key="1">1</button>
+                <button class="quick-btn" data-key="2">2</button>
+                <button class="quick-btn" data-key="3">3</button>
+                <span class="bar-separator"></span>
+                <button class="quick-btn" data-key="esc">Esc</button>
+                <button class="quick-btn" data-key="tab">Tab</button>
+                <button class="quick-btn btn-tmux" data-key="ctrl-b">^B</button>
+                <span class="bar-separator"></span>
+                <button class="quick-btn" data-key="down">&#x2193;</button>
+                <button class="quick-btn" data-key="up">&#x2191;</button>
+                <button class="quick-btn btn-stop" data-key="ctrl-c">^C</button>
+                <button class="quick-btn btn-enter" data-key="enter">&#x23CE;</button>
+            </div>
+            <div id="controlBar" class="control-bar hidden"></div>
+            <div id="roleBar" class="role-bar"></div>
         </div>
 
         <!-- Action bar: visible in Terminal view only -->
@@ -172,7 +167,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=46"></script>
+    <script src="/static/terminal.js?v=47"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
