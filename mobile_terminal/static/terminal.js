@@ -1201,6 +1201,14 @@ function setupChallenge() {
     const challengeIncludeDiff = document.getElementById('challengeIncludeDiff');
     const challengePreview = document.getElementById('challengePreview');
     const challengePreviewContent = document.getElementById('challengePreviewContent');
+    const challengeInputSection = document.getElementById('challengeInputSection');
+    const challengeInputLabel = document.getElementById('challengeInputLabel');
+    const challengeResultContent = document.getElementById('challengeResultContent');
+    const challengeCopy = document.getElementById('challengeCopy');
+    const challengeToCompose = document.getElementById('challengeToCompose');
+
+    // Store last response for copy/export
+    let lastResponseText = '';
 
     let modelsLoaded = false;
 
@@ -1273,6 +1281,12 @@ function setupChallenge() {
     challengeBtn.addEventListener('click', () => {
         challengeModal.classList.remove('hidden');
         challengeResult.classList.add('hidden');
+        // Reset input section to open state
+        if (challengeInputSection) {
+            challengeInputSection.open = true;
+            challengeInputLabel.textContent = 'Describe your problem';
+        }
+        lastResponseText = '';
         loadModels();
         loadPreview();
     });
@@ -1317,7 +1331,7 @@ function setupChallenge() {
     challengeRun.addEventListener('click', async () => {
         const selectedModel = challengeModelSelect.value;
         if (!selectedModel) {
-            challengeResult.innerHTML = '<p style="color: var(--danger);">No model selected</p>';
+            challengeResultContent.innerHTML = '<p style="color: var(--danger);">No model selected</p>';
             challengeResult.classList.remove('hidden');
             return;
         }
@@ -1331,7 +1345,7 @@ function setupChallenge() {
         challengeRun.disabled = true;
         challengeRun.textContent = 'Running...';
         challengeResult.classList.remove('hidden');
-        challengeResult.innerHTML = `<div class="loading">Analyzing with ${modelName}...</div>`;
+        challengeResultContent.innerHTML = `<div class="loading">Analyzing with ${modelName}...</div>`;
         challengeResult.classList.add('loading');
         challengeStatus.textContent = '';
 
@@ -1355,16 +1369,26 @@ function setupChallenge() {
                 throw new Error(data.error || 'Challenge failed');
             }
 
+            // Store raw response for copy/export
+            lastResponseText = data.content || 'No response received';
+
             // Format the result with markdown-like headers
-            let content = data.content || 'No response received';
-            content = content
+            let content = lastResponseText
                 .replace(/^(\d+\.\s*Problem Analysis:)/gm, '<h3>Problem Analysis</h3>')
                 .replace(/^(\d+\.\s*Potential Causes:)/gm, '<h3>Potential Causes</h3>')
                 .replace(/^(\d+\.\s*Suggested Fix:)/gm, '<h3>Suggested Fix</h3>')
                 .replace(/^(\d+\.\s*Risks\/Edge Cases:)/gm, '<h3>Risks/Edge Cases</h3>');
 
-            challengeResult.innerHTML = content;
+            challengeResultContent.innerHTML = content;
             challengeResult.classList.remove('loading');
+
+            // Auto-collapse input section after success
+            if (challengeInputSection) {
+                challengeInputSection.open = false;
+                // Update label with problem snippet
+                const snippet = problem.slice(0, 50) + (problem.length > 50 ? '...' : '');
+                challengeInputLabel.textContent = snippet || 'General review';
+            }
 
             // Show stats
             const usage = data.usage || {};
@@ -1376,7 +1400,7 @@ function setupChallenge() {
 
         } catch (error) {
             console.error('Challenge error:', error);
-            challengeResult.innerHTML = `<p style="color: var(--danger);">Error: ${error.message}</p>`;
+            challengeResultContent.innerHTML = `<p style="color: var(--danger);">Error: ${error.message}</p>`;
             challengeResult.classList.remove('loading');
             challengeStatus.textContent = '';
         } finally {
@@ -1384,6 +1408,38 @@ function setupChallenge() {
             challengeRun.textContent = 'Run Challenge';
         }
     });
+
+    // Copy response to clipboard
+    if (challengeCopy) {
+        challengeCopy.addEventListener('click', async () => {
+            if (!lastResponseText) return;
+            try {
+                await navigator.clipboard.writeText(lastResponseText);
+                const originalText = challengeCopy.textContent;
+                challengeCopy.textContent = 'Copied!';
+                setTimeout(() => {
+                    challengeCopy.textContent = originalText;
+                }, 1500);
+            } catch (e) {
+                console.error('Failed to copy:', e);
+            }
+        });
+    }
+
+    // Export to compose modal
+    if (challengeToCompose) {
+        challengeToCompose.addEventListener('click', () => {
+            if (!lastResponseText) return;
+            // Close challenge modal
+            challengeModal.classList.add('hidden');
+            // Open compose modal with response
+            if (composeModal && composeInput) {
+                composeModal.classList.remove('hidden');
+                composeInput.value = lastResponseText;
+                composeInput.focus();
+            }
+        });
+    }
 }
 
 /**

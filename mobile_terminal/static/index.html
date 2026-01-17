@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=68">
+    <link rel="stylesheet" href="/static/styles.css?v=69">
 </head>
 <body>
     <div class="app">
@@ -180,39 +180,52 @@
                     <button id="challengeClose" class="challenge-close">&times;</button>
                 </div>
 
-                <!-- Problem description input -->
-                <div class="challenge-problem-section">
-                    <label class="challenge-label">What should the reviewer focus on?</label>
-                    <textarea
-                        id="challengeProblem"
-                        class="challenge-problem-input"
-                        placeholder="Describe the specific problem you're debugging or want reviewed..."
-                        rows="3"
-                    ></textarea>
-                </div>
+                <!-- Collapsible input section -->
+                <details id="challengeInputSection" class="challenge-input-section" open>
+                    <summary class="challenge-input-summary">
+                        <span id="challengeInputLabel">Describe your problem</span>
+                    </summary>
 
-                <!-- Context options -->
-                <div class="challenge-options">
-                    <label class="challenge-option">
-                        <input type="checkbox" id="challengeIncludeTerminal" checked>
-                        <span>Include terminal (last 50 lines)</span>
-                    </label>
-                    <label class="challenge-option">
-                        <input type="checkbox" id="challengeIncludeDiff" checked>
-                        <span>Include uncommitted changes</span>
-                    </label>
-                </div>
-
-                <!-- Preview (collapsible) -->
-                <details id="challengePreview" class="challenge-preview">
-                    <summary>Preview context to send</summary>
-                    <div id="challengePreviewContent" class="challenge-preview-content">
-                        Loading preview...
+                    <!-- Problem description input -->
+                    <div class="challenge-problem-section">
+                        <label class="challenge-label">What should the reviewer focus on?</label>
+                        <textarea
+                            id="challengeProblem"
+                            class="challenge-problem-input"
+                            placeholder="Describe the specific problem you're debugging or want reviewed..."
+                            rows="3"
+                        ></textarea>
                     </div>
+
+                    <!-- Context options -->
+                    <div class="challenge-options">
+                        <label class="challenge-option">
+                            <input type="checkbox" id="challengeIncludeTerminal" checked>
+                            <span>Include terminal (last 50 lines)</span>
+                        </label>
+                        <label class="challenge-option">
+                            <input type="checkbox" id="challengeIncludeDiff" checked>
+                            <span>Include uncommitted changes</span>
+                        </label>
+                    </div>
+
+                    <!-- Preview (collapsible) -->
+                    <details id="challengePreview" class="challenge-preview">
+                        <summary>Preview context to send</summary>
+                        <div id="challengePreviewContent" class="challenge-preview-content">
+                            Loading preview...
+                        </div>
+                    </details>
                 </details>
 
                 <!-- Result area -->
-                <div id="challengeResult" class="challenge-result hidden"></div>
+                <div id="challengeResult" class="challenge-result hidden">
+                    <div id="challengeResultContent" class="challenge-result-content"></div>
+                    <div class="challenge-result-actions">
+                        <button id="challengeCopy" class="challenge-action secondary">Copy</button>
+                        <button id="challengeToCompose" class="challenge-action primary">Edit & Send</button>
+                    </div>
+                </div>
 
                 <!-- Footer -->
                 <div class="challenge-footer">
@@ -239,7 +252,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=68"></script>
+    <script src="/static/terminal.js?v=69"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
