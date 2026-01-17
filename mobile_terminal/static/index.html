@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=55">
+    <link rel="stylesheet" href="/static/styles.css?v=57">
 </head>
 <body>
     <div class="app">
@@ -62,16 +62,22 @@
             </div>
         </div>
 
-        <!-- Terminal container -->
-        <div id="terminal-container" class="terminal-container"></div>
-
-        <!-- Transcript view (hidden by default) -->
-        <div id="transcriptContainer" class="transcript-container hidden">
-            <div class="transcript-search">
-                <input type="text" id="transcriptSearch" placeholder="Search transcript..." autocomplete="off">
-                <span id="transcriptSearchCount" class="search-count"></span>
+        <!-- Hybrid view: Log + Terminal -->
+        <div id="hybridView" class="hybrid-view">
+            <!-- Log section (top) -->
+            <div id="logSection" class="log-section">
+                <div class="log-section-header">
+                    <span class="log-section-title">Context</span>
+                    <button id="logRefresh" class="log-refresh-btn">↻</button>
+                </div>
+                <div id="logContent" class="log-content"></div>
             </div>
-            <div id="transcriptContent" class="transcript-content"></div>
+            <!-- Resize handle -->
+            <div id="resizeHandle" class="resize-handle"></div>
+            <!-- Terminal section (bottom) -->
+            <div id="terminalSection" class="terminal-section">
+                <div id="terminal-container" class="terminal-container"></div>
+            </div>
         </div>
 
         <!-- Context view (CONTEXT.md) -->
@@ -94,8 +100,7 @@
 
         <!-- Tab position indicator (dots) -->
         <div id="tabIndicator" class="tab-indicator">
-            <span class="tab-dot active" data-view="terminal"></span>
-            <span class="tab-dot" data-view="transcript"></span>
+            <span class="tab-dot active" data-view="hybrid"></span>
             <span class="tab-dot" data-view="context"></span>
             <span class="tab-dot" data-view="touch"></span>
         </div>
@@ -202,7 +207,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=55"></script>
+    <script src="/static/terminal.js?v=57"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

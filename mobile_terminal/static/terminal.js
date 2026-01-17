@@ -50,6 +50,7 @@ let selectCopyBtn, stopBtn, challengeBtn;
 let challengeModal, challengeClose, challengeResult, challengeStatus, challengeRun;
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 let contextViewBtn, touchViewBtn, contextContainer, contextContent, touchContainer, touchContent;
+let hybridView, logSection, terminalSection, logContent, logRefresh, resizeHandle;
 
 // Attachments state for compose modal
 let pendingAttachments = [];
@@ -110,6 +111,12 @@ function initDOMElements() {
     touchContainer = document.getElementById('touchContainer');
     touchContent = document.getElementById('touchContent');
     lastActivityElement = document.getElementById('lastActivity');
+    hybridView = document.getElementById('hybridView');
+    logSection = document.getElementById('logSection');
+    terminalSection = document.getElementById('terminalSection');
+    logContent = document.getElementById('logContent');
+    logRefresh = document.getElementById('logRefresh');
+    resizeHandle = document.getElementById('resizeHandle');
 }
 
 /**
@@ -1699,45 +1706,14 @@ function setupCommandHistory() {
 /**
  * View toggle: Terminal | Log | Context | Touch
  */
-let currentView = 'terminal';  // 'terminal', 'transcript', 'context', 'touch'
+let currentView = 'hybrid';  // 'hybrid', 'context', 'touch'
 let transcriptText = '';  // Cached transcript text
 
 function setupViewToggle() {
+    // Views are now: hybrid (log+terminal), context, touch
     // Tab buttons removed - using swipe and dots now
-    // Keep handlers in case buttons are re-added
-    if (terminalViewBtn) {
-        terminalViewBtn.addEventListener('click', () => {
-            if (currentView !== 'terminal') {
-                switchToTerminalView();
-            }
-        });
-    }
 
-    if (transcriptViewBtn) {
-        transcriptViewBtn.addEventListener('click', () => {
-            if (currentView !== 'transcript') {
-                switchToTranscriptView();
-            }
-        });
-    }
-
-    if (contextViewBtn) {
-        contextViewBtn.addEventListener('click', () => {
-            if (currentView !== 'context') {
-                switchToContextView();
-            }
-        });
-    }
-
-    if (touchViewBtn) {
-        touchViewBtn.addEventListener('click', () => {
-            if (currentView !== 'touch') {
-                switchToTouchView();
-            }
-        });
-    }
-
-    // Refresh buttons
+    // Refresh buttons for context and touch views
     const contextRefresh = document.getElementById('contextRefresh');
     const touchRefresh = document.getElementById('touchRefresh');
     if (contextRefresh) {
@@ -1748,15 +1724,12 @@ function setupViewToggle() {
     }
 }
 
-// Tab order for swipe navigation
-const tabOrder = ['terminal', 'transcript', 'context', 'touch'];
+// Tab order for swipe navigation (hybrid = log+terminal, context = CONTEXT.md, touch = touch-summary.md)
+const tabOrder = ['hybrid', 'context', 'touch'];
 
 function clearAllTabActive() {
     // Tab buttons removed from header - dots handle indication now
-    if (terminalViewBtn) terminalViewBtn.classList.remove('active');
-    if (transcriptViewBtn) transcriptViewBtn.classList.remove('active');
-    if (contextViewBtn) contextViewBtn.classList.remove('active');
-    if (touchViewBtn) touchViewBtn.classList.remove('active');
+    // This function is kept for compatibility but no longer needed
 }
 
 /**
@@ -1799,11 +1772,8 @@ function switchToPrevTab() {
  */
 function switchToView(viewName) {
     switch (viewName) {
-        case 'terminal':
-            switchToTerminalView();
-            break;
-        case 'transcript':
-            switchToTranscriptView();
+        case 'hybrid':
+            switchToHybridView();
             break;
         case 'context':
             switchToContextView();
@@ -1819,8 +1789,7 @@ function switchToView(viewName) {
  */
 function setupSwipeNavigation() {
     const containers = [
-        document.getElementById('terminal-container'),
-        document.getElementById('transcriptContainer'),
+        document.getElementById('hybridView'),
         document.getElementById('contextContainer'),
         document.getElementById('touchContainer'),
     ];
@@ -1877,45 +1846,33 @@ function setupSwipeNavigation() {
 }
 
 function hideAllContainers() {
-    terminalContainer.classList.add('hidden');
-    transcriptContainer.classList.add('hidden');
+    if (hybridView) hybridView.classList.add('hidden');
+    if (transcriptContainer) transcriptContainer.classList.add('hidden');
     contextContainer.classList.add('hidden');
     touchContainer.classList.add('hidden');
 }
 
-function switchToTerminalView() {
-    currentView = 'terminal';
-    clearAllTabActive();
-    if (terminalViewBtn) terminalViewBtn.classList.add('active');
+function switchToHybridView() {
+    currentView = 'hybrid';
     hideAllContainers();
-    terminalContainer.classList.remove('hidden');
-    viewBar.classList.remove('hidden');  // Show action bar in terminal view
+    if (hybridView) hybridView.classList.remove('hidden');
+    viewBar.classList.remove('hidden');  // Show action bar in hybrid view
     // Only show control bars if unlocked
     if (isControlUnlocked) {
         controlBarsContainer.classList.remove('hidden');
     }
     updateTabIndicator();
-}
-
-async function switchToTranscriptView() {
-    currentView = 'transcript';
-    clearAllTabActive();
-    if (transcriptViewBtn) transcriptViewBtn.classList.add('active');
-    hideAllContainers();
-    transcriptContainer.classList.remove('hidden');
-    viewBar.classList.add('hidden');  // Hide action bar in non-terminal views
-    controlBarsContainer.classList.add('hidden');
-    updateTabIndicator();
-
-    // Fetch transcript and scroll to bottom
-    await fetchTranscript();
-    transcriptContent.scrollTop = transcriptContent.scrollHeight;
+    // Load log content if not already loaded
+    loadLogContent();
+    // Resize terminal to fit new container
+    setTimeout(() => {
+        if (fitAddon) fitAddon.fit();
+        sendResize();
+    }, 100);
 }
 
 async function switchToContextView() {
     currentView = 'context';
-    clearAllTabActive();
-    if (contextViewBtn) contextViewBtn.classList.add('active');
     hideAllContainers();
     contextContainer.classList.remove('hidden');
     viewBar.classList.add('hidden');
@@ -1927,8 +1884,6 @@ async function switchToContextView() {
 
 async function switchToTouchView() {
     currentView = 'touch';
-    clearAllTabActive();
-    if (touchViewBtn) touchViewBtn.classList.add('active');
     hideAllContainers();
     touchContainer.classList.remove('hidden');
     viewBar.classList.add('hidden');
@@ -2343,6 +2298,8 @@ function escapeRegExp(string) {
 function setupTranscriptSearch() {
     let searchDebounce = null;
 
+    if (!transcriptSearch) return;
+
     transcriptSearch.addEventListener('input', (e) => {
         clearTimeout(searchDebounce);
         searchDebounce = setTimeout(() => {
@@ -2357,6 +2314,177 @@ function setupTranscriptSearch() {
             renderTranscript(transcriptText, '');
         }
     });
+}
+
+/**
+ * Load log content for the hybrid view
+ */
+let logLoaded = false;
+
+async function loadLogContent() {
+    if (!logContent) return;
+
+    // Only load once per session (refresh button can reload)
+    if (logLoaded) return;
+
+    logContent.innerHTML = '<div class="log-loading">Loading context...</div>';
+
+    try {
+        const response = await fetch(`/api/log?token=${token}`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch log');
+        }
+        const data = await response.json();
+
+        if (!data.exists || !data.content) {
+            logContent.innerHTML = '<div class="log-empty">No recent activity</div>';
+            logLoaded = true;
+            return;
+        }
+
+        // Parse and render log entries
+        renderLogEntries(data.content);
+        logLoaded = true;
+
+    } catch (error) {
+        console.error('Log error:', error);
+        logContent.innerHTML = `<div class="log-error">Error loading log: ${error.message}</div>`;
+    }
+}
+
+/**
+ * Render log entries in the hybrid view log section
+ */
+function renderLogEntries(content) {
+    if (!logContent) return;
+
+    // Strip ANSI codes
+    content = stripAnsi(content);
+
+    // Split into lines and take last portion for context
+    const lines = content.split('\n');
+    const maxLines = 100;  // Keep last 100 lines for context
+    const relevantLines = lines.slice(-maxLines);
+
+    // Simple rendering - each line as a log entry
+    let html = '';
+    for (const line of relevantLines) {
+        if (!line.trim()) continue;
+
+        // Detect role based on content patterns
+        let roleClass = '';
+        let displayLine = line;
+
+        if (line.match(/^(Human|User|>)/i)) {
+            roleClass = 'user';
+        } else if (line.match(/^(Assistant|Claude|AI)/i)) {
+            roleClass = 'assistant';
+        }
+
+        // Escape HTML
+        displayLine = displayLine
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+        html += `<div class="log-line ${roleClass}">${displayLine}</div>`;
+    }
+
+    logContent.innerHTML = html || '<div class="log-empty">No recent activity</div>';
+
+    // Scroll to bottom
+    logContent.scrollTop = logContent.scrollHeight;
+}
+
+/**
+ * Setup hybrid view with draggable resize handle
+ */
+function setupHybridView() {
+    if (!logSection || !terminalSection || !resizeHandle || !hybridView) return;
+
+    let isDragging = false;
+    let startY = 0;
+    let startLogHeight = 0;
+
+    // Get the hybrid view's available height
+    function getAvailableHeight() {
+        return hybridView.clientHeight - resizeHandle.offsetHeight;
+    }
+
+    // Update section heights based on log height percentage
+    function setSectionHeights(logHeightPx) {
+        const availableHeight = getAvailableHeight();
+        const minHeight = 60;  // Minimum height for either section
+
+        // Clamp log height
+        logHeightPx = Math.max(minHeight, Math.min(availableHeight - minHeight, logHeightPx));
+
+        // Apply heights using flex-basis
+        const logPercent = (logHeightPx / availableHeight) * 100;
+        logSection.style.flex = `0 0 ${logPercent}%`;
+        terminalSection.style.flex = `1 1 ${100 - logPercent}%`;
+    }
+
+    // Handle drag start (touch and mouse)
+    function onDragStart(e) {
+        isDragging = true;
+        startY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
+        startLogHeight = logSection.offsetHeight;
+
+        // Prevent text selection during drag
+        document.body.style.userSelect = 'none';
+        document.body.style.webkitUserSelect = 'none';
+
+        // Add active state to handle
+        resizeHandle.classList.add('active');
+    }
+
+    // Handle drag move
+    function onDragMove(e) {
+        if (!isDragging) return;
+
+        e.preventDefault();
+        const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
+        const deltaY = clientY - startY;
+        const newLogHeight = startLogHeight + deltaY;
+
+        setSectionHeights(newLogHeight);
+    }
+
+    // Handle drag end
+    function onDragEnd() {
+        if (!isDragging) return;
+
+        isDragging = false;
+        document.body.style.userSelect = '';
+        document.body.style.webkitUserSelect = '';
+        resizeHandle.classList.remove('active');
+
+        // Resize terminal after drag completes
+        setTimeout(() => {
+            if (fitAddon) fitAddon.fit();
+            sendResize();
+        }, 50);
+    }
+
+    // Touch events for mobile
+    resizeHandle.addEventListener('touchstart', onDragStart, { passive: true });
+    document.addEventListener('touchmove', onDragMove, { passive: false });
+    document.addEventListener('touchend', onDragEnd);
+    document.addEventListener('touchcancel', onDragEnd);
+
+    // Mouse events for desktop
+    resizeHandle.addEventListener('mousedown', onDragStart);
+    document.addEventListener('mousemove', onDragMove);
+    document.addEventListener('mouseup', onDragEnd);
+
+    // Log refresh button
+    if (logRefresh) {
+        logRefresh.addEventListener('click', () => {
+            logLoaded = false;
+            loadLogContent();
+        });
+    }
 }
 
 
@@ -2388,6 +2516,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupViewToggle();
     setupSwipeNavigation();
     setupTranscriptSearch();
+    setupHybridView();
     startActivityUpdates();
 
     // Load current session first, then config
