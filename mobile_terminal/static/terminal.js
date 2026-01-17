@@ -2357,6 +2357,7 @@ async function loadLogContent() {
 
 /**
  * Render log entries in the hybrid view log section
+ * Parses conversation format: $ user | • Tool: | assistant text
  */
 function renderLogEntries(content) {
     if (!logContent) return;
@@ -2364,39 +2365,111 @@ function renderLogEntries(content) {
     // Strip ANSI codes
     content = stripAnsi(content);
 
-    // Split into lines and take last portion for context
-    const lines = content.split('\n');
-    const maxLines = 100;  // Keep last 100 lines for context
-    const relevantLines = lines.slice(-maxLines);
+    // Split by double newline to get message blocks
+    const blocks = content.split('\n\n').filter(b => b.trim());
 
-    // Simple rendering - each line as a log entry
-    let html = '';
-    for (const line of relevantLines) {
-        if (!line.trim()) continue;
-
-        // Detect role based on content patterns
-        let roleClass = '';
-        let displayLine = line;
-
-        if (line.match(/^(Human|User|>)/i)) {
-            roleClass = 'user';
-        } else if (line.match(/^(Assistant|Claude|AI)/i)) {
-            roleClass = 'assistant';
-        }
-
-        // Escape HTML
-        displayLine = displayLine
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-
-        html += `<div class="log-line ${roleClass}">${displayLine}</div>`;
+    if (blocks.length === 0) {
+        logContent.innerHTML = '<div class="log-empty">No recent activity</div>';
+        return;
     }
 
-    logContent.innerHTML = html || '<div class="log-empty">No recent activity</div>';
+    // Group consecutive messages by role
+    const messages = [];
+    let currentGroup = null;
+
+    for (const block of blocks) {
+        const trimmed = block.trim();
+        if (!trimmed) continue;
+
+        let role, text;
+
+        if (trimmed.startsWith('$ ')) {
+            // User message
+            role = 'user';
+            text = trimmed.slice(2);  // Remove "$ " prefix
+        } else if (trimmed.startsWith('• ')) {
+            // Tool call
+            role = 'tool';
+            text = trimmed;
+        } else {
+            // Assistant message
+            role = 'assistant';
+            text = trimmed;
+        }
+
+        // Group consecutive assistant/tool messages together
+        if (currentGroup && (
+            (currentGroup.role === 'assistant' && role === 'assistant') ||
+            (currentGroup.role === 'assistant' && role === 'tool') ||
+            (currentGroup.role === 'tool' && role === 'tool')
+        )) {
+            currentGroup.blocks.push({ role, text });
+        } else {
+            // Start new group
+            if (currentGroup) messages.push(currentGroup);
+            currentGroup = {
+                role: role === 'tool' ? 'assistant' : role,  // Tools are part of assistant turn
+                blocks: [{ role, text }]
+            };
+        }
+    }
+    if (currentGroup) messages.push(currentGroup);
+
+    // Render message cards
+    let html = '';
+    for (const msg of messages) {
+        const roleLabel = msg.role === 'user' ? 'You' : 'Claude';
+        const roleClass = msg.role === 'user' ? 'user' : 'assistant';
+
+        html += `<div class="log-card ${roleClass}">`;
+        html += `<div class="log-card-header"><span class="log-role-badge">${roleLabel}</span></div>`;
+        html += `<div class="log-card-body">`;
+
+        for (const block of msg.blocks) {
+            if (block.role === 'tool') {
+                // Render tool call as collapsible
+                const toolMatch = block.text.match(/^• (\w+):?\s*(.*)/s);
+                if (toolMatch) {
+                    const toolName = toolMatch[1];
+                    const toolDetail = toolMatch[2] || '';
+                    // Truncate long details for summary
+                    const summary = toolDetail.length > 60 ? toolDetail.slice(0, 60) + '...' : toolDetail;
+                    html += `<details class="log-tool"><summary class="log-tool-summary"><span class="log-tool-name">${toolName}</span> <span class="log-tool-detail">${escapeHtml(summary)}</span></summary>`;
+                    html += `<div class="log-tool-content">${escapeHtml(toolDetail)}</div></details>`;
+                } else {
+                    html += `<div class="log-tool-inline">${escapeHtml(block.text)}</div>`;
+                }
+            } else if (block.role === 'user') {
+                // User text - plain with highlighting
+                html += `<div class="log-text user-text">${escapeHtml(block.text)}</div>`;
+            } else {
+                // Assistant text - render with markdown
+                try {
+                    html += `<div class="log-text assistant-text">${marked.parse(block.text)}</div>`;
+                } catch (e) {
+                    html += `<div class="log-text assistant-text">${escapeHtml(block.text)}</div>`;
+                }
+            }
+        }
+
+        html += `</div></div>`;
+    }
+
+    logContent.innerHTML = html;
 
     // Scroll to bottom
     logContent.scrollTop = logContent.scrollHeight;
+}
+
+/**
+ * Escape HTML entities
+ */
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
 }
 
 /**
