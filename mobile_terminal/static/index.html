@@ -18,7 +18,7 @@
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=42">
+    <link rel="stylesheet" href="/static/styles.css?v=43">
 </head>
 <body>
     <div class="app">
@@ -67,35 +67,34 @@
 
         <!-- Control bars container (Control mode only) -->
         <div id="controlBarsContainer" class="control-bars-container hidden">
-                <!-- Control keys bar -->
-                <div id="controlBar" class="control-bar">
-                    <button class="ctrl-key" data-key="ctrl-b">^B</button>
-                    <button class="ctrl-key" data-key="ctrl-c">^C</button>
-                    <button class="ctrl-key" data-key="ctrl-d">^D</button>
-                    <button class="ctrl-key" data-key="ctrl-z">^Z</button>
-                    <button class="ctrl-key" data-key="ctrl-l">^L</button>
-                    <button class="ctrl-key" data-key="ctrl-a">^A</button>
-                    <button class="ctrl-key" data-key="ctrl-e">^E</button>
-                    <button class="ctrl-key" data-key="ctrl-w">^W</button>
-                    <button class="ctrl-key" data-key="ctrl-u">^U</button>
-                    <button class="ctrl-key" data-key="ctrl-k">^K</button>
-                    <button class="ctrl-key" data-key="ctrl-r">^R</button>
-                    <button class="ctrl-key" data-key="ctrl-o">^O</button>
-                    <button class="ctrl-key" data-key="tab">Tab</button>
-                    <button class="ctrl-key" data-key="esc">Esc</button>
-                </div>
-
-                <!-- Input bar: arrows, numbers, y/n/enter, slash (Control mode only) -->
+                <!-- Input bar: numbers, responses, navigation, enter (right-hand optimized) -->
                 <div id="inputBar" class="input-bar">
-                    <button class="quick-btn" data-key="up">&#x2191;</button>
-                    <button class="quick-btn" data-key="down">&#x2193;</button>
+                    <button class="quick-btn" data-key="slash">/</button>
+                    <span class="bar-separator"></span>
                     <button class="quick-btn" data-key="1">1</button>
                     <button class="quick-btn" data-key="2">2</button>
                     <button class="quick-btn" data-key="3">3</button>
-                    <button class="quick-btn" data-key="y">y</button>
-                    <button class="quick-btn" data-key="n">n</button>
-                    <button class="quick-btn" data-key="enter">&#x23CE;</button>
-                    <button class="quick-btn" data-key="slash">/</button>
+                    <span class="bar-separator"></span>
+                    <button class="quick-btn btn-no" data-key="n">n</button>
+                    <button class="quick-btn btn-yes" data-key="y">y</button>
+                    <span class="bar-separator"></span>
+                    <button class="quick-btn" data-key="down">&#x2193;</button>
+                    <button class="quick-btn" data-key="up">&#x2191;</button>
+                    <button class="quick-btn btn-enter" data-key="enter">&#x23CE;</button>
+                </div>
+
+                <!-- Control keys bar: editing, tmux, interrupt (right-hand optimized) -->
+                <div id="controlBar" class="control-bar">
+                    <button class="ctrl-key" data-key="esc">Esc</button>
+                    <span class="bar-separator"></span>
+                    <button class="ctrl-key" data-key="ctrl-u">^U</button>
+                    <button class="ctrl-key" data-key="ctrl-w">^W</button>
+                    <button class="ctrl-key" data-key="ctrl-e">^E</button>
+                    <button class="ctrl-key" data-key="ctrl-a">^A</button>
+                    <span class="bar-separator"></span>
+                    <button class="ctrl-key" data-key="tab">Tab</button>
+                    <button class="ctrl-key btn-tmux" data-key="ctrl-b">^B</button>
+                    <button class="ctrl-key btn-stop" data-key="ctrl-c">^C</button>
                 </div>
 
                 <!-- Role prefixes bar -->
@@ -182,7 +181,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=42"></script>
+    <script src="/static/terminal.js?v=43"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

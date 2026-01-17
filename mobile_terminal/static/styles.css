@@ -407,6 +407,63 @@ html, body {
     background: rgba(63, 185, 80, 0.2);
 }
 
+/* Bar separator for visual grouping */
+.bar-separator {
+    width: 1px;
+    background: var(--border);
+    margin: 4px 2px;
+    flex-shrink: 0;
+}
+
+/* Colored button variants */
+.btn-yes {
+    color: var(--success) !important;
+    border-color: rgba(63, 185, 80, 0.4) !important;
+}
+
+.btn-yes:active {
+    background: rgba(63, 185, 80, 0.3) !important;
+}
+
+.btn-no {
+    color: var(--error) !important;
+    border-color: rgba(248, 81, 73, 0.4) !important;
+}
+
+.btn-no:active {
+    background: rgba(248, 81, 73, 0.3) !important;
+}
+
+.btn-enter {
+    background: var(--accent) !important;
+    color: white !important;
+    border-color: var(--accent) !important;
+    min-width: 48px;
+}
+
+.btn-enter:active {
+    background: var(--accent-hover) !important;
+}
+
+.btn-stop {
+    color: var(--error) !important;
+    border-color: rgba(248, 81, 73, 0.5) !important;
+    background: rgba(248, 81, 73, 0.15) !important;
+}
+
+.btn-stop:active {
+    background: rgba(248, 81, 73, 0.4) !important;
+}
+
+.btn-tmux {
+    color: var(--magenta) !important;
+    border-color: rgba(188, 140, 255, 0.4) !important;
+}
+
+.btn-tmux:active {
+    background: rgba(188, 140, 255, 0.3) !important;
+}
+
 /* Input bar (Control mode - arrows, numbers, etc.) */
 .input-bar {
     display: flex;
