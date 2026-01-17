@@ -2583,15 +2583,18 @@ function setupHybridView() {
         document.body.style.webkitUserSelect = '';
         resizeHandle.classList.remove('active');
 
-        // Force scroll to bottom for next 300ms (catches tmux redraw)
+        // Enable force scroll flag - this makes the write handler scroll after EACH write
+        // This is the key: scrollToBottom() during active writes is ignored,
+        // but scrolling AFTER each write completes works
         forceScrollToBottom = true;
-        setTimeout(() => { forceScrollToBottom = false; }, 300);
+        setTimeout(() => { forceScrollToBottom = false; }, 1000);
 
         // Resize terminal after drag completes
         setTimeout(() => {
             if (fitAddon) fitAddon.fit();
             sendResize();
-            // Also scroll log to bottom
+
+            // Scroll log to bottom
             if (logContent) {
                 logContent.scrollTop = logContent.scrollHeight;
             }
