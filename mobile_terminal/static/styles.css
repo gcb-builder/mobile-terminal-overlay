@@ -1118,3 +1118,70 @@ html, body {
 .refresh-btn {
     background: var(--bg-tertiary) !important;
 }
+
+/* Context container (CONTEXT.md view) */
+.context-container,
+.touch-container {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-primary);
+}
+
+.context-container.hidden,
+.touch-container.hidden {
+    display: none;
+}
+
+.context-header,
+.touch-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.context-title,
+.touch-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.context-refresh,
+.touch-refresh {
+    padding: 6px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.context-refresh:active,
+.touch-refresh:active {
+    background: var(--bg-primary);
+}
+
+.context-content,
+.touch-content {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 12px;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    color: var(--text-primary);
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+}

@@ -375,6 +375,83 @@ def create_app(config: Config) -> FastAPI:
             logger.error(f"Refresh error: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    def get_current_repo_path() -> Optional[Path]:
+        """Get the path of the current repo based on session name."""
+        session_name = app.state.current_session
+        # Check if session matches a configured repo
+        for repo in config.repos:
+            if repo.session == session_name:
+                return Path(repo.path)
+        # Fall back to project_root if set
+        if config.project_root:
+            return config.project_root
+        # Fall back to current working directory
+        return Path.cwd()
+
+    @app.get("/api/context")
+    async def get_context(token: Optional[str] = Query(None)):
+        """
+        Get the .claude/CONTEXT.md file from the current repo.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        context_file = repo_path / ".claude" / "CONTEXT.md"
+
+        if not context_file.exists():
+            return {
+                "exists": False,
+                "content": "",
+                "path": str(context_file),
+                "session": app.state.current_session,
+            }
+
+        try:
+            content = context_file.read_text(errors="replace")
+            return {
+                "exists": True,
+                "content": content,
+                "path": str(context_file),
+                "session": app.state.current_session,
+                "modified": context_file.stat().st_mtime,
+            }
+        except Exception as e:
+            logger.error(f"Error reading context file: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/touch")
+    async def get_touch(token: Optional[str] = Query(None)):
+        """
+        Get the .claude/touch-summary.md file from the current repo.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        touch_file = repo_path / ".claude" / "touch-summary.md"
+
+        if not touch_file.exists():
+            return {
+                "exists": False,
+                "content": "",
+                "path": str(touch_file),
+                "session": app.state.current_session,
+            }
+
+        try:
+            content = touch_file.read_text(errors="replace")
+            return {
+                "exists": True,
+                "content": content,
+                "path": str(touch_file),
+                "session": app.state.current_session,
+                "modified": touch_file.stat().st_mtime,
+            }
+        except Exception as e:
+            logger.error(f"Error reading touch file: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.post("/api/upload")
     async def upload_image(
         file: UploadFile = File(...),

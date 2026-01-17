@@ -44,10 +44,11 @@ let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let composeBtn, composeModal;
-let composeInput, composeClose, composeClear, composeInsert;
+let composeInput, composeClose, composeClear, composeInsert, composeRun;
 let composeCamera, composeGallery, composeCameraInput, composeGalleryInput, composeAttachments;
 let copyBtn, selectModeBtn, stopBtn;
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
+let contextViewBtn, touchViewBtn, contextContainer, contextContent, touchContainer, touchContent;
 
 // Attachments state for compose modal
 let pendingAttachments = [];
@@ -77,6 +78,7 @@ function initDOMElements() {
     composeClose = document.getElementById('composeClose');
     composeClear = document.getElementById('composeClear');
     composeInsert = document.getElementById('composeInsert');
+    composeRun = document.getElementById('composeRun');
     composeCamera = document.getElementById('composeCamera');
     composeGallery = document.getElementById('composeGallery');
     composeCameraInput = document.getElementById('composeCameraInput');
@@ -91,6 +93,12 @@ function initDOMElements() {
     transcriptContent = document.getElementById('transcriptContent');
     transcriptSearch = document.getElementById('transcriptSearch');
     transcriptSearchCount = document.getElementById('transcriptSearchCount');
+    contextViewBtn = document.getElementById('contextViewBtn');
+    touchViewBtn = document.getElementById('touchViewBtn');
+    contextContainer = document.getElementById('contextContainer');
+    contextContent = document.getElementById('contextContent');
+    touchContainer = document.getElementById('touchContainer');
+    touchContent = document.getElementById('touchContent');
 }
 
 /**
@@ -912,6 +920,27 @@ function setupViewportHandler() {
             }
         }
     });
+
+    // Handle network state changes (mobile networks are flaky)
+    window.addEventListener('online', () => {
+        console.log('Network online - checking connection');
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+            console.log('Network back, reconnecting immediately');
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            reconnectDelay = INITIAL_RECONNECT_DELAY;
+            connect();
+        }
+    });
+
+    window.addEventListener('offline', () => {
+        console.log('Network offline');
+        updateConnectionIndicator('disconnected');
+        // Stop heartbeat to avoid timeout triggers while offline
+        stopHeartbeat();
+    });
 }
 
 // Enable paste from clipboard
@@ -991,12 +1020,8 @@ function setupComposeMode() {
     });
 
     // Send to terminal (text + attachment paths)
-    // Short tap: insert text only
-    // Long press (500ms): insert text + Enter
-    let longPressTimer = null;
-    let isLongPress = false;
-    const LONG_PRESS_DURATION = 500;
-
+    // Insert: insert text only (no Enter)
+    // Run: insert text + Enter (execute command)
     function sendComposedText(withEnter = false) {
         let text = composeInput.value;
 
@@ -1007,57 +1032,25 @@ function setupComposeMode() {
         }
 
         if (text && socket && socket.readyState === WebSocket.OPEN) {
-            sendInput(withEnter ? text + '\r' : text);
+            // Send text first
+            sendInput(text);
+            // Then send Enter separately (as terminal expects discrete keypress)
+            if (withEnter) {
+                sendInput('\r');
+            }
             closeComposeModal();
             terminal.focus();
         }
     }
 
-    // Touch events for long press detection
-    let touchHandled = false;
-
-    composeInsert.addEventListener('touchstart', (e) => {
-        isLongPress = false;
-        touchHandled = false;
-        longPressTimer = setTimeout(() => {
-            isLongPress = true;
-            // Visual feedback
-            composeInsert.style.transform = 'scale(0.95)';
-            composeInsert.textContent = 'Send + Enter';
-        }, LONG_PRESS_DURATION);
-    }, { passive: true });
-
-    composeInsert.addEventListener('touchend', (e) => {
-        clearTimeout(longPressTimer);
-        composeInsert.style.transform = '';
-        composeInsert.textContent = 'Send';
-
-        if (isLongPress) {
-            e.preventDefault();
-            touchHandled = true;
-            sendComposedText(true);  // With Enter
-        } else {
-            // Short tap - handle here instead of click to avoid timing issues
-            touchHandled = true;
-            sendComposedText(false);  // Without Enter
-        }
-        isLongPress = false;
+    // Insert button - insert text only (no Enter)
+    composeInsert.addEventListener('click', () => {
+        sendComposedText(false);
     });
 
-    composeInsert.addEventListener('touchcancel', () => {
-        clearTimeout(longPressTimer);
-        composeInsert.style.transform = '';
-        composeInsert.textContent = 'Send';
-        isLongPress = false;
-        touchHandled = false;
-    });
-
-    // Click for mouse/desktop only (touch is handled above)
-    composeInsert.addEventListener('click', (e) => {
-        if (!touchHandled) {
-            sendComposedText(false);  // Without Enter
-        }
-        touchHandled = false;
+    // Run button - insert text + Enter (execute)
+    composeRun.addEventListener('click', () => {
+        sendComposedText(true);
     });
 
     // Send on Ctrl+Enter or Cmd+Enter
@@ -1481,9 +1474,9 @@ function setupCommandHistory() {
 }
 
 /**
- * View toggle: Terminal vs Transcript
+ * View toggle: Terminal | Log | Context | Touch
  */
-let currentView = 'terminal';  // 'terminal' or 'transcript'
+let currentView = 'terminal';  // 'terminal', 'transcript', 'context', 'touch'
 let transcriptText = '';  // Cached transcript text
 
 function setupViewToggle() {
@@ -1498,14 +1491,50 @@ function setupViewToggle() {
             switchToTranscriptView();
         }
     });
+
+    contextViewBtn.addEventListener('click', () => {
+        if (currentView !== 'context') {
+            switchToContextView();
+        }
+    });
+
+    touchViewBtn.addEventListener('click', () => {
+        if (currentView !== 'touch') {
+            switchToTouchView();
+        }
+    });
+
+    // Refresh buttons
+    const contextRefresh = document.getElementById('contextRefresh');
+    const touchRefresh = document.getElementById('touchRefresh');
+    if (contextRefresh) {
+        contextRefresh.addEventListener('click', fetchContext);
+    }
+    if (touchRefresh) {
+        touchRefresh.addEventListener('click', fetchTouch);
+    }
+}
+
+function clearAllTabActive() {
+    terminalViewBtn.classList.remove('active');
+    transcriptViewBtn.classList.remove('active');
+    contextViewBtn.classList.remove('active');
+    touchViewBtn.classList.remove('active');
+}
+
+function hideAllContainers() {
+    terminalContainer.classList.add('hidden');
+    transcriptContainer.classList.add('hidden');
+    contextContainer.classList.add('hidden');
+    touchContainer.classList.add('hidden');
 }
 
 function switchToTerminalView() {
     currentView = 'terminal';
+    clearAllTabActive();
     terminalViewBtn.classList.add('active');
-    transcriptViewBtn.classList.remove('active');
+    hideAllContainers();
     terminalContainer.classList.remove('hidden');
-    transcriptContainer.classList.add('hidden');
     viewBar.classList.remove('hidden');  // Show action bar in terminal view
     // Only show control bars if unlocked
     if (isControlUnlocked) {
@@ -1515,16 +1544,84 @@ function switchToTerminalView() {
 
 async function switchToTranscriptView() {
     currentView = 'transcript';
+    clearAllTabActive();
     transcriptViewBtn.classList.add('active');
-    terminalViewBtn.classList.remove('active');
+    hideAllContainers();
     transcriptContainer.classList.remove('hidden');
-    terminalContainer.classList.add('hidden');
-    viewBar.classList.add('hidden');  // Hide action bar in log view
-    controlBarsContainer.classList.add('hidden');  // Hide control bars in log view
+    viewBar.classList.add('hidden');  // Hide action bar in non-terminal views
+    controlBarsContainer.classList.add('hidden');
 
     // Fetch transcript and scroll to bottom
     await fetchTranscript();
     transcriptContent.scrollTop = transcriptContent.scrollHeight;
+}
+
+async function switchToContextView() {
+    currentView = 'context';
+    clearAllTabActive();
+    contextViewBtn.classList.add('active');
+    hideAllContainers();
+    contextContainer.classList.remove('hidden');
+    viewBar.classList.add('hidden');
+    controlBarsContainer.classList.add('hidden');
+
+    await fetchContext();
+}
+
+async function switchToTouchView() {
+    currentView = 'touch';
+    clearAllTabActive();
+    touchViewBtn.classList.add('active');
+    hideAllContainers();
+    touchContainer.classList.remove('hidden');
+    viewBar.classList.add('hidden');
+    controlBarsContainer.classList.add('hidden');
+
+    await fetchTouch();
+}
+
+async function fetchContext() {
+    contextContent.textContent = 'Loading CONTEXT.md...';
+
+    try {
+        const response = await fetch(`/api/context?token=${token}`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch context');
+        }
+        const data = await response.json();
+
+        if (!data.exists) {
+            contextContent.textContent = 'No CONTEXT.md file found in .claude/ directory.';
+            return;
+        }
+
+        contextContent.textContent = data.content;
+    } catch (error) {
+        console.error('Context error:', error);
+        contextContent.textContent = 'Error loading context: ' + error.message;
+    }
+}
+
+async function fetchTouch() {
+    touchContent.textContent = 'Loading touch-summary.md...';
+
+    try {
+        const response = await fetch(`/api/touch?token=${token}`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch touch summary');
+        }
+        const data = await response.json();
+
+        if (!data.exists) {
+            touchContent.textContent = 'No touch-summary.md file found in .claude/ directory.';
+            return;
+        }
+
+        touchContent.textContent = data.content;
+    } catch (error) {
+        console.error('Touch error:', error);
+        touchContent.textContent = 'Error loading touch summary: ' + error.message;
+    }
 }
 
 let transcriptSource = '';  // 'log' or 'capture'

@@ -18,7 +18,7 @@
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=35">
+    <link rel="stylesheet" href="/static/styles.css?v=39">
 </head>
 <body>
     <div class="app">
@@ -41,6 +41,8 @@
                 <div id="viewToggle" class="view-toggle">
                     <button id="terminalViewBtn" class="view-toggle-btn active">Term</button>
                     <button id="transcriptViewBtn" class="view-toggle-btn">Log</button>
+                    <button id="contextViewBtn" class="view-toggle-btn">Ctx</button>
+                    <button id="touchViewBtn" class="view-toggle-btn">Touch</button>
                 </div>
                 <button id="searchBtn" class="icon-btn" aria-label="Search files">
                     <span>&#x1F50D;</span>
@@ -112,6 +114,24 @@
             <div id="transcriptContent" class="transcript-content"></div>
         </div>
 
+        <!-- Context view (CONTEXT.md) -->
+        <div id="contextContainer" class="context-container hidden">
+            <div class="context-header">
+                <span class="context-title">CONTEXT.md</span>
+                <button id="contextRefresh" class="context-refresh">Refresh</button>
+            </div>
+            <div id="contextContent" class="context-content"></div>
+        </div>
+
+        <!-- Touch view (touch-summary.md) -->
+        <div id="touchContainer" class="touch-container hidden">
+            <div class="touch-header">
+                <span class="touch-title">touch-summary.md</span>
+                <button id="touchRefresh" class="touch-refresh">Refresh</button>
+            </div>
+            <div id="touchContent" class="touch-content"></div>
+        </div>
+
         <!-- Action bar: visible in Terminal view only -->
         <div id="viewBar" class="view-bar">
             <button id="selectModeBtn" class="view-btn select-btn">Select</button>
@@ -145,7 +165,8 @@
                     <button id="composeCamera" class="compose-action attach-icon" title="Take photo">&#x1F4F7;</button>
                     <button id="composeGallery" class="compose-action attach-icon" title="Choose from gallery">&#x1F5BC;</button>
                     <button id="composeClear" class="compose-action secondary">Clear</button>
-                    <button id="composeInsert" class="compose-action primary">Send</button>
+                    <button id="composeInsert" class="compose-action secondary">Insert</button>
+                    <button id="composeRun" class="compose-action primary">Run</button>
                 </div>
                 <p class="compose-hint">Tip: Paste images directly or use voice input</p>
             </div>
@@ -161,7 +182,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=35"></script>
+    <script src="/static/terminal.js?v=39"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
