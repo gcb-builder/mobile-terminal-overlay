@@ -1176,14 +1176,53 @@ function setupComposeMode() {
 }
 
 /**
- * Setup challenge modal (DeepSeek code review)
+ * Setup challenge modal (AI code review with model selection)
  */
 function setupChallenge() {
     if (!challengeBtn || !challengeModal) return;
 
-    // Open modal
+    const challengeAsk = document.getElementById('challengeAsk');
+    const challengeModelSelect = document.getElementById('challengeModel');
+    let lastChallengeContent = '';  // Store raw content for "Ask Claude"
+    let modelsLoaded = false;
+
+    // Fetch available models
+    async function loadModels() {
+        if (modelsLoaded) return;
+
+        try {
+            const response = await fetch(`/api/challenge/models?token=${token}`);
+            if (!response.ok) {
+                throw new Error('Failed to load models');
+            }
+            const data = await response.json();
+
+            // Populate dropdown
+            challengeModelSelect.innerHTML = '';
+            if (data.models && data.models.length > 0) {
+                data.models.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model.key;
+                    option.textContent = model.name;
+                    if (model.key === data.default) {
+                        option.selected = true;
+                    }
+                    challengeModelSelect.appendChild(option);
+                });
+                modelsLoaded = true;
+            } else {
+                challengeModelSelect.innerHTML = '<option value="">No models available</option>';
+            }
+        } catch (error) {
+            console.error('Failed to load challenge models:', error);
+            challengeModelSelect.innerHTML = '<option value="">Error loading models</option>';
+        }
+    }
+
+    // Open modal and load models
     challengeBtn.addEventListener('click', () => {
         challengeModal.classList.remove('hidden');
+        loadModels();  // Load models when modal opens
     });
 
     // Close modal
@@ -1198,16 +1237,41 @@ function setupChallenge() {
         }
     });
 
-    // Run challenge
+    // "Ask Claude" button - extract questions and open Compose
+    if (challengeAsk) {
+        challengeAsk.addEventListener('click', () => {
+            // Extract clarifying questions from the challenge result
+            const questions = extractClarifyingQuestions(lastChallengeContent);
+
+            // Close challenge modal
+            challengeModal.classList.add('hidden');
+
+            // Open compose modal with questions pre-filled
+            composeModal.classList.remove('hidden');
+            composeInput.value = questions;
+            composeInput.focus();
+        });
+    }
+
+    // Run challenge with selected model
     challengeRun.addEventListener('click', async () => {
+        const selectedModel = challengeModelSelect.value;
+        if (!selectedModel) {
+            challengeResult.innerHTML = '<p style="color: var(--accent-red);">No model selected</p>';
+            return;
+        }
+
+        const modelName = challengeModelSelect.options[challengeModelSelect.selectedIndex]?.text || selectedModel;
+
         challengeRun.disabled = true;
         challengeRun.textContent = 'Running...';
-        challengeResult.innerHTML = '<div class="loading">Analyzing code with DeepSeek...</div>';
+        challengeResult.innerHTML = `<div class="loading">Analyzing code with ${modelName}...</div>`;
         challengeResult.classList.add('loading');
         challengeStatus.textContent = '';
+        if (challengeAsk) challengeAsk.classList.add('hidden');
 
         try {
-            const response = await fetch(`/api/challenge?token=${token}`, {
+            const response = await fetch(`/api/challenge?token=${token}&model=${encodeURIComponent(selectedModel)}`, {
                 method: 'POST',
             });
 
@@ -1216,6 +1280,9 @@ function setupChallenge() {
             if (!response.ok) {
                 throw new Error(data.error || 'Challenge failed');
             }
+
+            // Store raw content for "Ask Claude"
+            lastChallengeContent = data.content || '';
 
             // Format the result with markdown-like headers
             let content = data.content || 'No response received';
@@ -1228,9 +1295,15 @@ function setupChallenge() {
             challengeResult.innerHTML = content;
             challengeResult.classList.remove('loading');
 
-            // Show stats
+            // Show "Ask Claude" button if we have content
+            if (challengeAsk && lastChallengeContent) {
+                challengeAsk.classList.remove('hidden');
+            }
+
+            // Show stats with model info
             const usage = data.usage || {};
             const stats = [];
+            if (data.model_name) stats.push(data.model_name);
             if (data.bundle_chars) stats.push(`${Math.round(data.bundle_chars / 1000)}k chars`);
             if (usage.total_tokens) stats.push(`${usage.total_tokens} tokens`);
             challengeStatus.textContent = stats.join(' | ');
@@ -1240,11 +1313,46 @@ function setupChallenge() {
             challengeResult.innerHTML = `<p style="color: var(--accent-red);">Error: ${error.message}</p>`;
             challengeResult.classList.remove('loading');
             challengeStatus.textContent = '';
+            if (challengeAsk) challengeAsk.classList.add('hidden');
         } finally {
             challengeRun.disabled = false;
             challengeRun.textContent = 'Run Challenge';
         }
     });
+}
+
+/**
+ * Extract clarifying questions from DeepSeek challenge response
+ * @param {string} content - Raw challenge response content
+ * @returns {string} - Formatted questions for Claude
+ */
+function extractClarifyingQuestions(content) {
+    // Look for the "Clarifying questions" section
+    const questionsMatch = content.match(/Clarifying questions[^:]*:([\s\S]*?)(?:$|(?=\n\n[A-Z]))/i);
+
+    if (questionsMatch && questionsMatch[1]) {
+        // Extract the questions portion
+        let questions = questionsMatch[1].trim();
+
+        // Clean up numbered/bulleted list formatting
+        questions = questions
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => line.length > 0)
+            .map(line => {
+                // Remove leading numbers, bullets, dashes
+                return line.replace(/^[\d\.\-\*\)]+\s*/, '').trim();
+            })
+            .filter(q => q.length > 0)
+            .join('\n- ');
+
+        if (questions) {
+            return `DeepSeek asked these questions about the code:\n- ${questions}\n\nPlease address these concerns.`;
+        }
+    }
+
+    // Fallback: return a generic prompt with the full content
+    return `DeepSeek's code review raised these points:\n\n${content}\n\nPlease address the concerns above.`;
 }
 
 /**

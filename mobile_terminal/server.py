@@ -24,7 +24,7 @@ from collections import deque
 from pathlib import Path
 from typing import Optional
 
-from mobile_terminal.challenge import run_challenge, get_together_api_key, validate_api_key
+from mobile_terminal.challenge import run_challenge, get_available_models, DEFAULT_MODEL
 
 
 class RingBuffer:
@@ -568,10 +568,29 @@ def create_app(config: Config) -> FastAPI:
             logger.error(f"Error reading log file: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
-    @app.post("/api/challenge")
-    async def challenge_code(token: Optional[str] = Query(None)):
+    @app.get("/api/challenge/models")
+    async def get_challenge_models(token: Optional[str] = Query(None)):
         """
-        Run skeptical code review using DeepSeek via Together.ai API.
+        Get list of available AI models for challenge function.
+
+        Returns only models whose provider has a valid API key configured.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        models = get_available_models()
+        return {"models": models, "default": DEFAULT_MODEL}
+
+    @app.post("/api/challenge")
+    async def challenge_code(
+        token: Optional[str] = Query(None),
+        model: str = Query(DEFAULT_MODEL),
+    ):
+        """
+        Run skeptical code review using AI models.
+
+        Supports multiple providers: Together.ai, OpenAI, Anthropic.
+        User selects model, system routes to appropriate provider.
 
         Builds a context bundle from:
         - Git status and branch
@@ -579,19 +598,10 @@ def create_app(config: Config) -> FastAPI:
         - touch-summary.md
         - Recent activity log
 
-        Returns DeepSeek's critical analysis.
+        Returns AI's critical analysis.
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-        # Validate API key
-        api_key = get_together_api_key()
-        is_valid, error_msg = validate_api_key(api_key)
-        if not is_valid:
-            return JSONResponse(
-                {"error": error_msg},
-                status_code=503,
-            )
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -639,14 +649,16 @@ def create_app(config: Config) -> FastAPI:
         except Exception as e:
             logger.warning(f"Failed to get log content for challenge: {e}")
 
-        # Run the challenge
-        result = await run_challenge(repo_path, log_content)
+        # Run the challenge with selected model
+        result = await run_challenge(repo_path, log_content, model_key=model)
 
         if result.get("success"):
             return {
                 "success": True,
                 "content": result["content"],
                 "model": result.get("model"),
+                "model_name": result.get("model_name"),
+                "provider": result.get("provider"),
                 "bundle_chars": result.get("bundle_chars"),
                 "usage": result.get("usage", {}),
             }

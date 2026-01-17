@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=51">
+    <link rel="stylesheet" href="/static/styles.css?v=53">
 </head>
 <body>
     <div class="app">
@@ -169,11 +169,19 @@
                     <button id="challengeClose" class="challenge-close">&times;</button>
                 </div>
                 <div id="challengeResult" class="challenge-result">
-                    <p class="challenge-hint">Tap "Run Challenge" to get a skeptical code review from DeepSeek.</p>
+                    <p class="challenge-hint">Select a model and tap "Run Challenge" to get a skeptical code review.</p>
                 </div>
                 <div class="challenge-footer">
-                    <span id="challengeStatus" class="challenge-status"></span>
-                    <button id="challengeRun" class="challenge-action primary">Run Challenge</button>
+                    <div class="challenge-footer-row">
+                        <span id="challengeStatus" class="challenge-status"></span>
+                        <select id="challengeModel" class="challenge-model-select">
+                            <option value="">Loading models...</option>
+                        </select>
+                    </div>
+                    <div class="challenge-footer-row">
+                        <button id="challengeAsk" class="challenge-action secondary hidden">Ask Claude</button>
+                        <button id="challengeRun" class="challenge-action primary">Run Challenge</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -188,7 +196,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=51"></script>
+    <script src="/static/terminal.js?v=53"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
