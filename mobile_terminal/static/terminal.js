@@ -60,6 +60,9 @@ let lastActivityTime = 0;
 let lastActivityElement = null;
 let activityUpdateTimer = null;
 
+// Force scroll to bottom flag (used during resize)
+let forceScrollToBottom = false;
+
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
     controlBtn = document.getElementById('controlBtn');
@@ -1036,12 +1039,12 @@ function setupJumpToBottom() {
         isAtBottom = scrollPos >= maxScroll - 1;
     });
 
-    // Auto-scroll on new output (only if already at bottom)
+    // Auto-scroll on new output (only if already at bottom, or force flag is set)
     const originalWrite = terminal.write.bind(terminal);
     terminal.write = (data) => {
         const wasAtBottom = isAtBottom;
         originalWrite(data);
-        if (wasAtBottom) {
+        if (wasAtBottom || forceScrollToBottom) {
             terminal.scrollToBottom();
         }
     };
@@ -2397,12 +2400,16 @@ function renderLogEntries(content) {
 }
 
 /**
- * Setup hybrid view with draggable resize handle
+ * Setup hybrid view with draggable resize handle (hold-to-drag)
  */
 function setupHybridView() {
     if (!logSection || !terminalSection || !resizeHandle || !hybridView) return;
 
+    const HOLD_DELAY = 150;  // ms to hold before drag activates
+
     let isDragging = false;
+    let isHolding = false;
+    let holdTimer = null;
     let startY = 0;
     let startLogHeight = 0;
 
@@ -2425,11 +2432,10 @@ function setupHybridView() {
         terminalSection.style.flex = `1 1 ${100 - logPercent}%`;
     }
 
-    // Handle drag start (touch and mouse)
-    function onDragStart(e) {
+    // Activate drag mode after hold delay
+    function activateDrag() {
         isDragging = true;
-        startY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
-        startLogHeight = logSection.offsetHeight;
+        isHolding = false;
 
         // Prevent text selection during drag
         document.body.style.userSelect = 'none';
@@ -2437,10 +2443,43 @@ function setupHybridView() {
 
         // Add active state to handle
         resizeHandle.classList.add('active');
+
+        // Scroll log to bottom when drag starts
+        if (logContent) {
+            logContent.scrollTop = logContent.scrollHeight;
+        }
+    }
+
+    // Handle touch/mouse down - start hold timer
+    function onPointerDown(e) {
+        // Clear any existing timer
+        if (holdTimer) clearTimeout(holdTimer);
+
+        isHolding = true;
+        startY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
+        startLogHeight = logSection.offsetHeight;
+
+        // Start hold timer - drag activates after delay
+        holdTimer = setTimeout(() => {
+            if (isHolding) {
+                activateDrag();
+            }
+        }, HOLD_DELAY);
     }
 
     // Handle drag move
-    function onDragMove(e) {
+    function onPointerMove(e) {
+        // If still in hold phase and moved too much, cancel
+        if (isHolding && !isDragging) {
+            const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
+            const deltaY = Math.abs(clientY - startY);
+            // If moved more than 10px before hold completes, cancel (probably scrolling)
+            if (deltaY > 10) {
+                cancelHold();
+            }
+            return;
+        }
+
         if (!isDragging) return;
 
         e.preventDefault();
@@ -2451,8 +2490,19 @@ function setupHybridView() {
         setSectionHeights(newLogHeight);
     }
 
+    // Cancel hold without activating drag
+    function cancelHold() {
+        if (holdTimer) {
+            clearTimeout(holdTimer);
+            holdTimer = null;
+        }
+        isHolding = false;
+    }
+
     // Handle drag end
-    function onDragEnd() {
+    function onPointerUp() {
+        cancelHold();
+
         if (!isDragging) return;
 
         isDragging = false;
@@ -2460,23 +2510,31 @@ function setupHybridView() {
         document.body.style.webkitUserSelect = '';
         resizeHandle.classList.remove('active');
 
+        // Force scroll to bottom for next 300ms (catches tmux redraw)
+        forceScrollToBottom = true;
+        setTimeout(() => { forceScrollToBottom = false; }, 300);
+
         // Resize terminal after drag completes
         setTimeout(() => {
             if (fitAddon) fitAddon.fit();
             sendResize();
+            // Also scroll log to bottom
+            if (logContent) {
+                logContent.scrollTop = logContent.scrollHeight;
+            }
         }, 50);
     }
 
     // Touch events for mobile
-    resizeHandle.addEventListener('touchstart', onDragStart, { passive: true });
-    document.addEventListener('touchmove', onDragMove, { passive: false });
-    document.addEventListener('touchend', onDragEnd);
-    document.addEventListener('touchcancel', onDragEnd);
+    resizeHandle.addEventListener('touchstart', onPointerDown, { passive: true });
+    document.addEventListener('touchmove', onPointerMove, { passive: false });
+    document.addEventListener('touchend', onPointerUp);
+    document.addEventListener('touchcancel', onPointerUp);
 
     // Mouse events for desktop
-    resizeHandle.addEventListener('mousedown', onDragStart);
-    document.addEventListener('mousemove', onDragMove);
-    document.addEventListener('mouseup', onDragEnd);
+    resizeHandle.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('mousemove', onPointerMove);
+    document.addEventListener('mouseup', onPointerUp);
 
     // Log refresh button
     if (logRefresh) {
