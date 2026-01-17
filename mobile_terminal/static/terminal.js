@@ -1480,29 +1480,39 @@ let currentView = 'terminal';  // 'terminal', 'transcript', 'context', 'touch'
 let transcriptText = '';  // Cached transcript text
 
 function setupViewToggle() {
-    terminalViewBtn.addEventListener('click', () => {
-        if (currentView !== 'terminal') {
-            switchToTerminalView();
-        }
-    });
+    // Tab buttons removed - using swipe and dots now
+    // Keep handlers in case buttons are re-added
+    if (terminalViewBtn) {
+        terminalViewBtn.addEventListener('click', () => {
+            if (currentView !== 'terminal') {
+                switchToTerminalView();
+            }
+        });
+    }
 
-    transcriptViewBtn.addEventListener('click', () => {
-        if (currentView !== 'transcript') {
-            switchToTranscriptView();
-        }
-    });
+    if (transcriptViewBtn) {
+        transcriptViewBtn.addEventListener('click', () => {
+            if (currentView !== 'transcript') {
+                switchToTranscriptView();
+            }
+        });
+    }
 
-    contextViewBtn.addEventListener('click', () => {
-        if (currentView !== 'context') {
-            switchToContextView();
-        }
-    });
+    if (contextViewBtn) {
+        contextViewBtn.addEventListener('click', () => {
+            if (currentView !== 'context') {
+                switchToContextView();
+            }
+        });
+    }
 
-    touchViewBtn.addEventListener('click', () => {
-        if (currentView !== 'touch') {
-            switchToTouchView();
-        }
-    });
+    if (touchViewBtn) {
+        touchViewBtn.addEventListener('click', () => {
+            if (currentView !== 'touch') {
+                switchToTouchView();
+            }
+        });
+    }
 
     // Refresh buttons
     const contextRefresh = document.getElementById('contextRefresh');
@@ -1515,11 +1525,132 @@ function setupViewToggle() {
     }
 }
 
+// Tab order for swipe navigation
+const tabOrder = ['terminal', 'transcript', 'context', 'touch'];
+
 function clearAllTabActive() {
-    terminalViewBtn.classList.remove('active');
-    transcriptViewBtn.classList.remove('active');
-    contextViewBtn.classList.remove('active');
-    touchViewBtn.classList.remove('active');
+    // Tab buttons removed from header - dots handle indication now
+    if (terminalViewBtn) terminalViewBtn.classList.remove('active');
+    if (transcriptViewBtn) transcriptViewBtn.classList.remove('active');
+    if (contextViewBtn) contextViewBtn.classList.remove('active');
+    if (touchViewBtn) touchViewBtn.classList.remove('active');
+}
+
+/**
+ * Update the dot indicator to reflect current view
+ */
+function updateTabIndicator() {
+    const dots = document.querySelectorAll('.tab-dot');
+    dots.forEach(dot => {
+        dot.classList.remove('active');
+        if (dot.dataset.view === currentView) {
+            dot.classList.add('active');
+        }
+    });
+}
+
+/**
+ * Switch to next tab (swipe left)
+ */
+function switchToNextTab() {
+    const currentIndex = tabOrder.indexOf(currentView);
+    if (currentIndex < tabOrder.length - 1) {
+        const nextView = tabOrder[currentIndex + 1];
+        switchToView(nextView);
+    }
+}
+
+/**
+ * Switch to previous tab (swipe right)
+ */
+function switchToPrevTab() {
+    const currentIndex = tabOrder.indexOf(currentView);
+    if (currentIndex > 0) {
+        const prevView = tabOrder[currentIndex - 1];
+        switchToView(prevView);
+    }
+}
+
+/**
+ * Switch to a specific view by name
+ */
+function switchToView(viewName) {
+    switch (viewName) {
+        case 'terminal':
+            switchToTerminalView();
+            break;
+        case 'transcript':
+            switchToTranscriptView();
+            break;
+        case 'context':
+            switchToContextView();
+            break;
+        case 'touch':
+            switchToTouchView();
+            break;
+    }
+}
+
+/**
+ * Setup swipe gesture detection for tab navigation
+ */
+function setupSwipeNavigation() {
+    const containers = [
+        document.getElementById('terminal-container'),
+        document.getElementById('transcriptContainer'),
+        document.getElementById('contextContainer'),
+        document.getElementById('touchContainer'),
+    ];
+
+    const SWIPE_THRESHOLD = 80;    // Minimum px to trigger
+    const SWIPE_TIMEOUT = 300;     // Max ms for swipe
+    const DIRECTION_RATIO = 1.5;   // deltaX must be > deltaY * ratio
+
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchStartTime = 0;
+
+    const handleTouchStart = (e) => {
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+        touchStartTime = Date.now();
+    };
+
+    const handleTouchEnd = (e) => {
+        const deltaX = e.changedTouches[0].clientX - touchStartX;
+        const deltaY = e.changedTouches[0].clientY - touchStartY;
+        const deltaTime = Date.now() - touchStartTime;
+
+        // Validate swipe
+        if (deltaTime > SWIPE_TIMEOUT) return;
+        if (Math.abs(deltaX) < SWIPE_THRESHOLD) return;
+        if (Math.abs(deltaY) * DIRECTION_RATIO > Math.abs(deltaX)) return;
+
+        if (deltaX < 0) {
+            // Swipe left - next tab
+            switchToNextTab();
+        } else {
+            // Swipe right - previous tab
+            switchToPrevTab();
+        }
+    };
+
+    containers.forEach(container => {
+        if (container) {
+            container.addEventListener('touchstart', handleTouchStart, { passive: true });
+            container.addEventListener('touchend', handleTouchEnd, { passive: true });
+        }
+    });
+
+    // Click handlers for dots
+    document.querySelectorAll('.tab-dot').forEach(dot => {
+        dot.addEventListener('click', () => {
+            const viewName = dot.dataset.view;
+            if (viewName && viewName !== currentView) {
+                switchToView(viewName);
+            }
+        });
+    });
 }
 
 function hideAllContainers() {
@@ -1532,7 +1663,7 @@ function hideAllContainers() {
 function switchToTerminalView() {
     currentView = 'terminal';
     clearAllTabActive();
-    terminalViewBtn.classList.add('active');
+    if (terminalViewBtn) terminalViewBtn.classList.add('active');
     hideAllContainers();
     terminalContainer.classList.remove('hidden');
     viewBar.classList.remove('hidden');  // Show action bar in terminal view
@@ -1540,16 +1671,18 @@ function switchToTerminalView() {
     if (isControlUnlocked) {
         controlBarsContainer.classList.remove('hidden');
     }
+    updateTabIndicator();
 }
 
 async function switchToTranscriptView() {
     currentView = 'transcript';
     clearAllTabActive();
-    transcriptViewBtn.classList.add('active');
+    if (transcriptViewBtn) transcriptViewBtn.classList.add('active');
     hideAllContainers();
     transcriptContainer.classList.remove('hidden');
     viewBar.classList.add('hidden');  // Hide action bar in non-terminal views
     controlBarsContainer.classList.add('hidden');
+    updateTabIndicator();
 
     // Fetch transcript and scroll to bottom
     await fetchTranscript();
@@ -1559,11 +1692,12 @@ async function switchToTranscriptView() {
 async function switchToContextView() {
     currentView = 'context';
     clearAllTabActive();
-    contextViewBtn.classList.add('active');
+    if (contextViewBtn) contextViewBtn.classList.add('active');
     hideAllContainers();
     contextContainer.classList.remove('hidden');
     viewBar.classList.add('hidden');
     controlBarsContainer.classList.add('hidden');
+    updateTabIndicator();
 
     await fetchContext();
 }
@@ -1571,11 +1705,12 @@ async function switchToContextView() {
 async function switchToTouchView() {
     currentView = 'touch';
     clearAllTabActive();
-    touchViewBtn.classList.add('active');
+    if (touchViewBtn) touchViewBtn.classList.add('active');
     hideAllContainers();
     touchContainer.classList.remove('hidden');
     viewBar.classList.add('hidden');
     controlBarsContainer.classList.add('hidden');
+    updateTabIndicator();
 
     await fetchTouch();
 }
@@ -1958,6 +2093,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupCommandHistory();
     setupComposeMode();
     setupViewToggle();
+    setupSwipeNavigation();
     setupTranscriptSearch();
 
     // Load current session first, then config

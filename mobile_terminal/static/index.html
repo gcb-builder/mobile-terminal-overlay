@@ -18,7 +18,7 @@
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=43">
+    <link rel="stylesheet" href="/static/styles.css?v=46">
 </head>
 <body>
     <div class="app">
@@ -37,13 +37,6 @@
                 </button>
             </div>
             <div class="header-right">
-                <!-- View toggle: Terminal | Transcript -->
-                <div id="viewToggle" class="view-toggle">
-                    <button id="terminalViewBtn" class="view-toggle-btn active">Term</button>
-                    <button id="transcriptViewBtn" class="view-toggle-btn">Log</button>
-                    <button id="contextViewBtn" class="view-toggle-btn">Ctx</button>
-                    <button id="touchViewBtn" class="view-toggle-btn">Touch</button>
-                </div>
                 <button id="searchBtn" class="icon-btn" aria-label="Search files">
                     <span>&#x1F50D;</span>
                 </button>
@@ -67,35 +60,25 @@
 
         <!-- Control bars container (Control mode only) -->
         <div id="controlBarsContainer" class="control-bars-container hidden">
-                <!-- Input bar: numbers, responses, navigation, enter (right-hand optimized) -->
+                <!-- Single combined shortcut bar (right-hand optimized) -->
                 <div id="inputBar" class="input-bar">
                     <button class="quick-btn" data-key="slash">/</button>
-                    <span class="bar-separator"></span>
                     <button class="quick-btn" data-key="1">1</button>
                     <button class="quick-btn" data-key="2">2</button>
                     <button class="quick-btn" data-key="3">3</button>
                     <span class="bar-separator"></span>
-                    <button class="quick-btn btn-no" data-key="n">n</button>
-                    <button class="quick-btn btn-yes" data-key="y">y</button>
+                    <button class="quick-btn" data-key="esc">Esc</button>
+                    <button class="quick-btn" data-key="tab">Tab</button>
+                    <button class="quick-btn btn-tmux" data-key="ctrl-b">^B</button>
                     <span class="bar-separator"></span>
                     <button class="quick-btn" data-key="down">&#x2193;</button>
                     <button class="quick-btn" data-key="up">&#x2191;</button>
+                    <button class="quick-btn btn-stop" data-key="ctrl-c">^C</button>
                     <button class="quick-btn btn-enter" data-key="enter">&#x23CE;</button>
                 </div>
 
-                <!-- Control keys bar: editing, tmux, interrupt (right-hand optimized) -->
-                <div id="controlBar" class="control-bar">
-                    <button class="ctrl-key" data-key="esc">Esc</button>
-                    <span class="bar-separator"></span>
-                    <button class="ctrl-key" data-key="ctrl-u">^U</button>
-                    <button class="ctrl-key" data-key="ctrl-w">^W</button>
-                    <button class="ctrl-key" data-key="ctrl-e">^E</button>
-                    <button class="ctrl-key" data-key="ctrl-a">^A</button>
-                    <span class="bar-separator"></span>
-                    <button class="ctrl-key" data-key="tab">Tab</button>
-                    <button class="ctrl-key btn-tmux" data-key="ctrl-b">^B</button>
-                    <button class="ctrl-key btn-stop" data-key="ctrl-c">^C</button>
-                </div>
+                <!-- Control bar kept for JS compatibility but hidden -->
+                <div id="controlBar" class="control-bar hidden"></div>
 
                 <!-- Role prefixes bar -->
                 <div id="roleBar" class="role-bar"></div>
@@ -129,6 +112,14 @@
                 <button id="touchRefresh" class="touch-refresh">Refresh</button>
             </div>
             <div id="touchContent" class="touch-content"></div>
+        </div>
+
+        <!-- Tab position indicator (dots) -->
+        <div id="tabIndicator" class="tab-indicator">
+            <span class="tab-dot active" data-view="terminal"></span>
+            <span class="tab-dot" data-view="transcript"></span>
+            <span class="tab-dot" data-view="context"></span>
+            <span class="tab-dot" data-view="touch"></span>
         </div>
 
         <!-- Action bar: visible in Terminal view only -->
@@ -181,7 +172,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=43"></script>
+    <script src="/static/terminal.js?v=46"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

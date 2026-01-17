@@ -310,6 +310,10 @@ html, body {
     flex-shrink: 0;
 }
 
+.control-bar.hidden {
+    display: none;
+}
+
 .ctrl-key {
     min-width: 44px;
     height: 44px;
@@ -372,12 +376,14 @@ html, body {
 }
 
 .quick-btn {
-    padding: 8px 12px;
+    min-width: 36px;
+    height: 38px;
+    padding: 0 8px;
     background: var(--bg-tertiary);
     border: 1px solid var(--border);
     border-radius: 6px;
     color: var(--accent);
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 500;
     cursor: pointer;
     flex-shrink: 0;
@@ -385,6 +391,9 @@ html, body {
     user-select: none;
     -webkit-user-select: none;
     touch-action: manipulation;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .quick-btn:active {
@@ -438,7 +447,6 @@ html, body {
     background: var(--accent) !important;
     color: white !important;
     border-color: var(--accent) !important;
-    min-width: 48px;
 }
 
 .btn-enter:active {
@@ -467,20 +475,50 @@ html, body {
 /* Input bar (Control mode - arrows, numbers, etc.) */
 .input-bar {
     display: flex;
-    gap: 6px;
-    padding: 8px 12px;
+    gap: 4px;
+    padding: 8px 8px;
     overflow-x: auto;
     flex-shrink: 0;
 }
 
 /* View bar - View mode only */
+/* Tab position indicator (dots) */
+.tab-indicator {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.tab-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border);
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+
+.tab-dot.active {
+    background: var(--accent);
+    transform: scale(1.2);
+}
+
+.tab-dot:hover {
+    background: var(--text-secondary);
+}
+
 .view-bar {
     display: flex;
     gap: 8px;
     padding: 10px 12px;
     padding-bottom: calc(10px + env(safe-area-inset-bottom));
     background: var(--bg-secondary);
-    border-top: 1px solid var(--border);
+    border-top: none;
     flex-shrink: 0;
     justify-content: center;
 }
