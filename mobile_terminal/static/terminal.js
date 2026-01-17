@@ -1286,6 +1286,9 @@ function setupChallenge() {
             challengeInputSection.open = true;
             challengeInputLabel.textContent = 'Describe your problem';
         }
+        // Hide Copy/Edit buttons until there's a result
+        if (challengeCopy) challengeCopy.classList.add('hidden');
+        if (challengeToCompose) challengeToCompose.classList.add('hidden');
         lastResponseText = '';
         loadModels();
         loadPreview();
@@ -1390,6 +1393,10 @@ function setupChallenge() {
                 challengeInputLabel.textContent = snippet || 'General review';
             }
 
+            // Show Copy and Edit buttons
+            if (challengeCopy) challengeCopy.classList.remove('hidden');
+            if (challengeToCompose) challengeToCompose.classList.remove('hidden');
+
             // Show stats
             const usage = data.usage || {};
             const stats = [];
@@ -1405,7 +1412,7 @@ function setupChallenge() {
             challengeStatus.textContent = '';
         } finally {
             challengeRun.disabled = false;
-            challengeRun.textContent = 'Run Challenge';
+            challengeRun.textContent = 'Run';
         }
     });
 

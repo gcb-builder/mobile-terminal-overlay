@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=69">
+    <link rel="stylesheet" href="/static/styles.css?v=70">
 </head>
 <body>
     <div class="app">
@@ -176,7 +176,10 @@
         <div id="challengeModal" class="challenge-modal hidden">
             <div class="challenge-modal-content">
                 <div class="challenge-header">
-                    <span class="challenge-title">Challenge Review</span>
+                    <span class="challenge-title">Challenge</span>
+                    <select id="challengeModel" class="challenge-model-select">
+                        <option value="">Loading...</option>
+                    </select>
                     <button id="challengeClose" class="challenge-close">&times;</button>
                 </div>
 
@@ -221,22 +224,15 @@
                 <!-- Result area -->
                 <div id="challengeResult" class="challenge-result hidden">
                     <div id="challengeResultContent" class="challenge-result-content"></div>
-                    <div class="challenge-result-actions">
-                        <button id="challengeCopy" class="challenge-action secondary">Copy</button>
-                        <button id="challengeToCompose" class="challenge-action primary">Edit & Send</button>
-                    </div>
                 </div>
 
-                <!-- Footer -->
+                <!-- Footer with actions -->
                 <div class="challenge-footer">
-                    <div class="challenge-footer-row">
-                        <span id="challengeStatus" class="challenge-status"></span>
-                        <select id="challengeModel" class="challenge-model-select">
-                            <option value="">Loading models...</option>
-                        </select>
-                    </div>
-                    <div class="challenge-footer-row">
-                        <button id="challengeRun" class="challenge-action primary">Run Challenge</button>
+                    <span id="challengeStatus" class="challenge-status"></span>
+                    <div class="challenge-actions">
+                        <button id="challengeCopy" class="challenge-action secondary hidden">Copy</button>
+                        <button id="challengeToCompose" class="challenge-action secondary hidden">Edit</button>
+                        <button id="challengeRun" class="challenge-action primary">Run</button>
                     </div>
                 </div>
             </div>
@@ -252,7 +248,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=69"></script>
+    <script src="/static/terminal.js?v=70"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
