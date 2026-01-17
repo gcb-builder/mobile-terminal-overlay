@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # Together.ai API configuration
 TOGETHER_API_URL = "https://api.together.xyz/v1/chat/completions"
-TOGETHER_MODEL = "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct"
+TOGETHER_MODEL = "deepseek-ai/DeepSeek-V3"
 MAX_BUNDLE_CHARS = 20000
 MAX_TOKENS = 500
 TEMPERATURE = 0.2
