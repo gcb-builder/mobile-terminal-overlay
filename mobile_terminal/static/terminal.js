@@ -1190,14 +1190,18 @@ function setupComposeMode() {
 }
 
 /**
- * Setup challenge modal (AI code review with model selection)
+ * Setup challenge modal (Problem-focused AI code review)
  */
 function setupChallenge() {
     if (!challengeBtn || !challengeModal) return;
 
-    const challengeAsk = document.getElementById('challengeAsk');
     const challengeModelSelect = document.getElementById('challengeModel');
-    let lastChallengeContent = '';  // Store raw content for "Ask Claude"
+    const challengeProblem = document.getElementById('challengeProblem');
+    const challengeIncludeTerminal = document.getElementById('challengeIncludeTerminal');
+    const challengeIncludeDiff = document.getElementById('challengeIncludeDiff');
+    const challengePreview = document.getElementById('challengePreview');
+    const challengePreviewContent = document.getElementById('challengePreviewContent');
+
     let modelsLoaded = false;
 
     // Fetch available models
@@ -1211,7 +1215,6 @@ function setupChallenge() {
             }
             const data = await response.json();
 
-            // Populate dropdown
             challengeModelSelect.innerHTML = '';
             if (data.models && data.models.length > 0) {
                 data.models.forEach(model => {
@@ -1233,10 +1236,45 @@ function setupChallenge() {
         }
     }
 
-    // Open modal and load models
+    // Load preview content
+    async function loadPreview() {
+        if (!challengePreviewContent) return;
+
+        let preview = '';
+
+        // Problem statement
+        const problem = challengeProblem?.value?.trim() || '(No problem described)';
+        preview += `## Problem Statement\n${problem}\n\n`;
+
+        // Terminal content
+        if (challengeIncludeTerminal?.checked) {
+            try {
+                const response = await fetch(`/api/terminal/capture?token=${token}&lines=50`);
+                const data = await response.json();
+                if (data.content) {
+                    preview += `## Terminal (last 50 lines)\n${data.content.slice(-2000)}\n\n`;
+                }
+            } catch (e) {
+                preview += `## Terminal\n(Failed to capture)\n\n`;
+            }
+        }
+
+        // Git diff indicator
+        if (challengeIncludeDiff?.checked) {
+            preview += `## Git Diff\n(Will include uncommitted changes)\n\n`;
+        }
+
+        preview += `## Git Status\n(Will include current status)`;
+
+        challengePreviewContent.textContent = preview;
+    }
+
+    // Open modal
     challengeBtn.addEventListener('click', () => {
         challengeModal.classList.remove('hidden');
-        loadModels();  // Load models when modal opens
+        challengeResult.classList.add('hidden');
+        loadModels();
+        loadPreview();
     });
 
     // Close modal
@@ -1251,41 +1289,63 @@ function setupChallenge() {
         }
     });
 
-    // "Ask Claude" button - extract questions and open Compose
-    if (challengeAsk) {
-        challengeAsk.addEventListener('click', () => {
-            // Extract clarifying questions from the challenge result
-            const questions = extractClarifyingQuestions(lastChallengeContent);
-
-            // Close challenge modal
-            challengeModal.classList.add('hidden');
-
-            // Open compose modal with questions pre-filled
-            composeModal.classList.remove('hidden');
-            composeInput.value = questions;
-            composeInput.focus();
+    // Update preview when options change
+    if (challengeIncludeTerminal) {
+        challengeIncludeTerminal.addEventListener('change', loadPreview);
+    }
+    if (challengeIncludeDiff) {
+        challengeIncludeDiff.addEventListener('change', loadPreview);
+    }
+    if (challengeProblem) {
+        let previewDebounce = null;
+        challengeProblem.addEventListener('input', () => {
+            clearTimeout(previewDebounce);
+            previewDebounce = setTimeout(loadPreview, 500);
         });
     }
 
-    // Run challenge with selected model
+    // Refresh preview when details opens
+    if (challengePreview) {
+        challengePreview.addEventListener('toggle', () => {
+            if (challengePreview.open) {
+                loadPreview();
+            }
+        });
+    }
+
+    // Run challenge with problem-focused context
     challengeRun.addEventListener('click', async () => {
         const selectedModel = challengeModelSelect.value;
         if (!selectedModel) {
-            challengeResult.innerHTML = '<p style="color: var(--accent-red);">No model selected</p>';
+            challengeResult.innerHTML = '<p style="color: var(--danger);">No model selected</p>';
+            challengeResult.classList.remove('hidden');
             return;
         }
+
+        const problem = challengeProblem?.value?.trim() || '';
+        const includeTerminal = challengeIncludeTerminal?.checked ?? true;
+        const includeDiff = challengeIncludeDiff?.checked ?? true;
 
         const modelName = challengeModelSelect.options[challengeModelSelect.selectedIndex]?.text || selectedModel;
 
         challengeRun.disabled = true;
         challengeRun.textContent = 'Running...';
-        challengeResult.innerHTML = `<div class="loading">Analyzing code with ${modelName}...</div>`;
+        challengeResult.classList.remove('hidden');
+        challengeResult.innerHTML = `<div class="loading">Analyzing with ${modelName}...</div>`;
         challengeResult.classList.add('loading');
         challengeStatus.textContent = '';
-        if (challengeAsk) challengeAsk.classList.add('hidden');
 
         try {
-            const response = await fetch(`/api/challenge?token=${token}&model=${encodeURIComponent(selectedModel)}`, {
+            const params = new URLSearchParams({
+                token: token,
+                model: selectedModel,
+                problem: problem,
+                include_terminal: includeTerminal,
+                terminal_lines: 50,
+                include_diff: includeDiff,
+            });
+
+            const response = await fetch(`/api/challenge?${params}`, {
                 method: 'POST',
             });
 
@@ -1295,39 +1355,30 @@ function setupChallenge() {
                 throw new Error(data.error || 'Challenge failed');
             }
 
-            // Store raw content for "Ask Claude"
-            lastChallengeContent = data.content || '';
-
             // Format the result with markdown-like headers
             let content = data.content || 'No response received';
-            // Convert "Risks:", "Missing checks/tests:", etc. to styled headers
             content = content
-                .replace(/^(Risks:)/gm, '<h3>Risks</h3>')
-                .replace(/^(Missing checks\/tests:)/gm, '<h3>Missing Checks/Tests</h3>')
-                .replace(/^(Clarifying questions.*:)/gm, '<h3>Clarifying Questions</h3>');
+                .replace(/^(\d+\.\s*Problem Analysis:)/gm, '<h3>Problem Analysis</h3>')
+                .replace(/^(\d+\.\s*Potential Causes:)/gm, '<h3>Potential Causes</h3>')
+                .replace(/^(\d+\.\s*Suggested Fix:)/gm, '<h3>Suggested Fix</h3>')
+                .replace(/^(\d+\.\s*Risks\/Edge Cases:)/gm, '<h3>Risks/Edge Cases</h3>');
 
             challengeResult.innerHTML = content;
             challengeResult.classList.remove('loading');
 
-            // Show "Ask Claude" button if we have content
-            if (challengeAsk && lastChallengeContent) {
-                challengeAsk.classList.remove('hidden');
-            }
-
-            // Show stats with model info
+            // Show stats
             const usage = data.usage || {};
             const stats = [];
             if (data.model_name) stats.push(data.model_name);
-            if (data.bundle_chars) stats.push(`${Math.round(data.bundle_chars / 1000)}k chars`);
-            if (usage.total_tokens) stats.push(`${usage.total_tokens} tokens`);
+            if (data.bundle_chars) stats.push(`${Math.round(data.bundle_chars / 1000)}k ctx`);
+            if (usage.total_tokens) stats.push(`${usage.total_tokens} tok`);
             challengeStatus.textContent = stats.join(' | ');
 
         } catch (error) {
             console.error('Challenge error:', error);
-            challengeResult.innerHTML = `<p style="color: var(--accent-red);">Error: ${error.message}</p>`;
+            challengeResult.innerHTML = `<p style="color: var(--danger);">Error: ${error.message}</p>`;
             challengeResult.classList.remove('loading');
             challengeStatus.textContent = '';
-            if (challengeAsk) challengeAsk.classList.add('hidden');
         } finally {
             challengeRun.disabled = false;
             challengeRun.textContent = 'Run Challenge';

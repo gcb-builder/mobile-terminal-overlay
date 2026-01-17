@@ -568,6 +568,42 @@ def create_app(config: Config) -> FastAPI:
             logger.error(f"Error reading log file: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.get("/api/terminal/capture")
+    async def capture_terminal(
+        token: Optional[str] = Query(None),
+        lines: int = Query(50),
+    ):
+        """
+        Capture recent terminal output from tmux pane.
+
+        Uses tmux capture-pane to get scrollback buffer.
+        Returns last N lines of terminal content.
+        """
+        import subprocess
+
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session = app.state.current_session
+        if not session:
+            return {"content": "", "error": "No session"}
+
+        try:
+            # Capture last N lines from tmux pane
+            result = subprocess.run(
+                ["tmux", "capture-pane", "-t", session, "-p", "-S", f"-{lines}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                return {"content": result.stdout, "lines": lines}
+            else:
+                return {"content": "", "error": result.stderr}
+        except Exception as e:
+            logger.error(f"Failed to capture terminal: {e}")
+            return {"content": "", "error": str(e)}
+
     @app.get("/api/challenge/models")
     async def get_challenge_models(token: Optional[str] = Query(None)):
         """
@@ -585,20 +621,24 @@ def create_app(config: Config) -> FastAPI:
     async def challenge_code(
         token: Optional[str] = Query(None),
         model: str = Query(DEFAULT_MODEL),
+        problem: str = Query(""),
+        include_terminal: bool = Query(True),
+        terminal_lines: int = Query(50),
+        include_diff: bool = Query(True),
     ):
         """
-        Run skeptical code review using AI models.
+        Run problem-focused code review using AI models.
 
         Supports multiple providers: Together.ai, OpenAI, Anthropic.
         User selects model, system routes to appropriate provider.
 
-        Builds a context bundle from:
-        - Git status and branch
-        - CONTEXT.md
-        - touch-summary.md
-        - Recent activity log
+        Context bundle is built from:
+        - User's problem description (required for focused review)
+        - Terminal output (optional, captures current state)
+        - Git diff (optional, shows recent changes)
+        - Minimal project context
 
-        Returns AI's critical analysis.
+        Returns AI's analysis focused on the specific problem.
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
@@ -610,47 +650,170 @@ def create_app(config: Config) -> FastAPI:
                 status_code=400,
             )
 
-        # Get recent log content for context
-        log_content = ""
+        # Build problem-focused bundle
+        bundle_parts = []
+
+        # 1. Problem statement (user-provided)
+        if problem.strip():
+            bundle_parts.append(f"## Problem Statement\n{problem.strip()}")
+        else:
+            bundle_parts.append("## Problem Statement\nGeneral code review requested (no specific problem described)")
+
+        # 2. Terminal content (captures current debugging state)
+        if include_terminal:
+            session = app.state.current_session
+            if session:
+                try:
+                    result = subprocess.run(
+                        ["tmux", "capture-pane", "-t", session, "-p", "-S", f"-{terminal_lines}"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        bundle_parts.append(f"## Current Terminal State (last {terminal_lines} lines)\n```\n{result.stdout}\n```")
+                except Exception as e:
+                    logger.warning(f"Failed to capture terminal: {e}")
+
+        # 3. Git diff (shows recent changes)
+        if include_diff:
+            try:
+                # Get diff stat first
+                diff_stat = subprocess.run(
+                    ["git", "diff", "--stat"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                # Get actual diff (limited)
+                diff_content = subprocess.run(
+                    ["git", "diff"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if diff_stat.returncode == 0 and diff_stat.stdout.strip():
+                    diff_text = diff_content.stdout[:8000] if diff_content.stdout else ""
+                    if len(diff_content.stdout) > 8000:
+                        diff_text += "\n... [diff truncated]"
+                    bundle_parts.append(f"## Uncommitted Changes\n```\n{diff_stat.stdout}\n```\n\n### Diff Detail\n```diff\n{diff_text}\n```")
+            except Exception as e:
+                logger.warning(f"Failed to get git diff: {e}")
+
+        # 4. Minimal project context (git status + branch)
         try:
-            # Reuse the log parsing logic
-            import json as json_module
-            project_id = str(repo_path.resolve()).replace("/", "-")
-            claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
-            if claude_projects_dir.exists():
-                jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
-                if jsonl_files:
-                    jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-                    log_file = jsonl_files[0]
-                    raw_content = log_file.read_text(errors="replace")
-                    lines = raw_content.strip().split('\n')[-100:]  # Last 100 entries
+            status = subprocess.run(
+                ["git", "status", "-sb"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if status.returncode == 0:
+                bundle_parts.append(f"## Git Status\n```\n{status.stdout}\n```")
+        except Exception:
+            pass
 
-                    for line in lines:
-                        if not line.strip():
-                            continue
-                        try:
-                            entry = json_module.loads(line)
-                            msg_type = entry.get('type')
-                            message = entry.get('message', {})
-                            if msg_type == 'user':
-                                content = message.get('content', '')
-                                if isinstance(content, str) and content.strip():
-                                    log_content += f"User: {content[:200]}\n"
-                            elif msg_type == 'assistant':
-                                content = message.get('content', [])
-                                if isinstance(content, list):
-                                    for block in content:
-                                        if isinstance(block, dict) and block.get('type') == 'text':
-                                            text = block.get('text', '')[:200]
-                                            if text.strip():
-                                                log_content += f"Assistant: {text}\n"
-                        except json_module.JSONDecodeError:
-                            continue
+        bundle = "\n\n".join(bundle_parts)
+
+        # Call API with problem-focused system prompt
+        from .challenge import call_api, MODELS
+        if model not in MODELS:
+            return JSONResponse({"error": f"Unknown model: {model}"}, status_code=400)
+
+        # Custom system prompt for problem-focused review
+        system_prompt = """You are a code reviewer focusing on a SPECIFIC problem described by the user.
+
+Focus your review ONLY on the problem described in the "Problem Statement" section.
+Use the terminal output and git diff to understand the current state.
+
+Do not give generic project feedback unrelated to the problem.
+Do not suggest running commands.
+Be concise and actionable.
+
+Output format:
+1. Problem Analysis: [Your understanding of the issue]
+2. Potential Causes: [Based on the context provided]
+3. Suggested Fix: [Specific actionable suggestions]
+4. Risks/Edge Cases: [Things to watch out for]"""
+
+        # Build request manually to use custom system prompt
+        model_info = MODELS[model]
+        provider_key = model_info["provider"]
+        model_id = model_info["model_id"]
+
+        from .challenge import (
+            PROVIDERS, get_api_key, validate_api_key,
+            build_openai_payload, build_anthropic_payload,
+            build_openai_headers, build_anthropic_headers,
+            parse_openai_response, parse_anthropic_response,
+        )
+        import httpx
+
+        provider = PROVIDERS[provider_key]
+        api_key = get_api_key(provider_key)
+        is_valid, error_msg = validate_api_key(api_key, provider_key)
+        if not is_valid:
+            return JSONResponse({"error": error_msg}, status_code=400)
+
+        # Build payload with custom system prompt
+        fmt = provider["format"]
+        if fmt == "openai":
+            headers = build_openai_headers(api_key)
+            payload = {
+                "model": model_id,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": bundle},
+                ],
+                "temperature": 0.2,
+                "max_tokens": 1000,
+            }
+            parse_response = parse_openai_response
+        elif fmt == "anthropic":
+            headers = build_anthropic_headers(api_key)
+            payload = {
+                "model": model_id,
+                "system": system_prompt,
+                "messages": [
+                    {"role": "user", "content": bundle},
+                ],
+                "temperature": 0.2,
+                "max_tokens": 1000,
+            }
+            parse_response = parse_anthropic_response
+        else:
+            return JSONResponse({"error": f"Unknown format: {fmt}"}, status_code=400)
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    provider["url"],
+                    headers=headers,
+                    json=payload,
+                )
+                if response.status_code != 200:
+                    return JSONResponse(
+                        {"error": f"API error {response.status_code}: {response.text}"},
+                        status_code=500,
+                    )
+                data = response.json()
+                content = parse_response(data)
+                result = {
+                    "success": True,
+                    "content": content,
+                    "model": model,
+                    "model_name": model_info["name"],
+                    "provider": provider_key,
+                    "bundle_chars": len(bundle),
+                }
+        except httpx.TimeoutException:
+            return JSONResponse({"error": "Request timed out (120s)"}, status_code=500)
         except Exception as e:
-            logger.warning(f"Failed to get log content for challenge: {e}")
-
-        # Run the challenge with selected model
-        result = await run_challenge(repo_path, log_content, model_key=model)
+            logger.error(f"Challenge API error: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
 
         if result.get("success"):
             return {

@@ -1496,6 +1496,100 @@ html, body {
     background: var(--bg-tertiary);
 }
 
+/* Challenge problem input section */
+.challenge-problem-section {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.challenge-label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.challenge-problem-input {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 70px;
+}
+
+.challenge-problem-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.challenge-problem-input::placeholder {
+    color: var(--text-secondary);
+}
+
+/* Challenge context options */
+.challenge-options {
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+.challenge-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.challenge-option input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+}
+
+/* Challenge preview section */
+.challenge-preview {
+    margin: 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.challenge-preview summary {
+    padding: 12px 16px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.challenge-preview summary:hover {
+    color: var(--text-primary);
+}
+
+.challenge-preview-content {
+    max-height: 150px;
+    overflow-y: auto;
+    padding: 0 16px 12px 16px;
+    font-size: 11px;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: var(--bg-primary);
+    margin: 0 12px 12px 12px;
+    border-radius: 6px;
+    padding: 10px;
+}
+
+/* Challenge result */
 .challenge-result {
     flex: 1;
     overflow-y: auto;
@@ -1505,6 +1599,10 @@ html, body {
     color: var(--text-primary);
     white-space: pre-wrap;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.challenge-result.hidden {
+    display: none;
 }
 
 .challenge-result .challenge-hint {
