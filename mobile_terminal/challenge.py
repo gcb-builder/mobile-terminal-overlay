@@ -52,9 +52,9 @@ MODELS = {
         "model_id": "deepseek-ai/DeepSeek-R1",
     },
     "qwen-coder": {
-        "name": "Qwen 2.5 Coder 32B",
+        "name": "Qwen3 Coder 480B",
         "provider": "together",
-        "model_id": "Qwen/Qwen2.5-Coder-32B-Instruct",
+        "model_id": "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
     },
     "llama-70b": {
         "name": "Llama 3.3 70B",
