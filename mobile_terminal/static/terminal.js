@@ -1039,14 +1039,21 @@ function setupJumpToBottom() {
         isAtBottom = scrollPos >= maxScroll - 1;
     });
 
-    // Auto-scroll on new output (only if already at bottom, or force flag is set)
-    // Use write callback to ensure scroll happens AFTER data is rendered
+    // Auto-scroll on new output
+    // Use requestAnimationFrame to debounce rapid writes during resize
     const originalWrite = terminal.write.bind(terminal);
+    let scrollPending = false;
+
     terminal.write = (data) => {
-        const wasAtBottom = isAtBottom;
+        const shouldScroll = isAtBottom || forceScrollToBottom;
+
         originalWrite(data, () => {
-            if (wasAtBottom || forceScrollToBottom) {
-                terminal.scrollToBottom();
+            if (shouldScroll && !scrollPending) {
+                scrollPending = true;
+                requestAnimationFrame(() => {
+                    terminal.scrollToBottom();
+                    scrollPending = false;
+                });
             }
         });
     };
