@@ -31,6 +31,27 @@ def get_together_api_key() -> Optional[str]:
     return os.environ.get("TOGETHER_API_KEY")
 
 
+def validate_api_key(api_key: Optional[str]) -> tuple[bool, str]:
+    """
+    Validate Together.ai API key format.
+
+    Returns:
+        (is_valid, error_message)
+    """
+    if not api_key:
+        return False, "TOGETHER_API_KEY environment variable not set"
+
+    api_key = api_key.strip()
+
+    if len(api_key) < 20:
+        return False, "API key appears too short"
+
+    if " " in api_key or "\n" in api_key:
+        return False, "API key contains invalid characters (spaces/newlines)"
+
+    return True, ""
+
+
 def build_challenge_bundle(repo_path: Path, log_content: str = "") -> str:
     """
     Build a context bundle for the challenge function.
@@ -140,10 +161,13 @@ async def call_together_api(bundle: str) -> dict:
         dict with 'success', 'content' or 'error' keys
     """
     api_key = get_together_api_key()
-    if not api_key:
+
+    # Validate API key
+    is_valid, error_msg = validate_api_key(api_key)
+    if not is_valid:
         return {
             "success": False,
-            "error": "TOGETHER_API_KEY environment variable not set",
+            "error": error_msg,
         }
 
     headers = {

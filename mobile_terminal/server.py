@@ -24,7 +24,7 @@ from collections import deque
 from pathlib import Path
 from typing import Optional
 
-from mobile_terminal.challenge import run_challenge, get_together_api_key
+from mobile_terminal.challenge import run_challenge, get_together_api_key, validate_api_key
 
 
 class RingBuffer:
@@ -584,10 +584,12 @@ def create_app(config: Config) -> FastAPI:
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        # Check if API key is configured
-        if not get_together_api_key():
+        # Validate API key
+        api_key = get_together_api_key()
+        is_valid, error_msg = validate_api_key(api_key)
+        if not is_valid:
             return JSONResponse(
-                {"error": "TOGETHER_API_KEY environment variable not set"},
+                {"error": error_msg},
                 status_code=503,
             )
 
