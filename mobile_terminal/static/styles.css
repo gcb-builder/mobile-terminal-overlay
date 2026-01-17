@@ -1114,6 +1114,96 @@ html, body {
     background: var(--accent);
 }
 
+/* Tool call lines (• Bash(, • Read:, etc.) */
+.transcript-line.tool-call {
+    background: rgba(188, 140, 255, 0.1);
+    border-left-color: var(--magenta);
+    margin-top: 8px;
+    padding: 4px 8px;
+}
+
+.transcript-content .tool-bullet {
+    color: var(--magenta);
+    font-weight: 600;
+}
+
+.transcript-content .tool-name {
+    color: var(--cyan);
+    font-weight: 600;
+}
+
+/* Bullet point lines */
+.transcript-line.bullet-item {
+    padding-left: 8px;
+}
+
+.transcript-content .bullet {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+/* Inline code (backticks) */
+.transcript-content .inline-code {
+    background: var(--bg-tertiary);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+    color: var(--warning);
+}
+
+/* Horizontal rule in transcript */
+.transcript-hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 12px 0;
+}
+
+/* Collapsible output blocks */
+.output-block {
+    margin: 4px 0;
+    border-left: 2px solid var(--border);
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 0 4px 4px 0;
+}
+
+.output-summary {
+    padding: 6px 12px;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 12px;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.output-summary::before {
+    content: '▶';
+    font-size: 10px;
+    transition: transform 0.15s ease;
+}
+
+.output-block[open] .output-summary::before {
+    transform: rotate(90deg);
+}
+
+.output-summary:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.output-content {
+    padding: 0 8px 8px 8px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+/* Enhanced prompt styling */
+.transcript-content .prompt {
+    color: var(--cyan);
+    font-weight: 700;
+    text-shadow: 0 0 8px rgba(57, 197, 207, 0.4);
+}
+
 /* Refresh button style */
 .refresh-btn {
     background: var(--bg-tertiary) !important;

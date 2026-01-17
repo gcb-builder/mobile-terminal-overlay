@@ -1682,47 +1682,136 @@ function renderTranscript(text, searchTerm = '') {
     // Strip ANSI codes for clean display
     text = stripAnsi(text);
 
+    // Pre-process: merge continuation lines for better word wrap
+    text = mergeTranscriptLines(text);
+
     const lines = text.split('\n');
     let html = '';
     let searchCount = 0;
+    let lastWasEmpty = false;
+
+    // Collapsible output block tracking
+    let outputBuffer = [];
+    let outputContext = '';  // What triggered this output (tool name or command)
 
     // Patterns for detecting different line types
-    const promptPattern = /^(\s*)([\$#>]|\w+@[\w.-]+[:\$#]|\([\w-]+\)\s*[\$#])/;
+    const promptPattern = /^(\s*)([\$#>❯]|\w+@[\w.-]+[:\$#]|\([\w-]+\)\s*[\$#])/;
+    const toolCallPattern = /^(\s*)[•●]\s*\w+[\(:\[]/;  // • Bash(, • Read:, etc.
+    const bulletPattern = /^(\s*)[•●-]\s+/;  // Any bullet point
+    const hrPattern = /^[\s]*[_\-=]{3,}[\s]*$/;  // Horizontal rules: ___, ---, ===
     const pathPattern = /(\/[\w./-]+|~\/[\w./-]*)/g;
     const flagPattern = /(\s--?[\w-]+)/g;
     const stringPattern = /("[^"]*"|'[^']*')/g;
+    const codePattern = /`([^`]+)`/g;  // Inline code in backticks
+
+    // Helper to flush output buffer as collapsible block
+    function flushOutputBuffer() {
+        if (outputBuffer.length === 0) return;
+
+        const lineCount = outputBuffer.length;
+        const preview = outputBuffer[0].text.slice(0, 50) + (outputBuffer[0].text.length > 50 ? '...' : '');
+        const summary = outputContext ? `${outputContext} output` : `${lineCount} line${lineCount > 1 ? 's' : ''}`;
+
+        // Only collapse if more than 3 lines
+        if (lineCount > 3) {
+            html += `<details class="output-block"><summary class="output-summary">${summary}</summary><div class="output-content">`;
+            for (const item of outputBuffer) {
+                html += item.html;
+            }
+            html += '</div></details>';
+        } else {
+            // Small output - don't collapse
+            for (const item of outputBuffer) {
+                html += item.html;
+            }
+        }
+
+        outputBuffer = [];
+        outputContext = '';
+    }
 
     for (const line of lines) {
+        const isEmpty = line.trim() === '';
+
+        // Collapse consecutive blank lines
+        if (isEmpty) {
+            if (!lastWasEmpty) {
+                if (outputBuffer.length > 0) {
+                    outputBuffer.push({ text: '', html: '<div class="transcript-line empty"></div>' });
+                } else {
+                    html += '<div class="transcript-line empty"></div>';
+                }
+            }
+            lastWasEmpty = true;
+            continue;
+        }
+        lastWasEmpty = false;
+
+        // Horizontal rule - flush buffer first
+        if (hrPattern.test(line)) {
+            flushOutputBuffer();
+            html += '<hr class="transcript-hr">';
+            continue;
+        }
+
+        const isPromptLine = promptPattern.test(line);
+        const isToolCall = toolCallPattern.test(line);
+        const isBullet = bulletPattern.test(line);
+        const isStructural = isPromptLine || isToolCall || isBullet;
+
+        // If we hit a structural line, flush any pending output
+        if (isStructural) {
+            flushOutputBuffer();
+        }
+
         let escaped = line
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;');
 
-        const isPromptLine = promptPattern.test(line);
-        const isEmpty = line.trim() === '';
-
-        if (isEmpty) {
-            html += '<div class="transcript-line empty"></div>';
-            continue;
-        }
-
-        // Apply syntax highlighting
+        // Apply shell syntax highlighting ONLY to command lines (not Claude output)
         if (isPromptLine) {
+            // Highlight paths, flags, strings first (before adding HTML)
+            escaped = escaped.replace(pathPattern, '\x00PATH\x01$1\x00/PATH\x01');
+            escaped = escaped.replace(flagPattern, '\x00FLAG\x01$1\x00/FLAG\x01');
+            escaped = escaped.replace(stringPattern, '\x00STR\x01$1\x00/STR\x01');
+
             // Highlight the prompt itself
             escaped = escaped.replace(
-                /^(\s*)([\$#&gt;]|[\w]+@[\w.-]+[:\$#]|\([\w-]+\)\s*[\$#])/,
-                '$1<span class="prompt">$2</span>'
+                /^(\s*)([\$#&gt;❯]|[\w]+@[\w.-]+[:\$#]|\([\w-]+\)\s*[\$#])/,
+                '$1\x00PROMPT\x01$2\x00/PROMPT\x01'
+            );
+
+            // Convert placeholders to HTML
+            escaped = escaped
+                .replace(/\x00PATH\x01/g, '<span class="path">')
+                .replace(/\x00\/PATH\x01/g, '</span>')
+                .replace(/\x00FLAG\x01/g, '<span class="flag">')
+                .replace(/\x00\/FLAG\x01/g, '</span>')
+                .replace(/\x00STR\x01/g, '<span class="string">')
+                .replace(/\x00\/STR\x01/g, '</span>')
+                .replace(/\x00PROMPT\x01/g, '<span class="prompt">')
+                .replace(/\x00\/PROMPT\x01/g, '</span>');
+        } else if (isToolCall) {
+            // Extract tool name for context
+            const toolMatch = line.match(/[•●]\s*(\w+)/);
+            outputContext = toolMatch ? toolMatch[1] : '';
+
+            // Highlight tool name: • ToolName(
+            escaped = escaped.replace(
+                /^(\s*)([•●]\s*)(\w+)([\(:\[])/,
+                '$1<span class="tool-bullet">$2</span><span class="tool-name">$3</span>$4'
+            );
+        } else if (isBullet) {
+            // Highlight bullet points
+            escaped = escaped.replace(
+                /^(\s*)([•●-])(\s+)/,
+                '$1<span class="bullet">$2</span>$3'
             );
         }
 
-        // Highlight paths
-        escaped = escaped.replace(pathPattern, '<span class="path">$1</span>');
-
-        // Highlight flags (but not in paths)
-        escaped = escaped.replace(flagPattern, '<span class="flag">$1</span>');
-
-        // Highlight strings
-        escaped = escaped.replace(stringPattern, '<span class="string">$1</span>');
+        // Highlight inline code (backticks) - safe for all lines
+        escaped = escaped.replace(codePattern, '<code class="inline-code">$1</code>');
 
         // Apply search highlighting if searching
         if (searchTerm) {
@@ -1732,9 +1821,28 @@ function renderTranscript(text, searchTerm = '') {
             escaped = escaped.replace(regex, '<span class="highlight">$1</span>');
         }
 
-        const lineClass = isPromptLine ? 'transcript-line command' : 'transcript-line output';
-        html += `<div class="${lineClass}">${escaped}</div>`;
+        // Determine line class
+        let lineClass = 'transcript-line output';
+        if (isPromptLine) {
+            lineClass = 'transcript-line command';
+        } else if (isToolCall) {
+            lineClass = 'transcript-line tool-call';
+        } else if (isBullet) {
+            lineClass = 'transcript-line bullet-item';
+        }
+
+        const lineHtml = `<div class="${lineClass}">${escaped}</div>`;
+
+        // Collect output lines into buffer, structural lines go directly to html
+        if (!isStructural) {
+            outputBuffer.push({ text: line, html: lineHtml });
+        } else {
+            html += lineHtml;
+        }
     }
+
+    // Flush any remaining output
+    flushOutputBuffer();
 
     transcriptContent.innerHTML = html;
 
@@ -1750,6 +1858,55 @@ function renderTranscript(text, searchTerm = '') {
         const sourceLabel = transcriptSource === 'log' ? 'Live Log' : 'Snapshot';
         transcriptSearchCount.textContent = sourceLabel;
     }
+}
+
+/**
+ * Merge continuation lines for better word wrap
+ * Lines that are just wrapped text (don't start with special patterns) get merged
+ */
+function mergeTranscriptLines(text) {
+    const lines = text.split('\n');
+    const merged = [];
+
+    // Patterns that indicate a new logical line (not a continuation)
+    const newLinePatterns = [
+        /^[\s]*$/,                           // Empty line
+        /^[\s]*[•●-]\s/,                     // Bullet point
+        /^[\s]*[\$#>❯]/,                     // Prompt
+        /^[\s]*\w+@[\w.-]+[:\$#]/,           // user@host prompt
+        /^[\s]*\([^)]+\)\s*[\$#]/,           // (env) $ prompt
+        /^[\s]*[_\-=]{3,}[\s]*$/,            // Horizontal rule
+        /^[\s]*\d+\.\s/,                     // Numbered list
+        /^[\s]*[A-Z][a-z]+:\s/,              // Label: value
+        /^[\s]*```/,                         // Code fence
+        /^[\s]*#+\s/,                        // Markdown header
+        /^[\s]*\|/,                          // Table row
+        /^\s{4,}/,                           // Heavily indented (code block)
+    ];
+
+    const isNewLogicalLine = (line) => {
+        return newLinePatterns.some(p => p.test(line));
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        // If this is a new logical line or first line, start fresh
+        if (merged.length === 0 || isNewLogicalLine(line)) {
+            merged.push(line);
+        } else {
+            // This is a continuation - merge with previous line
+            const prev = merged[merged.length - 1];
+            // Only merge if previous line doesn't end with punctuation that suggests completion
+            if (prev && !prev.match(/[.!?:]\s*$/) && line.trim()) {
+                merged[merged.length - 1] = prev + ' ' + line.trim();
+            } else {
+                merged.push(line);
+            }
+        }
+    }
+
+    return merged.join('\n');
 }
 
 function escapeRegExp(string) {
