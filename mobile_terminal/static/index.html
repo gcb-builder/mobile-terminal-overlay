@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=48">
+    <link rel="stylesheet" href="/static/styles.css?v=51">
 </head>
 <body>
     <div class="app">
@@ -123,9 +123,9 @@
 
         <!-- Action bar: visible in Terminal view only -->
         <div id="viewBar" class="view-bar">
-            <button id="selectModeBtn" class="view-btn select-btn">Select</button>
-            <button id="copyBtn" class="view-btn copy-btn">Copy</button>
+            <button id="selectCopyBtn" class="view-btn select-btn">Select</button>
             <button id="stopBtn" class="view-btn stop-btn">Stop</button>
+            <button id="challengeBtn" class="view-btn challenge-btn">Challenge</button>
             <button id="composeBtn" class="view-btn compose-btn">Compose</button>
         </div>
 
@@ -161,6 +161,23 @@
             </div>
         </div>
 
+        <!-- Challenge modal (DeepSeek code review) -->
+        <div id="challengeModal" class="challenge-modal hidden">
+            <div class="challenge-modal-content">
+                <div class="challenge-header">
+                    <span class="challenge-title">Challenge Review</span>
+                    <button id="challengeClose" class="challenge-close">&times;</button>
+                </div>
+                <div id="challengeResult" class="challenge-result">
+                    <p class="challenge-hint">Tap "Run Challenge" to get a skeptical code review from DeepSeek.</p>
+                </div>
+                <div class="challenge-footer">
+                    <span id="challengeStatus" class="challenge-status"></span>
+                    <button id="challengeRun" class="challenge-action primary">Run Challenge</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Connection status overlay -->
         <div id="statusOverlay" class="status-overlay">
             <div class="status-content">
@@ -171,7 +188,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=49"></script>
+    <script src="/static/terminal.js?v=51"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

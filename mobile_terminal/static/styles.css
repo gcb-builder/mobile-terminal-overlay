@@ -415,15 +415,6 @@ html, body {
     border-color: var(--accent);
 }
 
-/* Copy button - green tint */
-.quick-btn.copy-btn {
-    color: var(--success);
-}
-
-.quick-btn.copy-btn:active {
-    background: rgba(63, 185, 80, 0.2);
-}
-
 /* Bar separator for visual grouping */
 .bar-separator {
     width: 1px;
@@ -560,14 +551,6 @@ html, body {
     background: var(--accent);
     color: white;
     border-color: var(--accent);
-}
-
-.view-btn.copy-btn {
-    color: var(--success);
-}
-
-.view-btn.copy-btn:active {
-    background: rgba(63, 185, 80, 0.2);
 }
 
 .view-btn.stop-btn {
@@ -1073,6 +1056,143 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: center;
+}
+
+/* Challenge modal */
+.challenge-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.85);
+    z-index: 400;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.challenge-modal.hidden {
+    display: none;
+}
+
+.challenge-modal-content {
+    width: 100%;
+    max-width: 500px;
+    max-height: 80vh;
+    background: var(--bg-secondary);
+    border-radius: 16px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    animation: slideUp 0.2s ease-out;
+}
+
+.challenge-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.challenge-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.challenge-close {
+    width: 32px;
+    height: 32px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 24px;
+    cursor: pointer;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.challenge-close:active {
+    background: var(--bg-tertiary);
+}
+
+.challenge-result {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.challenge-result .challenge-hint {
+    color: var(--text-secondary);
+    text-align: center;
+    font-style: italic;
+}
+
+.challenge-result.loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+}
+
+.challenge-result h3 {
+    color: var(--accent-cyan);
+    margin: 1em 0 0.5em 0;
+    font-size: 14px;
+}
+
+.challenge-result h3:first-child {
+    margin-top: 0;
+}
+
+.challenge-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.challenge-status {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.challenge-action {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.challenge-action.primary {
+    background: var(--accent-magenta);
+    color: white;
+}
+
+.challenge-action.primary:active {
+    background: #9a5bb0;
+}
+
+.challenge-action.primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.challenge-btn {
+    background: var(--accent-magenta) !important;
+    color: white !important;
 }
 
 /* View toggle (Terminal | Transcript) */

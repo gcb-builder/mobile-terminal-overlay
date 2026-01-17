@@ -46,7 +46,8 @@ let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composeInsert, composeRun;
 let composeCamera, composeGallery, composeCameraInput, composeGalleryInput, composeAttachments;
-let copyBtn, selectModeBtn, stopBtn;
+let selectCopyBtn, stopBtn, challengeBtn;
+let challengeModal, challengeClose, challengeResult, challengeStatus, challengeRun;
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 let contextViewBtn, touchViewBtn, contextContainer, contextContent, touchContainer, touchContent;
 
@@ -89,9 +90,14 @@ function initDOMElements() {
     composeCameraInput = document.getElementById('composeCameraInput');
     composeGalleryInput = document.getElementById('composeGalleryInput');
     composeAttachments = document.getElementById('composeAttachments');
-    copyBtn = document.getElementById('copyBtn');
-    selectModeBtn = document.getElementById('selectModeBtn');
+    selectCopyBtn = document.getElementById('selectCopyBtn');
     stopBtn = document.getElementById('stopBtn');
+    challengeBtn = document.getElementById('challengeBtn');
+    challengeModal = document.getElementById('challengeModal');
+    challengeClose = document.getElementById('challengeClose');
+    challengeResult = document.getElementById('challengeResult');
+    challengeStatus = document.getElementById('challengeStatus');
+    challengeRun = document.getElementById('challengeRun');
     terminalViewBtn = document.getElementById('terminalViewBtn');
     transcriptViewBtn = document.getElementById('transcriptViewBtn');
     transcriptContainer = document.getElementById('transcriptContainer');
@@ -1170,6 +1176,78 @@ function setupComposeMode() {
 }
 
 /**
+ * Setup challenge modal (DeepSeek code review)
+ */
+function setupChallenge() {
+    if (!challengeBtn || !challengeModal) return;
+
+    // Open modal
+    challengeBtn.addEventListener('click', () => {
+        challengeModal.classList.remove('hidden');
+    });
+
+    // Close modal
+    challengeClose.addEventListener('click', () => {
+        challengeModal.classList.add('hidden');
+    });
+
+    // Close on backdrop click
+    challengeModal.addEventListener('click', (e) => {
+        if (e.target === challengeModal) {
+            challengeModal.classList.add('hidden');
+        }
+    });
+
+    // Run challenge
+    challengeRun.addEventListener('click', async () => {
+        challengeRun.disabled = true;
+        challengeRun.textContent = 'Running...';
+        challengeResult.innerHTML = '<div class="loading">Analyzing code with DeepSeek...</div>';
+        challengeResult.classList.add('loading');
+        challengeStatus.textContent = '';
+
+        try {
+            const response = await fetch(`/api/challenge?token=${token}`, {
+                method: 'POST',
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || 'Challenge failed');
+            }
+
+            // Format the result with markdown-like headers
+            let content = data.content || 'No response received';
+            // Convert "Risks:", "Missing checks/tests:", etc. to styled headers
+            content = content
+                .replace(/^(Risks:)/gm, '<h3>Risks</h3>')
+                .replace(/^(Missing checks\/tests:)/gm, '<h3>Missing Checks/Tests</h3>')
+                .replace(/^(Clarifying questions.*:)/gm, '<h3>Clarifying Questions</h3>');
+
+            challengeResult.innerHTML = content;
+            challengeResult.classList.remove('loading');
+
+            // Show stats
+            const usage = data.usage || {};
+            const stats = [];
+            if (data.bundle_chars) stats.push(`${Math.round(data.bundle_chars / 1000)}k chars`);
+            if (usage.total_tokens) stats.push(`${usage.total_tokens} tokens`);
+            challengeStatus.textContent = stats.join(' | ');
+
+        } catch (error) {
+            console.error('Challenge error:', error);
+            challengeResult.innerHTML = `<p style="color: var(--accent-red);">Error: ${error.message}</p>`;
+            challengeResult.classList.remove('loading');
+            challengeStatus.textContent = '';
+        } finally {
+            challengeRun.disabled = false;
+            challengeRun.textContent = 'Run Challenge';
+        }
+    });
+}
+
+/**
  * Upload a file attachment
  * @param {File} file - The file to upload
  * @param {HTMLElement} [triggerBtn] - Optional button to show uploading state on
@@ -1294,30 +1372,88 @@ let isSelectMode = false;
 let selectStart = null;  // {row, col}
 
 function setupCopyButton() {
-    // Toggle select mode
-    const toggleSelectMode = (e) => {
-        e.preventDefault();
+    // Select/Copy button states: 'select' | 'tap-start' | 'tap-end' | 'copy'
+    let buttonState = 'select';
 
-        isSelectMode = !isSelectMode;
+    const resetState = () => {
+        buttonState = 'select';
+        isSelectMode = false;
         selectStart = null;
+        if (selectCopyBtn) {
+            selectCopyBtn.classList.remove('active');
+            selectCopyBtn.textContent = 'Select';
+        }
+        setTimeout(() => terminal.focus(), 100);
+    };
 
-        if (isSelectMode) {
-            selectModeBtn.classList.add('active');
-            selectModeBtn.textContent = 'Tap start';
-            terminal.clearSelection();
-        } else {
-            selectModeBtn.classList.remove('active');
-            selectModeBtn.textContent = 'Select';
-            setTimeout(() => terminal.focus(), 100);
+    const fallbackCopy = (text) => {
+        try {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+            textarea.setAttribute('readonly', '');
+            document.body.appendChild(textarea);
+            textarea.select();
+            textarea.setSelectionRange(0, text.length);
+            const success = document.execCommand('copy');
+            document.body.removeChild(textarea);
+            return success;
+        } catch (e) {
+            return false;
         }
     };
 
-    if (selectModeBtn) {
-        selectModeBtn.addEventListener('click', toggleSelectMode);
+    const handleCopy = () => {
+        const selection = terminal.getSelection();
+        if (!selection) {
+            resetState();
+            return;
+        }
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(selection).then(() => {
+                selectCopyBtn.textContent = 'Copied!';
+                setTimeout(resetState, 1000);
+            }).catch(() => {
+                const success = fallbackCopy(selection);
+                selectCopyBtn.textContent = success ? 'Copied!' : 'Failed';
+                setTimeout(resetState, 1000);
+            }).finally(() => {
+                terminal.clearSelection();
+            });
+        } else {
+            const success = fallbackCopy(selection);
+            selectCopyBtn.textContent = success ? 'Copied!' : 'Failed';
+            terminal.clearSelection();
+            setTimeout(resetState, 1000);
+        }
+    };
+
+    // Button click handler - behavior depends on state
+    if (selectCopyBtn) {
+        selectCopyBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            if (buttonState === 'select') {
+                // Enter select mode
+                buttonState = 'tap-start';
+                isSelectMode = true;
+                selectStart = null;
+                selectCopyBtn.classList.add('active');
+                selectCopyBtn.textContent = 'Tap start';
+                terminal.clearSelection();
+            } else if (buttonState === 'tap-start' || buttonState === 'tap-end') {
+                // Cancel selection
+                resetState();
+            } else if (buttonState === 'copy') {
+                // Copy selection
+                handleCopy();
+            }
+        });
     }
 
-    // Handle taps on terminal for selection - use click only to avoid double-firing
-    // Note: Works in both View and Control mode (viewBar is always visible)
+    // Handle taps on terminal for selection
     let lastSelectionTap = 0;
     terminalContainer.addEventListener('click', (e) => {
         if (!isSelectMode) return;
@@ -1349,7 +1485,8 @@ function setupCopyButton() {
             if (!selectStart) {
                 // First tap - set start point
                 selectStart = { row, col };
-                if (selectModeBtn) selectModeBtn.textContent = 'Tap end';
+                buttonState = 'tap-end';
+                selectCopyBtn.textContent = 'Tap end';
             } else {
                 // Second tap - set end point and select
                 const startRow = Math.min(selectStart.row, row);
@@ -1363,97 +1500,18 @@ function setupCopyButton() {
                     terminal.selectLines(startRow, endRow);
                 }
 
-                // Exit select mode but keep selection visible for copy
+                // Transition to copy state
+                buttonState = 'copy';
                 isSelectMode = false;
                 selectStart = null;
-                if (selectModeBtn) {
-                    selectModeBtn.classList.remove('active');
-                    selectModeBtn.textContent = 'Select';
-                }
-                // Restore focus so user can type or tap Copy
-                setTimeout(() => terminal.focus(), 100);
+                selectCopyBtn.classList.add('active');
+                selectCopyBtn.textContent = 'Copy';
             }
         } catch (err) {
             console.error('Selection error:', err);
-            isSelectMode = false;
-            selectStart = null;
-            if (selectModeBtn) {
-                selectModeBtn.classList.remove('active');
-                selectModeBtn.textContent = 'Select';
-            }
-            // Restore focus on error too
-            setTimeout(() => terminal.focus(), 100);
+            resetState();
         }
     });
-
-    // Copy button
-    if (copyBtn) {
-        const resetCopyState = () => {
-            isSelectMode = false;
-            selectStart = null;
-            if (selectModeBtn) {
-                selectModeBtn.classList.remove('active');
-                selectModeBtn.textContent = 'Select';
-            }
-            setTimeout(() => {
-                terminal.focus();
-                if (document.activeElement !== terminal.textarea) {
-                    terminal.textarea.focus();
-                }
-            }, 50);
-        };
-
-        const handleCopy = () => {
-            const selection = terminal.getSelection();
-
-            if (!selection) {
-                copyBtn.textContent = 'Select first';
-                setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
-                resetCopyState();
-                return;
-            }
-
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(selection).then(() => {
-                    copyBtn.textContent = 'Copied!';
-                    setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
-                }).catch(() => {
-                    fallbackCopy(selection);
-                }).finally(() => {
-                    terminal.clearSelection();
-                    resetCopyState();
-                });
-            } else {
-                fallbackCopy(selection);
-                terminal.clearSelection();
-                resetCopyState();
-            }
-        };
-
-        const fallbackCopy = (text) => {
-            try {
-                const textarea = document.createElement('textarea');
-                textarea.value = text;
-                textarea.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
-                textarea.setAttribute('readonly', '');
-                document.body.appendChild(textarea);
-                textarea.select();
-                textarea.setSelectionRange(0, text.length);
-                const success = document.execCommand('copy');
-                document.body.removeChild(textarea);
-                copyBtn.textContent = success ? 'Copied!' : 'Failed';
-            } catch (e) {
-                copyBtn.textContent = 'Failed';
-            }
-            setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
-        };
-
-        copyBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            handleCopy();
-        });
-    }
 
     // Stop button (Ctrl+C)
     if (stopBtn) {
@@ -2214,6 +2272,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupCopyButton();
     setupCommandHistory();
     setupComposeMode();
+    setupChallenge();
     setupViewToggle();
     setupSwipeNavigation();
     setupTranscriptSearch();

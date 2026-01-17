@@ -24,6 +24,8 @@ from collections import deque
 from pathlib import Path
 from typing import Optional
 
+from mobile_terminal.challenge import run_challenge, get_together_api_key
+
 
 class RingBuffer:
     """Thread-safe ring buffer for storing PTY output."""
@@ -565,6 +567,92 @@ def create_app(config: Config) -> FastAPI:
         except Exception as e:
             logger.error(f"Error reading log file: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/api/challenge")
+    async def challenge_code(token: Optional[str] = Query(None)):
+        """
+        Run skeptical code review using DeepSeek via Together.ai API.
+
+        Builds a context bundle from:
+        - Git status and branch
+        - CONTEXT.md
+        - touch-summary.md
+        - Recent activity log
+
+        Returns DeepSeek's critical analysis.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Check if API key is configured
+        if not get_together_api_key():
+            return JSONResponse(
+                {"error": "TOGETHER_API_KEY environment variable not set"},
+                status_code=503,
+            )
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse(
+                {"error": "No repo path found"},
+                status_code=400,
+            )
+
+        # Get recent log content for context
+        log_content = ""
+        try:
+            # Reuse the log parsing logic
+            import json as json_module
+            project_id = str(repo_path.resolve()).replace("/", "-")
+            claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
+            if claude_projects_dir.exists():
+                jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
+                if jsonl_files:
+                    jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+                    log_file = jsonl_files[0]
+                    raw_content = log_file.read_text(errors="replace")
+                    lines = raw_content.strip().split('\n')[-100:]  # Last 100 entries
+
+                    for line in lines:
+                        if not line.strip():
+                            continue
+                        try:
+                            entry = json_module.loads(line)
+                            msg_type = entry.get('type')
+                            message = entry.get('message', {})
+                            if msg_type == 'user':
+                                content = message.get('content', '')
+                                if isinstance(content, str) and content.strip():
+                                    log_content += f"User: {content[:200]}\n"
+                            elif msg_type == 'assistant':
+                                content = message.get('content', [])
+                                if isinstance(content, list):
+                                    for block in content:
+                                        if isinstance(block, dict) and block.get('type') == 'text':
+                                            text = block.get('text', '')[:200]
+                                            if text.strip():
+                                                log_content += f"Assistant: {text}\n"
+                        except json_module.JSONDecodeError:
+                            continue
+        except Exception as e:
+            logger.warning(f"Failed to get log content for challenge: {e}")
+
+        # Run the challenge
+        result = await run_challenge(repo_path, log_content)
+
+        if result.get("success"):
+            return {
+                "success": True,
+                "content": result["content"],
+                "model": result.get("model"),
+                "bundle_chars": result.get("bundle_chars"),
+                "usage": result.get("usage", {}),
+            }
+        else:
+            return JSONResponse(
+                {"error": result.get("error", "Unknown error")},
+                status_code=500,
+            )
 
     @app.post("/api/upload")
     async def upload_image(

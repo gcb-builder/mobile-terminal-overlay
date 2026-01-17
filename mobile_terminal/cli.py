@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import uvicorn
+from dotenv import load_dotenv
 
 from . import __version__
 from .config import Config, load_config
@@ -80,6 +81,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     """Main entrypoint."""
+    # Load environment variables from .env file
+    load_dotenv()
+
     args = parse_args()
 
     # Load config
