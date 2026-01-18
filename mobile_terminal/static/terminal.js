@@ -46,11 +46,11 @@ let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composePaste, composeInsert, composeRun;
 let composeAttach, composeFileInput, composeThinkMode, composeAttachments;
-let selectCopyBtn, stopBtn, challengeBtn;
+let selectCopyBtn, viewBarQueue, challengeBtn;
 let challengeModal, challengeClose, challengeResult, challengeStatus, challengeRun;
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 let contextViewBtn, touchViewBtn, contextContainer, contextContent, touchContainer, touchContent;
-let logView, logInput, logSend, logQueue, logContent, refreshBtn;
+let logView, logInput, logSend, logContent, refreshBtn;
 let terminalView;
 
 // Attachments state for compose modal
@@ -68,6 +68,9 @@ let forceScrollToBottom = false;
 let queueItems = [];
 let queuePaused = false;
 let queueDrawerOpen = false;
+
+// Terminal busy state - when busy, input box shows Q instead of Enter
+let terminalBusy = false;
 
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
@@ -100,7 +103,7 @@ function initDOMElements() {
     composeThinkMode = document.getElementById('composeThinkMode');
     composeAttachments = document.getElementById('composeAttachments');
     selectCopyBtn = document.getElementById('selectCopyBtn');
-    stopBtn = document.getElementById('stopBtn');
+    viewBarQueue = document.getElementById('viewBarQueue');
     challengeBtn = document.getElementById('challengeBtn');
     challengeModal = document.getElementById('challengeModal');
     challengeClose = document.getElementById('challengeClose');
@@ -123,7 +126,6 @@ function initDOMElements() {
     logView = document.getElementById('logView');
     logInput = document.getElementById('logInput');
     logSend = document.getElementById('logSend');
-    logQueue = document.getElementById('logQueue');
     logContent = document.getElementById('logContent');
     refreshBtn = document.getElementById('refreshBtn');
     terminalView = document.getElementById('terminalView');
@@ -131,11 +133,10 @@ function initDOMElements() {
     activePromptContent = document.getElementById('activePromptContent');
     quickResponses = document.getElementById('quickResponses');
     // Queue elements
-    queueToggle = document.getElementById('queueToggle');
-    queueBadge = document.getElementById('queueBadge');
     queueDrawer = document.getElementById('queueDrawer');
     queueList = document.getElementById('queueList');
     queueCount = document.getElementById('queueCount');
+    queueBadge = document.getElementById('queueBadge');
     queuePauseBtn = document.getElementById('queuePauseBtn');
     queueDrawerClose = document.getElementById('queueDrawerClose');
     queueSendNext = document.getElementById('queueSendNext');
@@ -144,7 +145,7 @@ function initDOMElements() {
 
 // Additional DOM elements
 let terminalBlock, activePromptContent, quickResponses;
-let queueToggle, queueBadge, queueDrawer, queueList, queueCount;
+let queueDrawer, queueList, queueCount, queueBadge;
 let queuePauseBtn, queueDrawerClose, queueSendNext, queueFlush;
 
 /**
@@ -277,6 +278,12 @@ async function refreshActivePrompt() {
 
         // Try to extract and suggest command
         extractAndSuggestCommand(content);
+
+        // Check if prompt is visible - if so, terminal is ready
+        const extracted = extractPromptContent(content);
+        if (extracted !== null) {
+            setTerminalBusy(false);
+        }
 
     } catch (error) {
         console.debug('Active prompt refresh failed:', error);
@@ -411,9 +418,36 @@ async function syncPromptToInput() {
             logInput.dataset.autoSuggestion = 'false';
             logInput.focus();
             logInput.setSelectionRange(logInput.value.length, logInput.value.length);
+            // Prompt detected - terminal is ready
+            setTerminalBusy(false);
         }
     } catch (e) {
         console.debug('Sync failed:', e);
+    }
+}
+
+/**
+ * Set terminal busy state and update send button accordingly
+ */
+function setTerminalBusy(busy) {
+    terminalBusy = busy;
+    updateSendButton();
+}
+
+/**
+ * Update send button appearance based on terminal busy state
+ * When idle: blue Enter button (⏎) - sends immediately
+ * When busy: yellow Q button - queues for later
+ */
+function updateSendButton() {
+    if (!logSend) return;
+
+    if (terminalBusy) {
+        logSend.textContent = 'Q';
+        logSend.classList.add('queue-mode');
+    } else {
+        logSend.textContent = '⏎';
+        logSend.classList.remove('queue-mode');
     }
 }
 
@@ -1374,6 +1408,24 @@ function setupComposeMode() {
         }
     }
 
+    function queueComposedText() {
+        let text = composeInput.value;
+
+        // Append attachment paths to the message
+        if (pendingAttachments.length > 0) {
+            const paths = pendingAttachments.map(a => a.path).join(' ');
+            text = text ? `${text} ${paths}` : paths;
+        }
+
+        if (text) {
+            enqueueCommand(text).then(success => {
+                if (success) {
+                    closeComposeModal();
+                }
+            });
+        }
+    }
+
     // Insert button - insert text only (no Enter)
     composeInsert.addEventListener('click', () => {
         sendComposedText(false);
@@ -1383,6 +1435,14 @@ function setupComposeMode() {
     composeRun.addEventListener('click', () => {
         sendComposedText(true);
     });
+
+    // Queue button - add to queue instead of sending
+    const composeQueue = document.getElementById('composeQueue');
+    if (composeQueue) {
+        composeQueue.addEventListener('click', () => {
+            queueComposedText();
+        });
+    }
 
     // Send on Ctrl+Enter or Cmd+Enter
     composeInput.addEventListener('keydown', (e) => {
@@ -2013,16 +2073,6 @@ function setupCopyButton() {
         }
     });
 
-    // Stop button (Ctrl+C)
-    if (stopBtn) {
-        stopBtn.addEventListener('click', () => {
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                // Ensure terminal is focused/active before sending input
-                if (terminal) terminal.focus();
-                sendInput('\x03');  // Ctrl+C
-            }
-        });
-    }
 }
 
 /**
@@ -3239,13 +3289,14 @@ function setupLogInput() {
     logInput.addEventListener('keydown', handleEnter);
     logInput.addEventListener('keypress', handleEnter);
 
-    // Send on button click
-    logSend.addEventListener('click', sendLogCommand);
-
-    // Queue on Q button click
-    if (logQueue) {
-        logQueue.addEventListener('click', queueLogCommand);
-    }
+    // Send button - smart mode: send when idle, queue when busy
+    logSend.addEventListener('click', () => {
+        if (terminalBusy) {
+            queueLogCommand();
+        } else {
+            sendLogCommand();
+        }
+    });
 
     // Focus mode: when input is tapped, refresh the active prompt
     logInput.addEventListener('focus', () => {
@@ -3282,11 +3333,16 @@ function sendLogCommand() {
     // If empty, just send Enter (like control bar) for confirming prompts
     if (!command) {
         sendInput('\r');
+        // Mark busy after sending non-trivial commands
+        setTerminalBusy(true);
         return;
     }
 
     // Atomic send: command + carriage return
     sendInput(command + '\r');
+
+    // Mark terminal as busy after sending
+    setTerminalBusy(true);
 
     // Clear input
     logInput.value = '';
@@ -3577,15 +3633,14 @@ async function enqueueCommand(text, policy = 'auto') {
     if (!currentSession) return false;
 
     try {
-        const resp = await fetch('/api/queue/enqueue', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                session: currentSession,
-                text: text,
-                policy: policy,
-                token: token
-            })
+        const params = new URLSearchParams({
+            session: currentSession,
+            text: text,
+            policy: policy,
+            token: token
+        });
+        const resp = await fetch(`/api/queue/enqueue?${params}`, {
+            method: 'POST'
         });
 
         if (resp.ok) {
@@ -3608,14 +3663,13 @@ async function removeQueueItem(itemId) {
     if (!currentSession) return;
 
     try {
-        const resp = await fetch('/api/queue/remove', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                session: currentSession,
-                item_id: itemId,
-                token: token
-            })
+        const params = new URLSearchParams({
+            session: currentSession,
+            item_id: itemId,
+            token: token
+        });
+        const resp = await fetch(`/api/queue/remove?${params}`, {
+            method: 'POST'
         });
 
         if (resp.ok) {
@@ -3634,15 +3688,14 @@ async function toggleQueuePause() {
     if (!currentSession) return;
 
     const endpoint = queuePaused ? '/api/queue/resume' : '/api/queue/pause';
+    const params = new URLSearchParams({
+        session: currentSession,
+        token: token
+    });
 
     try {
-        const resp = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                session: currentSession,
-                token: token
-            })
+        const resp = await fetch(`${endpoint}?${params}`, {
+            method: 'POST'
         });
 
         if (resp.ok) {
@@ -3670,13 +3723,12 @@ async function sendNextUnsafe() {
     if (!currentSession) return;
 
     try {
-        const resp = await fetch('/api/queue/send-next', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                session: currentSession,
-                token: token
-            })
+        const params = new URLSearchParams({
+            session: currentSession,
+            token: token
+        });
+        const resp = await fetch(`/api/queue/send-next?${params}`, {
+            method: 'POST'
         });
 
         if (resp.ok) {
@@ -3696,14 +3748,13 @@ async function flushQueue() {
     if (!confirm('Clear all queued commands?')) return;
 
     try {
-        const resp = await fetch('/api/queue/flush', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                session: currentSession,
-                confirm: true,
-                token: token
-            })
+        const params = new URLSearchParams({
+            session: currentSession,
+            confirm: 'true',
+            token: token
+        });
+        const resp = await fetch(`/api/queue/flush?${params}`, {
+            method: 'POST'
         });
 
         if (resp.ok) {
@@ -3750,8 +3801,8 @@ function handleQueueMessage(msg) {
  * Setup queue event listeners
  */
 function setupQueue() {
-    if (queueToggle) {
-        queueToggle.addEventListener('click', toggleQueueDrawer);
+    if (viewBarQueue) {
+        viewBarQueue.addEventListener('click', toggleQueueDrawer);
     }
 
     if (queueDrawerClose) {
