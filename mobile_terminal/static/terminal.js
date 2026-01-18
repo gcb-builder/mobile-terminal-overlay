@@ -2489,8 +2489,9 @@ function cleanTerminalOutput(text) {
             continue;
         }
 
-        // Skip Claude Code UI hints (⏵⏵ lines, accept edits, context left, etc.)
-        if (/^[⏵▶►→]{1,2}/.test(trimmed)) {
+        // Skip specific Claude Code status hints (not questions/options)
+        // Only filter "accept edits", "shift+tab to cycle" - NOT interactive prompts
+        if (/^[⏵▶►→]{1,2}\s*(accept|shift\+tab|tab to|esc to|ctrl\+)/i.test(trimmed)) {
             continue;
         }
 
@@ -3315,7 +3316,12 @@ function sendLogCommand() {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
     const command = logInput ? logInput.value.trim() : '';
-    if (!command) return;
+
+    // If empty, just send Enter (like control bar) for confirming prompts
+    if (!command) {
+        sendInput('\r');
+        return;
+    }
 
     // Atomic send: command + carriage return
     sendInput(command + '\r');

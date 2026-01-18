@@ -53,3 +53,28 @@ Append-only log of implementation batches.
 **Risks/Follow-ups:**
 - PWA needs reinstall after service worker changes
 - systemd service needs manual setup (sudo required)
+
+---
+
+## 2026-01-18: Input Box Sync with tmux Terminal
+
+**Goal:** Implement tighter alignment between mobile overlay input box and tmux terminal command line
+
+**Files Changed:**
+- `mobile_terminal/static/terminal.js` - Added extractPromptContent(), syncPromptToInput(), sendKeyWithSync(), sendKeyDebounced(); atomic send in sendLogCommand(); modified control bar handlers for Up/Down/Tab sync
+- `mobile_terminal/static/index.html` - Added sync button (↻) to terminal-block-input, version bumps
+- `mobile_terminal/static/styles.css` - Added .terminal-sync-btn styling
+- `mobile_terminal/static/sw.js` - Version bump to v31
+
+**New Functions (terminal.js):**
+- `extractPromptContent(content)` - Multi-pattern prompt detection (Claude ❯, bash $, Python >>>, Node >)
+- `syncPromptToInput()` - Captures terminal and syncs prompt content to input box
+- `sendKeyWithSync(key, delay)` - Sends key and syncs result back to input
+- `sendKeyDebounced(key, force)` - 150ms debounce, Ctrl+C bypasses
+
+**Commits:**
+- `9bd1ea9` Add input box sync with tmux terminal command line
+
+**Risks/Follow-ups:**
+- Sync delay (100-200ms) may feel slow on laggy connections
+- Prompt patterns may need expansion for other shells (fish, nushell)

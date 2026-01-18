@@ -4,7 +4,7 @@
 
 - **Branch:** master
 - **Stage:** Production-ready with PWA support
-- **Last Updated:** 2026-01-15
+- **Last Updated:** 2026-01-18
 
 ## Objective
 
@@ -32,8 +32,28 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] WebSocket resilience (handles malformed messages)
 - [x] Transcript view with syntax highlighting
 - [x] tmux capture-pane history on connect
+- [x] Terminal block UI with active prompt display
+- [x] Input box sync with tmux (Up/Down/Tab sync, sync button)
+- [x] Client-side key debounce (150ms)
 
-## Recent Changes (2026-01-15)
+## Recent Changes (2026-01-18)
+
+### Input Box Sync with tmux Terminal
+- Atomic send: `command + '\r'` as single write (no race conditions)
+- Up/Down arrows now sync terminal history to input box
+- Tab completion syncs completed text back to input
+- New sync button (↻) to manually refresh input from terminal prompt
+- Client-side 150ms debounce on key sends (Ctrl+C bypasses for immediate interrupt)
+- Multi-prompt pattern detection: Claude `❯`, bash `$`, zsh, Python `>>>`, Node `>`
+
+### Terminal Block UI
+- Active prompt display shows last 20 lines of terminal
+- Clean terminal output in log view
+- Auto-suggest commands from terminal prompt
+
+---
+
+## Changes (2026-01-15)
 
 ### UI Simplification
 - Unified action bar (viewBar) always visible: Select | Copy | Scroll | Refresh | Compose
