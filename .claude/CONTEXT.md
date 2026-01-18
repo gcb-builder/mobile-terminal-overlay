@@ -17,7 +17,7 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] Auth disabled by default (Tailscale-friendly), opt-in via --require-token
 - [x] Static files (HTML, CSS, JS)
 - [x] xterm.js integration
-- [x] View/Control toggle with lock indicator
+- [x] Control bars with collapse toggle
 - [x] Control keys bar (^B, ^C, ^D, ^Z, ^L, ^A, ^E, ^W, ^U, ^K, ^R, ^O, Tab, Esc)
 - [x] Quick bar (arrows, numbers, y/n/enter, slash)
 - [x] Role prefixes from config
@@ -33,16 +33,36 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] Transcript view with syntax highlighting
 - [x] tmux capture-pane history on connect
 - [x] Terminal block UI with active prompt display
-- [x] Input box sync with tmux (Up/Down/Tab sync, sync button)
+- [x] Input box sync with tmux (Up/Down/Tab sync via refresh button)
 - [x] Client-side key debounce (150ms)
+- [x] Always-on controls (lock removed, collapse toggle in tab bar)
+- [x] Unified collapse (view bar + control bars collapse together)
+- [x] Streamlined header (refresh in header, no working indicator)
 
 ## Recent Changes (2026-01-18)
 
+### Header Simplification
+- Removed "Log" title from log view
+- Moved refresh button (↻) to header - refreshes log AND syncs input box
+- Removed sync button from input box (refresh handles both)
+- Removed "working..." indicator (redundant with activity timestamp)
+- Header now: `[repo] ... [activity] [refresh] [search] [connection dot]`
+
+### Unified Collapse Behavior
+- View bar (Select/Stop/Challenge/Compose) now collapses with control bars
+- Single collapse toggle controls all bottom bars
+
+### UI Simplification
+- Removed lock button from header (controls always enabled)
+- Moved collapse toggle to tab indicator section (next to dots)
+- Empty input box Enter sends `'\r'` (confirms prompts)
+- Control bar Enter kept as "stateless confirm" (ignores input box state)
+- Fixed aggressive filter that hid Claude's interactive options
+
 ### Input Box Sync with tmux Terminal
 - Atomic send: `command + '\r'` as single write (no race conditions)
-- Up/Down arrows now sync terminal history to input box
+- Up/Down arrows sync terminal history to input box
 - Tab completion syncs completed text back to input
-- New sync button (↻) to manually refresh input from terminal prompt
 - Client-side 150ms debounce on key sends (Ctrl+C bypasses for immediate interrupt)
 - Multi-prompt pattern detection: Claude `❯`, bash `$`, zsh, Python `>>>`, Node `>`
 

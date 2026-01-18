@@ -883,13 +883,13 @@ html, body {
 }
 
 .btn-enter {
-    background: var(--accent) !important;
+    background: var(--success) !important;
     color: white !important;
-    border-color: var(--accent) !important;
+    border-color: var(--success) !important;
 }
 
 .btn-enter:active {
-    background: var(--accent-hover) !important;
+    background: #2ea043 !important;
 }
 
 .btn-stop {

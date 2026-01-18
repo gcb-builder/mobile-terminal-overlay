@@ -78,3 +78,47 @@ Append-only log of implementation batches.
 **Risks/Follow-ups:**
 - Sync delay (100-200ms) may feel slow on laggy connections
 - Prompt patterns may need expansion for other shells (fish, nushell)
+
+---
+
+## 2026-01-18: UI Simplification (continued)
+
+**Goal:** Remove lock button, simplify controls, fix tail viewport filtering
+
+**Files Changed:**
+- `mobile_terminal/static/terminal.js` - Removed toggleControl(), controlBtn; set isControlUnlocked=true; empty Enter sends '\r'; fixed ⏵⏵ filter to not hide Claude options
+- `mobile_terminal/static/index.html` - Removed lock button, moved collapse toggle to tab indicator
+- `mobile_terminal/static/styles.css` - Resized collapse toggle (32x24px pill) for tab bar
+
+**Commits:**
+- `eb4e898` Fix tail viewport filtering and empty Enter behavior
+- `298ea42` Remove lock button, move collapse toggle to tab indicator
+
+**Changes:**
+- Controls always enabled (no lock/unlock)
+- Collapse toggle in tab indicator section (next to dots)
+- Empty input Enter confirms prompts (like control bar Enter)
+- ⏵⏵ filter now only hides status hints, not interactive options
+
+---
+
+## 2026-01-18: Header Simplification and Unified Collapse
+
+**Goal:** Streamline header, remove redundant indicators, unify collapse behavior
+
+**Files Changed:**
+- `mobile_terminal/static/index.html` - Removed "Log" title and log-view-header; removed sync button from input box; added refresh button to header; removed working indicator
+- `mobile_terminal/static/styles.css` - Removed .log-view-header, .terminal-sync-btn, .header-thinking styles; added .view-bar.collapsed
+- `mobile_terminal/static/terminal.js` - Removed updateWorkingIndicator(), showThinking(), hideThinking(), maybeHideThinking(); updated toggleControlBarsCollapse() to also collapse viewBar; refresh button now calls loadLogContent() + syncPromptToInput()
+- `mobile_terminal/static/sw.js` - Version bump to v32
+
+**Commits:**
+- `45ddc35` Simplify header and unify collapse behavior
+
+**Changes:**
+- Removed "Log" title from log view
+- Refresh button moved to header (refreshes log + syncs input)
+- Removed sync button from input box
+- Removed "working..." indicator (redundant with activity timestamp)
+- View bar (Select/Stop/Challenge/Compose) collapses with control bars
+- Control bar Enter kept as stateless confirm (ignores input box state)
