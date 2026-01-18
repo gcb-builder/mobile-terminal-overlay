@@ -341,6 +341,119 @@ function extractAndSuggestCommand(content) {
 }
 
 /**
+ * Extract editable content from terminal prompt line.
+ * Supports multiple prompt patterns: Claude Code, bash, zsh, python, node.
+ * @param {string} content - Terminal capture (ANSI stripped)
+ * @returns {string|null} - Content after prompt marker, or null if no prompt found
+ */
+function extractPromptContent(content) {
+    const lines = content.split('\n');
+
+    // Prompt patterns in priority order
+    const patterns = [
+        /^❯\s*(.*)$/,                                                  // Claude Code: ❯ cmd
+        /^(?:\([^)]+\)\s*)?[\w.-]+@[\w.-]+[:\s][^$#]*[$#]\s*(.*)$/,   // bash: user@host:~$
+        /^[$#]\s*(.*)$/,                                               // Simple: $ or #
+        /^>>>\s*(.*)$/,                                                // Python REPL
+        /^>\s+(.*)$/,                                                  // Node REPL
+    ];
+
+    // Search from bottom (most recent line first)
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        for (const regex of patterns) {
+            const match = line.match(regex);
+            if (match) {
+                // Remove trailing UI elements like "↵ send"
+                return (match[1] || '').replace(/\s*↵\s*\w*\s*$/, '').trim();
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Sync terminal prompt content to input box
+ */
+async function syncPromptToInput() {
+    if (!logInput) return;
+
+    try {
+        const response = await fetch(`/api/terminal/capture?token=${token}&lines=5`);
+        if (!response.ok) return;
+
+        const data = await response.json();
+        const content = stripAnsi(data.content || '');
+        const extracted = extractPromptContent(content);
+
+        if (extracted !== null) {
+            logInput.value = extracted;
+            logInput.dataset.autoSuggestion = 'false';
+            logInput.focus();
+            logInput.setSelectionRange(logInput.value.length, logInput.value.length);
+        }
+    } catch (e) {
+        console.debug('Sync failed:', e);
+    }
+}
+
+/**
+ * Send key to terminal and sync result to input box
+ * @param {string} key - ANSI key code to send
+ * @param {number} delay - ms to wait before capture (default 100)
+ */
+async function sendKeyWithSync(key, delay = 100) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+    sendInput(key);
+    await new Promise(r => setTimeout(r, delay));
+    await syncPromptToInput();
+}
+
+// Client-side debounce for key sends
+const KEY_DEBOUNCE_MS = 150;
+let lastKeySendTime = 0;
+let pendingKeyTimer = null;
+
+/**
+ * Debounced key send to prevent rapid-fire key presses.
+ * Ctrl+C bypasses debounce for immediate interrupt.
+ * @param {string} key - Key/ANSI code to send
+ * @param {boolean} force - Skip debounce (for critical keys)
+ */
+function sendKeyDebounced(key, force = false) {
+    const now = Date.now();
+    const elapsed = now - lastKeySendTime;
+
+    // Ctrl+C always immediate
+    if (force || key === '\x03') {
+        if (pendingKeyTimer) {
+            clearTimeout(pendingKeyTimer);
+            pendingKeyTimer = null;
+        }
+        sendInput(key);
+        lastKeySendTime = now;
+        return;
+    }
+
+    if (elapsed >= KEY_DEBOUNCE_MS) {
+        sendInput(key);
+        lastKeySendTime = now;
+    } else {
+        if (pendingKeyTimer) {
+            clearTimeout(pendingKeyTimer);
+        }
+        pendingKeyTimer = setTimeout(() => {
+            sendInput(key);
+            lastKeySendTime = Date.now();
+            pendingKeyTimer = null;
+        }, KEY_DEBOUNCE_MS - elapsed);
+    }
+}
+
+/**
  * Start heartbeat ping/pong for connection health monitoring
  */
 function startHeartbeat() {
@@ -1037,12 +1150,22 @@ function setupEventListeners() {
         btn.addEventListener('pointerup', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (isControlUnlocked) {
-                // Ensure terminal is focused/active before sending input
-                if (terminal) terminal.focus();
-                const keyName = btn.dataset.key;
-                const key = keyMap[keyName] || keyName;
-                sendInput(key);
+            if (!isControlUnlocked) return;
+
+            // Ensure terminal is focused/active before sending input
+            if (terminal) terminal.focus();
+            const keyName = btn.dataset.key;
+            const key = keyMap[keyName] || keyName;
+
+            // Up/Down/Tab: send with sync-back to input box
+            if (keyName === 'up' || keyName === 'down') {
+                sendKeyWithSync(key, 100);
+            } else if (keyName === 'tab') {
+                sendKeyWithSync(key, 200);  // Tab completion needs more time
+            } else if (keyName === 'ctrl-c') {
+                sendKeyDebounced(key, true);  // Force immediate (no debounce)
+            } else {
+                sendKeyDebounced(key);
             }
         });
     });
@@ -3155,6 +3278,12 @@ function setupLogInput() {
     // Send on button click
     logSend.addEventListener('click', sendLogCommand);
 
+    // Sync button: load terminal prompt content into input box
+    const syncBtn = document.getElementById('syncBtn');
+    if (syncBtn) {
+        syncBtn.addEventListener('click', syncPromptToInput);
+    }
+
     // Focus mode: when input is tapped, refresh the active prompt
     logInput.addEventListener('focus', () => {
         refreshActivePrompt();
@@ -3180,7 +3309,7 @@ function setupQuickResponses() {
 
 /**
  * Send command from log input to terminal
- * Simple working version: command → delay → \n → delay → \r
+ * Atomic send: command + carriage return as single write
  */
 function sendLogCommand() {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
@@ -3188,14 +3317,8 @@ function sendLogCommand() {
     const command = logInput ? logInput.value.trim() : '';
     if (!command) return;
 
-    // Send command, then \n, then \r with small delays
-    sendInput(command);
-    setTimeout(() => {
-        sendInput('\n');
-        setTimeout(() => {
-            sendInput('\r');
-        }, 50);
-    }, 50);
+    // Atomic send: command + carriage return
+    sendInput(command + '\r');
 
     // Clear input
     logInput.value = '';
