@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=113">
+    <link rel="stylesheet" href="/static/styles.css?v=114">
 </head>
 <body>
     <div class="app">
@@ -126,7 +126,12 @@
                 <button class="quick-btn btn-enter" data-key="enter">Enter</button>
             </div>
             <div id="controlBar" class="control-bar hidden"></div>
-            <div id="roleBar" class="role-bar"></div>
+            <div id="roleBar" class="role-bar">
+                <button id="queueToggle" class="queue-toggle-btn" title="Command Queue">
+                    <span>Q</span>
+                    <span id="queueBadge" class="queue-badge hidden">0</span>
+                </button>
+            </div>
         </div>
 
         <!-- Action bar: visible in Terminal view only -->
@@ -166,6 +171,7 @@
                 <div class="compose-footer">
                     <input type="file" id="composeFileInput" accept="*/*" hidden>
                     <button id="composeAttach" class="compose-action attach-icon" title="Attach file">&#x1F4CE;</button>
+                    <button id="composePaste" class="compose-action secondary" title="Paste from clipboard">Paste</button>
                     <button id="composeClear" class="compose-action secondary">Clear</button>
                     <button id="composeInsert" class="compose-action secondary">Insert</button>
                 </div>
@@ -241,6 +247,21 @@
             </div>
         </div>
 
+        <!-- Queue drawer (bottom sheet) -->
+        <div id="queueDrawer" class="queue-drawer hidden">
+            <div class="queue-drawer-header">
+                <span class="queue-title">Command Queue</span>
+                <span id="queueCount" class="queue-count">0</span>
+                <button id="queuePauseBtn" class="queue-pause-btn">Pause</button>
+                <button id="queueDrawerClose" class="queue-drawer-close">&times;</button>
+            </div>
+            <div id="queueList" class="queue-list"></div>
+            <div class="queue-drawer-footer">
+                <button id="queueSendNext" class="queue-action-btn primary">Send Next</button>
+                <button id="queueFlush" class="queue-action-btn secondary">Clear All</button>
+            </div>
+        </div>
+
         <!-- Connection status overlay -->
         <div id="statusOverlay" class="status-overlay">
             <div class="status-content">
@@ -251,11 +272,11 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=140"></script>
+    <script src="/static/terminal.js?v=142"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js?v=32', { scope: '/' })
+            navigator.serviceWorker.register('/sw.js?v=33', { scope: '/' })
                 .catch(err => console.log('SW registration failed:', err));
         }
     </script>

@@ -44,7 +44,7 @@ let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let composeBtn, composeModal;
-let composeInput, composeClose, composeClear, composeInsert, composeRun;
+let composeInput, composeClose, composeClear, composePaste, composeInsert, composeRun;
 let composeAttach, composeFileInput, composeThinkMode, composeAttachments;
 let selectCopyBtn, stopBtn, challengeBtn;
 let challengeModal, challengeClose, challengeResult, challengeStatus, challengeRun;
@@ -63,6 +63,11 @@ let activityUpdateTimer = null;
 
 // Force scroll to bottom flag (used during resize)
 let forceScrollToBottom = false;
+
+// Queue state
+let queueItems = [];
+let queuePaused = false;
+let queueDrawerOpen = false;
 
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
@@ -87,6 +92,7 @@ function initDOMElements() {
     composeInput = document.getElementById('composeInput');
     composeClose = document.getElementById('composeClose');
     composeClear = document.getElementById('composeClear');
+    composePaste = document.getElementById('composePaste');
     composeInsert = document.getElementById('composeInsert');
     composeRun = document.getElementById('composeRun');
     composeAttach = document.getElementById('composeAttach');
@@ -123,10 +129,22 @@ function initDOMElements() {
     terminalBlock = document.getElementById('terminalBlock');
     activePromptContent = document.getElementById('activePromptContent');
     quickResponses = document.getElementById('quickResponses');
+    // Queue elements
+    queueToggle = document.getElementById('queueToggle');
+    queueBadge = document.getElementById('queueBadge');
+    queueDrawer = document.getElementById('queueDrawer');
+    queueList = document.getElementById('queueList');
+    queueCount = document.getElementById('queueCount');
+    queuePauseBtn = document.getElementById('queuePauseBtn');
+    queueDrawerClose = document.getElementById('queueDrawerClose');
+    queueSendNext = document.getElementById('queueSendNext');
+    queueFlush = document.getElementById('queueFlush');
 }
 
 // Additional DOM elements
 let terminalBlock, activePromptContent, quickResponses;
+let queueToggle, queueBadge, queueDrawer, queueList, queueCount;
+let queuePauseBtn, queueDrawerClose, queueSendNext, queueFlush;
 
 /**
  * Initialize the terminal
@@ -635,12 +653,17 @@ function connect() {
                 updateLastActivity();
             });
         } else {
-            // Check for JSON messages (pong, etc.)
+            // Check for JSON messages (pong, queue updates, etc.)
             if (event.data.startsWith('{')) {
                 try {
                     const msg = JSON.parse(event.data);
                     if (msg.type === 'pong') {
                         handlePong();
+                        return;
+                    }
+                    // Handle queue messages
+                    if (msg.type === 'queue_update' || msg.type === 'queue_sent' || msg.type === 'queue_state') {
+                        handleQueueMessage(msg);
                         return;
                     }
                 } catch (e) {
@@ -1301,6 +1324,29 @@ function setupComposeMode() {
         clearAttachments();
         composeInput.focus();
     });
+
+    // Paste from clipboard
+    if (composePaste) {
+        composePaste.addEventListener('click', async () => {
+            try {
+                const text = await navigator.clipboard.readText();
+                if (text) {
+                    // Insert at cursor position or append
+                    const start = composeInput.selectionStart;
+                    const end = composeInput.selectionEnd;
+                    const before = composeInput.value.substring(0, start);
+                    const after = composeInput.value.substring(end);
+                    composeInput.value = before + text + after;
+                    // Move cursor to end of pasted text
+                    const newPos = start + text.length;
+                    composeInput.setSelectionRange(newPos, newPos);
+                    composeInput.focus();
+                }
+            } catch (err) {
+                console.debug('Clipboard read failed:', err);
+            }
+        });
+    }
 
     // Send to terminal (text + attachment paths)
     // Insert: insert text only (no Enter)
@@ -3407,6 +3453,305 @@ function setupHybridView() {
 }
 
 
+// ================== Queue Functions ==================
+
+/**
+ * Toggle queue drawer visibility
+ */
+function toggleQueueDrawer() {
+    queueDrawerOpen = !queueDrawerOpen;
+    if (queueDrawerOpen) {
+        queueDrawer.classList.remove('hidden');
+        refreshQueueList();
+    } else {
+        queueDrawer.classList.add('hidden');
+    }
+}
+
+/**
+ * Render queue items in the drawer
+ */
+function renderQueueList() {
+    if (!queueList) return;
+
+    if (queueItems.length === 0) {
+        queueList.innerHTML = '<div class="queue-empty">Queue is empty</div>';
+        queueCount.textContent = '0';
+        updateQueueBadge(0);
+        return;
+    }
+
+    queueList.innerHTML = queueItems.map(item => {
+        const displayText = item.text.length > 40 ? item.text.slice(0, 40) + '...' : item.text;
+        const escapedText = displayText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return `
+            <div class="queue-item" data-id="${item.id}">
+                <span class="queue-item-status ${item.status}"></span>
+                <div class="queue-item-content">
+                    <div class="queue-item-text">${escapedText || '(Enter)'}</div>
+                    <div class="queue-item-meta">
+                        <span class="queue-item-policy ${item.policy}">${item.policy}</span>
+                    </div>
+                </div>
+                <button class="queue-item-remove" data-id="${item.id}">&times;</button>
+            </div>
+        `;
+    }).join('');
+
+    queueCount.textContent = queueItems.length.toString();
+    updateQueueBadge(queueItems.length);
+
+    // Add remove handlers
+    queueList.querySelectorAll('.queue-item-remove').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const id = btn.dataset.id;
+            removeQueueItem(id);
+        });
+    });
+}
+
+/**
+ * Update queue badge visibility and count
+ */
+function updateQueueBadge(count) {
+    if (!queueBadge) return;
+    if (count > 0) {
+        queueBadge.textContent = count.toString();
+        queueBadge.classList.remove('hidden');
+    } else {
+        queueBadge.classList.add('hidden');
+    }
+}
+
+/**
+ * Refresh queue list from server
+ */
+async function refreshQueueList() {
+    if (!currentSession) return;
+
+    try {
+        const resp = await fetch(`/api/queue/list?session=${encodeURIComponent(currentSession)}&token=${token}`);
+        if (resp.ok) {
+            const data = await resp.json();
+            queueItems = data.items || [];
+            queuePaused = data.paused || false;
+            updatePauseButton();
+            renderQueueList();
+        }
+    } catch (e) {
+        console.error('Failed to refresh queue:', e);
+    }
+}
+
+/**
+ * Enqueue a command
+ */
+async function enqueueCommand(text, policy = 'auto') {
+    if (!currentSession) return false;
+
+    try {
+        const resp = await fetch('/api/queue/enqueue', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session: currentSession,
+                text: text,
+                policy: policy,
+                token: token
+            })
+        });
+
+        if (resp.ok) {
+            const data = await resp.json();
+            // Add to local state
+            queueItems.push(data.item);
+            renderQueueList();
+            return true;
+        }
+    } catch (e) {
+        console.error('Failed to enqueue:', e);
+    }
+    return false;
+}
+
+/**
+ * Remove item from queue
+ */
+async function removeQueueItem(itemId) {
+    if (!currentSession) return;
+
+    try {
+        const resp = await fetch('/api/queue/remove', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session: currentSession,
+                item_id: itemId,
+                token: token
+            })
+        });
+
+        if (resp.ok) {
+            queueItems = queueItems.filter(item => item.id !== itemId);
+            renderQueueList();
+        }
+    } catch (e) {
+        console.error('Failed to remove queue item:', e);
+    }
+}
+
+/**
+ * Toggle pause state
+ */
+async function toggleQueuePause() {
+    if (!currentSession) return;
+
+    const endpoint = queuePaused ? '/api/queue/resume' : '/api/queue/pause';
+
+    try {
+        const resp = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session: currentSession,
+                token: token
+            })
+        });
+
+        if (resp.ok) {
+            queuePaused = !queuePaused;
+            updatePauseButton();
+        }
+    } catch (e) {
+        console.error('Failed to toggle pause:', e);
+    }
+}
+
+/**
+ * Update pause button text and style
+ */
+function updatePauseButton() {
+    if (!queuePauseBtn) return;
+    queuePauseBtn.textContent = queuePaused ? 'Resume' : 'Pause';
+    queuePauseBtn.classList.toggle('paused', queuePaused);
+}
+
+/**
+ * Send next unsafe item manually
+ */
+async function sendNextUnsafe() {
+    if (!currentSession) return;
+
+    try {
+        const resp = await fetch('/api/queue/send-next', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session: currentSession,
+                token: token
+            })
+        });
+
+        if (resp.ok) {
+            refreshQueueList();
+        }
+    } catch (e) {
+        console.error('Failed to send next:', e);
+    }
+}
+
+/**
+ * Flush all queue items
+ */
+async function flushQueue() {
+    if (!currentSession) return;
+
+    if (!confirm('Clear all queued commands?')) return;
+
+    try {
+        const resp = await fetch('/api/queue/flush', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session: currentSession,
+                confirm: true,
+                token: token
+            })
+        });
+
+        if (resp.ok) {
+            queueItems = [];
+            renderQueueList();
+        }
+    } catch (e) {
+        console.error('Failed to flush queue:', e);
+    }
+}
+
+/**
+ * Handle queue WebSocket messages
+ */
+function handleQueueMessage(msg) {
+    switch (msg.type) {
+        case 'queue_update':
+            if (msg.action === 'add') {
+                queueItems.push(msg.item);
+            } else if (msg.action === 'update') {
+                const idx = queueItems.findIndex(i => i.id === msg.item.id);
+                if (idx >= 0) queueItems[idx] = msg.item;
+            } else if (msg.action === 'remove') {
+                queueItems = queueItems.filter(i => i.id !== msg.item.id);
+            }
+            renderQueueList();
+            break;
+
+        case 'queue_sent':
+            // Item was sent, remove from local state
+            queueItems = queueItems.filter(i => i.id !== msg.id);
+            renderQueueList();
+            break;
+
+        case 'queue_state':
+            queuePaused = msg.paused;
+            updatePauseButton();
+            updateQueueBadge(msg.count);
+            break;
+    }
+}
+
+/**
+ * Setup queue event listeners
+ */
+function setupQueue() {
+    if (queueToggle) {
+        queueToggle.addEventListener('click', toggleQueueDrawer);
+    }
+
+    if (queueDrawerClose) {
+        queueDrawerClose.addEventListener('click', () => {
+            queueDrawerOpen = false;
+            queueDrawer.classList.add('hidden');
+        });
+    }
+
+    if (queuePauseBtn) {
+        queuePauseBtn.addEventListener('click', toggleQueuePause);
+    }
+
+    if (queueSendNext) {
+        queueSendNext.addEventListener('click', sendNextUnsafe);
+    }
+
+    if (queueFlush) {
+        queueFlush.addEventListener('click', flushQueue);
+    }
+
+    // Initial load
+    refreshQueueList();
+}
+
+
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
     initDOMElements();
@@ -3435,6 +3780,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupSwipeNavigation();
     setupTranscriptSearch();
     startActivityUpdates();
+    setupQueue();
 
     // Scroll input bar to the right so Enter button is visible
     if (inputBar) {

@@ -14,15 +14,19 @@ import json
 import logging
 import os
 import pty
+import re
 import secrets
 import signal
 import struct
+import subprocess
 import termios
 import threading
 import time
+import uuid
 from collections import deque
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 from mobile_terminal.challenge import run_challenge, get_available_models, DEFAULT_MODEL
 
@@ -182,6 +186,350 @@ class InputQueue:
             self._writer_task.cancel()
             self._writer_task = None
 
+
+@dataclass
+class QueueItem:
+    """A command waiting to be sent to the terminal."""
+    id: str
+    text: str
+    policy: str  # "safe" | "unsafe"
+    status: str  # "queued" | "pending" | "sent" | "failed"
+    created_at: float
+    sent_at: Optional[float] = None
+    error: Optional[str] = None
+
+
+class CommandQueue:
+    """
+    Per-session command queue with ready-gate, policy enforcement, and pause/resume.
+
+    Commands are held until the terminal is ready (quiet + prompt visible).
+    Safe commands auto-send; unsafe commands require manual confirmation.
+    """
+
+    QUIET_MS = 400           # Wait for output quiet before sending
+    COOLDOWN_MS = 250        # Between sends
+    CHECK_INTERVAL_MS = 100  # How often to check ready state
+
+    # Patterns indicating terminal is ready for input
+    PROMPT_PATTERNS = [
+        r'❯\s*$',            # Claude Code prompt
+        r'\$\s*$',           # Bash prompt
+        r'#\s*$',            # Root prompt
+        r'>>>\s*$',          # Python REPL
+        r'>\s*$',            # Node REPL
+        r'\[y/n\]',          # Yes/no prompt
+        r'\[[1-9]\]',        # Numbered options
+    ]
+
+    # Patterns for commands that are safe to auto-send
+    SAFE_PATTERNS = [
+        r'^[1-9]$',          # Single digit
+        r'^[yn]$',           # y/n
+        r'^(yes|no)$',       # yes/no
+        r'^$',               # Empty (just Enter)
+    ]
+
+    # Patterns for unsafe commands (require confirmation)
+    UNSAFE_PATTERNS = [
+        r'[|;&><]',          # Shell metacharacters
+        r'^\s*sudo\s',       # sudo commands
+        r'^\s*rm\s',         # rm commands
+        r'^\s*git\s+push',   # git push
+    ]
+
+    def __init__(self):
+        self._queues: Dict[str, List[QueueItem]] = {}
+        self._paused: Dict[str, bool] = {}
+        self._lock = asyncio.Lock()
+        self._running = False
+        self._processor_task = None
+        self._app = None  # Set during startup
+
+    def set_app(self, app):
+        """Set the FastAPI app reference for accessing state."""
+        self._app = app
+
+    def _get_queue(self, session: str) -> List[QueueItem]:
+        """Get or create queue for session."""
+        if session not in self._queues:
+            self._queues[session] = []
+        return self._queues[session]
+
+    def _classify_policy(self, text: str) -> str:
+        """Determine if command is safe or unsafe."""
+        text = text.strip()
+
+        # Check unsafe patterns first
+        for pattern in self.UNSAFE_PATTERNS:
+            if re.search(pattern, text, re.IGNORECASE):
+                return "unsafe"
+
+        # Check safe patterns
+        for pattern in self.SAFE_PATTERNS:
+            if re.match(pattern, text, re.IGNORECASE):
+                return "safe"
+
+        # Long commands are unsafe
+        if len(text) > 50:
+            return "unsafe"
+
+        # Multi-word commands are unsafe
+        if len(text.split()) > 3:
+            return "unsafe"
+
+        # Default to safe for short, simple commands
+        return "safe"
+
+    def enqueue(self, session: str, text: str, policy: str = "auto") -> QueueItem:
+        """Add a command to the queue."""
+        queue = self._get_queue(session)
+
+        # Determine policy
+        if policy == "auto":
+            policy = self._classify_policy(text)
+
+        item = QueueItem(
+            id=str(uuid.uuid4()),
+            text=text,
+            policy=policy,
+            status="queued",
+            created_at=time.time(),
+        )
+        queue.append(item)
+        return item
+
+    def dequeue(self, session: str, item_id: str) -> bool:
+        """Remove an item from the queue."""
+        queue = self._get_queue(session)
+        for i, item in enumerate(queue):
+            if item.id == item_id:
+                queue.pop(i)
+                return True
+        return False
+
+    def reorder(self, session: str, item_id: str, new_index: int) -> bool:
+        """Move an item to a new position."""
+        queue = self._get_queue(session)
+        for i, item in enumerate(queue):
+            if item.id == item_id:
+                queue.pop(i)
+                new_index = max(0, min(new_index, len(queue)))
+                queue.insert(new_index, item)
+                return True
+        return False
+
+    def list_items(self, session: str) -> List[QueueItem]:
+        """Get all items in the queue."""
+        return self._get_queue(session).copy()
+
+    def pause(self, session: str) -> None:
+        """Pause queue processing for a session."""
+        self._paused[session] = True
+
+    def resume(self, session: str) -> None:
+        """Resume queue processing for a session."""
+        self._paused[session] = False
+
+    def is_paused(self, session: str) -> bool:
+        """Check if queue is paused."""
+        return self._paused.get(session, False)
+
+    def flush(self, session: str) -> int:
+        """Clear all queued items. Returns count cleared."""
+        queue = self._get_queue(session)
+        count = len(queue)
+        queue.clear()
+        return count
+
+    def get_next_unsafe(self, session: str) -> Optional[QueueItem]:
+        """Get the next unsafe item waiting for manual send."""
+        queue = self._get_queue(session)
+        for item in queue:
+            if item.status == "queued" and item.policy == "unsafe":
+                return item
+        return None
+
+    async def _check_ready(self, session: str) -> bool:
+        """
+        Check if terminal is ready to receive input:
+        1. Output has been quiet for QUIET_MS
+        2. Prompt is visible
+        """
+        if not self._app:
+            return False
+
+        # Check quiet period
+        input_queue = self._app.state.input_queue
+        since_output = (time.time() - input_queue._last_output_ts) * 1000
+        if since_output < self.QUIET_MS:
+            return False
+
+        # Check for prompt via tmux capture-pane
+        try:
+            result = subprocess.run(
+                ["tmux", "capture-pane", "-t", session, "-p", "-S", "-5"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if result.returncode != 0:
+                return False
+
+            content = result.stdout
+            # Check if any prompt pattern matches
+            for pattern in self.PROMPT_PATTERNS:
+                if re.search(pattern, content, re.MULTILINE):
+                    return True
+
+            # Check pane title for Claude Code waiting state
+            title_result = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", session, "#{pane_title}"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if "Signal Detection Pending" in title_result.stdout:
+                return True
+
+        except Exception as e:
+            logger.warning(f"Ready check failed: {e}")
+
+        return False
+
+    async def _send_item(self, session: str, item: QueueItem) -> bool:
+        """Send a single item to the terminal."""
+        if not self._app:
+            return False
+
+        item.status = "pending"
+
+        try:
+            master_fd = self._app.state.master_fd
+            websocket = self._app.state.active_websocket
+
+            if not master_fd:
+                item.status = "failed"
+                item.error = "No PTY available"
+                return False
+
+            # Send via InputQueue for proper serialization
+            success = await self._app.state.input_queue.send(
+                msg_id=item.id,
+                data=(item.text + '\r').encode('utf-8'),
+                master_fd=master_fd,
+                websocket=websocket,
+            )
+
+            if success:
+                item.status = "sent"
+                item.sent_at = time.time()
+
+                # Notify client
+                if websocket:
+                    try:
+                        await websocket.send_json({
+                            "type": "queue_sent",
+                            "id": item.id,
+                            "sent_at": item.sent_at,
+                        })
+                    except Exception:
+                        pass
+
+                return True
+            else:
+                item.status = "failed"
+                item.error = "Send timeout"
+                return False
+
+        except Exception as e:
+            item.status = "failed"
+            item.error = str(e)
+            return False
+
+    async def send_next_unsafe(self, session: str, item_id: Optional[str] = None) -> Optional[QueueItem]:
+        """Manually send the next unsafe item (or specific item)."""
+        queue = self._get_queue(session)
+
+        # Find the item
+        item = None
+        if item_id:
+            for i in queue:
+                if i.id == item_id and i.status == "queued":
+                    item = i
+                    break
+        else:
+            item = self.get_next_unsafe(session)
+
+        if not item:
+            return None
+
+        # Wait for ready and send
+        for _ in range(20):  # Try for 2 seconds
+            if await self._check_ready(session):
+                await self._send_item(session, item)
+                return item
+            await asyncio.sleep(0.1)
+
+        # Timeout waiting for ready, send anyway
+        await self._send_item(session, item)
+        return item
+
+    async def _process_loop(self) -> None:
+        """Main processing loop - runs continuously."""
+        self._running = True
+
+        while self._running:
+            await asyncio.sleep(self.CHECK_INTERVAL_MS / 1000)
+
+            if not self._app:
+                continue
+
+            current_session = self._app.state.current_session
+            if not current_session:
+                continue
+
+            # Process only current session
+            if self.is_paused(current_session):
+                continue
+
+            queue = self._get_queue(current_session)
+            if not queue:
+                continue
+
+            # Get first queued safe item
+            item = None
+            for i in queue:
+                if i.status == "queued" and i.policy == "safe":
+                    item = i
+                    break
+
+            if not item:
+                continue
+
+            # Check ready gate
+            if not await self._check_ready(current_session):
+                continue
+
+            # Send the item
+            await self._send_item(current_session, item)
+
+            # Cooldown
+            await asyncio.sleep(self.COOLDOWN_MS / 1000)
+
+    def start(self):
+        """Start the processor loop."""
+        if self._processor_task is None:
+            self._processor_task = asyncio.create_task(self._process_loop())
+
+    def stop(self):
+        """Stop the processor loop."""
+        self._running = False
+        if self._processor_task:
+            self._processor_task.cancel()
+            self._processor_task = None
+
+
 from fastapi import FastAPI, File, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -300,6 +648,8 @@ def create_app(config: Config) -> FastAPI:
     app.state.ws_connect_lock = asyncio.Lock()  # Prevent concurrent connection handling
     app.state.output_buffer = RingBuffer(max_size=2 * 1024 * 1024)  # 2MB scrollback buffer
     app.state.input_queue = InputQueue()  # Serialized input queue with ACKs
+    app.state.command_queue = CommandQueue()  # Deferred-send command queue
+    app.state.command_queue.set_app(app)
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -1103,6 +1453,192 @@ Output format:
 
         return {"status": "ok", "session": session}
 
+    # ========== Command Queue API Endpoints ==========
+
+    @app.post("/api/queue/enqueue")
+    async def queue_enqueue(
+        text: str = Query(...),
+        session: str = Query(...),
+        policy: str = Query("auto"),  # "auto" | "safe" | "unsafe"
+        token: Optional[str] = Query(None),
+    ):
+        """
+        Add command to the deferred queue.
+
+        Policy:
+        - "auto": server determines safe/unsafe based on text
+        - "safe": force auto-send when ready
+        - "unsafe": always require manual confirmation
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        item = app.state.command_queue.enqueue(session, text, policy)
+
+        # Notify connected clients
+        if app.state.active_websocket:
+            try:
+                await app.state.active_websocket.send_json({
+                    "type": "queue_update",
+                    "action": "add",
+                    "item": asdict(item),
+                })
+            except Exception:
+                pass
+
+        return {"status": "ok", "item": asdict(item)}
+
+    @app.get("/api/queue/list")
+    async def queue_list(
+        session: str = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """List all queued items for a session."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        items = app.state.command_queue.list_items(session)
+        paused = app.state.command_queue.is_paused(session)
+        return {
+            "items": [asdict(i) for i in items],
+            "paused": paused,
+            "session": session,
+        }
+
+    @app.post("/api/queue/remove")
+    async def queue_remove(
+        session: str = Query(...),
+        item_id: str = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """Remove an item from the queue."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        success = app.state.command_queue.dequeue(session, item_id)
+
+        if success and app.state.active_websocket:
+            try:
+                await app.state.active_websocket.send_json({
+                    "type": "queue_update",
+                    "action": "remove",
+                    "item": {"id": item_id},
+                })
+            except Exception:
+                pass
+
+        return {"status": "ok" if success else "not_found"}
+
+    @app.post("/api/queue/reorder")
+    async def queue_reorder(
+        session: str = Query(...),
+        item_id: str = Query(...),
+        new_index: int = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """Reorder an item in the queue."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        success = app.state.command_queue.reorder(session, item_id, new_index)
+        return {"status": "ok" if success else "not_found"}
+
+    @app.post("/api/queue/pause")
+    async def queue_pause(
+        session: str = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """Pause queue processing for a session."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        app.state.command_queue.pause(session)
+
+        if app.state.active_websocket:
+            try:
+                await app.state.active_websocket.send_json({
+                    "type": "queue_state",
+                    "paused": True,
+                    "count": len(app.state.command_queue.list_items(session)),
+                })
+            except Exception:
+                pass
+
+        return {"status": "ok", "paused": True}
+
+    @app.post("/api/queue/resume")
+    async def queue_resume(
+        session: str = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """Resume queue processing for a session."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        app.state.command_queue.resume(session)
+
+        if app.state.active_websocket:
+            try:
+                await app.state.active_websocket.send_json({
+                    "type": "queue_state",
+                    "paused": False,
+                    "count": len(app.state.command_queue.list_items(session)),
+                })
+            except Exception:
+                pass
+
+        return {"status": "ok", "paused": False}
+
+    @app.post("/api/queue/flush")
+    async def queue_flush(
+        session: str = Query(...),
+        confirm: bool = Query(False),
+        token: Optional[str] = Query(None),
+    ):
+        """Clear all queued items. Requires confirm=true."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        if not confirm:
+            items = app.state.command_queue.list_items(session)
+            return {"status": "confirm_required", "count": len(items)}
+
+        count = app.state.command_queue.flush(session)
+
+        if app.state.active_websocket:
+            try:
+                await app.state.active_websocket.send_json({
+                    "type": "queue_state",
+                    "paused": False,
+                    "count": 0,
+                })
+            except Exception:
+                pass
+
+        return {"status": "ok", "cleared": count}
+
+    @app.post("/api/queue/send-next")
+    async def queue_send_next(
+        session: str = Query(...),
+        item_id: Optional[str] = Query(None),
+        token: Optional[str] = Query(None),
+    ):
+        """
+        Manually send the next unsafe item (or specific item).
+        Bypasses policy check for one item.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        item = await app.state.command_queue.send_next_unsafe(session, item_id)
+
+        if item:
+            return {"status": "ok", "item": asdict(item)}
+        else:
+            return {"status": "not_found", "message": "No unsafe items in queue"}
+
+    # ========== End Command Queue API ==========
+
     @app.post("/api/send")
     async def send_line(
         text: str = Query(...),
@@ -1440,8 +1976,9 @@ Output format:
 
     @app.on_event("startup")
     async def startup():
-        """Start input queue and print access URL on startup."""
+        """Start input queue and command queue on startup."""
         app.state.input_queue.start()
+        app.state.command_queue.start()
 
         if app.state.no_auth:
             url = f"http://localhost:{config.port}/"
@@ -1466,6 +2003,7 @@ Output format:
     async def shutdown():
         """Cleanup on shutdown."""
         app.state.input_queue.stop()
+        app.state.command_queue.stop()
 
         if app.state.master_fd is not None:
             try:

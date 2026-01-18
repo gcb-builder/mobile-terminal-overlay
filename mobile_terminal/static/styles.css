@@ -2311,3 +2311,299 @@ html, body {
 .touch-content .error-content {
     color: var(--accent-red);
 }
+
+/* Queue toggle button in roleBar */
+.queue-toggle-btn {
+    position: relative;
+    min-width: 36px;
+    height: 38px;
+    padding: 0 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--warning);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+}
+
+.queue-toggle-btn:active {
+    background: rgba(210, 153, 34, 0.2);
+}
+
+.queue-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    background: var(--error);
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.queue-badge.hidden {
+    display: none;
+}
+
+/* Queue drawer (bottom sheet) */
+.queue-drawer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 60vh;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    border-radius: 16px 16px 0 0;
+    z-index: 350;
+    display: flex;
+    flex-direction: column;
+    animation: slideUp 0.2s ease-out;
+    padding-bottom: env(safe-area-inset-bottom);
+}
+
+.queue-drawer.hidden {
+    display: none;
+}
+
+.queue-drawer-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.queue-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.queue-count {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+}
+
+.queue-pause-btn {
+    margin-left: auto;
+    padding: 6px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--warning);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.queue-pause-btn:active {
+    background: rgba(210, 153, 34, 0.2);
+}
+
+.queue-pause-btn.paused {
+    background: var(--warning);
+    color: white;
+    border-color: var(--warning);
+}
+
+.queue-drawer-close {
+    width: 32px;
+    height: 32px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 24px;
+    cursor: pointer;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.queue-drawer-close:active {
+    background: var(--bg-tertiary);
+}
+
+/* Queue list */
+.queue-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 8px;
+}
+
+.queue-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 6px;
+}
+
+.queue-item:last-child {
+    margin-bottom: 0;
+}
+
+.queue-item-status {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.queue-item-status.queued {
+    background: var(--text-secondary);
+}
+
+.queue-item-status.pending {
+    background: var(--warning);
+    animation: pulse 1s ease-in-out infinite;
+}
+
+.queue-item-status.sent {
+    background: var(--success);
+}
+
+.queue-item-status.failed {
+    background: var(--error);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.queue-item-content {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.queue-item-text {
+    font-size: 13px;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.queue-item-meta {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.queue-item-policy {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 500;
+    padding: 1px 5px;
+    border-radius: 3px;
+    text-transform: uppercase;
+}
+
+.queue-item-policy.safe {
+    background: rgba(63, 185, 80, 0.2);
+    color: var(--success);
+}
+
+.queue-item-policy.unsafe {
+    background: rgba(248, 81, 73, 0.2);
+    color: var(--error);
+}
+
+.queue-item-remove {
+    width: 28px;
+    height: 28px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.queue-item-remove:active {
+    background: rgba(248, 81, 73, 0.2);
+    color: var(--error);
+    border-color: var(--error);
+}
+
+/* Queue drawer footer */
+.queue-drawer-footer {
+    display: flex;
+    gap: 10px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.queue-action-btn {
+    flex: 1;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    min-height: 44px;
+}
+
+.queue-action-btn.primary {
+    background: var(--accent);
+    color: white;
+}
+
+.queue-action-btn.primary:active {
+    background: #4a90d9;
+}
+
+.queue-action-btn.primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.queue-action-btn.secondary {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+}
+
+.queue-action-btn.secondary:active {
+    background: var(--bg-primary);
+}
+
+/* Queue empty state */
+.queue-empty {
+    padding: 32px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 14px;
+}
