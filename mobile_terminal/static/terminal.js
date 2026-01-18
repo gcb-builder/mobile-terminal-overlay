@@ -50,7 +50,8 @@ let selectCopyBtn, stopBtn, challengeBtn;
 let challengeModal, challengeClose, challengeResult, challengeStatus, challengeRun;
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 let contextViewBtn, touchViewBtn, contextContainer, contextContent, touchContainer, touchContent;
-let hybridView, logSection, terminalSection, logContent, logRefresh, resizeHandle;
+let logView, logInput, logSend, logContent, logRefresh;
+let terminalView;
 
 // Attachments state for compose modal
 let pendingAttachments = [];
@@ -114,13 +115,19 @@ function initDOMElements() {
     touchContainer = document.getElementById('touchContainer');
     touchContent = document.getElementById('touchContent');
     lastActivityElement = document.getElementById('lastActivity');
-    hybridView = document.getElementById('hybridView');
-    logSection = document.getElementById('logSection');
-    terminalSection = document.getElementById('terminalSection');
+    logView = document.getElementById('logView');
+    logInput = document.getElementById('logInput');
+    logSend = document.getElementById('logSend');
     logContent = document.getElementById('logContent');
     logRefresh = document.getElementById('logRefresh');
-    resizeHandle = document.getElementById('resizeHandle');
+    terminalView = document.getElementById('terminalView');
+    terminalBlock = document.getElementById('terminalBlock');
+    activePromptContent = document.getElementById('activePromptContent');
+    quickResponses = document.getElementById('quickResponses');
 }
+
+// Additional DOM elements
+let terminalBlock, activePromptContent, quickResponses;
 
 /**
  * Initialize the terminal
@@ -216,6 +223,121 @@ function initTerminal() {
     setTimeout(() => {
         sendResize();
     }, 100);
+}
+
+/**
+ * Active Prompt - shows current screen state from tmux
+ * Refreshes every 300ms to show what Claude is currently asking
+ */
+const ACTIVE_PROMPT_LINES = 15;  // Lines to capture from current screen
+const ACTIVE_PROMPT_INTERVAL = 300;  // Refresh every 300ms
+let activePromptTimer = null;
+
+async function refreshActivePrompt() {
+    if (!activePromptContent) return;
+
+    // Don't refresh if user has text selected (would lose selection)
+    const selection = window.getSelection();
+    if (selection && selection.toString().length > 0) {
+        return;
+    }
+
+    try {
+        // Use capture endpoint with small line count (current screen, not scrollback)
+        const response = await fetch(`/api/terminal/capture?token=${token}&lines=${ACTIVE_PROMPT_LINES}`);
+        if (!response.ok) return;
+
+        const data = await response.json();
+        if (!data.content) return;
+
+        // Strip ANSI codes and clean up clutter
+        let content = stripAnsi(data.content);
+        content = cleanTerminalOutput(content);
+
+        // Update content (no auto-scroll - let user control scroll position)
+        activePromptContent.textContent = content;
+
+        // Try to extract and suggest command
+        extractAndSuggestCommand(content);
+
+    } catch (error) {
+        console.debug('Active prompt refresh failed:', error);
+    }
+}
+
+function startActivePrompt() {
+    stopActivePrompt();
+    refreshActivePrompt();  // Initial fetch
+    activePromptTimer = setInterval(refreshActivePrompt, ACTIVE_PROMPT_INTERVAL);
+}
+
+function stopActivePrompt() {
+    if (activePromptTimer) {
+        clearInterval(activePromptTimer);
+        activePromptTimer = null;
+    }
+}
+
+/**
+ * Extract suggestion from terminal output and pre-fill input box
+ */
+let lastSuggestion = '';
+
+function extractAndSuggestCommand(content) {
+    if (!logInput) return;
+
+    // Don't overwrite if user is typing
+    if (document.activeElement === logInput && logInput.value.length > 0) {
+        return;
+    }
+
+    const lines = content.split('\n');
+    let suggestion = '';
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+
+        // Primary: Command prompt line with ❯ chevron (Claude Code's prompt)
+        // Format: "❯ command text" or "❯ command text    ↵ send"
+        if (/^❯\s+(.+)/.test(trimmed)) {
+            const match = trimmed.match(/^❯\s+(.+)/);
+            if (match) {
+                // Remove trailing "↵ send" or similar UI elements
+                suggestion = match[1].replace(/\s*↵\s*\w*\s*$/, '').trim();
+                if (suggestion) break;
+            }
+        }
+
+        // Numbered options: [1] Do something or 1) Do something
+        if (/^\[?[1-3]\]?\)?\.?\s+(.+)/.test(trimmed)) {
+            // Just show "1" for numbered options
+            const numMatch = trimmed.match(/^\[?([1-3])/);
+            if (numMatch) {
+                suggestion = numMatch[1];
+                break;
+            }
+        }
+
+        // Yes/No prompts
+        if (/\(y\/n\)/i.test(trimmed) || /\[yes\/no\]/i.test(trimmed)) {
+            suggestion = 'y';
+            break;
+        }
+    }
+
+    // Only update if suggestion changed and input is empty
+    if (suggestion && suggestion !== lastSuggestion && !logInput.value) {
+        lastSuggestion = suggestion;
+        logInput.value = suggestion;
+        logInput.dataset.autoSuggestion = 'true';
+        logInput.select();  // Select so user can easily replace
+    } else if (!suggestion && lastSuggestion) {
+        // Clear auto-suggestion if no suggestion found
+        if (logInput.dataset.autoSuggestion === 'true') {
+            logInput.value = '';
+            lastSuggestion = '';
+        }
+    }
 }
 
 /**
@@ -475,14 +597,13 @@ function sendResize() {
 }
 
 /**
- * Send input to terminal
+ * Send input to terminal (binary format, same as main terminal)
  */
+const inputEncoder = new TextEncoder();
+
 function sendInput(data) {
     if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-            type: 'input',
-            data: data,
-        }));
+        socket.send(inputEncoder.encode(data));
     }
 }
 
@@ -1830,13 +1951,22 @@ function setupCommandHistory() {
 }
 
 /**
- * View toggle: Terminal | Log | Context | Touch
+ * View toggle: Log | Terminal | Context | Touch
  */
-let currentView = 'hybrid';  // 'hybrid', 'context', 'touch'
+let currentView = 'log';  // 'log', 'terminal', 'context', 'touch'
 let transcriptText = '';  // Cached transcript text
 
+// Auto-refresh timer for log view
+let logAutoRefreshTimer = null;
+const LOG_AUTO_REFRESH_INTERVAL = 2000;  // Refresh every 2 seconds for real-time feel
+
+// Active Prompt functions are defined earlier - these are aliases for compatibility
+function startTailViewport() { startActivePrompt(); }
+function stopTailViewport() { stopActivePrompt(); }
+function updateTailViewport() { refreshActivePrompt(); }
+
 function setupViewToggle() {
-    // Views are now: hybrid (log+terminal), context, touch
+    // Views are now: log (primary), terminal, context, touch
     // Tab buttons removed - using swipe and dots now
 
     // Refresh buttons for context and touch views
@@ -1848,10 +1978,13 @@ function setupViewToggle() {
     if (touchRefresh) {
         touchRefresh.addEventListener('click', fetchTouch);
     }
+
+    // Log input handling
+    setupLogInput();
 }
 
-// Tab order for swipe navigation (hybrid = log+terminal, context = CONTEXT.md, touch = touch-summary.md)
-const tabOrder = ['hybrid', 'context', 'touch'];
+// Tab order for swipe navigation
+const tabOrder = ['log', 'terminal', 'context', 'touch'];
 
 function clearAllTabActive() {
     // Tab buttons removed from header - dots handle indication now
@@ -1898,8 +2031,11 @@ function switchToPrevTab() {
  */
 function switchToView(viewName) {
     switch (viewName) {
-        case 'hybrid':
-            switchToHybridView();
+        case 'log':
+            switchToLogView();
+            break;
+        case 'terminal':
+            switchToTerminalView();
             break;
         case 'context':
             switchToContextView();
@@ -1915,7 +2051,8 @@ function switchToView(viewName) {
  */
 function setupSwipeNavigation() {
     const containers = [
-        document.getElementById('hybridView'),
+        document.getElementById('logView'),
+        document.getElementById('terminalView'),
         document.getElementById('contextContainer'),
         document.getElementById('touchContainer'),
     ];
@@ -1972,25 +2109,45 @@ function setupSwipeNavigation() {
 }
 
 function hideAllContainers() {
-    if (hybridView) hybridView.classList.add('hidden');
+    if (logView) logView.classList.add('hidden');
+    if (terminalView) terminalView.classList.add('hidden');
     if (transcriptContainer) transcriptContainer.classList.add('hidden');
     contextContainer.classList.add('hidden');
     touchContainer.classList.add('hidden');
+    // Stop auto-refresh when leaving log view
+    stopLogAutoRefresh();
+    stopTailViewport();
 }
 
-function switchToHybridView() {
-    currentView = 'hybrid';
+function switchToLogView() {
+    currentView = 'log';
     hideAllContainers();
-    if (hybridView) hybridView.classList.remove('hidden');
-    viewBar.classList.remove('hidden');  // Show action bar in hybrid view
+    if (logView) logView.classList.remove('hidden');
+    viewBar.classList.remove('hidden');  // Show action bar (Select, Stop, Challenge, Compose)
+    // Show control bars if unlocked (same as terminal view)
+    if (isControlUnlocked) {
+        controlBarsContainer.classList.remove('hidden');
+    }
+    updateTabIndicator();
+    // Load log content
+    loadLogContent();
+    // Start auto-refresh
+    startLogAutoRefresh();
+    // Start tail viewport refresh
+    startTailViewport();
+}
+
+function switchToTerminalView() {
+    currentView = 'terminal';
+    hideAllContainers();
+    if (terminalView) terminalView.classList.remove('hidden');
+    viewBar.classList.remove('hidden');  // Show action bar in terminal view
     // Only show control bars if unlocked
     if (isControlUnlocked) {
         controlBarsContainer.classList.remove('hidden');
     }
     updateTabIndicator();
-    // Load log content if not already loaded
-    loadLogContent();
-    // Resize terminal to fit new container
+    // Resize terminal to fit container
     setTimeout(() => {
         if (fitAddon) fitAddon.fit();
         sendResize();
@@ -2157,6 +2314,79 @@ async function fetchTranscript() {
             transcriptContent.innerHTML = '<p class="error-content">Error loading log: ' + error.message + '</p>';
         }
     }
+}
+
+/**
+ * Clean terminal output by removing clutter
+ * - Collapse multiple blank lines
+ * - Remove spinner lines (Braille spinners, etc.)
+ * - Remove progress-only lines
+ * - Clean up carriage return artifacts
+ */
+function cleanTerminalOutput(text) {
+    // Split into lines
+    let lines = text.split('\n');
+
+    // Spinner characters (Braille pattern used by Claude)
+    const spinnerChars = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷]/;
+
+    // Box drawing characters
+    const boxDrawing = /^[─│┌┐└┘├┤┬┴┼━┃╭╮╯╰═║╔╗╚╝╠╣╦╩╬\s]+$/;
+
+    // Filter and clean lines
+    const cleanedLines = [];
+    let prevWasBlank = false;
+
+    for (let line of lines) {
+        // Handle carriage return (keep only last segment)
+        if (line.includes('\r')) {
+            const parts = line.split('\r');
+            line = parts[parts.length - 1];
+        }
+
+        const trimmed = line.trim();
+
+        // Skip lines that are just spinners
+        if (trimmed.length <= 3 && spinnerChars.test(trimmed)) {
+            continue;
+        }
+
+        // Skip lines that are just box drawing (borders)
+        if (trimmed.length > 0 && boxDrawing.test(trimmed)) {
+            continue;
+        }
+
+        // Skip lines that are mostly progress bar
+        if (trimmed.length > 0 && trimmed.replace(/[█▓▒░▏▎▍▌▋▊▉\s\[\]%0-9\/]/g, '').length < 3) {
+            continue;
+        }
+
+        // Skip "working..." type status lines that repeat
+        if (/^(working|thinking|processing|loading)\.{0,3}$/i.test(trimmed)) {
+            continue;
+        }
+
+        // Skip Claude Code UI hints (⏵⏵ lines, accept edits, context left, etc.)
+        if (/^[⏵▶►→]{1,2}/.test(trimmed)) {
+            continue;
+        }
+
+        // Skip "Context left until auto-compact" lines
+        if (/context left|auto-compact/i.test(trimmed)) {
+            continue;
+        }
+
+        // Collapse multiple blank lines
+        const isBlank = trimmed === '';
+        if (isBlank && prevWasBlank) {
+            continue;
+        }
+        prevWasBlank = isBlank;
+
+        cleanedLines.push(line);
+    }
+
+    return cleanedLines.join('\n');
 }
 
 // Strip ANSI escape codes from text
@@ -2472,6 +2702,12 @@ async function loadLogContent() {
         renderLogEntries(data.content);
         logLoaded = true;
 
+        // Update last modified time for change detection
+        lastLogModified = data.modified || 0;
+
+        // Load suggestions from terminal capture (not JSONL log)
+        loadTerminalSuggestions();
+
     } catch (error) {
         console.error('Log error:', error);
         logContent.innerHTML = `<div class="log-error">Error loading log: ${error.message}</div>`;
@@ -2580,9 +2816,255 @@ function renderLogEntries(content) {
 
     logContent.innerHTML = html;
 
+    // Extract and show suggestions from last message
+    extractAndShowSuggestions(content);
+
     // Scroll to bottom
     logContent.scrollTop = logContent.scrollHeight;
 }
+
+/**
+ * Extract last complete Claude message from terminal output
+ * Detects message boundaries via prompt (❯) reappearance
+ */
+function extractLastClaudeMessage(content) {
+    // Split by prompt markers to find message boundaries
+    // Claude's prompt is ❯, user input follows
+    const lines = content.split('\n');
+
+    // Find the last prompt line (indicates Claude finished)
+    let lastPromptIdx = -1;
+    let secondLastPromptIdx = -1;
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        // Prompt patterns: "❯ " at start, or line is just "❯"
+        if (line.startsWith('❯') || line === '❯') {
+            if (lastPromptIdx === -1) {
+                lastPromptIdx = i;
+            } else {
+                secondLastPromptIdx = i;
+                break;
+            }
+        }
+    }
+
+    // If we found two prompts, extract content between them (Claude's last message)
+    if (secondLastPromptIdx !== -1 && lastPromptIdx !== -1) {
+        // Get lines between prompts, skip user input line
+        const messageLines = lines.slice(secondLastPromptIdx + 2, lastPromptIdx);
+        return messageLines.join('\n');
+    }
+
+    // Fallback: return last 1500 chars
+    return content.slice(-1500);
+}
+
+/**
+ * Extract suggestions using hybrid heuristic scoring
+ * Returns: { questions: [], commands: [], actions: [], confirmations: [] }
+ */
+function extractSuggestionsHeuristic(content) {
+    const suggestions = {
+        questions: [],      // Blocking questions needing response
+        commands: [],       // Explicit command suggestions
+        actions: [],        // Implied next actions
+        confirmations: []   // Yes/no/continue prompts
+    };
+
+    // Get last Claude message block
+    const lastMessage = extractLastClaudeMessage(content);
+    if (!lastMessage || lastMessage.length < 10) return suggestions;
+
+    const lowerMessage = lastMessage.toLowerCase();
+
+    // Split into sentences (rough)
+    const sentences = lastMessage.split(/(?<=[.!?])\s+/);
+
+    for (const sentence of sentences) {
+        const lower = sentence.toLowerCase().trim();
+        if (lower.length < 5) continue;
+
+        let score = 0;
+        let type = null;
+
+        // === QUESTIONS (highest priority) ===
+        if (sentence.includes('?')) {
+            score += 3;
+            if (/do you want|should i|would you like|can i|is it okay|shall i/i.test(lower)) {
+                score += 3;
+                type = 'question';
+            }
+        }
+
+        // === CONFIRMATIONS ===
+        if (/proceed\??|continue\??|ready\??|let me know|when you're ready/i.test(lower)) {
+            score += 2;
+            type = type || 'confirmation';
+        }
+
+        // === EXPLICIT COMMANDS ===
+        // Only extract commands that look like actual shell/CLI commands, not code
+
+        // Slash commands (highest confidence) - /compact, /help, etc.
+        const slashCmd = sentence.match(/\s(\/[a-z][a-z0-9-]{1,20})\b/i);
+        if (slashCmd) {
+            suggestions.commands.push(slashCmd[1]);
+            score += 2;
+        }
+
+        // "Run X", "Try X", "Execute X" - but filter out code patterns
+        const runMatch = sentence.match(/(?:run|try|execute)\s+[`"']?([a-z][a-z0-9_-]{1,30})[`"']?/i);
+        if (runMatch) {
+            const cmd = runMatch[1];
+            // Filter out obvious code patterns (function calls, camelCase, etc.)
+            if (!/[A-Z]/.test(cmd) && !/\(/.test(cmd) && !/^(the|this|it|that|a|an)$/i.test(cmd)) {
+                suggestions.commands.push(cmd);
+                score += 2;
+            }
+        }
+
+        // Backtick commands - but only if they look like CLI commands
+        // Must be: lowercase, no parens, no camelCase, short
+        const backtickCmd = sentence.match(/`([a-z][a-z0-9 _-]{1,25})`/);
+        if (backtickCmd) {
+            const cmd = backtickCmd[1];
+            // Filter: no parens (not function), no camelCase, no dots
+            if (!/[A-Z()\.]/.test(cmd) && cmd.split(' ').length <= 3) {
+                suggestions.commands.push(cmd);
+            }
+        }
+
+        // === IMPLIED ACTIONS ===
+        if (/next,?\s|next step|you'll want to|you should|you can now|try\s|test\s|refresh/i.test(lower)) {
+            score += 1;
+            type = type || 'action';
+        }
+
+        // === Add to appropriate category ===
+        if (score >= 3 && type) {
+            if (type === 'question') {
+                suggestions.questions.push(sentence.trim());
+            } else if (type === 'confirmation') {
+                suggestions.confirmations.push(sentence.trim());
+            } else if (type === 'action') {
+                suggestions.actions.push(sentence.trim());
+            }
+        }
+    }
+
+    // Dedupe commands
+    suggestions.commands = [...new Set(suggestions.commands)].slice(0, 3);
+
+    return suggestions;
+}
+
+/**
+ * Legacy function for backward compatibility
+ */
+function extractDynamicSuggestion(content) {
+    const suggestions = extractSuggestionsHeuristic(content);
+
+    // Return first command or confirmation response
+    if (suggestions.commands.length > 0) {
+        return suggestions.commands[0];
+    }
+    if (suggestions.confirmations.length > 0 || suggestions.questions.length > 0) {
+        return 'yes';
+    }
+
+    // Fallback: check for common phrases
+    const lower = content.toLowerCase().slice(-1000);
+    if (lower.includes('refresh') || lower.includes('try it') || lower.includes('test it')) {
+        return 'try it';
+    }
+
+    return null;
+}
+
+/**
+ * DEPRECATED: Suggestion extraction has been replaced by tail viewport
+ * The tail viewport shows Claude's native suggestions directly
+ */
+function extractAndShowSuggestions(content) {
+    // No-op - tail viewport handles suggestion display now
+}
+
+/**
+ * Parse terminal capture for Claude's state
+ * NOTE: This is now a no-op since updateTailViewport() handles:
+ * - Terminal tail display (shows Claude's questions/suggestions natively)
+ * - Working indicator updates
+ * The old question/suggestion extraction is no longer needed.
+ */
+async function parseTerminalState() {
+    // No longer needed - updateTailViewport() handles everything
+    // Kept for backward compatibility with loadTerminalSuggestions alias
+}
+
+/**
+ * Update working indicator based on terminal state and pane title
+ */
+function updateWorkingIndicator(lastLines, lastChars, paneTitle) {
+    const lowerChars = lastChars.toLowerCase();
+    const indicator = document.getElementById('logThinkingDots');
+    if (!indicator) return;
+
+    // Check pane title first - most reliable signal
+    const titleLower = (paneTitle || '').toLowerCase();
+    const titleIndicatesWorking = titleLower.includes('thinking') ||
+                                   titleLower.includes('working') ||
+                                   titleLower.includes('processing');
+
+    // Check for Claude's working indicators in terminal content
+    const contentIndicatesWorking = (
+        // Claude's status text
+        lowerChars.includes('thinking') ||
+        lowerChars.includes('cogitating') ||
+        lowerChars.includes('working') ||
+        lowerChars.includes('processing') ||
+        lowerChars.includes('swooping') ||
+        lowerChars.includes('churning') ||
+        // Spinner characters (braille spinner)
+        /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✻]/.test(lastChars) ||
+        // Running tool indicator
+        lastChars.includes('Running…') ||
+        lastChars.includes('Running...')
+    );
+
+    // Check if we're at the prompt (idle state) - but NOT if waiting for input
+    const atPrompt = lastLines.trim().endsWith('❯') ||
+                     lastLines.trim().match(/❯\s*$/);
+    const isWaitingForInput = paneTitle.includes('Signal Detection Pending');
+
+    const isWorking = titleIndicatesWorking || contentIndicatesWorking;
+
+    if (isWorking && !atPrompt && !isWaitingForInput) {
+        indicator.classList.remove('hidden');
+        indicator.textContent = 'working...';
+    } else {
+        indicator.classList.add('hidden');
+    }
+}
+
+/**
+ * DEPRECATED: Question banner has been replaced by tail viewport
+ * The tail viewport shows Claude's native question UI directly
+ */
+function updateQuestionBanner(content, isWaitingForInput) {
+    // No-op - tail viewport handles question display now
+}
+
+/**
+ * DEPRECATED: Suggestion UI has been replaced by tail viewport
+ * The tail viewport shows Claude's native suggestions directly
+ */
+function updateSuggestion(content) {
+    // No-op - tail viewport handles suggestion display now
+}
+
+// Alias for backward compatibility
+const loadTerminalSuggestions = parseTerminalState;
 
 /**
  * Escape HTML entities
@@ -2596,10 +3078,187 @@ function escapeHtml(text) {
 }
 
 /**
+ * Start auto-refresh for log view
+ */
+function startLogAutoRefresh() {
+    stopLogAutoRefresh();  // Clear any existing timer
+    logAutoRefreshTimer = setInterval(() => {
+        if (currentView === 'log') {
+            refreshLogContent();
+        }
+    }, LOG_AUTO_REFRESH_INTERVAL);
+}
+
+/**
+ * Stop auto-refresh for log view
+ */
+function stopLogAutoRefresh() {
+    if (logAutoRefreshTimer) {
+        clearInterval(logAutoRefreshTimer);
+        logAutoRefreshTimer = null;
+    }
+}
+
+// Track last log modified time to avoid unnecessary re-renders
+let lastLogModified = 0;
+
+/**
+ * Refresh log content without resetting logLoaded flag
+ * (for auto-refresh to get new content)
+ */
+async function refreshLogContent() {
+    if (!logContent) return;
+
+    try {
+        const response = await fetch(`/api/log?token=${token}`);
+        if (!response.ok) return;
+
+        const data = await response.json();
+        if (!data.exists || !data.content) return;
+
+        // Only re-render if content actually changed
+        if (data.modified && data.modified === lastLogModified) {
+            return;  // No change, skip re-render
+        }
+        lastLogModified = data.modified || 0;
+
+        // Check if we should hide thinking indicator
+        maybeHideThinking(data.modified);
+
+        // Re-render log entries
+        renderLogEntries(data.content);
+
+        // Load suggestions from terminal capture (not JSONL log)
+        loadTerminalSuggestions();
+    } catch (error) {
+        // Silently fail on auto-refresh
+        console.debug('Log auto-refresh failed:', error);
+    }
+}
+
+/**
+ * Setup log input field for sending commands
+ */
+function setupLogInput() {
+    if (!logInput || !logSend) return;
+
+    // Send on Enter key (multiple event types for mobile compatibility)
+    const handleEnter = (e) => {
+        if ((e.key === 'Enter' || e.keyCode === 13) && !e.shiftKey) {
+            e.preventDefault();
+            sendLogCommand();
+        }
+    };
+    logInput.addEventListener('keydown', handleEnter);
+    logInput.addEventListener('keypress', handleEnter);
+
+    // Send on button click
+    logSend.addEventListener('click', sendLogCommand);
+
+    // Focus mode: when input is tapped, refresh the active prompt
+    logInput.addEventListener('focus', () => {
+        refreshActivePrompt();
+    });
+}
+
+/**
+ * Setup quick response buttons (1, 2, 3, yes, no)
+ * These send directly to the terminal for fast mobile interaction
+ */
+function setupQuickResponses() {
+    if (!quickResponses) return;
+
+    quickResponses.querySelectorAll('.quick-response-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const value = btn.dataset.value;
+            if (value && socket && socket.readyState === WebSocket.OPEN) {
+                sendInput(value + '\r');
+            }
+        });
+    });
+}
+
+/**
+ * Send command from log input to terminal
+ * Simple working version: command → delay → \n → delay → \r
+ */
+function sendLogCommand() {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+    const command = logInput ? logInput.value.trim() : '';
+    if (!command) return;
+
+    // Send command, then \n, then \r with small delays
+    sendInput(command);
+    setTimeout(() => {
+        sendInput('\n');
+        setTimeout(() => {
+            sendInput('\r');
+        }, 50);
+    }, 50);
+
+    // Clear input
+    logInput.value = '';
+    logInput.dataset.autoSuggestion = 'false';
+
+    // Add to command history
+    addToHistory(command);
+
+    // Show thinking indicator
+    showThinking();
+
+    // Force refresh log after a short delay
+    setTimeout(() => {
+        logLoaded = false;
+        lastLogModified = 0;  // Force re-fetch
+        loadLogContent();
+    }, 500);
+}
+
+// Track the modified timestamp when we sent command (to ignore immediate echo)
+let thinkingStartModified = 0;
+
+/**
+ * Show thinking indicator in header
+ */
+function showThinking() {
+    const dots = document.getElementById('logThinkingDots');
+    if (dots) dots.classList.remove('hidden');
+    // Record current modified time - we'll only hide when it changes TWICE
+    // (once for our command echo, once for Claude's response)
+    thinkingStartModified = lastLogModified;
+}
+
+/**
+ * Hide thinking indicator (only if content changed since we started)
+ */
+function hideThinking() {
+    const dots = document.getElementById('logThinkingDots');
+    if (dots) dots.classList.add('hidden');
+    thinkingStartModified = 0;
+}
+
+/**
+ * Check if we should hide thinking (content changed meaningfully)
+ */
+function maybeHideThinking(newModified) {
+    // If not showing dots, nothing to do
+    if (!thinkingStartModified) return;
+
+    // Hide if modified time changed from when we started
+    // (give 2 second grace period for command echo)
+    if (newModified > thinkingStartModified + 2) {
+        hideThinking();
+    }
+}
+
+/**
  * Setup hybrid view with draggable resize handle (hold-to-drag)
+ * NOTE: This is no longer used with the new log/terminal tab architecture
  */
 function setupHybridView() {
-    if (!logSection || !terminalSection || !resizeHandle || !hybridView) return;
+    // Hybrid view has been replaced with separate log and terminal tabs
+    return;
 
     const HOLD_DELAY = 150;  // ms to hold before drag activates
 
@@ -2735,10 +3394,20 @@ function setupHybridView() {
     document.addEventListener('mousemove', onPointerMove);
     document.addEventListener('mouseup', onPointerUp);
 
-    // Log refresh button
+    // Log refresh button - also toggles thinking dots for testing
     if (logRefresh) {
         logRefresh.addEventListener('click', () => {
+            // Toggle dots for visual test
+            const dots = document.getElementById('logThinkingDots');
+            if (dots) {
+                if (dots.classList.contains('hidden')) {
+                    dots.classList.remove('hidden');
+                } else {
+                    dots.classList.add('hidden');
+                }
+            }
             logLoaded = false;
+            lastLogModified = 0;  // Force re-fetch
             loadLogContent();
         });
     }
@@ -2749,14 +3418,13 @@ function setupHybridView() {
 document.addEventListener('DOMContentLoaded', async () => {
     initDOMElements();
 
-    // IMPORTANT: Size terminal with ALL bars visible to get the smallest size
-    // This ensures tmux gets a consistent size regardless of View/Control mode
-    controlBarsContainer.classList.remove('hidden');
-    // viewBar is always visible (no toggle needed)
+    // Initialize terminal (but it starts hidden in terminal tab)
+    initTerminal();
 
-    initTerminal();  // Fits terminal to container (with all bars taking space)
+    // Setup quick response buttons
+    setupQuickResponses();
 
-    // Switch to View mode layout - start in View mode
+    // Hide control bars initially (view mode)
     controlBarsContainer.classList.add('hidden');
 
     setupEventListeners();
@@ -2773,7 +3441,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupViewToggle();
     setupSwipeNavigation();
     setupTranscriptSearch();
-    setupHybridView();
     startActivityUpdates();
 
     // Load current session first, then config
@@ -2781,4 +3448,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadConfig();
 
     connect();
+
+    // Start with log view as primary
+    switchToLogView();
 });

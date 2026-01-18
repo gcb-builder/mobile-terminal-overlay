@@ -53,6 +53,135 @@ class RingBuffer:
         with self._lock:
             return len(self._buffer)
 
+
+class InputQueue:
+    """
+    Async queue for serializing PTY writes with quiet-wait and ACKs.
+
+    Features:
+    - Single writer per session (serialized writes)
+    - Waits for quiet period before sending (reduces tmux races)
+    - Tracks message IDs for ACKs
+    - Cooldown between sends
+    """
+
+    QUIET_MS = 350  # Wait for output to settle
+    COOLDOWN_MS = 200  # Min time between sends
+    QUIET_TIMEOUT_MS = 2000  # Max wait for quiet
+
+    def __init__(self):
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._last_output_ts: float = 0
+        self._last_send_ts: float = 0
+        self._pending_acks: dict = {}  # msg_id -> asyncio.Event
+        self._lock = asyncio.Lock()
+        self._running = False
+        self._writer_task = None
+
+    def update_output_ts(self):
+        """Called when PTY output is received."""
+        self._last_output_ts = time.time()
+
+    async def send(self, msg_id: str, data: bytes, master_fd: int, websocket) -> bool:
+        """
+        Queue a send request and wait for ACK.
+        Returns True if send was acknowledged, False on timeout.
+        """
+        event = asyncio.Event()
+        self._pending_acks[msg_id] = event
+
+        await self._queue.put((msg_id, data, master_fd, websocket))
+
+        try:
+            # Wait for ACK with timeout
+            await asyncio.wait_for(event.wait(), timeout=2.0)
+            return True
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            self._pending_acks.pop(msg_id, None)
+
+    def ack(self, msg_id: str):
+        """Acknowledge a message was processed."""
+        if msg_id in self._pending_acks:
+            self._pending_acks[msg_id].set()
+
+    async def _wait_for_quiet(self):
+        """Wait for output to settle before sending."""
+        deadline = time.time() + (self.QUIET_TIMEOUT_MS / 1000)
+
+        while time.time() < deadline:
+            since_output = (time.time() - self._last_output_ts) * 1000
+            if since_output >= self.QUIET_MS:
+                return True
+
+            # Wait a bit more
+            wait_time = min(
+                (self.QUIET_MS - since_output) / 1000,
+                deadline - time.time()
+            )
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+
+        # Timeout reached, send anyway
+        return False
+
+    async def _writer_loop(self):
+        """Process queued sends one at a time."""
+        self._running = True
+
+        while self._running:
+            try:
+                msg_id, data, master_fd, websocket = await asyncio.wait_for(
+                    self._queue.get(), timeout=1.0
+                )
+            except asyncio.TimeoutError:
+                continue
+
+            try:
+                async with self._lock:
+                    # Wait for quiet period
+                    await self._wait_for_quiet()
+
+                    # Enforce cooldown
+                    since_send = (time.time() - self._last_send_ts) * 1000
+                    if since_send < self.COOLDOWN_MS:
+                        await asyncio.sleep((self.COOLDOWN_MS - since_send) / 1000)
+
+                    # Write to PTY
+                    os.write(master_fd, data)
+                    self._last_send_ts = time.time()
+
+                    # Send ACK to client
+                    if websocket:
+                        try:
+                            await websocket.send_json({
+                                "type": "ack",
+                                "id": msg_id
+                            })
+                        except Exception:
+                            pass
+
+                    # Mark as acknowledged internally
+                    self.ack(msg_id)
+
+            except Exception as e:
+                logger.error(f"InputQueue write error: {e}")
+
+            self._queue.task_done()
+
+    def start(self):
+        """Start the writer loop."""
+        if self._writer_task is None:
+            self._writer_task = asyncio.create_task(self._writer_loop())
+
+    def stop(self):
+        """Stop the writer loop."""
+        self._running = False
+        if self._writer_task:
+            self._writer_task.cancel()
+            self._writer_task = None
+
 from fastapi import FastAPI, File, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -170,6 +299,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.last_ws_connect = 0  # Timestamp of last WebSocket connection
     app.state.ws_connect_lock = asyncio.Lock()  # Prevent concurrent connection handling
     app.state.output_buffer = RingBuffer(max_size=2 * 1024 * 1024)  # 2MB scrollback buffer
+    app.state.input_queue = InputQueue()  # Serialized input queue with ACKs
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -538,6 +668,17 @@ def create_app(config: Config) -> FastAPI:
                                         elif tool_name in ('Read', 'Edit', 'Write', 'Glob', 'Grep'):
                                             path = tool_input.get('file_path') or tool_input.get('path') or tool_input.get('pattern', '')
                                             conversation.append(f"• {tool_name}: {path[:100]}")
+                                        elif tool_name == 'AskUserQuestion':
+                                            # Show questions with options for user to respond
+                                            questions = tool_input.get('questions', [])
+                                            for q in questions:
+                                                qtext = q.get('question', '')
+                                                opts = q.get('options', [])
+                                                conversation.append(f"❓ {qtext}")
+                                                for i, opt in enumerate(opts, 1):
+                                                    label = opt.get('label', '')
+                                                    desc = opt.get('description', '')
+                                                    conversation.append(f"  {i}. {label}" + (f" - {desc}" if desc else ""))
                                         else:
                                             conversation.append(f"• {tool_name}")
                 except json.JSONDecodeError:
@@ -578,6 +719,7 @@ def create_app(config: Config) -> FastAPI:
 
         Uses tmux capture-pane to get scrollback buffer.
         Returns last N lines of terminal content.
+        Also returns pane_title which Claude Code uses to signal its state.
         """
         import subprocess
 
@@ -596,10 +738,30 @@ def create_app(config: Config) -> FastAPI:
                 text=True,
                 timeout=5,
             )
+
+            # Get pane title - Claude Code sets this to indicate state
+            # e.g., "✳ Signal Detection Pending" when waiting for input
+            pane_title = ""
+            try:
+                title_result = subprocess.run(
+                    ["tmux", "display-message", "-p", "-t", session, "#{pane_title}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                if title_result.returncode == 0:
+                    pane_title = title_result.stdout.strip()
+            except Exception:
+                pass
+
             if result.returncode == 0:
-                return {"content": result.stdout, "lines": lines}
+                return {
+                    "content": result.stdout,
+                    "lines": lines,
+                    "pane_title": pane_title,
+                }
             else:
-                return {"content": "", "error": result.stderr}
+                return {"content": "", "error": result.stderr, "pane_title": pane_title}
         except Exception as e:
             logger.error(f"Failed to capture terminal: {e}")
             return {"content": "", "error": str(e)}
@@ -941,6 +1103,131 @@ Output format:
 
         return {"status": "ok", "session": session}
 
+    @app.post("/api/send")
+    async def send_line(
+        text: str = Query(...),
+        session: str = Query(...),
+        msg_id: str = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """
+        Send a line of text to the terminal with Enter.
+        Uses the InputQueue for serialized, atomic writes with ACKs.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate session matches current
+        if session != app.state.current_session:
+            return JSONResponse({
+                "error": "Session mismatch",
+                "expected": app.state.current_session,
+                "got": session
+            }, status_code=400)
+
+        if app.state.master_fd is None:
+            return JSONResponse({"error": "No active terminal"}, status_code=400)
+
+        # Atomic write: text + carriage return
+        data = (text + "\r").encode("utf-8")
+
+        # Queue the send (will wait for quiet period and send ACK)
+        success = await app.state.input_queue.send(
+            msg_id,
+            data,
+            app.state.master_fd,
+            app.state.active_websocket
+        )
+
+        if success:
+            return {"status": "ok", "id": msg_id}
+        else:
+            return JSONResponse({"error": "Send timeout", "id": msg_id}, status_code=504)
+
+    @app.post("/api/sendkey")
+    async def send_key(
+        key: str = Query(...),
+        session: str = Query(...),
+        msg_id: str = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """
+        Send a control key using tmux send-keys.
+        Supports: C-c, C-d, C-z, C-l, Tab, Escape, Enter, Up, Down, Left, Right, etc.
+        """
+        import subprocess
+
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate session matches current
+        if session != app.state.current_session:
+            return JSONResponse({
+                "error": "Session mismatch",
+                "expected": app.state.current_session,
+                "got": session
+            }, status_code=400)
+
+        # Map common key names to tmux send-keys format
+        key_map = {
+            "ctrl-c": "C-c",
+            "ctrl-d": "C-d",
+            "ctrl-z": "C-z",
+            "ctrl-l": "C-l",
+            "ctrl-a": "C-a",
+            "ctrl-e": "C-e",
+            "ctrl-w": "C-w",
+            "ctrl-u": "C-u",
+            "ctrl-k": "C-k",
+            "ctrl-r": "C-r",
+            "ctrl-o": "C-o",
+            "ctrl-b": "C-b",
+            "tab": "Tab",
+            "escape": "Escape",
+            "esc": "Escape",
+            "enter": "Enter",
+            "up": "Up",
+            "down": "Down",
+            "left": "Left",
+            "right": "Right",
+            "pageup": "PageUp",
+            "pagedown": "PageDown",
+            "home": "Home",
+            "end": "End",
+        }
+
+        tmux_key = key_map.get(key.lower(), key)
+        target = f"{session}:0.0"
+
+        try:
+            result = subprocess.run(
+                ["tmux", "send-keys", "-t", target, tmux_key],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return JSONResponse({
+                    "error": f"tmux send-keys failed: {result.stderr}",
+                    "id": msg_id
+                }, status_code=500)
+
+            # Send ACK via WebSocket if connected
+            if app.state.active_websocket:
+                try:
+                    await app.state.active_websocket.send_json({
+                        "type": "ack",
+                        "id": msg_id
+                    })
+                except Exception:
+                    pass
+
+            return {"status": "ok", "id": msg_id, "key": tmux_key}
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "tmux command timeout", "id": msg_id}, status_code=504)
+        except Exception as e:
+            return JSONResponse({"error": str(e), "id": msg_id}, status_code=500)
+
     @app.websocket("/ws/terminal")
     async def terminal_websocket(websocket: WebSocket, token: Optional[str] = Query(None)):
         """WebSocket endpoint for terminal I/O."""
@@ -1040,6 +1327,9 @@ Output format:
                     )
                     if not data:
                         break
+
+                    # Update input queue timestamp (for quiet-wait logic)
+                    app.state.input_queue.update_output_ts()
 
                     # Store in ring buffer for future reconnects
                     output_buffer.write(data)
@@ -1150,7 +1440,9 @@ Output format:
 
     @app.on_event("startup")
     async def startup():
-        """Print access URL on startup."""
+        """Start input queue and print access URL on startup."""
+        app.state.input_queue.start()
+
         if app.state.no_auth:
             url = f"http://localhost:{config.port}/"
             print(f"\n{'=' * 60}")
@@ -1173,6 +1465,8 @@ Output format:
     @app.on_event("shutdown")
     async def shutdown():
         """Cleanup on shutdown."""
+        app.state.input_queue.stop()
+
         if app.state.master_fd is not None:
             try:
                 os.close(app.state.master_fd)

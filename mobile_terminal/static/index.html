@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=72">
+    <link rel="stylesheet" href="/static/styles.css?v=108">
 </head>
 <body>
     <div class="app">
@@ -62,22 +62,30 @@
             </div>
         </div>
 
-        <!-- Hybrid view: Log + Terminal -->
-        <div id="hybridView" class="hybrid-view">
-            <!-- Log section (top) -->
-            <div id="logSection" class="log-section">
-                <div class="log-section-header">
-                    <span class="log-section-title">Context</span>
-                    <button id="logRefresh" class="log-refresh-btn">↻</button>
+        <!-- Log view: Log + Command input (primary view) -->
+        <div id="logView" class="log-view">
+            <div class="log-view-header">
+                <span class="log-view-title">Log</span>
+                <span id="logThinkingDots" class="log-thinking-text hidden">thinking...</span>
+                <button id="logRefresh" class="log-refresh-btn">↻</button>
+            </div>
+            <div id="logContent" class="log-view-content"></div>
+            <!-- Terminal block: active prompt + input as one unit -->
+            <div id="terminalBlock" class="terminal-block">
+                <pre id="activePromptContent" class="terminal-block-output"></pre>
+                <div class="terminal-block-input">
+                    <span class="terminal-prompt">❯</span>
+                    <input type="text" id="logInput" class="terminal-input"
+                           placeholder="command or prompt..."
+                           autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                    <button id="logSend" class="terminal-send-btn">⏎</button>
                 </div>
-                <div id="logContent" class="log-content"></div>
             </div>
-            <!-- Resize handle -->
-            <div id="resizeHandle" class="resize-handle"></div>
-            <!-- Terminal section (bottom) -->
-            <div id="terminalSection" class="terminal-section">
-                <div id="terminal-container" class="terminal-container"></div>
-            </div>
+        </div>
+
+        <!-- Terminal view (secondary, swipe to access) -->
+        <div id="terminalView" class="terminal-view hidden">
+            <div id="terminal-container" class="terminal-container"></div>
         </div>
 
         <!-- Context view (CONTEXT.md) -->
@@ -100,7 +108,8 @@
 
         <!-- Tab position indicator (dots) -->
         <div id="tabIndicator" class="tab-indicator">
-            <span class="tab-dot active" data-view="hybrid"></span>
+            <span class="tab-dot active" data-view="log"></span>
+            <span class="tab-dot" data-view="terminal"></span>
             <span class="tab-dot" data-view="context"></span>
             <span class="tab-dot" data-view="touch"></span>
         </div>
@@ -248,7 +257,7 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=72"></script>
+    <script src="/static/terminal.js?v=131"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
