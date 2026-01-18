@@ -3436,6 +3436,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupTranscriptSearch();
     startActivityUpdates();
 
+    // Scroll input bar to the right so Enter button is visible
+    if (inputBar) {
+        inputBar.scrollLeft = inputBar.scrollWidth;
+    }
+
     // Load current session first, then config
     await loadCurrentSession();
     await loadConfig();
