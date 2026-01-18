@@ -11,7 +11,7 @@ const token = urlParams.get('token') || '';
 // State
 let terminal = null;
 let socket = null;
-let isControlUnlocked = false;
+let isControlUnlocked = true;  // Controls always enabled (no lock)
 let config = null;
 let currentSession = null;
 
@@ -39,7 +39,7 @@ let historyIndex = -1;
 let currentInput = '';
 
 // DOM elements (initialized in DOMContentLoaded)
-let terminalContainer, controlBtn, controlBarsContainer;
+let terminalContainer, controlBarsContainer;
 let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
@@ -66,7 +66,6 @@ let forceScrollToBottom = false;
 
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
-    controlBtn = document.getElementById('controlBtn');
     controlBarsContainer = document.getElementById('controlBarsContainer');
     collapseToggle = document.getElementById('collapseToggle');
     controlBar = document.getElementById('controlBar');
@@ -723,39 +722,7 @@ function sendInput(data) {
 /**
  * Toggle control lock
  */
-function toggleControl() {
-    isControlUnlocked = !isControlUnlocked;
-
-    if (isControlUnlocked) {
-        controlBtn.classList.remove('locked');
-        controlBtn.classList.add('unlocked');
-        controlBtn.querySelector('.lock-icon').innerHTML = '&#x1F513;';
-
-        controlBarsContainer.classList.remove('hidden');
-        controlBarsContainer.classList.remove('collapsed');
-        collapseToggle.classList.remove('hidden');
-        collapseToggle.classList.remove('collapsed');
-
-        // Focus terminal for direct input
-        terminal.focus();
-        terminalContainer.classList.add('focusable');
-
-        // Don't resize - keeps terminal stable, prevents tmux reflow/corruption
-    } else {
-        controlBtn.classList.remove('unlocked');
-        controlBtn.classList.add('locked');
-        controlBtn.querySelector('.lock-icon').innerHTML = '&#x1F512;';
-
-        controlBarsContainer.classList.add('hidden');
-        collapseToggle.classList.add('hidden');
-        terminalContainer.classList.remove('focusable');
-
-        // Clear any selection when locking
-        terminal.clearSelection();
-
-        // Don't resize - keeps terminal stable, prevents tmux reflow/corruption
-    }
-}
+// Lock functionality removed - controls always enabled
 
 /**
  * Toggle control bars collapse state
@@ -1083,9 +1050,6 @@ function setupFileSearch() {
  * Setup event listeners
  */
 function setupEventListeners() {
-    // Control toggle button
-    controlBtn.addEventListener('click', toggleControl);
-
     // Collapse toggle for control bars
     if (collapseToggle) {
         let collapseHandled = false;
@@ -1307,12 +1271,8 @@ function setupJumpToBottom() {
  * Setup compose mode (predictive text + speech-to-text + image upload)
  */
 function setupComposeMode() {
-    // Open compose modal and unlock control mode
+    // Open compose modal
     composeBtn.addEventListener('click', () => {
-        // Unlock control mode if locked (so compose can send input)
-        if (!isControlUnlocked) {
-            toggleControl();
-        }
         composeModal.classList.remove('hidden');
         composeInput.value = '';
         clearAttachments();
