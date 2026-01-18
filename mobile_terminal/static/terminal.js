@@ -50,7 +50,7 @@ let selectCopyBtn, stopBtn, challengeBtn;
 let challengeModal, challengeClose, challengeResult, challengeStatus, challengeRun;
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 let contextViewBtn, touchViewBtn, contextContainer, contextContent, touchContainer, touchContent;
-let logView, logInput, logSend, logContent, refreshBtn;
+let logView, logInput, logSend, logQueue, logContent, refreshBtn;
 let terminalView;
 
 // Attachments state for compose modal
@@ -123,6 +123,7 @@ function initDOMElements() {
     logView = document.getElementById('logView');
     logInput = document.getElementById('logInput');
     logSend = document.getElementById('logSend');
+    logQueue = document.getElementById('logQueue');
     logContent = document.getElementById('logContent');
     refreshBtn = document.getElementById('refreshBtn');
     terminalView = document.getElementById('terminalView');
@@ -3241,6 +3242,11 @@ function setupLogInput() {
     // Send on button click
     logSend.addEventListener('click', sendLogCommand);
 
+    // Queue on Q button click
+    if (logQueue) {
+        logQueue.addEventListener('click', queueLogCommand);
+    }
+
     // Focus mode: when input is tapped, refresh the active prompt
     logInput.addEventListener('focus', () => {
         refreshActivePrompt();
@@ -3295,6 +3301,26 @@ function sendLogCommand() {
         lastLogModified = 0;  // Force re-fetch
         loadLogContent();
     }, 500);
+}
+
+/**
+ * Queue command from input box instead of sending directly
+ */
+function queueLogCommand() {
+    const command = logInput ? logInput.value.trim() : '';
+
+    // Enqueue the command (even empty for Enter)
+    enqueueCommand(command).then(success => {
+        if (success) {
+            // Clear input on success
+            logInput.value = '';
+            logInput.dataset.autoSuggestion = 'false';
+            // Add to command history
+            if (command) {
+                addToHistory(command);
+            }
+        }
+    });
 }
 
 /**

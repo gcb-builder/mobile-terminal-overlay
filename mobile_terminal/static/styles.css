@@ -321,6 +321,23 @@ html, body {
     opacity: 0.8;
 }
 
+.terminal-queue-btn {
+    width: 44px;
+    height: 44px;
+    background: var(--warning);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.terminal-queue-btn:active {
+    opacity: 0.8;
+}
+
 /* Terminal view (secondary tab) */
 .terminal-view {
     flex: 1;
