@@ -50,7 +50,7 @@ let selectCopyBtn, stopBtn, challengeBtn;
 let challengeModal, challengeClose, challengeResult, challengeStatus, challengeRun;
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 let contextViewBtn, touchViewBtn, contextContainer, contextContent, touchContainer, touchContent;
-let logView, logInput, logSend, logContent, logRefresh;
+let logView, logInput, logSend, logContent, refreshBtn;
 let terminalView;
 
 // Attachments state for compose modal
@@ -118,7 +118,7 @@ function initDOMElements() {
     logInput = document.getElementById('logInput');
     logSend = document.getElementById('logSend');
     logContent = document.getElementById('logContent');
-    logRefresh = document.getElementById('logRefresh');
+    refreshBtn = document.getElementById('refreshBtn');
     terminalView = document.getElementById('terminalView');
     terminalBlock = document.getElementById('terminalBlock');
     activePromptContent = document.getElementById('activePromptContent');
@@ -733,6 +733,10 @@ function toggleControlBarsCollapse() {
     const isCollapsed = controlBarsContainer.classList.toggle('collapsed');
     // Update button icon state
     collapseToggle.classList.toggle('collapsed', isCollapsed);
+    // Also collapse/expand the view bar (Select, Stop, Challenge, Compose)
+    if (viewBar) {
+        viewBar.classList.toggle('collapsed', isCollapsed);
+    }
 
     // Don't resize - keeps terminal stable, prevents tmux reflow/corruption
 }
@@ -3087,51 +3091,6 @@ async function parseTerminalState() {
 }
 
 /**
- * Update working indicator based on terminal state and pane title
- */
-function updateWorkingIndicator(lastLines, lastChars, paneTitle) {
-    const lowerChars = lastChars.toLowerCase();
-    const indicator = document.getElementById('logThinkingDots');
-    if (!indicator) return;
-
-    // Check pane title first - most reliable signal
-    const titleLower = (paneTitle || '').toLowerCase();
-    const titleIndicatesWorking = titleLower.includes('thinking') ||
-                                   titleLower.includes('working') ||
-                                   titleLower.includes('processing');
-
-    // Check for Claude's working indicators in terminal content
-    const contentIndicatesWorking = (
-        // Claude's status text
-        lowerChars.includes('thinking') ||
-        lowerChars.includes('cogitating') ||
-        lowerChars.includes('working') ||
-        lowerChars.includes('processing') ||
-        lowerChars.includes('swooping') ||
-        lowerChars.includes('churning') ||
-        // Spinner characters (braille spinner)
-        /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✻]/.test(lastChars) ||
-        // Running tool indicator
-        lastChars.includes('Running…') ||
-        lastChars.includes('Running...')
-    );
-
-    // Check if we're at the prompt (idle state) - but NOT if waiting for input
-    const atPrompt = lastLines.trim().endsWith('❯') ||
-                     lastLines.trim().match(/❯\s*$/);
-    const isWaitingForInput = paneTitle.includes('Signal Detection Pending');
-
-    const isWorking = titleIndicatesWorking || contentIndicatesWorking;
-
-    if (isWorking && !atPrompt && !isWaitingForInput) {
-        indicator.classList.remove('hidden');
-        indicator.textContent = 'working...';
-    } else {
-        indicator.classList.add('hidden');
-    }
-}
-
-/**
  * DEPRECATED: Question banner has been replaced by tail viewport
  * The tail viewport shows Claude's native question UI directly
  */
@@ -3206,9 +3165,6 @@ async function refreshLogContent() {
         }
         lastLogModified = data.modified || 0;
 
-        // Check if we should hide thinking indicator
-        maybeHideThinking(data.modified);
-
         // Re-render log entries
         renderLogEntries(data.content);
 
@@ -3238,12 +3194,6 @@ function setupLogInput() {
 
     // Send on button click
     logSend.addEventListener('click', sendLogCommand);
-
-    // Sync button: load terminal prompt content into input box
-    const syncBtn = document.getElementById('syncBtn');
-    if (syncBtn) {
-        syncBtn.addEventListener('click', syncPromptToInput);
-    }
 
     // Focus mode: when input is tapped, refresh the active prompt
     logInput.addEventListener('focus', () => {
@@ -3293,52 +3243,12 @@ function sendLogCommand() {
     // Add to command history
     addToHistory(command);
 
-    // Show thinking indicator
-    showThinking();
-
     // Force refresh log after a short delay
     setTimeout(() => {
         logLoaded = false;
         lastLogModified = 0;  // Force re-fetch
         loadLogContent();
     }, 500);
-}
-
-// Track the modified timestamp when we sent command (to ignore immediate echo)
-let thinkingStartModified = 0;
-
-/**
- * Show thinking indicator in header
- */
-function showThinking() {
-    const dots = document.getElementById('logThinkingDots');
-    if (dots) dots.classList.remove('hidden');
-    // Record current modified time - we'll only hide when it changes TWICE
-    // (once for our command echo, once for Claude's response)
-    thinkingStartModified = lastLogModified;
-}
-
-/**
- * Hide thinking indicator (only if content changed since we started)
- */
-function hideThinking() {
-    const dots = document.getElementById('logThinkingDots');
-    if (dots) dots.classList.add('hidden');
-    thinkingStartModified = 0;
-}
-
-/**
- * Check if we should hide thinking (content changed meaningfully)
- */
-function maybeHideThinking(newModified) {
-    // If not showing dots, nothing to do
-    if (!thinkingStartModified) return;
-
-    // Hide if modified time changed from when we started
-    // (give 2 second grace period for command echo)
-    if (newModified > thinkingStartModified + 2) {
-        hideThinking();
-    }
 }
 
 /**
@@ -3483,21 +3393,15 @@ function setupHybridView() {
     document.addEventListener('mousemove', onPointerMove);
     document.addEventListener('mouseup', onPointerUp);
 
-    // Log refresh button - also toggles thinking dots for testing
-    if (logRefresh) {
-        logRefresh.addEventListener('click', () => {
-            // Toggle dots for visual test
-            const dots = document.getElementById('logThinkingDots');
-            if (dots) {
-                if (dots.classList.contains('hidden')) {
-                    dots.classList.remove('hidden');
-                } else {
-                    dots.classList.add('hidden');
-                }
-            }
+    // Header refresh button - refreshes log AND syncs input box
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', () => {
+            // Refresh log content
             logLoaded = false;
             lastLogModified = 0;  // Force re-fetch
             loadLogContent();
+            // Sync terminal prompt to input box
+            syncPromptToInput();
         });
     }
 }

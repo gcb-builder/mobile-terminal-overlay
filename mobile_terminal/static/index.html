@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=110">
+    <link rel="stylesheet" href="/static/styles.css?v=112">
 </head>
 <body>
     <div class="app">
@@ -37,6 +37,9 @@
             </div>
             <div class="header-right">
                 <span id="lastActivity" class="last-activity" title="Last activity">--</span>
+                <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh log and sync">
+                    <span>↻</span>
+                </button>
                 <button id="searchBtn" class="icon-btn" aria-label="Search files">
                     <span>&#x1F50D;</span>
                 </button>
@@ -57,11 +60,6 @@
 
         <!-- Log view: Log + Command input (primary view) -->
         <div id="logView" class="log-view">
-            <div class="log-view-header">
-                <span class="log-view-title">Log</span>
-                <span id="logThinkingDots" class="log-thinking-text hidden">thinking...</span>
-                <button id="logRefresh" class="log-refresh-btn">↻</button>
-            </div>
             <div id="logContent" class="log-view-content"></div>
             <!-- Terminal block: active prompt + input as one unit -->
             <div id="terminalBlock" class="terminal-block">
@@ -71,7 +69,6 @@
                     <input type="text" id="logInput" class="terminal-input"
                            placeholder="command or prompt..."
                            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-                    <button id="syncBtn" class="terminal-sync-btn" title="Sync from terminal">↻</button>
                     <button id="logSend" class="terminal-send-btn">⏎</button>
                 </div>
             </div>
@@ -254,11 +251,11 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=136"></script>
+    <script src="/static/terminal.js?v=139"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js?v=31', { scope: '/' })
+            navigator.serviceWorker.register('/sw.js?v=32', { scope: '/' })
                 .catch(err => console.log('SW registration failed:', err));
         }
     </script>

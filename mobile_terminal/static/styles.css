@@ -240,39 +240,6 @@ html, body {
     display: none !important;
 }
 
-.log-view-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 12px;
-    background: var(--bg-tertiary);
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-}
-
-.log-view-title {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-
-.log-refresh-btn {
-    width: 28px;
-    height: 28px;
-    background: transparent;
-    border: none;
-    color: var(--text-secondary);
-    font-size: 16px;
-    cursor: pointer;
-    border-radius: 4px;
-}
-
-.log-refresh-btn:active {
-    background: var(--bg-primary);
-}
-
 .log-view-content {
     flex: 1;
     overflow-y: auto;
@@ -353,24 +320,6 @@ html, body {
 .terminal-send-btn:active {
     opacity: 0.8;
 }
-
-.terminal-sync-btn {
-    width: 36px;
-    height: 44px;
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 16px;
-    cursor: pointer;
-    flex-shrink: 0;
-}
-
-.terminal-sync-btn:active {
-    background: var(--bg-secondary);
-    color: var(--accent);
-}
-
 
 /* Terminal view (secondary tab) */
 .terminal-view {
@@ -1014,6 +963,10 @@ html, body {
 }
 
 .view-bar.hidden {
+    display: none;
+}
+
+.view-bar.collapsed {
     display: none;
 }
 
