@@ -16,21 +16,26 @@ let config = null;
 let currentSession = null;
 
 // Reconnection with exponential backoff
-let reconnectDelay = 500;
-const MAX_RECONNECT_DELAY = 30000;
-const INITIAL_RECONNECT_DELAY = 500;  // Fast initial reconnect for mobile
-const MIN_CONNECTION_INTERVAL = 500;  // Minimum ms between connection attempts
+let reconnectDelay = 300;
+const MAX_RECONNECT_DELAY = 10000;  // Cap at 10s (was 30s) - mobile needs fast recovery
+const INITIAL_RECONNECT_DELAY = 300;  // Faster initial reconnect (was 500ms)
+const MIN_CONNECTION_INTERVAL = 300;  // Minimum ms between connection attempts
 let intentionalClose = false;  // Track intentional closes to skip auto-reconnect
 let isConnecting = false;  // Prevent concurrent connection attempts
 let reconnectTimer = null;  // Track pending reconnect
 let lastConnectionAttempt = 0;  // Timestamp of last connection attempt
 
 // Heartbeat for connection health monitoring
-const HEARTBEAT_INTERVAL = 30000;  // Send ping every 30s
-const HEARTBEAT_TIMEOUT = 10000;   // Expect pong within 10s
+const HEARTBEAT_INTERVAL = 15000;  // Send ping every 15s (was 30s) - faster detection
+const HEARTBEAT_TIMEOUT = 5000;    // Expect pong within 5s (was 10s)
 let heartbeatTimer = null;
 let heartbeatTimeoutTimer = null;
 let lastPongTime = 0;
+let lastDataReceived = 0;  // Track last data from server
+
+// Activity-based keepalive - detect stale connections
+const IDLE_THRESHOLD = 20000;  // If no data for 20s, send a ping to verify connection
+let idleCheckTimer = null;
 
 // Local command history (persisted to localStorage)
 const MAX_HISTORY_SIZE = 100;
@@ -555,6 +560,40 @@ function stopHeartbeat() {
         clearTimeout(heartbeatTimeoutTimer);
         heartbeatTimeoutTimer = null;
     }
+    if (idleCheckTimer) {
+        clearInterval(idleCheckTimer);
+        idleCheckTimer = null;
+    }
+}
+
+/**
+ * Start idle connection check - detects stale connections faster
+ * If no data received for IDLE_THRESHOLD, send a ping to verify connection
+ */
+function startIdleCheck() {
+    if (idleCheckTimer) clearInterval(idleCheckTimer);
+    lastDataReceived = Date.now();
+
+    idleCheckTimer = setInterval(() => {
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+        const idle = Date.now() - lastDataReceived;
+        if (idle > IDLE_THRESHOLD) {
+            // No data for a while - send a ping to verify connection is alive
+            console.log(`Connection idle for ${idle}ms, sending keepalive ping`);
+            socket.send(JSON.stringify({ type: 'ping' }));
+
+            // If we don't get a pong soon, heartbeat timeout will catch it
+            // But also set a shorter timeout for this specific check
+            setTimeout(() => {
+                const stillIdle = Date.now() - lastDataReceived;
+                if (stillIdle > IDLE_THRESHOLD + HEARTBEAT_TIMEOUT) {
+                    console.log('Connection appears stale, forcing reconnect');
+                    if (socket) socket.close();
+                }
+            }, HEARTBEAT_TIMEOUT);
+        }
+    }, 5000);  // Check every 5s
 }
 
 /**
@@ -562,6 +601,7 @@ function stopHeartbeat() {
  */
 function handlePong() {
     lastPongTime = Date.now();
+    lastDataReceived = Date.now();  // Pong counts as data received
     if (heartbeatTimeoutTimer) {
         clearTimeout(heartbeatTimeoutTimer);
         heartbeatTimeoutTimer = null;
@@ -692,22 +732,31 @@ function connect() {
 
         sendResize();
         startHeartbeat();
+        startIdleCheck();  // Start idle connection monitoring
         updateConnectionIndicator('connected');
     };
 
     socket.onmessage = (event) => {
+        // Track all incoming data for idle detection
+        lastDataReceived = Date.now();
+
         if (event.data instanceof Blob) {
             event.data.arrayBuffer().then((buffer) => {
                 terminal.write(new Uint8Array(buffer));
                 updateLastActivity();
             });
         } else {
-            // Check for JSON messages (pong, queue updates, etc.)
+            // Check for JSON messages (pong, queue updates, server ping, etc.)
             if (event.data.startsWith('{')) {
                 try {
                     const msg = JSON.parse(event.data);
                     if (msg.type === 'pong') {
                         handlePong();
+                        return;
+                    }
+                    // Server-initiated ping - respond with pong to keep connection alive
+                    if (msg.type === 'server_ping') {
+                        socket.send(JSON.stringify({ type: 'pong' }));
                         return;
                     }
                     // Handle queue messages

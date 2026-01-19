@@ -1980,6 +1980,9 @@ Output format:
                                 elif data.get("type") == "ping":
                                     # Respond to heartbeat ping with pong
                                     await websocket.send_json({"type": "pong"})
+                                elif data.get("type") == "pong":
+                                    # Client responding to server_ping - connection is alive
+                                    pass  # No action needed, connection confirmed alive
                             else:
                                 # JSON but not dict, treat as plain text
                                 os.write(master_fd, text.encode())
@@ -2000,13 +2003,26 @@ Output format:
                         logger.warning(f"Ignoring malformed message: {e}")
                     continue
 
-        # Run both tasks concurrently
+        async def server_keepalive():
+            """Send periodic pings from server to keep connection alive."""
+            SERVER_PING_INTERVAL = 20  # Send ping every 20s from server
+            while app.state.active_websocket == websocket:
+                try:
+                    await asyncio.sleep(SERVER_PING_INTERVAL)
+                    if app.state.active_websocket == websocket:
+                        # Send server-initiated ping (client will respond with pong)
+                        await websocket.send_json({"type": "server_ping"})
+                except Exception:
+                    break
+
+        # Run all tasks concurrently
         read_task = asyncio.create_task(read_from_terminal())
         app.state.read_task = read_task
         write_task = asyncio.create_task(write_to_terminal())
+        keepalive_task = asyncio.create_task(server_keepalive())
 
         try:
-            await asyncio.gather(read_task, write_task)
+            await asyncio.gather(read_task, write_task, keepalive_task)
         except asyncio.CancelledError:
             # Normal termination when connection is replaced or closed
             pass
@@ -2015,6 +2031,7 @@ Output format:
         finally:
             read_task.cancel()
             write_task.cancel()
+            keepalive_task.cancel()
             if app.state.active_websocket == websocket:
                 app.state.active_websocket = None
                 app.state.read_task = None

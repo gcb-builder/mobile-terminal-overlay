@@ -295,4 +295,39 @@ Click to expand and see individual tools (which can still have ×N badges).
 - Ensures bars become visible even if `hidden` was re-added during view switches
 
 **Commits:**
+- `46e64fb` Fix collapse toggle to properly expand control bars
+
+---
+
+## 2026-01-19: Connection Stability Improvements
+
+**Goal:** Reduce "Connecting..." screen frequency on mobile networks
+
+**Problems Addressed:**
+1. Heartbeat too slow (30s ping, 10s timeout = 40s to detect dead connection)
+2. No server-side ping (server only responds, never initiates)
+3. No idle connection detection (stale connections not detected until heartbeat)
+4. Aggressive reconnect backoff (up to 30s delay)
+
+**Files Changed:**
+- `mobile_terminal/static/terminal.js` - Faster heartbeat, idle check, server ping handling
+- `mobile_terminal/server.py` - Server-side keepalive pings, pong handling
+- `mobile_terminal/static/index.html` - Version bump (v155)
+
+**Changes:**
+1. **Faster heartbeat**: 15s interval (was 30s), 5s timeout (was 10s)
+2. **Faster reconnect**: 300ms initial (was 500ms), 10s max (was 30s)
+3. **Idle detection**: Check every 5s, ping if no data for 20s
+4. **Server-side ping**: Server sends ping every 20s to keep connection alive
+5. **Bidirectional keepalive**: Both client and server can initiate pings
+
+**New Functions (terminal.js):**
+- `startIdleCheck()` - Monitors connection idle time, sends keepalive pings
+
+**New Variables:**
+- `lastDataReceived` - Timestamp of last data from server
+- `idleCheckTimer` - Timer for idle connection checks
+- `IDLE_THRESHOLD` - 20s threshold for idle detection
+
+**Commits:**
 - (pending)
