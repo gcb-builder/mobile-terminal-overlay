@@ -228,3 +228,50 @@ Click to expand and see individual tools (which can still have ×N badges).
 - Stable group key: `supergroup:${firstToolKey}:${toolCount}`
 - Super-groups are per-.log-card-body (within a Claude turn), not global
 - CSS uses `!important` on .super-collapsed to ensure tools are hidden
+
+---
+
+## 2026-01-19: Terminal-Native UI Design (CSS Only)
+
+**Goal:** Make UI feel like one coherent terminal with layers, not three separate widgets
+
+**Problem:** UI felt like chat app (YOU/CLAUDE badges, rounded cards) mixed with terminal, causing mental model switching.
+
+**Solution:** Terminal-first aesthetic throughout:
+
+**Log cards → Terminal style:**
+- Removed rounded corners, chat-style backgrounds
+- Hidden YOU/CLAUDE role badges
+- Monospace font for all text
+- User messages prefixed with `$ ` in accent color
+- Left border indicator only (2px, not full card)
+
+**Log → Terminal handoff:**
+- Added gradient fade (::before pseudo-element)
+- "── live ──" label at top of terminal block
+- Visual continuity from history to active
+
+**Input → stdin feel:**
+- Darker background matching terminal aesthetic
+- Subtle caret color (accent)
+- Placeholder opacity reduced
+
+**Control strip → Keyboard extension:**
+- Darker background (--bg-darker)
+- Smaller, tighter buttons (36px)
+- Monospace font on quick-btn
+- Reduced gap and padding
+
+**Files Changed:**
+- `mobile_terminal/static/styles.css` - Major CSS refactor (~100 lines changed)
+- `mobile_terminal/static/index.html` - Version bump (v123)
+- `mobile_terminal/static/sw.js` - Version bump (v37)
+
+**Key CSS Changes:**
+- `.log-card` - border-radius: 0, no background
+- `.log-card-header` - display: none (hides role badges)
+- `.log-text` - monospace font
+- `.log-text.user-text::before` - content: '$ '
+- `.terminal-block::before` - gradient fade overlay
+- `.terminal-block::after` - "live" label
+- `.quick-btn` - monospace, smaller, darker
