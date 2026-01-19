@@ -272,15 +272,20 @@ def build_challenge_bundle(repo_path: Path, log_content: str = "") -> str:
 
 def build_openai_payload(model_id: str, bundle: str) -> dict:
     """Build payload for OpenAI-compatible APIs (OpenAI, Together.ai)."""
-    return {
+    payload = {
         "model": model_id,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Review this project state and provide your skeptical analysis:\n\n{bundle}"},
         ],
         "temperature": TEMPERATURE,
-        "max_tokens": MAX_TOKENS,
     }
+    # GPT-5.x models use max_completion_tokens instead of max_tokens
+    if model_id.startswith("gpt-5"):
+        payload["max_completion_tokens"] = MAX_TOKENS
+    else:
+        payload["max_tokens"] = MAX_TOKENS
+    return payload
 
 
 def build_anthropic_payload(model_id: str, bundle: str) -> dict:
