@@ -4546,6 +4546,43 @@ function closePreviewDrawer() {
 }
 
 /**
+ * Toggle pin state for a snapshot
+ */
+async function toggleSnapshotPin(snapId, pinned) {
+    try {
+        const resp = await fetch(`/api/rollback/preview/${snapId}/pin?pinned=${pinned}&token=${token}`, {
+            method: 'POST'
+        });
+        if (resp.ok) {
+            // Update local state and re-render
+            const snap = previewSnapshots.find(s => s.id === snapId);
+            if (snap) snap.pinned = pinned;
+            renderPreviewList();
+        }
+    } catch (e) {
+        console.error('Failed to toggle pin:', e);
+    }
+}
+
+/**
+ * Export snapshot as JSON file
+ */
+async function exportSnapshot(snapId) {
+    try {
+        const url = `/api/rollback/preview/${snapId}/export?token=${token}`;
+        // Trigger download by opening in new window or using anchor
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${snapId}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    } catch (e) {
+        console.error('Failed to export snapshot:', e);
+    }
+}
+
+/**
  * Render the preview list in the drawer
  */
 function renderPreviewList() {
@@ -4561,10 +4598,15 @@ function renderPreviewList() {
         const date = new Date(snap.timestamp);
         const time = date.toLocaleTimeString();
         const isActive = previewMode === snap.id;
+        const isPinned = snap.pinned;
         return `
-            <div class="preview-list-item ${isActive ? 'active' : ''}" data-snap-id="${snap.id}">
+            <div class="preview-list-item ${isActive ? 'active' : ''} ${isPinned ? 'pinned' : ''}" data-snap-id="${snap.id}">
+                <button class="preview-pin-btn ${isPinned ? 'pinned' : ''}" title="${isPinned ? 'Unpin' : 'Pin'}">
+                    ${isPinned ? '&#x1F4CC;' : '&#x1F4CD;'}
+                </button>
                 <span class="preview-time">${time}</span>
                 <span class="preview-label-badge ${snap.label}">${snap.label}</span>
+                <button class="preview-export-btn" title="Export JSON">&#x2B07;</button>
                 <button class="preview-load-btn">${isActive ? 'Current' : 'Load'}</button>
             </div>
         `;
@@ -4603,14 +4645,31 @@ function setupPreviewHandlers() {
     });
 
     // List item clicks (event delegation)
-    document.getElementById('previewList')?.addEventListener('click', (e) => {
+    document.getElementById('previewList')?.addEventListener('click', async (e) => {
         const item = e.target.closest('.preview-list-item');
-        const btn = e.target.closest('.preview-load-btn');
-        if (btn && item) {
-            const snapId = item.dataset.snapId;
-            if (snapId && snapId !== previewMode) {
-                enterPreviewMode(snapId);
-            }
+        if (!item) return;
+        const snapId = item.dataset.snapId;
+        if (!snapId) return;
+
+        // Handle pin button
+        const pinBtn = e.target.closest('.preview-pin-btn');
+        if (pinBtn) {
+            const isPinned = pinBtn.classList.contains('pinned');
+            await toggleSnapshotPin(snapId, !isPinned);
+            return;
+        }
+
+        // Handle export button
+        const exportBtn = e.target.closest('.preview-export-btn');
+        if (exportBtn) {
+            await exportSnapshot(snapId);
+            return;
+        }
+
+        // Handle load button
+        const loadBtn = e.target.closest('.preview-load-btn');
+        if (loadBtn && snapId !== previewMode) {
+            enterPreviewMode(snapId);
         }
     });
 
@@ -4620,6 +4679,371 @@ function setupPreviewHandlers() {
             captureSnapshot('periodic');
         }
     }, 30000);
+
+    // Setup tab switching
+    document.querySelectorAll('.rollback-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            const tabName = tab.dataset.tab;
+            switchRollbackTab(tabName);
+        });
+    });
+
+    // Git tab handlers
+    document.getElementById('gitRefreshBtn')?.addEventListener('click', loadGitCommits);
+    document.getElementById('gitBackBtn')?.addEventListener('click', showGitCommitList);
+    document.getElementById('gitDryRunBtn')?.addEventListener('click', dryRunRevert);
+    document.getElementById('gitRevertBtn')?.addEventListener('click', executeRevert);
+
+    // Git commit list click handler
+    document.getElementById('gitCommitList')?.addEventListener('click', (e) => {
+        const item = e.target.closest('.git-commit-item');
+        if (item) {
+            const hash = item.dataset.hash;
+            if (hash) showGitCommitDetail(hash);
+        }
+    });
+}
+
+// ============================================================================
+// GIT TAB FUNCTIONS
+// ============================================================================
+
+let gitCommits = [];
+let selectedCommitHash = null;
+let lastRevertCommit = null;  // The SHA of the revert commit (for undo = revert-the-revert)
+let gitStatus = null;  // Current git status (branch, dirty, ahead/behind)
+
+/**
+ * Load git status (branch, dirty, ahead/behind)
+ */
+async function loadGitStatus() {
+    const banner = document.getElementById('gitStatusBanner');
+    const statusText = document.getElementById('gitStatusText');
+
+    if (!banner || !statusText) return;
+
+    try {
+        const resp = await fetch(`/api/rollback/git/status?token=${token}`);
+        gitStatus = await resp.json();
+
+        if (!gitStatus.has_repo) {
+            banner.className = 'git-status-banner no-repo';
+            statusText.innerHTML = 'No git repository found';
+            return;
+        }
+
+        // Build status text
+        let html = `<span class="git-status-branch">${escapeHtml(gitStatus.branch)}</span>`;
+
+        if (gitStatus.is_dirty) {
+            html += ` <span class="git-status-dirty">(${gitStatus.dirty_files} uncommitted)</span>`;
+            banner.className = 'git-status-banner dirty';
+        } else {
+            banner.className = 'git-status-banner clean';
+        }
+
+        if (gitStatus.has_upstream) {
+            const parts = [];
+            if (gitStatus.ahead > 0) parts.push(`↑${gitStatus.ahead}`);
+            if (gitStatus.behind > 0) parts.push(`↓${gitStatus.behind}`);
+            if (parts.length > 0) {
+                html += ` <span class="git-status-ahead-behind">${parts.join(' ')}</span>`;
+            }
+        }
+
+        statusText.innerHTML = html;
+
+        // Disable revert button if dirty
+        updateRevertButtonState();
+
+    } catch (e) {
+        console.error('Failed to load git status:', e);
+        banner.className = 'git-status-banner';
+        statusText.textContent = 'Error loading status';
+    }
+}
+
+/**
+ * Update revert button enabled state based on git status
+ */
+function updateRevertButtonState() {
+    const revertBtn = document.getElementById('gitRevertBtn');
+    if (revertBtn && gitStatus) {
+        revertBtn.disabled = gitStatus.is_dirty;
+        if (gitStatus.is_dirty) {
+            revertBtn.title = 'Commit or stash changes first';
+        } else {
+            revertBtn.title = '';
+        }
+    }
+}
+
+/**
+ * Switch between rollback drawer tabs
+ */
+function switchRollbackTab(tabName) {
+    // Update tab buttons
+    document.querySelectorAll('.rollback-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.tab === tabName);
+    });
+
+    // Update tab content
+    const previewContent = document.getElementById('previewTabContent');
+    const gitContent = document.getElementById('gitTabContent');
+
+    if (tabName === 'preview') {
+        previewContent?.classList.remove('hidden');
+        previewContent?.classList.add('active');
+        gitContent?.classList.add('hidden');
+        gitContent?.classList.remove('active');
+    } else if (tabName === 'git') {
+        previewContent?.classList.add('hidden');
+        previewContent?.classList.remove('active');
+        gitContent?.classList.remove('hidden');
+        gitContent?.classList.add('active');
+        // Load status and commits when switching to git tab
+        loadGitStatus();
+        loadGitCommits();
+    }
+}
+
+/**
+ * Load git commits list
+ */
+async function loadGitCommits() {
+    const list = document.getElementById('gitCommitList');
+    if (!list) return;
+
+    list.innerHTML = '<div class="git-empty">Loading...</div>';
+
+    try {
+        const resp = await fetch(`/api/rollback/git/commits?token=${token}`);
+        if (!resp.ok) throw new Error('Failed to load commits');
+
+        const data = await resp.json();
+        gitCommits = data.commits || [];
+        renderGitCommitList();
+    } catch (e) {
+        console.error('Failed to load git commits:', e);
+        list.innerHTML = '<div class="git-empty">Failed to load commits</div>';
+    }
+}
+
+/**
+ * Render git commits list
+ */
+function renderGitCommitList() {
+    const list = document.getElementById('gitCommitList');
+    if (!list) return;
+
+    if (gitCommits.length === 0) {
+        list.innerHTML = '<div class="git-empty">No commits found</div>';
+        return;
+    }
+
+    list.innerHTML = gitCommits.map(commit => `
+        <div class="git-commit-item" data-hash="${commit.hash}">
+            <span class="git-commit-hash">${commit.hash.substring(0, 7)}</span>
+            <span class="git-commit-subject">${escapeHtml(commit.subject)}</span>
+            <span class="git-commit-meta">${escapeHtml(commit.author)} &middot; ${commit.date}</span>
+        </div>
+    `).join('');
+}
+
+/**
+ * Show git commit list (hide detail)
+ */
+function showGitCommitList() {
+    const list = document.getElementById('gitCommitList');
+    const detail = document.getElementById('gitCommitDetail');
+    const dryRunResult = document.getElementById('gitDryRunResult');
+
+    list?.classList.remove('hidden');
+    detail?.classList.add('hidden');
+    dryRunResult?.classList.add('hidden');
+    selectedCommitHash = null;
+}
+
+/**
+ * Show git commit detail
+ */
+async function showGitCommitDetail(hash) {
+    const list = document.getElementById('gitCommitList');
+    const detail = document.getElementById('gitCommitDetail');
+    const content = document.getElementById('gitDetailContent');
+    const hashSpan = document.getElementById('gitDetailHash');
+    const dryRunResult = document.getElementById('gitDryRunResult');
+
+    if (!detail || !content) return;
+
+    selectedCommitHash = hash;
+    list?.classList.add('hidden');
+    detail.classList.remove('hidden');
+    dryRunResult?.classList.add('hidden');
+
+    if (hashSpan) hashSpan.textContent = hash.substring(0, 7);
+    content.innerHTML = '<div class="git-empty">Loading...</div>';
+
+    try {
+        const resp = await fetch(`/api/rollback/git/commit/${hash}?token=${token}`);
+        if (!resp.ok) throw new Error('Failed to load commit');
+
+        const data = await resp.json();
+
+        content.innerHTML = `
+            <div class="git-detail-subject">${escapeHtml(data.subject)}</div>
+            ${data.body ? `<div class="git-detail-body">${escapeHtml(data.body)}</div>` : ''}
+            <div class="git-detail-meta">
+                <strong>Author:</strong> ${escapeHtml(data.author)}<br>
+                <strong>Date:</strong> ${escapeHtml(data.date)}
+            </div>
+            ${data.stat ? `<div class="git-detail-stat">${escapeHtml(data.stat)}</div>` : ''}
+        `;
+    } catch (e) {
+        console.error('Failed to load commit detail:', e);
+        content.innerHTML = '<div class="git-empty">Failed to load commit details</div>';
+    }
+}
+
+/**
+ * Dry run revert for selected commit
+ */
+async function dryRunRevert() {
+    if (!selectedCommitHash) return;
+
+    const dryRunBtn = document.getElementById('gitDryRunBtn');
+    const dryRunResult = document.getElementById('gitDryRunResult');
+
+    if (!dryRunBtn || !dryRunResult) return;
+
+    dryRunBtn.disabled = true;
+    dryRunBtn.textContent = 'Checking...';
+    dryRunResult.classList.remove('hidden', 'success', 'error');
+    dryRunResult.innerHTML = '<pre>Running dry-run...</pre>';
+
+    try {
+        const resp = await fetch(`/api/rollback/git/revert/dry-run?commit_hash=${selectedCommitHash}&token=${token}`, {
+            method: 'POST'
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            dryRunResult.classList.add('success');
+            dryRunResult.innerHTML = `<pre>${escapeHtml(data.message)}\n\n${escapeHtml(data.changes || 'No changes')}</pre>`;
+        } else {
+            dryRunResult.classList.add('error');
+            dryRunResult.innerHTML = `<pre>Error: ${escapeHtml(data.error || 'Unknown error')}\n${escapeHtml(data.details || '')}</pre>`;
+        }
+    } catch (e) {
+        console.error('Dry run failed:', e);
+        dryRunResult.classList.add('error');
+        dryRunResult.innerHTML = `<pre>Error: ${e.message}</pre>`;
+    } finally {
+        dryRunBtn.disabled = false;
+        dryRunBtn.textContent = 'Dry Run';
+    }
+}
+
+/**
+ * Execute revert for selected commit
+ */
+async function executeRevert() {
+    if (!selectedCommitHash) return;
+
+    if (!confirm(`Are you sure you want to revert commit ${selectedCommitHash.substring(0, 7)}?\n\nThis will create a new commit that undoes the changes.`)) {
+        return;
+    }
+
+    const revertBtn = document.getElementById('gitRevertBtn');
+    const dryRunResult = document.getElementById('gitDryRunResult');
+
+    if (!revertBtn || !dryRunResult) return;
+
+    revertBtn.disabled = true;
+    revertBtn.textContent = 'Reverting...';
+    dryRunResult.classList.remove('hidden', 'success', 'error');
+    dryRunResult.innerHTML = '<pre>Executing revert...</pre>';
+
+    try {
+        const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedCommitHash}&token=${token}`, {
+            method: 'POST'
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            lastRevertCommit = data.new_commit;  // Store revert commit SHA for undo
+            dryRunResult.classList.add('success');
+            dryRunResult.innerHTML = `<pre>Revert successful!\nNew commit: ${data.new_commit.substring(0, 7)}\n\nTo undo, click "Undo Revert" (creates another revert commit).</pre>
+                <button id="gitUndoBtn" class="git-action-btn secondary" style="margin-top: 8px;">Undo Revert</button>`;
+
+            // Add undo handler
+            document.getElementById('gitUndoBtn')?.addEventListener('click', undoRevert);
+
+            // Refresh commits list
+            loadGitCommits();
+        } else {
+            dryRunResult.classList.add('error');
+            dryRunResult.innerHTML = `<pre>Error: ${escapeHtml(data.error || 'Unknown error')}</pre>`;
+        }
+    } catch (e) {
+        console.error('Revert failed:', e);
+        dryRunResult.classList.add('error');
+        dryRunResult.innerHTML = `<pre>Error: ${e.message}</pre>`;
+    } finally {
+        revertBtn.disabled = false;
+        revertBtn.textContent = 'Revert';
+    }
+}
+
+/**
+ * Undo the last revert (by reverting the revert commit - non-destructive)
+ */
+async function undoRevert() {
+    if (!lastRevertCommit) return;
+
+    if (!confirm('Are you sure you want to undo the revert?\n\nThis will create a new commit that undoes the revert (revert-the-revert).')) {
+        return;
+    }
+
+    const dryRunResult = document.getElementById('gitDryRunResult');
+    if (!dryRunResult) return;
+
+    dryRunResult.innerHTML = '<pre>Undoing revert...</pre>';
+
+    try {
+        const resp = await fetch(`/api/rollback/git/revert/undo?revert_commit=${lastRevertCommit}&token=${token}`, {
+            method: 'POST'
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            dryRunResult.classList.remove('error');
+            dryRunResult.classList.add('success');
+            dryRunResult.innerHTML = `<pre>Undo successful!\nCreated commit: ${data.new_commit.substring(0, 7)}</pre>`;
+            lastRevertCommit = null;
+
+            // Refresh commits list and status
+            loadGitStatus();
+            loadGitCommits();
+        } else {
+            dryRunResult.classList.add('error');
+            dryRunResult.innerHTML = `<pre>Error: ${escapeHtml(data.error || 'Unknown error')}\n${escapeHtml(data.details || '')}</pre>`;
+        }
+    } catch (e) {
+        console.error('Undo failed:', e);
+        dryRunResult.classList.add('error');
+        dryRunResult.innerHTML = `<pre>Error: ${e.message}</pre>`;
+    }
+}
+
+/**
+ * Escape HTML to prevent XSS
+ */
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 

@@ -383,3 +383,91 @@ Click to expand and see individual tools (which can still have ×N badges).
 
 **Commits:**
 - (pending)
+
+---
+
+## 2026-01-19: Rollback v1 - Preview Enhancements + Git Rollback
+
+**Goal:** Enhance Preview v0 with pin/export/diff/audit features and add Git rollback capabilities.
+
+### Stage A: Preview v1 (Read-Only Enhancements)
+
+**Server Changes (server.py):**
+- Added `AuditLog` class - In-memory audit log with 500 entry limit
+- Added `pin_snapshot()` method to SnapshotBuffer - Prevents pinned snapshots from eviction
+- Modified eviction logic to skip pinned snapshots
+- Updated `list_snapshots()` to include `pinned` field
+- Added audit logging to capture, select, pin, export endpoints
+
+**New Endpoints:**
+- `POST /api/rollback/preview/{snap_id}/pin` - Pin/unpin snapshot
+- `GET /api/rollback/preview/{snap_id}/export` - Download snapshot as JSON
+- `GET /api/rollback/preview/diff` - Compare two snapshots
+- `GET /api/rollback/audit` - Get audit log entries
+
+**Client Changes (terminal.js):**
+- Updated `renderPreviewList()` to show pin/export buttons
+- Added `toggleSnapshotPin(snapId, pinned)` - Toggle pin via API
+- Added `exportSnapshot(snapId)` - Trigger JSON download
+- Added click handlers for pin/export in event delegation
+
+**Styles (styles.css):**
+- `.preview-pin-btn` - Pin toggle button (pushpin icons)
+- `.preview-export-btn` - Export download button
+- `.preview-list-item.pinned` - Yellow border for pinned snapshots
+
+### Stage B: Git Rollback v1 (Non-Destructive)
+
+**New Git Endpoints (server.py):**
+- `GET /api/rollback/git/commits` - List recent commits (hash, subject, author, date)
+- `GET /api/rollback/git/commit/{hash}` - Get commit detail (body, stat)
+- `POST /api/rollback/git/revert/dry-run` - Preview revert without executing
+- `POST /api/rollback/git/revert/execute` - Execute git revert, return undo_target
+- `POST /api/rollback/git/revert/undo` - Reset to pre-revert state
+
+**Safety Measures:**
+- Hash validation with regex (`^[a-f0-9]{7,40}$`)
+- Clean working directory check before any write operation
+- Subprocess timeouts (5-30s depending on operation)
+- Audit logging for all operations
+- No force operations
+
+**UI Changes (index.html):**
+- Converted preview drawer to tabbed interface (Preview / Git tabs)
+- Added git tab content: commit list, detail panel, action buttons
+- Detail panel shows: subject, body, author, date, file stat
+- Action buttons: Dry Run, Revert, Undo
+
+**Client Functions (terminal.js):**
+- `switchRollbackTab(tabName)` - Switch between Preview/Git tabs
+- `loadGitCommits()` - Fetch and render commits list
+- `renderGitCommitList()` - Display commits in list
+- `showGitCommitDetail(hash)` - Load and display commit detail
+- `showGitCommitList()` - Return to list view
+- `dryRunRevert()` - Preview revert changes
+- `executeRevert()` - Execute revert with confirmation
+- `undoRevert()` - Undo last revert
+- `escapeHtml(text)` - XSS prevention
+
+**Styles (styles.css):**
+- `.rollback-tabs` / `.rollback-tab` - Tab buttons
+- `.rollback-tab-content` - Tab panels
+- `.git-commit-list` / `.git-commit-item` - Commit list
+- `.git-commit-detail` - Detail panel
+- `.git-action-btn` - Action buttons (secondary, danger)
+- `.git-dry-run-result` - Result display (success/error states)
+
+**Files Changed:**
+- `mobile_terminal/server.py` - AuditLog, pin logic, 9 new endpoints
+- `mobile_terminal/static/terminal.js` - Pin/export, git tab functions
+- `mobile_terminal/static/index.html` - Tabbed drawer, git tab HTML
+- `mobile_terminal/static/styles.css` - Tab and git styles
+- `mobile_terminal/static/sw.js` - Version bump to v41
+
+**Version Bumps:**
+- styles.css: v124 → v126
+- terminal.js: v158 → v160
+- sw.js: v39 → v41
+
+**Commits:**
+- (pending)

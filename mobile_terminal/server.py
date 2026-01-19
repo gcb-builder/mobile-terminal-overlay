@@ -91,33 +91,107 @@ class SnapshotBuffer:
                 "log_hash": log_hash,
                 "terminal_text": terminal_text,
                 "queue_state": queue_state,
+                "pinned": False,
             }
 
             # Initialize session buffer if needed
             if session not in self._snapshots:
                 self._snapshots[session] = OrderedDict()
 
-            # Add snapshot, evict oldest if over limit
+            # Add snapshot, evict oldest non-pinned if over limit
             self._snapshots[session][snap_id] = snapshot
             while len(self._snapshots[session]) > self.MAX_SNAPSHOTS:
-                self._snapshots[session].popitem(last=False)
+                # Find first non-pinned snapshot to evict
+                evicted = False
+                for key in list(self._snapshots[session].keys()):
+                    if not self._snapshots[session][key].get("pinned"):
+                        del self._snapshots[session][key]
+                        evicted = True
+                        break
+                if not evicted:
+                    break  # All pinned, can't evict more
 
             self._last_hash[session] = log_hash
             return snapshot
 
     def list_snapshots(self, session: str, limit: int = 50) -> list:
-        """Return snapshot summaries (id, timestamp, label only)."""
+        """Return snapshot summaries (id, timestamp, label, pinned)."""
         with self._lock:
             if session not in self._snapshots:
                 return []
             items = list(self._snapshots[session].values())[-limit:]
-            return [{"id": s["id"], "timestamp": s["timestamp"], "label": s["label"]}
+            return [{"id": s["id"], "timestamp": s["timestamp"], "label": s["label"],
+                     "pinned": s.get("pinned", False)}
                     for s in reversed(items)]
 
     def get_snapshot(self, session: str, snap_id: str) -> Optional[dict]:
         """Get full snapshot by ID."""
         with self._lock:
             return self._snapshots.get(session, {}).get(snap_id)
+
+    def pin_snapshot(self, session: str, snap_id: str, pinned: bool = True) -> bool:
+        """Pin or unpin a snapshot to prevent eviction."""
+        with self._lock:
+            if session in self._snapshots and snap_id in self._snapshots[session]:
+                self._snapshots[session][snap_id]["pinned"] = pinned
+                return True
+            return False
+
+
+class AuditLog:
+    """In-memory audit log with size limit for tracking rollback operations."""
+
+    MAX_ENTRIES = 500
+
+    def __init__(self):
+        self._entries: List[dict] = []
+        self._lock = threading.Lock()
+
+    def log(self, action: str, details: dict = None):
+        """Log an action with timestamp."""
+        with self._lock:
+            self._entries.append({
+                "timestamp": int(time.time() * 1000),
+                "action": action,
+                "details": details or {}
+            })
+            if len(self._entries) > self.MAX_ENTRIES:
+                self._entries = self._entries[-self.MAX_ENTRIES:]
+
+    def get_entries(self, limit: int = 100) -> list:
+        """Return recent entries, newest first."""
+        with self._lock:
+            return list(reversed(self._entries[-limit:]))
+
+
+class GitOpLock:
+    """Async lock to prevent concurrent git operations (race conditions from double-taps)."""
+
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._current_op: Optional[str] = None
+
+    async def acquire(self, operation: str) -> bool:
+        """Try to acquire lock for an operation. Returns False if already locked."""
+        if self._lock.locked():
+            return False
+        await self._lock.acquire()
+        self._current_op = operation
+        return True
+
+    def release(self):
+        """Release the lock."""
+        self._current_op = None
+        if self._lock.locked():
+            self._lock.release()
+
+    @property
+    def is_locked(self) -> bool:
+        return self._lock.locked()
+
+    @property
+    def current_operation(self) -> Optional[str]:
+        return self._current_op
 
 
 class InputQueue:
@@ -713,6 +787,8 @@ def create_app(config: Config) -> FastAPI:
     app.state.command_queue = CommandQueue()  # Deferred-send command queue
     app.state.command_queue.set_app(app)
     app.state.snapshot_buffer = SnapshotBuffer()  # Preview snapshots ring buffer
+    app.state.audit_log = AuditLog()  # Audit log for rollback operations
+    app.state.git_op_lock = GitOpLock()  # Lock for git write operations
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -1798,6 +1874,7 @@ Output format:
 
         if snapshot:
             logger.info(f"Snapshot created: {snapshot['id']}")
+            app.state.audit_log.log("snapshot_capture", {"snap_id": snapshot["id"], "label": label})
             return {"success": True, "snapshot": {"id": snapshot["id"], "label": label}}
         logger.info("Snapshot skipped: content unchanged")
         return {"success": True, "snapshot": None, "reason": "unchanged"}
@@ -1848,10 +1925,488 @@ Output format:
             snapshot = app.state.snapshot_buffer.get_snapshot(session, snap_id)
             if not snapshot:
                 return JSONResponse({"error": "Snapshot not found"}, status_code=404)
+            app.state.audit_log.log("preview_enter", {"snap_id": snap_id})
+        else:
+            app.state.audit_log.log("preview_exit", {})
 
         return {"success": True, "preview_mode": snap_id is not None, "snap_id": snap_id}
 
+    @app.post("/api/rollback/preview/{snap_id}/pin")
+    async def pin_snapshot(
+        snap_id: str,
+        pinned: bool = Query(True),
+        token: Optional[str] = Query(None),
+    ):
+        """Pin or unpin a snapshot to prevent eviction."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session = app.state.current_session
+        success = app.state.snapshot_buffer.pin_snapshot(session, snap_id, pinned)
+
+        if not success:
+            return JSONResponse({"error": "Snapshot not found"}, status_code=404)
+
+        app.state.audit_log.log("snapshot_pin", {"snap_id": snap_id, "pinned": pinned})
+        return {"success": True, "snap_id": snap_id, "pinned": pinned}
+
+    @app.get("/api/rollback/preview/{snap_id}/export")
+    async def export_snapshot(
+        snap_id: str,
+        token: Optional[str] = Query(None),
+    ):
+        """Export snapshot as JSON file."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session = app.state.current_session
+        snapshot = app.state.snapshot_buffer.get_snapshot(session, snap_id)
+
+        if not snapshot:
+            return JSONResponse({"error": "Snapshot not found"}, status_code=404)
+
+        app.state.audit_log.log("snapshot_export", {"snap_id": snap_id})
+
+        from starlette.responses import Response
+        return Response(
+            json.dumps(snapshot, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename={snap_id}.json"}
+        )
+
+    @app.get("/api/rollback/preview/diff")
+    async def diff_snapshots(
+        snap_a: str = Query(...),
+        snap_b: str = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """Compare two snapshots."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session = app.state.current_session
+        a = app.state.snapshot_buffer.get_snapshot(session, snap_a)
+        b = app.state.snapshot_buffer.get_snapshot(session, snap_b)
+
+        if not a:
+            return JSONResponse({"error": f"Snapshot {snap_a} not found"}, status_code=404)
+        if not b:
+            return JSONResponse({"error": f"Snapshot {snap_b} not found"}, status_code=404)
+
+        return {
+            "a": {"id": snap_a, "timestamp": a["timestamp"], "label": a["label"]},
+            "b": {"id": snap_b, "timestamp": b["timestamp"], "label": b["label"]},
+            "log_changed": a["log_hash"] != b["log_hash"],
+            "terminal_changed": a["terminal_text"] != b["terminal_text"],
+            "queue_changed": a["queue_state"] != b["queue_state"],
+        }
+
+    @app.get("/api/rollback/audit")
+    async def get_audit_log(
+        limit: int = Query(100),
+        token: Optional[str] = Query(None),
+    ):
+        """Get recent audit log entries."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        entries = app.state.audit_log.get_entries(limit)
+        return {"entries": entries}
+
     # ========== End Preview/Snapshot API ==========
+
+    # ========== Git Rollback API ==========
+
+    @app.get("/api/rollback/git/status")
+    async def git_status(
+        token: Optional[str] = Query(None),
+    ):
+        """Get current git status: branch, dirty, ahead/behind, lock status."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return {
+                "has_repo": False,
+                "error": "No git repository found"
+            }
+
+        try:
+            # Get current branch
+            branch_result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=repo_path, capture_output=True, text=True, timeout=5
+            )
+            branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "unknown"
+
+            # Get dirty status
+            status_result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_path, capture_output=True, text=True, timeout=5
+            )
+            is_dirty = bool(status_result.stdout.strip())
+            dirty_files = len(status_result.stdout.strip().split('\n')) if status_result.stdout.strip() else 0
+
+            # Get ahead/behind (may fail if no upstream)
+            ahead = 0
+            behind = 0
+            has_upstream = False
+            try:
+                rev_result = subprocess.run(
+                    ["git", "rev-list", "--left-right", "--count", f"{branch}@{{upstream}}...HEAD"],
+                    cwd=repo_path, capture_output=True, text=True, timeout=5
+                )
+                if rev_result.returncode == 0:
+                    parts = rev_result.stdout.strip().split()
+                    if len(parts) == 2:
+                        behind = int(parts[0])
+                        ahead = int(parts[1])
+                        has_upstream = True
+            except Exception:
+                pass
+
+            # Get repo path (relative to home for display)
+            display_path = str(repo_path)
+            home = str(Path.home())
+            if display_path.startswith(home):
+                display_path = "~" + display_path[len(home):]
+
+            return {
+                "has_repo": True,
+                "repo_path": display_path,
+                "branch": branch,
+                "is_dirty": is_dirty,
+                "dirty_files": dirty_files,
+                "has_upstream": has_upstream,
+                "ahead": ahead,
+                "behind": behind,
+                "op_locked": app.state.git_op_lock.is_locked,
+                "current_op": app.state.git_op_lock.current_operation,
+            }
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/rollback/git/commits")
+    async def list_git_commits(
+        limit: int = Query(20),
+        token: Optional[str] = Query(None),
+    ):
+        """List recent git commits."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo found"}, status_code=400)
+
+        try:
+            result = subprocess.run(
+                ["git", "log", f"--max-count={limit}", "--format=%H|%s|%an|%ad", "--date=short"],
+                cwd=repo_path, capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                return JSONResponse({"error": result.stderr}, status_code=500)
+
+            commits = []
+            for line in result.stdout.strip().split("\n"):
+                if "|" in line:
+                    parts = line.split("|", 3)
+                    commits.append({
+                        "hash": parts[0],
+                        "subject": parts[1],
+                        "author": parts[2] if len(parts) > 2 else "",
+                        "date": parts[3] if len(parts) > 3 else ""
+                    })
+
+            return {"commits": commits}
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/rollback/git/commit/{commit_hash}")
+    async def get_git_commit_detail(
+        commit_hash: str,
+        token: Optional[str] = Query(None),
+    ):
+        """Get commit details including changed files."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate hash format (security)
+        if not re.match(r'^[a-f0-9]{7,40}$', commit_hash):
+            return JSONResponse({"error": "Invalid hash format"}, status_code=400)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo found"}, status_code=400)
+
+        try:
+            result = subprocess.run(
+                ["git", "show", "--stat", "--format=%H%n%s%n%b%n---AUTHOR---%n%an%n---DATE---%n%ad", commit_hash],
+                cwd=repo_path, capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                return JSONResponse({"error": "Commit not found"}, status_code=404)
+
+            output = result.stdout
+            parts = output.split("\n---AUTHOR---\n")
+            first_part = parts[0].split("\n", 2)
+            hash_val = first_part[0] if len(first_part) > 0 else commit_hash
+            subject = first_part[1] if len(first_part) > 1 else ""
+            body = first_part[2] if len(first_part) > 2 else ""
+
+            author_part = parts[1].split("\n---DATE---\n") if len(parts) > 1 else ["", ""]
+            author = author_part[0] if len(author_part) > 0 else ""
+            rest = author_part[1] if len(author_part) > 1 else ""
+            date_and_stat = rest.split("\n", 1)
+            date = date_and_stat[0] if len(date_and_stat) > 0 else ""
+            stat = date_and_stat[1] if len(date_and_stat) > 1 else ""
+
+            return {
+                "hash": hash_val,
+                "subject": subject,
+                "body": body.strip(),
+                "author": author,
+                "date": date,
+                "stat": stat.strip()
+            }
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/api/rollback/git/revert/dry-run")
+    async def dry_run_revert(
+        commit_hash: str = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """Preview revert without executing."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate hash format
+        if not re.match(r'^[a-f0-9]{7,40}$', commit_hash):
+            return JSONResponse({"error": "Invalid hash format"}, status_code=400)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo found"}, status_code=400)
+
+        # Acquire git operation lock
+        if not await app.state.git_op_lock.acquire("dry_run"):
+            return JSONResponse({
+                "error": "Another git operation in progress",
+                "current_op": app.state.git_op_lock.current_operation
+            }, status_code=409)
+
+        try:
+            # Check for uncommitted changes
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_path, capture_output=True, text=True, timeout=5
+            )
+            if status.stdout.strip():
+                return JSONResponse({
+                    "error": "Working directory not clean",
+                    "details": "Commit or stash changes first"
+                }, status_code=400)
+
+            # Try revert with --no-commit to preview
+            result = subprocess.run(
+                ["git", "revert", "--no-commit", commit_hash],
+                cwd=repo_path, capture_output=True, text=True, timeout=30
+            )
+
+            if result.returncode != 0:
+                # Reset any partial changes
+                subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path, timeout=10)
+                return {
+                    "success": False,
+                    "error": "Revert would fail",
+                    "details": result.stderr
+                }
+
+            # Get what would change
+            diff = subprocess.run(
+                ["git", "diff", "--cached", "--stat"],
+                cwd=repo_path, capture_output=True, text=True, timeout=10
+            )
+
+            # Reset the staged revert
+            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path, timeout=10)
+
+            app.state.audit_log.log("revert_dry_run", {"commit": commit_hash})
+
+            return {
+                "success": True,
+                "commit": commit_hash,
+                "changes": diff.stdout,
+                "message": f"Revert \"{commit_hash[:7]}\" would succeed"
+            }
+        except subprocess.TimeoutExpired:
+            # Clean up on timeout
+            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path, timeout=10)
+            return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path, timeout=10)
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            app.state.git_op_lock.release()
+
+    @app.post("/api/rollback/git/revert/execute")
+    async def execute_revert(
+        commit_hash: str = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """Execute git revert."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate hash format
+        if not re.match(r'^[a-f0-9]{7,40}$', commit_hash):
+            return JSONResponse({"error": "Invalid hash format"}, status_code=400)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo found"}, status_code=400)
+
+        # Acquire git operation lock
+        if not await app.state.git_op_lock.acquire("execute_revert"):
+            return JSONResponse({
+                "error": "Another git operation in progress",
+                "current_op": app.state.git_op_lock.current_operation
+            }, status_code=409)
+
+        try:
+            # Check working directory is clean
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_path, capture_output=True, text=True, timeout=5
+            )
+            if status.stdout.strip():
+                return JSONResponse({
+                    "error": "Working directory not clean"
+                }, status_code=400)
+
+            # Get current HEAD for undo
+            head_before = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path, capture_output=True, text=True, timeout=5
+            ).stdout.strip()
+
+            # Execute revert
+            result = subprocess.run(
+                ["git", "revert", "--no-edit", commit_hash],
+                cwd=repo_path, capture_output=True, text=True, timeout=30
+            )
+
+            if result.returncode != 0:
+                return JSONResponse({
+                    "success": False,
+                    "error": result.stderr
+                }, status_code=500)
+
+            # Get new HEAD
+            new_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path, capture_output=True, text=True, timeout=5
+            ).stdout.strip()
+
+            app.state.audit_log.log("revert_execute", {
+                "commit": commit_hash,
+                "head_before": head_before,
+                "head_after": new_head
+            })
+
+            return {
+                "success": True,
+                "reverted_commit": commit_hash,
+                "new_commit": new_head,
+                "undo_target": head_before
+            }
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            app.state.git_op_lock.release()
+
+    @app.post("/api/rollback/git/revert/undo")
+    async def undo_revert(
+        revert_commit: str = Query(..., description="SHA of the revert commit to undo"),
+        token: Optional[str] = Query(None),
+    ):
+        """Undo a revert by reverting the revert commit (non-destructive)."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate hash format
+        if not re.match(r'^[a-f0-9]{7,40}$', revert_commit):
+            return JSONResponse({"error": "Invalid hash format"}, status_code=400)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo found"}, status_code=400)
+
+        # Acquire git operation lock
+        if not await app.state.git_op_lock.acquire("undo_revert"):
+            return JSONResponse({
+                "error": "Another git operation in progress",
+                "current_op": app.state.git_op_lock.current_operation
+            }, status_code=409)
+
+        try:
+            # Check working directory is clean
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_path, capture_output=True, text=True, timeout=5
+            )
+            if status.stdout.strip():
+                return JSONResponse({
+                    "error": "Working directory not clean"
+                }, status_code=400)
+
+            # Revert the revert commit (non-destructive, creates new commit)
+            result = subprocess.run(
+                ["git", "revert", "--no-edit", revert_commit],
+                cwd=repo_path, capture_output=True, text=True, timeout=30
+            )
+
+            if result.returncode != 0:
+                return JSONResponse({
+                    "success": False,
+                    "error": "Undo failed - revert may have conflicts",
+                    "details": result.stderr
+                }, status_code=500)
+
+            # Get new HEAD (the undo commit)
+            new_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path, capture_output=True, text=True, timeout=5
+            ).stdout.strip()
+
+            app.state.audit_log.log("revert_undo", {
+                "revert_commit": revert_commit,
+                "undo_commit": new_head
+            })
+
+            return {
+                "success": True,
+                "reverted_commit": revert_commit,
+                "new_commit": new_head
+            }
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            app.state.git_op_lock.release()
+
+    # ========== End Git Rollback API ==========
 
     @app.post("/api/send")
     async def send_line(
