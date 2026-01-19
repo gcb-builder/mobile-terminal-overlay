@@ -71,6 +71,16 @@ MODELS = {
         "provider": "openai",
         "model_id": "gpt-4o",
     },
+    "gpt-5.2": {
+        "name": "GPT-5.2",
+        "provider": "openai",
+        "model_id": "gpt-5.2",
+    },
+    "gpt-5.2-pro": {
+        "name": "GPT-5.2 Pro",
+        "provider": "openai",
+        "model_id": "gpt-5.2-pro",
+    },
     "claude-sonnet": {
         "name": "Claude 3.5 Sonnet",
         "provider": "anthropic",
