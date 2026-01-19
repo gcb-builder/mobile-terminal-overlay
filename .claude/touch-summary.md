@@ -122,3 +122,109 @@ Append-only log of implementation batches.
 - Removed "working..." indicator (redundant with activity timestamp)
 - View bar (Select/Stop/Challenge/Compose) collapses with control bars
 - Control bar Enter kept as stateless confirm (ignores input box state)
+
+---
+
+## 2026-01-18: Non-Blocking Tool Collapse for Log View
+
+**Goal:** Collapse consecutive duplicate tool `<details>` blocks into single block with "×N" badge
+
+**Files Changed:**
+- `mobile_terminal/static/terminal.js` - Added data-tool attributes in renderLogEntries(), scheduleCollapse(), collapseRepeatedTools(), setupCollapseHandler()
+- `mobile_terminal/static/styles.css` - Added .collapsed-duplicate, .collapse-count styles
+- `mobile_terminal/static/index.html` - Version bumps (v120, v151, v34)
+- `mobile_terminal/static/sw.js` - Version bump to v34
+
+**New Functions (terminal.js):**
+- `scheduleCollapse()` - Hash-based scheduling via requestIdleCallback
+- `collapseRepeatedTools(hash)` - Single-pass DOM collapse with badge insertion
+- `setupCollapseHandler()` - Event delegation for expand/collapse toggle
+
+**Key Design Decisions:**
+- Post-render collapse via requestIdleCallback (fallback: setTimeout 100ms)
+- Hash check: `${toolCount}:${lastToolKey}:${htmlLength}` to skip unchanged content
+- Stable group keys: `${toolName}:${summaryText.slice(0,40)}` (not index-based)
+- Single event delegation handler (no per-node listeners)
+- Graceful degradation: try/catch wrapper, base render unaffected
+
+**Risks/Follow-ups:**
+- Previous attempts caused lag due to work in render loop; this uses idle callback
+- Safari <16.4 uses setTimeout fallback
+- Hash verification at end of collapse to detect race conditions
+
+---
+
+## 2026-01-19: Smart Auto-Scroll and Plan File Previews
+
+**Goal:** Improve log view UX with conditional auto-scroll and inline plan file previews
+
+**Problem 2: Auto-scroll Interrupts Reading**
+- Track if user is at bottom of log via scroll event listener
+- Only auto-scroll if `userAtBottom` is true
+- Show floating "↓ New content" indicator when new content arrives while reading
+- Click indicator to jump to bottom
+
+**Problem 3: Plan Files Not Visible**
+- Added `/api/plan` endpoint to read plan files from `~/.claude/plans/`
+- Detect plan file paths in log text via regex
+- Replace with clickable elements showing filename
+- On tap, fetch 10-line preview and show inline
+- Tap again to collapse
+
+**Files Changed:**
+- `mobile_terminal/server.py` - Added `/api/plan` endpoint with filename sanitization
+- `mobile_terminal/static/terminal.js` - Added scroll tracking, new content indicator, plan file detection
+- `mobile_terminal/static/styles.css` - Added .new-content-indicator, .plan-file-ref, .plan-preview styles
+- `mobile_terminal/static/index.html` - Version bumps (v121, v152, v35)
+- `mobile_terminal/static/sw.js` - Version bump to v35
+
+**New Functions (terminal.js):**
+- `setupScrollTracking()` - Scroll event listener to track userAtBottom
+- `showNewContentIndicator()` / `hideNewContentIndicator()` - Floating indicator management
+- `schedulePlanPreviews()` - Schedule plan detection for idle time
+- `detectAndReplacePlanRefs()` - TreeWalker to find and replace plan paths
+- `setupPlanPreviewHandler()` - Event delegation for plan preview clicks
+
+**Key Design Decisions:**
+- Both features use requestIdleCallback for non-blocking execution
+- New content indicator positioned absolute, slides up with animation
+- Plan file regex: `/(?:~|\/home\/\w+)\/\.claude\/plans\/([\w\-\.]+\.md)/g`
+- API sanitizes filenames to prevent path traversal
+
+---
+
+## 2026-01-19: Super-Collapse for Tool Runs
+
+**Goal:** Collapse runs of many consecutive tool calls into single summary row
+
+**Problem:** Even with same-tool collapsing (×N badges), interleaved tool types (Read, Edit, TodoWrite, Grep) still create long lists that overwhelm the log view.
+
+**Solution:** "Super-collapse" - when 6+ consecutive tool blocks appear, collapse them into:
+```
+🔧 23 tool operations ▶
+```
+Click to expand and see individual tools (which can still have ×N badges).
+
+**Files Changed:**
+- `mobile_terminal/static/terminal.js` - Added scheduleSuperCollapse(), applySuperCollapse(), createSuperGroup(), setupSuperCollapseHandler()
+- `mobile_terminal/static/styles.css` - Added .super-collapsed, .tool-supergroup, .tool-supergroup-toggle styles
+- `mobile_terminal/static/index.html` - Version bumps (v122, v153, v36)
+- `mobile_terminal/static/sw.js` - Version bump to v36
+
+**New State Variables:**
+- `SUPER_COLLAPSE_THRESHOLD = 6` - Minimum tools to trigger super-collapse
+- `lastSuperCollapseHash` - Skip work if unchanged
+- `expandedSuperGroups` - Set of expanded group keys
+
+**New Functions (terminal.js):**
+- `scheduleSuperCollapse()` - Waits 150ms for regular collapse, then schedules idle pass
+- `applySuperCollapse(hash)` - Finds runs of consecutive .log-tool within each .log-card-body
+- `createSuperGroup(container, tools, insertIndex)` - Creates header element, hides tools
+- `setupSuperCollapseHandler()` - Event delegation for toggle clicks
+
+**Key Design Decisions:**
+- Runs after 150ms delay to let regular collapse (×N badges) complete first
+- Uses requestIdleCallback with 700ms timeout for non-blocking execution
+- Stable group key: `supergroup:${firstToolKey}:${toolCount}`
+- Super-groups are per-.log-card-body (within a Claude turn), not global
+- CSS uses `!important` on .super-collapsed to ensure tools are hidden

@@ -934,6 +934,52 @@ def create_app(config: Config) -> FastAPI:
             logger.error(f"Error reading touch file: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.get("/api/plan")
+    async def get_plan(
+        token: Optional[str] = Query(None),
+        filename: str = Query(..., description="Plan filename"),
+        preview: bool = Query(True, description="Return only first 10 lines"),
+    ):
+        """
+        Get a plan file from ~/.claude/plans/.
+        Returns preview (first 10 lines) by default, or full content.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Sanitize filename - only allow alphanumeric, dash, underscore, dot
+        import re
+        if not re.match(r'^[\w\-\.]+\.md$', filename):
+            return JSONResponse({"error": "Invalid filename"}, status_code=400)
+
+        plan_file = Path.home() / ".claude" / "plans" / filename
+
+        if not plan_file.exists():
+            return {
+                "exists": False,
+                "content": "",
+                "filename": filename,
+            }
+
+        try:
+            content = plan_file.read_text(errors="replace")
+            if preview:
+                # Return first 10 lines for preview
+                lines = content.split('\n')[:10]
+                content = '\n'.join(lines)
+                if len(plan_file.read_text().split('\n')) > 10:
+                    content += '\n...'
+
+            return {
+                "exists": True,
+                "content": content,
+                "filename": filename,
+                "modified": plan_file.stat().st_mtime,
+            }
+        except Exception as e:
+            logger.error(f"Error reading plan file: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.get("/api/log")
     async def get_log(token: Optional[str] = Query(None), limit: int = Query(200)):
         """

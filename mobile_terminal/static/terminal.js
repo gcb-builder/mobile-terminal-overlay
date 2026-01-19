@@ -72,6 +72,20 @@ let queueDrawerOpen = false;
 // Terminal busy state - when busy, input box shows Q instead of Enter
 let terminalBusy = false;
 
+// Tool collapse state for log view
+let lastCollapseHash = '';
+let expandedGroups = new Set();  // Stores group keys that user expanded
+const scheduleIdle = window.requestIdleCallback || ((cb) => setTimeout(cb, 100));
+
+// Scroll tracking for log view - only auto-scroll if user is at bottom
+let userAtBottom = true;
+let newContentIndicator = null;
+
+// Super-collapse state for grouping many tool calls into single row
+const SUPER_COLLAPSE_THRESHOLD = 6;  // Minimum tools to trigger super-collapse
+let lastSuperCollapseHash = '';
+let expandedSuperGroups = new Set();  // Stores group keys for expanded super-groups
+
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
     controlBarsContainer = document.getElementById('controlBarsContainer');
@@ -2978,7 +2992,8 @@ function renderLogEntries(content) {
                     const toolDetail = toolMatch[2] || '';
                     // Truncate long details for summary
                     const summary = toolDetail.length > 60 ? toolDetail.slice(0, 60) + '...' : toolDetail;
-                    html += `<details class="log-tool"><summary class="log-tool-summary"><span class="log-tool-name">${toolName}</span> <span class="log-tool-detail">${escapeHtml(summary)}</span></summary>`;
+                    const summaryKey = (summary || toolName).slice(0, 40).replace(/[^a-zA-Z0-9]/g, '_');
+                    html += `<details class="log-tool" data-tool="${toolName}" data-tool-key="${toolName}:${summaryKey}"><summary class="log-tool-summary"><span class="log-tool-name">${toolName}</span> <span class="log-tool-detail">${escapeHtml(summary)}</span></summary>`;
                     html += `<div class="log-tool-content">${escapeHtml(toolDetail)}</div></details>`;
                 } else {
                     html += `<div class="log-tool-inline">${escapeHtml(block.text)}</div>`;
@@ -3001,11 +3016,459 @@ function renderLogEntries(content) {
 
     logContent.innerHTML = html;
 
+    // Schedule tool collapsing for idle time (non-blocking)
+    scheduleCollapse();
+
+    // Schedule super-collapse for runs of many tools (after regular collapse)
+    scheduleSuperCollapse();
+
+    // Schedule plan file preview detection
+    schedulePlanPreviews();
+
     // Extract and show suggestions from last message
     extractAndShowSuggestions(content);
 
-    // Scroll to bottom
-    logContent.scrollTop = logContent.scrollHeight;
+    // Only scroll to bottom if user was already at bottom
+    if (userAtBottom) {
+        logContent.scrollTop = logContent.scrollHeight;
+    } else {
+        // Show new content indicator
+        showNewContentIndicator();
+    }
+}
+
+/**
+ * Schedule tool collapse for idle time
+ * Computes hash to skip if content unchanged
+ */
+function scheduleCollapse() {
+    if (!logContent) return;
+
+    const tools = logContent.querySelectorAll('.log-tool');
+    if (tools.length < 2) return;  // Nothing to collapse
+
+    // Hash: count + last tool key + html length
+    const lastTool = tools[tools.length - 1];
+    const hash = `${tools.length}:${lastTool?.dataset.toolKey || ''}:${logContent.innerHTML.length}`;
+
+    if (hash === lastCollapseHash) return;  // Content unchanged
+
+    scheduleIdle(() => {
+        try {
+            collapseRepeatedTools(hash);
+        } catch (e) {
+            console.warn('Collapse failed:', e);
+            // Graceful degradation - log still visible
+        }
+    }, { timeout: 500 });
+}
+
+/**
+ * Single-pass collapse of consecutive duplicate tools
+ * Adds badge to first, hides rest unless expanded
+ */
+function collapseRepeatedTools(hash) {
+    const tools = logContent.querySelectorAll('.log-tool');
+    if (tools.length < 2) return;
+
+    // Clean previous collapse state
+    logContent.querySelectorAll('.collapse-count').forEach(b => b.remove());
+    logContent.querySelectorAll('.collapsed-duplicate').forEach(t =>
+        t.classList.remove('collapsed-duplicate'));
+
+    let i = 0;
+    while (i < tools.length) {
+        const toolName = tools[i].dataset.tool;
+        const groupKey = tools[i].dataset.toolKey;
+
+        // Count consecutive same-tool entries
+        let count = 1;
+        let j = i + 1;
+        while (j < tools.length && tools[j].dataset.tool === toolName) {
+            count++;
+            j++;
+        }
+
+        if (count > 1) {
+            // Add/update badge on first tool
+            const summary = tools[i].querySelector('.log-tool-summary');
+            if (summary) {
+                const badge = document.createElement('span');
+                badge.className = 'collapse-count';
+                badge.dataset.groupKey = groupKey;
+                badge.textContent = `×${count}`;
+                summary.appendChild(badge);
+            }
+
+            // Hide duplicates unless group is expanded
+            if (!expandedGroups.has(groupKey)) {
+                for (let k = i + 1; k < j; k++) {
+                    tools[k].classList.add('collapsed-duplicate');
+                }
+            }
+        }
+
+        i = j;  // Skip to next group
+    }
+
+    // Verify hash still valid (content didn't change during execution)
+    const tools2 = logContent.querySelectorAll('.log-tool');
+    const lastTool = tools2[tools2.length - 1];
+    const currentHash = `${tools2.length}:${lastTool?.dataset.toolKey || ''}:${logContent.innerHTML.length}`;
+
+    if (currentHash === hash) {
+        lastCollapseHash = hash;
+    }
+    // If hash changed, next render will re-trigger collapse
+}
+
+/**
+ * Schedule super-collapse for idle time
+ * Groups runs of many tool calls into single summary row
+ */
+function scheduleSuperCollapse() {
+    if (!logContent) return;
+
+    // Delay slightly to let regular collapse complete first
+    setTimeout(() => {
+        const tools = logContent.querySelectorAll('.log-tool');
+        if (tools.length < SUPER_COLLAPSE_THRESHOLD) return;
+
+        // Hash based on tool count and innerHTML length
+        const hash = `super:${tools.length}:${logContent.innerHTML.length}`;
+        if (hash === lastSuperCollapseHash) return;
+
+        scheduleIdle(() => {
+            try {
+                applySuperCollapse(hash);
+            } catch (e) {
+                console.warn('Super-collapse failed:', e);
+            }
+        }, { timeout: 700 });
+    }, 150);  // Wait for regular collapse to finish
+}
+
+/**
+ * Apply super-collapse to runs of consecutive tool blocks
+ * Creates summary header and hides individual tools
+ */
+function applySuperCollapse(hash) {
+    if (!logContent) return;
+
+    // Remove existing super-group headers
+    logContent.querySelectorAll('.tool-supergroup').forEach(g => g.remove());
+    // Unhide all tools first
+    logContent.querySelectorAll('.super-collapsed').forEach(t =>
+        t.classList.remove('super-collapsed'));
+
+    // Find all log cards (message groups)
+    const cards = logContent.querySelectorAll('.log-card');
+
+    for (const card of cards) {
+        const cardBody = card.querySelector('.log-card-body');
+        if (!cardBody) continue;
+
+        // Find runs of consecutive tool elements within this card
+        const children = Array.from(cardBody.children);
+        let runStart = -1;
+        let runTools = [];
+
+        for (let i = 0; i <= children.length; i++) {
+            const child = children[i];
+            const isTool = child?.classList?.contains('log-tool');
+
+            if (isTool) {
+                if (runStart === -1) runStart = i;
+                runTools.push(child);
+            } else {
+                // End of run (or end of children)
+                if (runTools.length >= SUPER_COLLAPSE_THRESHOLD) {
+                    createSuperGroup(cardBody, runTools, runStart);
+                }
+                runStart = -1;
+                runTools = [];
+            }
+        }
+    }
+
+    // Update hash
+    const tools = logContent.querySelectorAll('.log-tool');
+    const currentHash = `super:${tools.length}:${logContent.innerHTML.length}`;
+    if (currentHash === hash) {
+        lastSuperCollapseHash = hash;
+    }
+}
+
+/**
+ * Create a super-group header for a run of tool elements
+ */
+function createSuperGroup(container, tools, insertIndex) {
+    // Generate stable group key from first tool
+    const firstTool = tools[0];
+    const firstKey = firstTool.dataset.toolKey || firstTool.dataset.tool || 'tools';
+    const groupKey = `supergroup:${firstKey}:${tools.length}`;
+
+    // Create header element
+    const header = document.createElement('div');
+    header.className = 'tool-supergroup';
+    header.dataset.groupKey = groupKey;
+
+    const isExpanded = expandedSuperGroups.has(groupKey);
+    const arrow = isExpanded ? '▼' : '▶';
+
+    header.innerHTML = `<button class="tool-supergroup-toggle">🔧 ${tools.length} tool operations ${arrow}</button>`;
+
+    // Insert header before the run
+    const firstChild = tools[0];
+    container.insertBefore(header, firstChild);
+
+    // Hide tools if not expanded
+    if (!isExpanded) {
+        for (const tool of tools) {
+            tool.classList.add('super-collapsed');
+        }
+    }
+}
+
+/**
+ * Setup super-collapse toggle via event delegation
+ */
+function setupSuperCollapseHandler() {
+    if (!logContent) return;
+
+    logContent.addEventListener('click', (e) => {
+        const toggle = e.target.closest('.tool-supergroup-toggle');
+        if (!toggle) return;
+
+        const header = toggle.closest('.tool-supergroup');
+        if (!header) return;
+
+        const groupKey = header.dataset.groupKey;
+        if (!groupKey) return;
+
+        // Toggle expanded state
+        if (expandedSuperGroups.has(groupKey)) {
+            expandedSuperGroups.delete(groupKey);
+        } else {
+            expandedSuperGroups.add(groupKey);
+        }
+
+        // Force re-apply super-collapse
+        lastSuperCollapseHash = '';
+        scheduleSuperCollapse();
+    });
+}
+
+/**
+ * Setup collapse toggle via event delegation
+ * Click on collapse badge toggles expanded state
+ */
+function setupCollapseHandler() {
+    if (!logContent) return;
+
+    logContent.addEventListener('click', (e) => {
+        const badge = e.target.closest('.collapse-count');
+        if (!badge) return;
+
+        const groupKey = badge.dataset.groupKey;
+        if (!groupKey) return;
+
+        // Toggle expanded state
+        if (expandedGroups.has(groupKey)) {
+            expandedGroups.delete(groupKey);
+        } else {
+            expandedGroups.add(groupKey);
+        }
+
+        // Re-run collapse to show/hide
+        lastCollapseHash = '';  // Force re-collapse
+        scheduleCollapse();
+    });
+}
+
+/**
+ * Setup scroll tracking for log view
+ * Tracks if user is at bottom to control auto-scroll
+ */
+function setupScrollTracking() {
+    if (!logContent) return;
+
+    logContent.addEventListener('scroll', () => {
+        // Consider "at bottom" if within 50px of bottom
+        const scrollBottom = logContent.scrollHeight - logContent.scrollTop - logContent.clientHeight;
+        userAtBottom = scrollBottom < 50;
+
+        // Hide indicator if user scrolled to bottom
+        if (userAtBottom) {
+            hideNewContentIndicator();
+        }
+    });
+}
+
+/**
+ * Show "new content" indicator when content arrives while user is reading above
+ */
+function showNewContentIndicator() {
+    if (!logContent) return;
+
+    // Create indicator if it doesn't exist
+    if (!newContentIndicator) {
+        newContentIndicator = document.createElement('div');
+        newContentIndicator.className = 'new-content-indicator';
+        newContentIndicator.innerHTML = '↓ New content';
+        newContentIndicator.addEventListener('click', () => {
+            logContent.scrollTop = logContent.scrollHeight;
+            userAtBottom = true;
+            hideNewContentIndicator();
+        });
+        logContent.parentElement.appendChild(newContentIndicator);
+    }
+
+    newContentIndicator.classList.add('visible');
+}
+
+/**
+ * Hide new content indicator
+ */
+function hideNewContentIndicator() {
+    if (newContentIndicator) {
+        newContentIndicator.classList.remove('visible');
+    }
+}
+
+// Track which plan files have been processed
+let processedPlanRefs = new Set();
+
+/**
+ * Schedule plan file preview detection for idle time
+ */
+function schedulePlanPreviews() {
+    if (!logContent) return;
+
+    scheduleIdle(() => {
+        try {
+            detectAndReplacePlanRefs();
+        } catch (e) {
+            console.warn('Plan preview detection failed:', e);
+        }
+    }, { timeout: 600 });
+}
+
+/**
+ * Detect plan file references in log and replace with expandable previews
+ * Looks for paths like ~/.claude/plans/foo.md or /home/user/.claude/plans/foo.md
+ */
+function detectAndReplacePlanRefs() {
+    if (!logContent) return;
+
+    // Find all text nodes that might contain plan file references
+    const walker = document.createTreeWalker(
+        logContent,
+        NodeFilter.SHOW_TEXT,
+        null,
+        false
+    );
+
+    const planPathRegex = /(?:~|\/home\/\w+)\/\.claude\/plans\/([\w\-\.]+\.md)/g;
+    const nodesToReplace = [];
+
+    let node;
+    while (node = walker.nextNode()) {
+        const text = node.textContent;
+        if (planPathRegex.test(text)) {
+            planPathRegex.lastIndex = 0;  // Reset regex
+            nodesToReplace.push(node);
+        }
+    }
+
+    // Replace each text node with plan link elements
+    for (const textNode of nodesToReplace) {
+        const text = textNode.textContent;
+        const fragment = document.createDocumentFragment();
+        let lastIndex = 0;
+        let match;
+
+        planPathRegex.lastIndex = 0;
+        while ((match = planPathRegex.exec(text)) !== null) {
+            // Add text before match
+            if (match.index > lastIndex) {
+                fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+            }
+
+            // Create plan preview link
+            const filename = match[1];
+            const fullPath = match[0];
+
+            // Check if already processed
+            if (!processedPlanRefs.has(fullPath)) {
+                const planLink = document.createElement('span');
+                planLink.className = 'plan-file-ref';
+                planLink.dataset.filename = filename;
+                planLink.innerHTML = `<span class="plan-file-icon">📋</span> ${filename} <span class="plan-expand-hint">(tap to preview)</span>`;
+                fragment.appendChild(planLink);
+                processedPlanRefs.add(fullPath);
+            } else {
+                // Already processed, just show as text
+                fragment.appendChild(document.createTextNode(fullPath));
+            }
+
+            lastIndex = match.index + match[0].length;
+        }
+
+        // Add remaining text
+        if (lastIndex < text.length) {
+            fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+        }
+
+        textNode.parentNode.replaceChild(fragment, textNode);
+    }
+}
+
+/**
+ * Setup event delegation for plan file preview clicks
+ */
+function setupPlanPreviewHandler() {
+    if (!logContent) return;
+
+    logContent.addEventListener('click', async (e) => {
+        const planRef = e.target.closest('.plan-file-ref');
+        if (!planRef) return;
+
+        const filename = planRef.dataset.filename;
+        if (!filename) return;
+
+        // Toggle preview
+        const existingPreview = planRef.querySelector('.plan-preview');
+        if (existingPreview) {
+            existingPreview.remove();
+            planRef.classList.remove('expanded');
+            return;
+        }
+
+        // Fetch and show preview
+        planRef.classList.add('loading');
+        try {
+            const response = await fetch(`/api/plan?token=${token}&filename=${encodeURIComponent(filename)}&preview=true`);
+            const data = await response.json();
+
+            if (data.exists && data.content) {
+                const preview = document.createElement('div');
+                preview.className = 'plan-preview';
+                preview.innerHTML = `<pre>${escapeHtml(data.content)}</pre>`;
+                planRef.appendChild(preview);
+                planRef.classList.add('expanded');
+            } else {
+                const preview = document.createElement('div');
+                preview.className = 'plan-preview error';
+                preview.textContent = 'Plan file not found';
+                planRef.appendChild(preview);
+            }
+        } catch (err) {
+            console.error('Failed to fetch plan preview:', err);
+        } finally {
+            planRef.classList.remove('loading');
+        }
+    });
 }
 
 /**
@@ -3858,6 +4321,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupTranscriptSearch();
     startActivityUpdates();
     setupQueue();
+    setupCollapseHandler();
+    setupSuperCollapseHandler();
+    setupScrollTracking();
+    setupPlanPreviewHandler();
 
     // Scroll input bar to the right so Enter button is visible
     if (inputBar) {
