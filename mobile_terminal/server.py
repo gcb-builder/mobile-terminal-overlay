@@ -1791,12 +1791,15 @@ Output format:
         queue_state = [item.to_dict() for item in app.state.command_queue.items]
 
         # Capture snapshot
+        logger.info(f"Capturing snapshot: session={session}, label={label}, log_len={len(log_content)}, term_len={len(terminal_text)}")
         snapshot = app.state.snapshot_buffer.capture(
             session, label, log_content, terminal_text, queue_state
         )
 
         if snapshot:
+            logger.info(f"Snapshot created: {snapshot['id']}")
             return {"success": True, "snapshot": {"id": snapshot["id"], "label": label}}
+        logger.info("Snapshot skipped: content unchanged")
         return {"success": True, "snapshot": None, "reason": "unchanged"}
 
     @app.get("/api/rollback/previews")
@@ -1810,6 +1813,7 @@ Output format:
 
         session = app.state.current_session
         snapshots = app.state.snapshot_buffer.list_snapshots(session, limit)
+        logger.info(f"List snapshots: session={session}, count={len(snapshots)}")
         return {"session": session, "snapshots": snapshots}
 
     @app.get("/api/rollback/preview/{snap_id}")

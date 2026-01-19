@@ -4370,11 +4370,15 @@ async function captureSnapshot(label = 'manual') {
     if (previewMode) return;  // Don't capture while previewing
 
     try {
-        await fetch(`/api/rollback/preview/capture?label=${label}&token=${token}`, {
+        const resp = await fetch(`/api/rollback/preview/capture?label=${label}&token=${token}`, {
             method: 'POST'
         });
+        const data = await resp.json();
+        console.log('Snapshot capture result:', data);
+        return data;
     } catch (e) {
         console.warn('Snapshot capture failed:', e);
+        return null;
     }
 }
 
@@ -4383,9 +4387,12 @@ async function captureSnapshot(label = 'manual') {
  */
 async function loadSnapshotList() {
     try {
+        console.log('Loading snapshot list...');
         const resp = await fetch(`/api/rollback/previews?token=${token}`);
         const data = await resp.json();
+        console.log('Snapshots response:', data);
         previewSnapshots = data.snapshots || [];
+        console.log('Snapshot count:', previewSnapshots.length);
         renderPreviewList();
     } catch (e) {
         console.error('Failed to load snapshots:', e);
@@ -4578,10 +4585,21 @@ function setupPreviewHandlers() {
     document.getElementById('previewDrawerBtn')?.addEventListener('click', openPreviewDrawer);
 
     // Snapshot button in drawer
-    document.getElementById('snapshotBtn')?.addEventListener('click', () => {
-        captureSnapshot('manual');
+    const snapBtn = document.getElementById('snapshotBtn');
+    snapBtn?.addEventListener('click', async () => {
+        // Visual feedback
+        const origText = snapBtn.textContent;
+        snapBtn.textContent = 'Saving...';
+        snapBtn.disabled = true;
+
+        await captureSnapshot('manual');
+
         // Refresh list after a short delay
-        setTimeout(loadSnapshotList, 200);
+        setTimeout(() => {
+            loadSnapshotList();
+            snapBtn.textContent = origText;
+            snapBtn.disabled = false;
+        }, 300);
     });
 
     // List item clicks (event delegation)
