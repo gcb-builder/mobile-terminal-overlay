@@ -810,6 +810,15 @@ function toggleControlBarsCollapse() {
         viewBar.classList.toggle('collapsed', isCollapsed);
     }
 
+    // When expanding in log or terminal view, also remove 'hidden' to ensure visibility
+    // (hidden might be present if view was switched while collapsed)
+    if (!isCollapsed && (currentView === 'log' || currentView === 'terminal')) {
+        controlBarsContainer.classList.remove('hidden');
+        if (viewBar) {
+            viewBar.classList.remove('hidden');
+        }
+    }
+
     // Don't resize - keeps terminal stable, prevents tmux reflow/corruption
 }
 

@@ -275,3 +275,24 @@ Click to expand and see individual tools (which can still have ×N badges).
 - `.terminal-block::before` - gradient fade overlay
 - `.terminal-block::after` - "live" label
 - `.quick-btn` - monospace, smaller, darker
+
+---
+
+## 2026-01-19: Collapse Toggle Fix
+
+**Goal:** Fix collapse button not properly expanding control bars
+
+**Problem:** When the collapse button was tapped to collapse the control bars, tapping again to expand might not work if the `hidden` class was present (e.g., from a view switch while collapsed).
+
+**Files Changed:**
+- `mobile_terminal/static/terminal.js` - Fixed toggleControlBarsCollapse() to also remove 'hidden' class when expanding in log/terminal views
+- `mobile_terminal/static/index.html` - Version bump (v154, v38)
+- `mobile_terminal/static/sw.js` - Version bump to v38
+
+**Fix Details:**
+- Modified `toggleControlBarsCollapse()` to remove `hidden` class when expanding (isCollapsed=false)
+- Only applies in log and terminal views where bars should be visible
+- Ensures bars become visible even if `hidden` was re-added during view switches
+
+**Commits:**
+- (pending)

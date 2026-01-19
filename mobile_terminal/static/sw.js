@@ -1,5 +1,5 @@
 // Service Worker for Mobile Terminal PWA
-const CACHE_NAME = 'terminal-v37';
+const CACHE_NAME = 'terminal-v38';
 
 // Install event - cache essential assets
 self.addEventListener('install', (event) => {
