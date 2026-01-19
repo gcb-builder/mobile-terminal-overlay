@@ -331,3 +331,55 @@ Click to expand and see individual tools (which can still have ×N badges).
 
 **Commits:**
 - (pending)
+
+---
+
+## 2026-01-19: Preview v0 - UI State Time-Travel
+
+**Goal:** Add a "Preview" system for safe read-only time-travel through UI state snapshots.
+
+**Files Changed:**
+- `mobile_terminal/server.py` - Added SnapshotBuffer class, 4 preview API endpoints
+- `mobile_terminal/static/terminal.js` - Preview mode state, capture/enter/exit functions, input guards
+- `mobile_terminal/static/index.html` - Preview banner, drawer HTML, Preview button in view bar
+- `mobile_terminal/static/styles.css` - Preview banner and drawer styles
+- `mobile_terminal/static/sw.js` - Version bump to v39
+
+**New Server Components:**
+- `SnapshotBuffer` class - Ring buffer (200 max) with MD5 hash deduplication
+- `POST /api/rollback/preview/capture` - Capture snapshot (JSONL + tmux + queue)
+- `GET /api/rollback/previews` - List snapshots (id, timestamp, label)
+- `GET /api/rollback/preview/{snap_id}` - Get full snapshot data
+- `POST /api/rollback/preview/select` - Enter/exit preview mode
+
+**New Client Functions (terminal.js):**
+- `captureSnapshot(label)` - Trigger server-side capture
+- `loadSnapshotList()` - Fetch available snapshots
+- `enterPreviewMode(snapId)` - Load snapshot and disable inputs
+- `exitPreviewMode()` - Return to live, re-enable inputs
+- `renderPreviewLog()` / `renderPreviewTerminal()` - Display snapshot data
+- `showPreviewBanner()` / `hidePreviewBanner()` - Preview mode indicator
+- `disableInputsForPreview()` / `enableInputsAfterPreview()` - Input control
+- `isPreviewMode()` - Check if in preview mode
+- `setupPreviewHandlers()` - Wire up UI event handlers
+
+**Snapshot Schema:**
+```
+{id, timestamp, session, label, log_entries, log_hash, terminal_text, queue_state}
+```
+
+**Labels:** user_send, periodic (30s), manual (+ Snap button)
+
+**UI Components:**
+- Preview banner (fixed, yellow, "Preview Mode" + timestamp + "Back to Live")
+- Preview drawer (bottom sheet, snapshot list, + Snap button)
+- Preview button in view bar
+
+**Safety:**
+- All inputs disabled in preview mode (log input, quick buttons, compose)
+- terminal.onData() blocked
+- sendLogCommand() blocked
+- Purely read-only display
+
+**Commits:**
+- (pending)

@@ -91,6 +91,11 @@ const SUPER_COLLAPSE_THRESHOLD = 6;  // Minimum tools to trigger super-collapse
 let lastSuperCollapseHash = '';
 let expandedSuperGroups = new Set();  // Stores group keys for expanded super-groups
 
+// Preview mode state
+let previewMode = null;          // null = live, string = snapshot_id
+let previewSnapshot = null;      // Full snapshot data when in preview
+let previewSnapshots = [];       // Cached list of snapshots
+
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
     controlBarsContainer = document.getElementById('controlBarsContainer');
@@ -248,7 +253,7 @@ function initTerminal() {
     });
 
     terminal.onData((data) => {
-        if (isControlUnlocked && socket && socket.readyState === WebSocket.OPEN) {
+        if (isControlUnlocked && !isPreviewMode() && socket && socket.readyState === WebSocket.OPEN) {
             // Skip during active composition - wait for compositionend then onData fires
             if (isComposing) {
                 return;
@@ -835,6 +840,7 @@ function sendResize() {
 const inputEncoder = new TextEncoder();
 
 function sendInput(data) {
+    if (isPreviewMode()) return;  // No input in preview mode
     if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(inputEncoder.encode(data));
     }
@@ -3847,6 +3853,7 @@ function setupQuickResponses() {
  * Atomic send: command + carriage return as single write
  */
 function sendLogCommand() {
+    if (isPreviewMode()) return;  // No input in preview mode
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
     const command = logInput ? logInput.value.trim() : '';
@@ -3856,6 +3863,7 @@ function sendLogCommand() {
         sendInput('\r');
         // Mark busy after sending non-trivial commands
         setTerminalBusy(true);
+        captureSnapshot('user_send');  // Capture state before command
         return;
     }
 
@@ -3864,6 +3872,7 @@ function sendLogCommand() {
 
     // Mark terminal as busy after sending
     setTerminalBusy(true);
+    captureSnapshot('user_send');  // Capture state before command
 
     // Clear input
     logInput.value = '';
@@ -4350,6 +4359,252 @@ function setupQueue() {
 }
 
 
+// ============================================================================
+// PREVIEW MODE FUNCTIONS
+// ============================================================================
+
+/**
+ * Capture a snapshot (server-side)
+ */
+async function captureSnapshot(label = 'manual') {
+    if (previewMode) return;  // Don't capture while previewing
+
+    try {
+        await fetch(`/api/rollback/preview/capture?label=${label}&token=${token}`, {
+            method: 'POST'
+        });
+    } catch (e) {
+        console.warn('Snapshot capture failed:', e);
+    }
+}
+
+/**
+ * Load list of available snapshots
+ */
+async function loadSnapshotList() {
+    try {
+        const resp = await fetch(`/api/rollback/previews?token=${token}`);
+        const data = await resp.json();
+        previewSnapshots = data.snapshots || [];
+        renderPreviewList();
+    } catch (e) {
+        console.error('Failed to load snapshots:', e);
+    }
+}
+
+/**
+ * Enter preview mode with a specific snapshot
+ */
+async function enterPreviewMode(snapId) {
+    try {
+        // Fetch full snapshot
+        const resp = await fetch(`/api/rollback/preview/${snapId}?token=${token}`);
+        if (!resp.ok) throw new Error('Snapshot not found');
+
+        previewSnapshot = await resp.json();
+        previewMode = snapId;
+
+        // Notify server
+        await fetch(`/api/rollback/preview/select?snap_id=${snapId}&token=${token}`, {
+            method: 'POST'
+        });
+
+        // Render preview state
+        renderPreviewLog();
+        renderPreviewTerminal();
+
+        // Show banner, disable inputs
+        showPreviewBanner();
+        disableInputsForPreview();
+
+        // Close drawer
+        closePreviewDrawer();
+
+    } catch (e) {
+        console.error('Failed to enter preview mode:', e);
+        previewMode = null;
+        previewSnapshot = null;
+    }
+}
+
+/**
+ * Exit preview mode, return to live
+ */
+async function exitPreviewMode() {
+    previewMode = null;
+    previewSnapshot = null;
+
+    // Notify server
+    await fetch(`/api/rollback/preview/select?token=${token}`, { method: 'POST' });
+
+    // Hide banner, re-enable inputs
+    hidePreviewBanner();
+    enableInputsAfterPreview();
+
+    // Refresh live content
+    logLoaded = false;
+    loadLogContent();
+    refreshActivePrompt();
+}
+
+/**
+ * Render log from snapshot data
+ */
+function renderPreviewLog() {
+    if (!previewSnapshot || !logContent) return;
+
+    // Parse and render log entries from snapshot
+    const content = previewSnapshot.log_entries;
+    renderLogEntries(content);
+}
+
+/**
+ * Render terminal from snapshot
+ */
+function renderPreviewTerminal() {
+    if (!previewSnapshot) return;
+    const activePromptContent = document.getElementById('activePromptContent');
+    if (activePromptContent) {
+        activePromptContent.textContent = previewSnapshot.terminal_text || '';
+    }
+}
+
+/**
+ * Show preview mode banner
+ */
+function showPreviewBanner() {
+    const banner = document.getElementById('previewBanner');
+    const timestamp = document.getElementById('previewTimestamp');
+    if (banner) {
+        banner.classList.remove('hidden');
+        if (timestamp && previewSnapshot) {
+            const date = new Date(previewSnapshot.timestamp);
+            timestamp.textContent = date.toLocaleTimeString();
+        }
+    }
+}
+
+/**
+ * Hide preview mode banner
+ */
+function hidePreviewBanner() {
+    const banner = document.getElementById('previewBanner');
+    if (banner) banner.classList.add('hidden');
+}
+
+/**
+ * Disable all input controls in preview mode
+ */
+function disableInputsForPreview() {
+    if (logInput) logInput.disabled = true;
+    if (logSend) logSend.disabled = true;
+    document.querySelectorAll('.quick-btn').forEach(btn => btn.disabled = true);
+    document.querySelectorAll('.view-btn').forEach(btn => {
+        if (btn.id !== 'previewDrawerBtn') btn.disabled = true;
+    });
+}
+
+/**
+ * Re-enable all input controls
+ */
+function enableInputsAfterPreview() {
+    if (logInput) logInput.disabled = false;
+    if (logSend) logSend.disabled = false;
+    document.querySelectorAll('.quick-btn').forEach(btn => btn.disabled = false);
+    document.querySelectorAll('.view-btn').forEach(btn => btn.disabled = false);
+}
+
+/**
+ * Check if in preview mode
+ */
+function isPreviewMode() {
+    return previewMode !== null;
+}
+
+/**
+ * Open preview drawer
+ */
+function openPreviewDrawer() {
+    loadSnapshotList();
+    const drawer = document.getElementById('previewDrawer');
+    if (drawer) drawer.classList.remove('hidden');
+}
+
+/**
+ * Close preview drawer
+ */
+function closePreviewDrawer() {
+    const drawer = document.getElementById('previewDrawer');
+    if (drawer) drawer.classList.add('hidden');
+}
+
+/**
+ * Render the preview list in the drawer
+ */
+function renderPreviewList() {
+    const list = document.getElementById('previewList');
+    if (!list) return;
+
+    if (previewSnapshots.length === 0) {
+        list.innerHTML = '<div class="preview-empty">No snapshots yet</div>';
+        return;
+    }
+
+    list.innerHTML = previewSnapshots.map(snap => {
+        const date = new Date(snap.timestamp);
+        const time = date.toLocaleTimeString();
+        const isActive = previewMode === snap.id;
+        return `
+            <div class="preview-list-item ${isActive ? 'active' : ''}" data-snap-id="${snap.id}">
+                <span class="preview-time">${time}</span>
+                <span class="preview-label-badge ${snap.label}">${snap.label}</span>
+                <button class="preview-load-btn">${isActive ? 'Current' : 'Load'}</button>
+            </div>
+        `;
+    }).join('');
+}
+
+/**
+ * Setup preview event handlers
+ */
+function setupPreviewHandlers() {
+    // Back to live button
+    document.getElementById('previewBackToLive')?.addEventListener('click', exitPreviewMode);
+
+    // Drawer close
+    document.getElementById('previewDrawerClose')?.addEventListener('click', closePreviewDrawer);
+
+    // Drawer open (from view bar)
+    document.getElementById('previewDrawerBtn')?.addEventListener('click', openPreviewDrawer);
+
+    // Snapshot button in drawer
+    document.getElementById('snapshotBtn')?.addEventListener('click', () => {
+        captureSnapshot('manual');
+        // Refresh list after a short delay
+        setTimeout(loadSnapshotList, 200);
+    });
+
+    // List item clicks (event delegation)
+    document.getElementById('previewList')?.addEventListener('click', (e) => {
+        const item = e.target.closest('.preview-list-item');
+        const btn = e.target.closest('.preview-load-btn');
+        if (btn && item) {
+            const snapId = item.dataset.snapId;
+            if (snapId && snapId !== previewMode) {
+                enterPreviewMode(snapId);
+            }
+        }
+    });
+
+    // Periodic snapshot capture (every 30s)
+    setInterval(() => {
+        if (!isPreviewMode()) {
+            captureSnapshot('periodic');
+        }
+    }, 30000);
+}
+
+
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
     initDOMElements();
@@ -4383,6 +4638,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupSuperCollapseHandler();
     setupScrollTracking();
     setupPlanPreviewHandler();
+    setupPreviewHandlers();
 
     // Scroll input bar to the right so Enter button is visible
     if (inputBar) {

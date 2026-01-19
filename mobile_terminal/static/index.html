@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=123">
+    <link rel="stylesheet" href="/static/styles.css?v=124">
 </head>
 <body>
     <div class="app">
@@ -56,6 +56,13 @@
                 </div>
                 <div id="searchResults" class="search-results"></div>
             </div>
+        </div>
+
+        <!-- Preview mode banner -->
+        <div id="previewBanner" class="preview-banner hidden">
+            <span class="preview-label">Preview Mode</span>
+            <span id="previewTimestamp" class="preview-timestamp"></span>
+            <button id="previewBackToLive" class="preview-back-btn">Back to Live</button>
         </div>
 
         <!-- Log view: Log + Command input (primary view) -->
@@ -133,6 +140,7 @@
         <div id="viewBar" class="view-bar">
             <button id="selectCopyBtn" class="view-btn select-btn">Select</button>
             <button id="viewBarQueue" class="view-btn queue-btn">Queue<span id="queueBadge" class="queue-badge hidden">0</span></button>
+            <button id="previewDrawerBtn" class="view-btn preview-btn">Preview</button>
             <button id="challengeBtn" class="view-btn challenge-btn">Challenge</button>
             <button id="composeBtn" class="view-btn compose-btn">Compose</button>
         </div>
@@ -258,6 +266,16 @@
             </div>
         </div>
 
+        <!-- Preview drawer -->
+        <div id="previewDrawer" class="preview-drawer hidden">
+            <div class="preview-drawer-header">
+                <span class="preview-title">Snapshots</span>
+                <button id="snapshotBtn" class="preview-snap-btn">+ Snap</button>
+                <button id="previewDrawerClose" class="preview-drawer-close">&times;</button>
+            </div>
+            <div id="previewList" class="preview-list"></div>
+        </div>
+
         <!-- Connection status overlay -->
         <div id="statusOverlay" class="status-overlay">
             <div class="status-content">
@@ -268,11 +286,11 @@
         </div>
     </div>
 
-    <script src="/static/terminal.js?v=155"></script>
+    <script src="/static/terminal.js?v=156"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js?v=38', { scope: '/' })
+            navigator.serviceWorker.register('/sw.js?v=39', { scope: '/' })
                 .catch(err => console.log('SW registration failed:', err));
         }
     </script>

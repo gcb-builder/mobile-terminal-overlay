@@ -23,7 +23,8 @@ import termios
 import threading
 import time
 import uuid
-from collections import deque
+import hashlib
+from collections import deque, OrderedDict
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -56,6 +57,67 @@ class RingBuffer:
     def __len__(self) -> int:
         with self._lock:
             return len(self._buffer)
+
+
+class SnapshotBuffer:
+    """Ring buffer for session snapshots with hash deduplication."""
+
+    MAX_SNAPSHOTS = 200
+
+    def __init__(self):
+        self._snapshots: Dict[str, OrderedDict] = {}  # session -> {id: snapshot}
+        self._lock = threading.Lock()
+        self._last_hash: Dict[str, str] = {}  # session -> last log_hash
+
+    def capture(self, session: str, label: str, log_content: str,
+                terminal_text: str, queue_state: list) -> Optional[dict]:
+        """Capture snapshot if content changed."""
+        log_hash = hashlib.md5(log_content.encode()).hexdigest()[:12]
+
+        with self._lock:
+            # Skip if unchanged
+            if self._last_hash.get(session) == log_hash:
+                return None
+
+            # Create snapshot
+            ts = int(time.time() * 1000)
+            snap_id = f"snap_{ts}"
+            snapshot = {
+                "id": snap_id,
+                "timestamp": ts,
+                "session": session,
+                "label": label,
+                "log_entries": log_content,
+                "log_hash": log_hash,
+                "terminal_text": terminal_text,
+                "queue_state": queue_state,
+            }
+
+            # Initialize session buffer if needed
+            if session not in self._snapshots:
+                self._snapshots[session] = OrderedDict()
+
+            # Add snapshot, evict oldest if over limit
+            self._snapshots[session][snap_id] = snapshot
+            while len(self._snapshots[session]) > self.MAX_SNAPSHOTS:
+                self._snapshots[session].popitem(last=False)
+
+            self._last_hash[session] = log_hash
+            return snapshot
+
+    def list_snapshots(self, session: str, limit: int = 50) -> list:
+        """Return snapshot summaries (id, timestamp, label only)."""
+        with self._lock:
+            if session not in self._snapshots:
+                return []
+            items = list(self._snapshots[session].values())[-limit:]
+            return [{"id": s["id"], "timestamp": s["timestamp"], "label": s["label"]}
+                    for s in reversed(items)]
+
+    def get_snapshot(self, session: str, snap_id: str) -> Optional[dict]:
+        """Get full snapshot by ID."""
+        with self._lock:
+            return self._snapshots.get(session, {}).get(snap_id)
 
 
 class InputQueue:
@@ -650,6 +712,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.input_queue = InputQueue()  # Serialized input queue with ACKs
     app.state.command_queue = CommandQueue()  # Deferred-send command queue
     app.state.command_queue.set_app(app)
+    app.state.snapshot_buffer = SnapshotBuffer()  # Preview snapshots ring buffer
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -1684,6 +1747,107 @@ Output format:
             return {"status": "not_found", "message": "No unsafe items in queue"}
 
     # ========== End Command Queue API ==========
+
+    # ========== Preview/Snapshot API ==========
+
+    @app.post("/api/rollback/preview/capture")
+    async def capture_preview(
+        label: str = Query("manual"),
+        token: Optional[str] = Query(None),
+    ):
+        """Capture a snapshot of current session state."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session = app.state.current_session
+        if not session:
+            return JSONResponse({"error": "No active session"}, status_code=400)
+
+        # Get log content (reuse /api/log logic)
+        try:
+            repo_path = get_current_repo_path()
+            if repo_path:
+                project_id = str(repo_path.resolve()).replace("/", "-").lstrip("-")
+                claude_dir = Path.home() / ".claude" / "projects" / project_id
+                jsonl_files = sorted(claude_dir.glob("*.jsonl"),
+                                   key=lambda f: f.stat().st_mtime, reverse=True)
+                log_content = jsonl_files[0].read_text(errors="replace") if jsonl_files else ""
+            else:
+                log_content = ""
+        except Exception as e:
+            log_content = f"[Error reading log: {e}]"
+
+        # Capture terminal (last 50 lines)
+        try:
+            result = subprocess.run(
+                ["tmux", "capture-pane", "-t", session, "-p", "-S", "-50"],
+                capture_output=True, text=True, timeout=5
+            )
+            terminal_text = result.stdout if result.returncode == 0 else ""
+        except Exception:
+            terminal_text = ""
+
+        # Get queue state
+        queue_state = [item.to_dict() for item in app.state.command_queue.items]
+
+        # Capture snapshot
+        snapshot = app.state.snapshot_buffer.capture(
+            session, label, log_content, terminal_text, queue_state
+        )
+
+        if snapshot:
+            return {"success": True, "snapshot": {"id": snapshot["id"], "label": label}}
+        return {"success": True, "snapshot": None, "reason": "unchanged"}
+
+    @app.get("/api/rollback/previews")
+    async def list_previews(
+        limit: int = Query(50),
+        token: Optional[str] = Query(None),
+    ):
+        """List available snapshots."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session = app.state.current_session
+        snapshots = app.state.snapshot_buffer.list_snapshots(session, limit)
+        return {"session": session, "snapshots": snapshots}
+
+    @app.get("/api/rollback/preview/{snap_id}")
+    async def get_preview(
+        snap_id: str,
+        token: Optional[str] = Query(None),
+    ):
+        """Get full snapshot data."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session = app.state.current_session
+        snapshot = app.state.snapshot_buffer.get_snapshot(session, snap_id)
+
+        if not snapshot:
+            return JSONResponse({"error": "Snapshot not found"}, status_code=404)
+        return snapshot
+
+    @app.post("/api/rollback/preview/select")
+    async def select_preview(
+        snap_id: Optional[str] = Query(None),
+        token: Optional[str] = Query(None),
+    ):
+        """Enter or exit preview mode (snap_id=null exits)."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session = app.state.current_session
+
+        if snap_id:
+            # Verify snapshot exists
+            snapshot = app.state.snapshot_buffer.get_snapshot(session, snap_id)
+            if not snapshot:
+                return JSONResponse({"error": "Snapshot not found"}, status_code=404)
+
+        return {"success": True, "preview_mode": snap_id is not None, "snap_id": snap_id}
+
+    # ========== End Preview/Snapshot API ==========
 
     @app.post("/api/send")
     async def send_line(
