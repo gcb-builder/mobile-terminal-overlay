@@ -789,6 +789,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.snapshot_buffer = SnapshotBuffer()  # Preview snapshots ring buffer
     app.state.audit_log = AuditLog()  # Audit log for rollback operations
     app.state.git_op_lock = GitOpLock()  # Lock for git write operations
+    app.state.active_target = None  # Explicit target pane (window:pane like "0:0")
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -859,6 +860,119 @@ def create_app(config: Config) -> FastAPI:
             "current": app.state.current_session,
             "prefix": prefix,
         }
+
+    @app.get("/api/targets")
+    async def list_targets(token: Optional[str] = Query(None)):
+        """
+        List all panes/windows in the current session with their working directories.
+        Used for explicit target selection when working with multiple projects.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session = app.state.current_session
+        targets = []
+
+        try:
+            # tmux list-panes -s lists all panes in session
+            # Format: window_index:pane_index|pane_current_path|window_name|pane_id|pane_title
+            result = subprocess.run(
+                ["tmux", "list-panes", "-s", "-t", session,
+                 "-F", "#{window_index}:#{pane_index}|#{pane_current_path}|#{window_name}|#{pane_id}|#{pane_title}"],
+                capture_output=True, text=True, timeout=5
+            )
+
+            if result.returncode == 0:
+                seen_cwds = {}  # Track duplicate cwds
+                for line in result.stdout.strip().split("\n"):
+                    if "|" in line:
+                        parts = line.split("|")
+                        if len(parts) >= 5:
+                            cwd = Path(parts[1])
+                            cwd_str = str(cwd)
+                            target_id = parts[0]  # "0:0" (window:pane)
+                            pane_title = parts[4] if parts[4] else None
+
+                            # Track duplicates
+                            if cwd_str in seen_cwds:
+                                seen_cwds[cwd_str].append(target_id)
+                            else:
+                                seen_cwds[cwd_str] = [target_id]
+
+                            targets.append({
+                                "id": target_id,
+                                "pane_id": parts[3],  # "%0"
+                                "cwd": cwd_str,
+                                "window_name": parts[2],
+                                "window_index": parts[0].split(":")[0],
+                                "pane_title": pane_title,
+                                "project": cwd.name,  # Last component of path
+                                "is_active": target_id == app.state.active_target
+                            })
+
+                # Mark targets with duplicate cwds
+                for target in targets:
+                    target["has_duplicate_cwd"] = len(seen_cwds.get(target["cwd"], [])) > 1
+
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout listing tmux panes")
+        except Exception as e:
+            logger.error(f"Error listing targets: {e}")
+
+        # Check if active target still exists
+        active_exists = any(t["id"] == app.state.active_target for t in targets)
+
+        # Get current path resolution info
+        path_info = get_repo_path_info()
+
+        return {
+            "targets": targets,
+            "active": app.state.active_target,
+            "active_exists": active_exists,
+            "session": session,
+            "resolution": {
+                "path": str(path_info["path"]) if path_info["path"] else None,
+                "source": path_info["source"],
+                "is_fallback": path_info["is_fallback"],
+                "warning": path_info["warning"]
+            }
+        }
+
+    @app.post("/api/target/select")
+    async def select_target(
+        target_id: str = Query(...),
+        token: Optional[str] = Query(None)
+    ):
+        """Set the active target pane for repo operations."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session = app.state.current_session
+
+        # Verify target exists
+        try:
+            result = subprocess.run(
+                ["tmux", "list-panes", "-s", "-t", session,
+                 "-F", "#{window_index}:#{pane_index}"],
+                capture_output=True, text=True, timeout=5
+            )
+            valid_targets = result.stdout.strip().split("\n") if result.returncode == 0 else []
+
+            if target_id not in valid_targets:
+                return JSONResponse({
+                    "error": "Target pane not found",
+                    "target_id": target_id,
+                    "valid_targets": valid_targets
+                }, status_code=409)
+
+        except Exception as e:
+            logger.error(f"Error verifying target: {e}")
+            # Allow selection even if verification fails
+            pass
+
+        app.state.active_target = target_id
+        app.state.audit_log.log("target_select", {"target": target_id})
+        return {"success": True, "active": target_id}
 
     @app.get("/api/files/search")
     async def search_files(q: str = Query(""), token: Optional[str] = Query(None), limit: int = Query(20)):
@@ -1003,17 +1117,62 @@ def create_app(config: Config) -> FastAPI:
             logger.error(f"Refresh error: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
-    def get_current_repo_path() -> Optional[Path]:
-        """Get the path of the current repo based on session name."""
+    def get_repo_path_info() -> dict:
+        """
+        Get repo path with resolution details.
+        Returns: {path, source, target_id, is_fallback, warning}
+        """
         session_name = app.state.current_session
-        # Check if session matches a configured repo
+        result_info = {
+            "path": None,
+            "source": None,
+            "target_id": app.state.active_target,
+            "is_fallback": False,
+            "warning": None
+        }
+
+        # Priority 1: Explicit target selection
+        if app.state.active_target:
+            try:
+                result = subprocess.run(
+                    ["tmux", "display-message", "-p", "-t",
+                     f"{session_name}:{app.state.active_target}",
+                     "#{pane_current_path}"],
+                    capture_output=True, text=True, timeout=2
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    target_path = Path(result.stdout.strip())
+                    if target_path.exists():
+                        result_info["path"] = target_path
+                        result_info["source"] = "explicit_target"
+                        return result_info
+                    else:
+                        result_info["warning"] = f"Target path does not exist: {target_path}"
+                else:
+                    result_info["warning"] = f"Target pane not found: {app.state.active_target}"
+            except Exception as e:
+                result_info["warning"] = f"Error resolving target: {e}"
+
+            # Target was set but failed - this is a fallback situation
+            result_info["is_fallback"] = True
+
+        # Priority 2: Check if session matches a configured repo
         for repo in config.repos:
             if repo.session == session_name:
-                return Path(repo.path)
-        # Fall back to project_root if set
+                result_info["path"] = Path(repo.path)
+                result_info["source"] = "configured_repo"
+                if not app.state.active_target:
+                    result_info["is_fallback"] = True
+                return result_info
+
+        # Priority 3: Fall back to project_root if set
         if config.project_root:
-            return config.project_root
-        # Query tmux for pane's actual working directory
+            result_info["path"] = config.project_root
+            result_info["source"] = "project_root"
+            result_info["is_fallback"] = True
+            return result_info
+
+        # Priority 4: Query tmux for active pane's working directory
         try:
             result = subprocess.run(
                 ["tmux", "display-message", "-p", "-t", session_name, "#{pane_current_path}"],
@@ -1022,11 +1181,23 @@ def create_app(config: Config) -> FastAPI:
             if result.returncode == 0 and result.stdout.strip():
                 pane_path = Path(result.stdout.strip())
                 if pane_path.exists():
-                    return pane_path
+                    result_info["path"] = pane_path
+                    result_info["source"] = "active_pane_cwd"
+                    result_info["is_fallback"] = True
+                    return result_info
         except Exception:
-            pass  # Fall through to cwd
+            pass
+
         # Last resort: server's working directory
-        return Path.cwd()
+        result_info["path"] = Path.cwd()
+        result_info["source"] = "server_cwd"
+        result_info["is_fallback"] = True
+        result_info["warning"] = "Using server working directory (no target selected)"
+        return result_info
+
+    def get_current_repo_path() -> Optional[Path]:
+        """Get the path of the current repo based on session name and target."""
+        return get_repo_path_info()["path"]
 
     @app.get("/api/context")
     async def get_context(token: Optional[str] = Query(None)):
@@ -1664,6 +1835,9 @@ Output format:
 
         # Clear output buffer (don't replay old session's content)
         app.state.output_buffer.clear()
+
+        # Clear target selection (pane IDs are session-specific)
+        app.state.active_target = None
 
         # Update current session
         app.state.current_session = session

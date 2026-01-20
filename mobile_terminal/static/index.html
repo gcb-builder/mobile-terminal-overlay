@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=134">
+    <link rel="stylesheet" href="/static/styles.css?v=135">
 </head>
 <body>
     <div class="app">
@@ -34,6 +34,11 @@
                 </button>
                 <!-- Repo dropdown (hidden by default) -->
                 <div id="repoDropdown" class="repo-dropdown hidden"></div>
+                <!-- Target selector (for multi-pane sessions) -->
+                <button id="targetBtn" class="target-btn hidden" title="Select target pane">
+                    <span id="targetLabel">0:0</span>
+                </button>
+                <div id="targetDropdown" class="target-dropdown hidden"></div>
             </div>
             <div class="header-right">
                 <span id="lastActivity" class="last-activity" title="Last activity">--</span>
@@ -46,6 +51,13 @@
                 <span id="connectionIndicator" class="connection-indicator connected" title="Connected"></span>
             </div>
         </header>
+
+        <!-- CWD mismatch warning banner -->
+        <div id="cwdMismatchBanner" class="cwd-mismatch-banner hidden">
+            <span id="cwdMismatchText">Target pane is not inside the expected repo.</span>
+            <button id="cwdFixBtn" class="cwd-fix-btn">cd to repo</button>
+            <button id="cwdDismissBtn" class="cwd-dismiss-btn">×</button>
+        </div>
 
         <!-- File search modal -->
         <div id="searchModal" class="search-modal hidden">
@@ -361,7 +373,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=171"></script>
+    <script src="/static/terminal.js?v=174"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

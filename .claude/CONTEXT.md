@@ -43,6 +43,23 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] V2: Preview filters + turn-based auto-snapshots
 - [x] V2: Runner with allowlisted quick commands
 - [x] V2: Connection resilience (hello handshake, watchdog, PTY death detection)
+- [x] Target Selector: Explicit pane selection for multi-project workflows
+
+## Recent Changes (2026-01-20) - Target Selector
+
+### Multi-Project Target Selector
+- **Problem solved:** Working with multiple projects in different tmux windows now works correctly
+- `/api/targets` - Lists all panes/windows in session with their working directories
+- `/api/target/select` - Set the active target pane for all operations
+- `get_current_repo_path()` updated to prioritize explicitly selected target
+- Header dropdown shows project name with pane ID, path in dropdown options
+- Selecting a target refreshes log view and context to show that project's data
+
+### How It Works
+1. Open tmux session with multiple windows (e.g., `ops:geo-cv`, `ops:cuisina`, `ops:studie`)
+2. Each window can be in a different project directory
+3. Use target dropdown to select which window's project to work with
+4. All operations (git, log, context) use the selected target's directory
 
 ## Recent Changes (2026-01-20) - V2 Features
 
@@ -77,28 +94,22 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 
 ## Portability: Using with Other Projects
 
-### Current Limitation
+### Solution: Target Selector (Implemented)
 
-`get_current_repo_path()` in `server.py` falls back to `Path.cwd()` which is the **server's** working directory, not the tmux session's. This means if you start the server from one directory but want to work on a different project, features like log viewing, git ops, and file search won't find the right files.
+The overlay now supports explicit target selection via the header dropdown:
 
-### Solution: Query tmux for pane's cwd
+1. **Resolution priority** in `get_current_repo_path()`:
+   - Explicit target selection (`app.state.active_target`)
+   - Configured repos (from config.yaml)
+   - project_root config option
+   - Active tmux pane cwd (fallback)
+   - Server cwd (last resort)
 
-```python
-def get_current_repo_path() -> Optional[Path]:
-    # ... existing checks ...
+2. **Target dropdown** in header shows all panes with their project directories
 
-    # Get pane's actual working directory from tmux
-    result = subprocess.run(
-        ["tmux", "display-message", "-p", "-t", session_name, "#{pane_current_path}"],
-        capture_output=True, text=True, timeout=2
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        return Path(result.stdout.strip())
+3. **Selecting a target** refreshes all context-dependent views (log, git, context)
 
-    return Path.cwd()  # Last resort fallback
-```
-
-### Alternative: Config-based mapping
+### Config-based mapping (still supported)
 
 Add to `~/.config/mobile-terminal/config.yaml`:
 ```yaml
@@ -114,13 +125,62 @@ repos:
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Terminal I/O | Works | Pure relay, no path dependency |
-| Log file | Works* | Uses `~/.claude/projects/{project-id}` - works if Claude Code is running there |
-| Git ops | Needs fix | Uses `get_current_repo_path()` |
-| File search | Needs fix | Uses `get_current_repo_path()` |
-| Uploads | Needs fix | Goes to `.claude/uploads/` relative to repo path |
-| Pipe-pane | Works* | Logs to repo's `.claude/` if path is correct |
+| Log file | Works | Uses selected target's project directory |
+| Git ops | Works | Uses `get_current_repo_path()` with target selection |
+| File search | Works | Uses `get_current_repo_path()` with target selection |
+| Uploads | Works | Goes to `.claude/uploads/` relative to selected target |
+| Context/Touch | Works | Reads from selected target's `.claude/` directory |
 
-**TODO:** Implement tmux pane cwd detection to make overlay fully portable.
+---
+
+## Architecture: Session vs Target
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  SESSION: "ops"  (tmux session name, set via --session)     │
+│                                                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │ Window 0    │  │ Window 1    │  │ Window 2    │         │
+│  │ name: geo   │  │ name: cuisi │  │ name: studie│         │
+│  │             │  │             │  │             │         │
+│  │ Pane 0:0    │  │ Pane 1:0    │  │ Pane 2:0    │         │
+│  │ cwd: geo-cv │  │ cwd: cuisina│  │ cwd: studie │         │
+│  │   ← TARGET  │  │             │  │             │         │
+│  └─────────────┘  └─────────────┘  └─────────────┘         │
+└─────────────────────────────────────────────────────────────┘
+                           ↓
+              get_current_repo_path() returns
+              /home/gbons/dev/geo-cv
+                           ↓
+         Git ops, log view, context.md all use this path
+```
+
+### Session
+- **What:** tmux session to connect terminal I/O to
+- **Set:** At server start via `mobile-terminal --session ops`
+- **Scope:** All windows/panes in that session are available as targets
+- **Terminal typing:** Goes to the **active pane** in tmux (wherever cursor is)
+
+### Target
+- **What:** Which pane's working directory to use for file operations
+- **Set:** Via header dropdown in the UI
+- **Scope:** Determines `get_current_repo_path()` result
+- **Used by:** Git status, log file, CONTEXT.md, file search
+
+### Key Distinction
+
+| Operation | Follows | Behavior |
+|-----------|---------|----------|
+| Terminal I/O | tmux active pane | Follows focus (typing goes where cursor is) |
+| File operations | Selected target | Stays locked (git/log/context use explicit selection) |
+
+This prevents the "cd elsewhere mid-task" footgun: even if you switch tmux focus or cd to another directory, git/log/context still use your explicitly selected target.
+
+### Safety Features
+- **Target strip:** Shows current working directory below header
+- **Fallback warning:** Yellow highlight when using auto-detected path
+- **localStorage:** Target persists across page reloads
+- **409 on missing:** Server returns error if selected pane no longer exists
 
 ---
 

@@ -54,6 +54,8 @@ let currentInput = '';
 let terminalContainer, controlBarsContainer;
 let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
+let targetBtn, targetLabel, targetDropdown;
+let cwdMismatchBanner, cwdMismatchText, cwdFixBtn, cwdDismissBtn;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composePaste, composeInsert, composeRun;
@@ -106,6 +108,11 @@ let previewSnapshot = null;      // Full snapshot data when in preview
 let previewSnapshots = [];       // Cached list of snapshots
 let previewFilter = 'all';       // Current filter: all, user_send, tool_call, claude_done, error
 
+// Target selector state (for multi-pane sessions)
+let targets = [];                // List of panes in current session
+let activeTarget = null;         // Currently selected target pane ID (e.g., "0:0")
+let expectedRepoPath = null;     // Expected repo path from config
+
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
     controlBarsContainer = document.getElementById('controlBarsContainer');
@@ -119,6 +126,13 @@ function initDOMElements() {
     repoBtn = document.getElementById('repoBtn');
     repoLabel = document.getElementById('repoLabel');
     repoDropdown = document.getElementById('repoDropdown');
+    targetBtn = document.getElementById('targetBtn');
+    targetLabel = document.getElementById('targetLabel');
+    targetDropdown = document.getElementById('targetDropdown');
+    cwdMismatchBanner = document.getElementById('cwdMismatchBanner');
+    cwdMismatchText = document.getElementById('cwdMismatchText');
+    cwdFixBtn = document.getElementById('cwdFixBtn');
+    cwdDismissBtn = document.getElementById('cwdDismissBtn');
     searchBtn = document.getElementById('searchBtn');
     searchModal = document.getElementById('searchModal');
     searchInput = document.getElementById('searchInput');
@@ -1105,6 +1119,9 @@ function populateUI() {
 
     // Populate repo dropdown
     populateRepoDropdown();
+
+    // Load target selector (for multi-pane sessions)
+    loadTargets();
 }
 
 /**
@@ -1184,6 +1201,12 @@ async function switchRepo(session) {
 
         currentSession = session;
 
+        // Clear target selection (pane IDs are session-specific)
+        activeTarget = null;
+        localStorage.removeItem('mto_active_target');
+        targetBtn.classList.add('hidden');
+        cwdMismatchBanner.classList.add('hidden');
+
         // Update UI
         const currentRepo = config.repos.find(r => r.session === session);
         if (currentRepo) {
@@ -1193,7 +1216,15 @@ async function switchRepo(session) {
         }
 
         // Server already closed WebSocket, reconnect after cleanup delay
-        setTimeout(connect, 1000);
+        setTimeout(() => {
+            connect();
+            // Refresh log and targets after connection established
+            setTimeout(async () => {
+                await loadTargets();
+                refreshLogContent();
+                loadContextFile();
+            }, 500);
+        }, 1000);
 
     } catch (error) {
         console.error('Error switching repo:', error);
@@ -1231,6 +1262,204 @@ function setupRepoDropdown() {
             repoDropdown.classList.add('hidden');
         }
     });
+}
+
+/**
+ * Target Selector Functions (for multi-pane sessions)
+ */
+
+/**
+ * Load available targets (panes) in current session
+ */
+async function loadTargets() {
+    try {
+        const response = await fetch(`/api/targets?token=${token}`);
+        if (!response.ok) return;
+
+        const data = await response.json();
+        targets = data.targets || [];
+        activeTarget = data.active;
+
+        // Get expected repo path from current repo config
+        if (config && config.repos) {
+            const currentRepo = config.repos.find(r => r.session === currentSession);
+            expectedRepoPath = currentRepo ? currentRepo.path : null;
+        }
+
+        // Show target button only if multiple panes exist
+        if (targets.length > 1) {
+            targetBtn.classList.remove('hidden');
+            updateTargetLabel();
+        } else {
+            targetBtn.classList.add('hidden');
+        }
+
+        // Check for cwd mismatch
+        checkCwdMismatch(data.resolution);
+
+        renderTargetDropdown();
+    } catch (error) {
+        console.error('Error loading targets:', error);
+    }
+}
+
+/**
+ * Check if pane cwd matches expected repo and show warning if not
+ */
+function checkCwdMismatch(resolution) {
+    if (!resolution || !expectedRepoPath) {
+        cwdMismatchBanner.classList.add('hidden');
+        return;
+    }
+
+    const currentCwd = resolution.path;
+    // Check if cwd is inside expected repo path
+    if (currentCwd && !currentCwd.startsWith(expectedRepoPath)) {
+        const shortExpected = expectedRepoPath.replace(/^\/home\/[^/]+/, '~');
+        cwdMismatchText.textContent = `Target pane is not inside ${shortExpected}. Open that repo or cd into it.`;
+        cwdMismatchBanner.classList.remove('hidden');
+    } else {
+        cwdMismatchBanner.classList.add('hidden');
+    }
+}
+
+/**
+ * Update target label in header
+ */
+function updateTargetLabel() {
+    if (activeTarget) {
+        targetLabel.textContent = activeTarget;
+    } else if (targets.length > 0) {
+        targetLabel.textContent = targets[0].id;
+    }
+}
+
+/**
+ * Render target dropdown options
+ */
+function renderTargetDropdown() {
+    targetDropdown.innerHTML = '';
+
+    if (targets.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'target-option';
+        empty.textContent = 'No panes found';
+        targetDropdown.appendChild(empty);
+        return;
+    }
+
+    targets.forEach((target) => {
+        const opt = document.createElement('button');
+        const isActive = target.id === activeTarget;
+        opt.className = 'target-option' + (isActive ? ' active' : '');
+
+        const shortPath = target.cwd.replace(/^\/home\/[^/]+/, '~');
+
+        opt.innerHTML = `
+            <span class="target-project">${target.project}</span>
+            <span class="target-pane-info">${target.window_name || ''} • ${target.pane_id}</span>
+            <span class="target-path">${shortPath}</span>
+        `;
+        opt.addEventListener('click', () => selectTarget(target.id));
+        targetDropdown.appendChild(opt);
+    });
+}
+
+/**
+ * Select a target pane
+ */
+async function selectTarget(targetId) {
+    targetDropdown.classList.add('hidden');
+
+    if (targetId === activeTarget) return;
+
+    try {
+        const response = await fetch(`/api/target/select?target_id=${encodeURIComponent(targetId)}&token=${token}`, {
+            method: 'POST',
+        });
+
+        if (response.status === 409) {
+            // Target no longer exists
+            showToast('Target pane not found', 'error');
+            loadTargets();
+            return;
+        }
+
+        if (!response.ok) throw new Error('Failed to select target');
+
+        activeTarget = targetId;
+        localStorage.setItem('mto_active_target', targetId);
+        updateTargetLabel();
+        renderTargetDropdown();
+
+        // Reload targets to check cwd mismatch
+        await loadTargets();
+
+        // Refresh context-dependent views
+        refreshLogContent();
+        loadContextFile();
+
+    } catch (error) {
+        console.error('Error selecting target:', error);
+        showToast('Failed to select target', 'error');
+    }
+}
+
+/**
+ * CD to expected repo root in the target pane
+ */
+async function cdToRepoRoot() {
+    if (!expectedRepoPath) return;
+
+    // Confirm before sending cd command
+    if (!confirm(`Send "cd ${expectedRepoPath}" to terminal?`)) return;
+
+    try {
+        // Send cd command via WebSocket
+        const cdCommand = `cd ${expectedRepoPath}\r`;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(cdCommand);
+            showToast('Sent cd command', 'success');
+            // Reload targets after a delay to check new cwd
+            setTimeout(loadTargets, 1000);
+        }
+    } catch (error) {
+        console.error('Error sending cd command:', error);
+    }
+}
+
+/**
+ * Setup target selector event listeners
+ */
+function setupTargetSelector() {
+    // Toggle dropdown on button click
+    targetBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        targetDropdown.classList.toggle('hidden');
+        // Refresh targets when opening
+        if (!targetDropdown.classList.contains('hidden')) {
+            loadTargets();
+        }
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!targetDropdown.contains(e.target) && e.target !== targetBtn) {
+            targetDropdown.classList.add('hidden');
+        }
+    });
+
+    // CWD mismatch banner buttons
+    cwdFixBtn.addEventListener('click', cdToRepoRoot);
+    cwdDismissBtn.addEventListener('click', () => {
+        cwdMismatchBanner.classList.add('hidden');
+    });
+
+    // Restore saved target on startup
+    const savedTarget = localStorage.getItem('mto_active_target');
+    if (savedTarget) {
+        selectTarget(savedTarget);
+    }
 }
 
 /**
@@ -5706,6 +5935,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupViewportHandler();
     setupClipboard();
     setupRepoDropdown();
+    setupTargetSelector();
     setupFileSearch();
     setupJumpToBottom();
     setupCopyButton();
