@@ -834,6 +834,13 @@ def create_app(config: Config) -> FastAPI:
         """Health check endpoint."""
         return {"status": "ok", "version": "0.1.0"}
 
+    @app.post("/restart")
+    async def restart_server():
+        """Restart the server by sending SIGTERM. Systemd will auto-restart it."""
+        import os
+        import signal
+        os.kill(os.getpid(), signal.SIGTERM)
+
     @app.get("/api/tmux/sessions")
     async def get_tmux_sessions(
         token: Optional[str] = Query(None),
@@ -1006,7 +1013,19 @@ def create_app(config: Config) -> FastAPI:
         # Fall back to project_root if set
         if config.project_root:
             return config.project_root
-        # Fall back to current working directory
+        # Query tmux for pane's actual working directory
+        try:
+            result = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", session_name, "#{pane_current_path}"],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                pane_path = Path(result.stdout.strip())
+                if pane_path.exists():
+                    return pane_path
+        except Exception:
+            pass  # Fall through to cwd
+        # Last resort: server's working directory
         return Path.cwd()
 
     @app.get("/api/context")
@@ -1446,6 +1465,7 @@ Output format:
             build_openai_payload, build_anthropic_payload,
             build_openai_headers, build_anthropic_headers,
             parse_openai_response, parse_anthropic_response,
+            parse_openai_responses_response,
         )
         import httpx
 
@@ -1469,6 +1489,19 @@ Output format:
                 "max_tokens": 1000,
             }
             parse_response = parse_openai_response
+        elif fmt == "openai_responses":
+            # GPT-5.2+ uses Responses API
+            headers = build_openai_headers(api_key)
+            payload = {
+                "model": model_id,
+                "input": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": bundle},
+                ],
+                "temperature": 0.2,
+                "max_output_tokens": 1000,
+            }
+            parse_response = parse_openai_responses_response
         elif fmt == "anthropic":
             headers = build_anthropic_headers(api_key)
             payload = {
@@ -2013,7 +2046,329 @@ Output format:
         entries = app.state.audit_log.get_entries(limit)
         return {"entries": entries}
 
+    @app.post("/api/rollback/audit/log")
+    async def log_audit_action(
+        action: str = Query(...),
+        details: Optional[str] = Query(None),
+        token: Optional[str] = Query(None),
+    ):
+        """Log an audit action from client."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        detail_dict = {}
+        if details:
+            try:
+                import json
+                detail_dict = json.loads(details)
+            except:
+                detail_dict = {"raw": details}
+
+        app.state.audit_log.log(action, detail_dict)
+        return {"success": True}
+
     # ========== End Preview/Snapshot API ==========
+
+    # ========== Process Management API ==========
+
+    @app.post("/api/process/terminate")
+    async def terminate_process(
+        token: Optional[str] = Query(None),
+        force: bool = Query(False),
+    ):
+        """
+        Terminate the PTY process.
+
+        First tries SIGTERM, then SIGKILL if force=True or if SIGTERM fails.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        child_pid = app.state.child_pid
+        if not child_pid:
+            return JSONResponse({"error": "No process running"}, status_code=400)
+
+        try:
+            # First try SIGTERM (graceful)
+            os.kill(child_pid, signal.SIGTERM)
+            app.state.audit_log.log("process_terminate", {"pid": child_pid, "signal": "SIGTERM"})
+
+            # Wait briefly for process to terminate
+            await asyncio.sleep(0.5)
+
+            # Check if still running
+            try:
+                os.kill(child_pid, 0)  # Signal 0 just checks if process exists
+                still_running = True
+            except OSError:
+                still_running = False
+
+            if still_running and force:
+                # SIGKILL as fallback
+                os.kill(child_pid, signal.SIGKILL)
+                app.state.audit_log.log("process_terminate", {"pid": child_pid, "signal": "SIGKILL"})
+                await asyncio.sleep(0.2)
+
+            # Clean up PTY state
+            if app.state.master_fd is not None:
+                try:
+                    os.close(app.state.master_fd)
+                except Exception:
+                    pass
+            app.state.master_fd = None
+            app.state.child_pid = None
+
+            return {
+                "success": True,
+                "pid": child_pid,
+                "method": "SIGKILL" if (still_running and force) else "SIGTERM"
+            }
+
+        except ProcessLookupError:
+            # Process already dead
+            app.state.master_fd = None
+            app.state.child_pid = None
+            return {"success": True, "pid": child_pid, "method": "already_dead"}
+        except Exception as e:
+            logger.error(f"Failed to terminate process: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/api/process/respawn")
+    async def respawn_process(
+        token: Optional[str] = Query(None),
+    ):
+        """
+        Respawn the PTY process.
+
+        Terminates existing process (if any) and creates a new one.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        old_pid = app.state.child_pid
+
+        # Terminate existing process if any
+        if old_pid:
+            try:
+                os.kill(old_pid, signal.SIGTERM)
+                await asyncio.sleep(0.3)
+                try:
+                    os.kill(old_pid, 0)
+                    os.kill(old_pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                logger.warning(f"Error terminating old process: {e}")
+
+        # Clean up old PTY
+        if app.state.master_fd is not None:
+            try:
+                os.close(app.state.master_fd)
+            except Exception:
+                pass
+        app.state.master_fd = None
+        app.state.child_pid = None
+        app.state.output_buffer.clear()
+
+        # Spawn new PTY
+        try:
+            session_name = app.state.current_session
+            master_fd, child_pid = spawn_tmux(session_name)
+            app.state.master_fd = master_fd
+            app.state.child_pid = child_pid
+
+            # Enable pipe-pane after short delay
+            await asyncio.sleep(0.5)
+            enable_pipe_pane(session_name)
+
+            app.state.audit_log.log("process_respawn", {
+                "old_pid": old_pid,
+                "new_pid": child_pid,
+                "session": session_name
+            })
+
+            return {
+                "success": True,
+                "old_pid": old_pid,
+                "new_pid": child_pid,
+                "session": session_name
+            }
+        except Exception as e:
+            logger.error(f"Failed to respawn process: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/process/status")
+    async def process_status(
+        token: Optional[str] = Query(None),
+    ):
+        """Get current process status."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        child_pid = app.state.child_pid
+        is_running = False
+
+        if child_pid:
+            try:
+                os.kill(child_pid, 0)
+                is_running = True
+            except OSError:
+                is_running = False
+
+        return {
+            "pid": child_pid,
+            "is_running": is_running,
+            "has_pty": app.state.master_fd is not None,
+            "session": app.state.current_session
+        }
+
+    # ========== End Process Management API ==========
+
+    # ========== Runner API (Allowlisted Commands) ==========
+
+    # Allowlisted runner commands - safe to execute via UI
+    RUNNER_COMMANDS = {
+        "build": {
+            "label": "Build",
+            "description": "Run build script",
+            "commands": ["npm run build", "yarn build", "make build", "cargo build"],
+            "icon": "🔨"
+        },
+        "test": {
+            "label": "Test",
+            "description": "Run tests",
+            "commands": ["npm test", "yarn test", "pytest", "cargo test", "make test"],
+            "icon": "✅"
+        },
+        "lint": {
+            "label": "Lint",
+            "description": "Run linter",
+            "commands": ["npm run lint", "yarn lint", "ruff check .", "cargo clippy"],
+            "icon": "🔍"
+        },
+        "format": {
+            "label": "Format",
+            "description": "Format code",
+            "commands": ["npm run format", "ruff format .", "cargo fmt", "black ."],
+            "icon": "📝"
+        },
+        "typecheck": {
+            "label": "Typecheck",
+            "description": "Run type checker",
+            "commands": ["npm run typecheck", "tsc --noEmit", "mypy .", "pyright"],
+            "icon": "📋"
+        },
+        "dev": {
+            "label": "Dev Server",
+            "description": "Start dev server",
+            "commands": ["npm run dev", "yarn dev", "python -m http.server"],
+            "icon": "🚀"
+        },
+    }
+
+    @app.get("/api/runner/commands")
+    async def list_runner_commands(
+        token: Optional[str] = Query(None),
+    ):
+        """List available runner commands."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        return {"commands": RUNNER_COMMANDS}
+
+    @app.post("/api/runner/execute")
+    async def execute_runner_command(
+        command_id: str = Query(...),
+        variant: int = Query(0),  # Which command variant to use
+        token: Optional[str] = Query(None),
+    ):
+        """
+        Execute an allowlisted runner command.
+
+        Sends the command to the PTY (same as user typing it).
+        Only commands in RUNNER_COMMANDS are allowed.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        if command_id not in RUNNER_COMMANDS:
+            return JSONResponse({"error": "Unknown command"}, status_code=400)
+
+        cmd_config = RUNNER_COMMANDS[command_id]
+        commands = cmd_config["commands"]
+
+        if variant < 0 or variant >= len(commands):
+            variant = 0
+
+        command = commands[variant]
+
+        # Check if PTY is available
+        master_fd = app.state.master_fd
+        if not master_fd:
+            return JSONResponse({"error": "No PTY available"}, status_code=400)
+
+        # Send command to PTY
+        try:
+            os.write(master_fd, (command + '\r').encode('utf-8'))
+            app.state.audit_log.log("runner_execute", {
+                "command_id": command_id,
+                "command": command
+            })
+            return {
+                "success": True,
+                "command_id": command_id,
+                "command": command,
+                "label": cmd_config["label"]
+            }
+        except Exception as e:
+            logger.error(f"Runner execute failed: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/api/runner/custom")
+    async def execute_custom_command(
+        command: str = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """
+        Execute a custom command (with basic safety checks).
+
+        This is more permissive than the queue but still has some safety rails.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Basic safety checks
+        dangerous_patterns = [
+            r'^\s*rm\s+-rf\s+/',  # rm -rf /
+            r'^\s*:(){',          # Fork bomb
+            r'>\s*/dev/sd',       # Writing to disk devices
+            r'mkfs\.',            # Formatting disks
+        ]
+
+        for pattern in dangerous_patterns:
+            if re.search(pattern, command):
+                return JSONResponse({
+                    "error": "Command blocked for safety",
+                    "reason": "Potentially destructive operation"
+                }, status_code=400)
+
+        # Check if PTY is available
+        master_fd = app.state.master_fd
+        if not master_fd:
+            return JSONResponse({"error": "No PTY available"}, status_code=400)
+
+        # Send command to PTY
+        try:
+            os.write(master_fd, (command + '\r').encode('utf-8'))
+            app.state.audit_log.log("runner_custom", {"command": command})
+            return {"success": True, "command": command}
+        except Exception as e:
+            logger.error(f"Runner custom execute failed: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    # ========== End Runner API ==========
 
     # ========== Git Rollback API ==========
 
@@ -2072,6 +2427,25 @@ Output format:
             if display_path.startswith(home):
                 display_path = "~" + display_path[len(home):]
 
+            # Check for associated PR (using gh CLI if available)
+            pr_info = None
+            try:
+                pr_result = subprocess.run(
+                    ["gh", "pr", "view", "--json", "number,title,url,state"],
+                    cwd=repo_path, capture_output=True, text=True, timeout=5
+                )
+                if pr_result.returncode == 0:
+                    import json as json_mod
+                    pr_data = json_mod.loads(pr_result.stdout)
+                    pr_info = {
+                        "number": pr_data.get("number"),
+                        "title": pr_data.get("title"),
+                        "url": pr_data.get("url"),
+                        "state": pr_data.get("state"),
+                    }
+            except Exception:
+                pass  # gh not available or no PR
+
             return {
                 "has_repo": True,
                 "repo_path": display_path,
@@ -2083,6 +2457,7 @@ Output format:
                 "behind": behind,
                 "op_locked": app.state.git_op_lock.is_locked,
                 "current_op": app.state.git_op_lock.current_operation,
+                "pr": pr_info,
             }
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "Git command timed out"}, status_code=500)
@@ -2595,6 +2970,22 @@ Output format:
         master_fd = app.state.master_fd
         output_buffer = app.state.output_buffer
 
+        # Send hello handshake FIRST - client expects this within 2s
+        # Must be sent before capture-pane which can be slow
+        try:
+            hello_msg = {
+                "type": "hello",
+                "session": app.state.current_session,
+                "pid": app.state.child_pid,
+                "started_at": int(time.time()),
+            }
+            await websocket.send_json(hello_msg)
+            logger.info(f"Sent hello handshake: {hello_msg}")
+        except Exception as e:
+            logger.error(f"Failed to send hello: {e}")
+            await websocket.close(code=4500)
+            return
+
         # Send history snapshot using tmux capture-pane with escape sequences
         try:
             import subprocess
@@ -2616,9 +3007,13 @@ Output format:
         except Exception as e:
             logger.error(f"Error getting capture-pane history: {e}")
 
+        # Track PTY death for proper close code
+        pty_died = False
+
         # Create tasks for bidirectional I/O
         async def read_from_terminal():
             """Read from terminal and send to WebSocket with batching."""
+            nonlocal pty_died
             loop = asyncio.get_event_loop()
             batch = bytearray()
             last_flush = time.time()
@@ -2631,6 +3026,9 @@ Output format:
                         None, lambda: os.read(master_fd, 4096)
                     )
                     if not data:
+                        # PTY returned EOF - terminal died
+                        logger.warning("PTY returned EOF - terminal process died")
+                        pty_died = True
                         break
 
                     # Update input queue timestamp (for quiet-wait logic)
@@ -2758,6 +3156,18 @@ Output format:
             if app.state.active_websocket == websocket:
                 app.state.active_websocket = None
                 app.state.read_task = None
+
+            # Close with appropriate code
+            if pty_died:
+                logger.warning("Closing WebSocket with code 4500 (PTY died)")
+                try:
+                    await websocket.close(code=4500, reason="PTY died")
+                except Exception:
+                    pass
+                # Clear PTY state so next connection recreates it
+                app.state.master_fd = None
+                app.state.child_pid = None
+
             logger.info("WebSocket connection closed")
 
     @app.on_event("startup")
@@ -2820,11 +3230,21 @@ def spawn_tmux(session_name: str) -> tuple:
     if pid == 0:
         # Child process
         os.setsid()
+
+        # Set the slave PTY as the controlling terminal
+        try:
+            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+        except Exception:
+            pass  # May fail on some systems, but dup2 should still work
+
         os.dup2(slave_fd, 0)
         os.dup2(slave_fd, 1)
         os.dup2(slave_fd, 2)
         os.close(master_fd)
         os.close(slave_fd)
+
+        # Set TERM for tmux
+        os.environ["TERM"] = "xterm-256color"
 
         # Execute tmux
         os.execvp("tmux", ["tmux", "new", "-A", "-s", session_name])

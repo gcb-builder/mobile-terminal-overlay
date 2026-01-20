@@ -1255,6 +1255,51 @@ html, body {
     display: none;
 }
 
+.view-btn.drawers-btn {
+    position: relative;
+}
+
+/* Queue tab styling */
+.queue-tab-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.queue-tab-header .queue-title {
+    flex: 1;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.queue-tab-footer {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+}
+
+.queue-tab-badge {
+    display: inline-block;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    margin-left: 4px;
+    background: var(--warning);
+    color: var(--bg-primary);
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 8px;
+    text-align: center;
+    line-height: 16px;
+}
+
+.queue-tab-badge.hidden {
+    display: none;
+}
+
 /* Status overlay */
 .status-overlay {
     position: fixed;
@@ -1314,6 +1359,25 @@ html, body {
 }
 
 .reconnect-btn.hidden {
+    display: none;
+}
+
+.hard-refresh-btn {
+    margin-top: 8px;
+    padding: 8px 16px;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.hard-refresh-btn:active {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.hard-refresh-btn.hidden {
     display: none;
 }
 
@@ -3164,6 +3228,69 @@ html, body {
     border-bottom: 1px solid var(--border);
 }
 
+/* Preview filters */
+.preview-filters {
+    display: flex;
+    gap: 4px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    flex-shrink: 0;
+}
+
+.preview-filter-btn {
+    padding: 4px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.preview-filter-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+.preview-filter-btn[data-filter="user_send"].active {
+    background: var(--success);
+    border-color: var(--success);
+}
+
+.preview-filter-btn[data-filter="tool_call"].active {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.preview-filter-btn[data-filter="claude_done"].active {
+    background: var(--info);
+    border-color: var(--info);
+}
+
+.preview-filter-btn[data-filter="error"].active {
+    background: var(--error);
+    border-color: var(--error);
+}
+
+/* Label badges for different snapshot types */
+.preview-label-badge.tool_call {
+    background: rgba(88, 166, 255, 0.2);
+    color: var(--accent);
+}
+
+.preview-label-badge.claude_done {
+    background: rgba(188, 140, 255, 0.2);
+    color: var(--info);
+}
+
+.preview-label-badge.error {
+    background: rgba(248, 81, 73, 0.2);
+    color: var(--error);
+}
+
 /* ============================================================================
    GIT TAB
    ============================================================================ */
@@ -3216,6 +3343,34 @@ html, body {
 .git-status-ahead-behind {
     color: var(--text-secondary);
     opacity: 0.8;
+}
+
+.git-status-pr {
+    color: var(--accent);
+    text-decoration: none;
+    margin-left: 4px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(88, 166, 255, 0.15);
+    font-size: 12px;
+}
+
+.git-status-pr:hover {
+    background: rgba(88, 166, 255, 0.25);
+}
+
+.git-status-pr.open {
+    color: var(--success);
+    background: rgba(63, 185, 80, 0.15);
+}
+
+.git-status-pr.open:hover {
+    background: rgba(63, 185, 80, 0.25);
+}
+
+.git-status-pr.closed {
+    color: var(--text-secondary);
+    background: rgba(110, 118, 129, 0.15);
 }
 
 .git-title {
@@ -3412,4 +3567,314 @@ html, body {
     font-size: 11px;
     white-space: pre-wrap;
     color: var(--text-secondary);
+}
+
+/* ============================================================================
+   PROCESS TAB STYLES
+   ============================================================================ */
+
+.process-status-banner {
+    padding: 8px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+}
+
+.process-status-banner.running {
+    background: rgba(63, 185, 80, 0.1);
+    border-color: var(--success);
+}
+
+.process-status-banner.dead {
+    background: rgba(248, 81, 73, 0.1);
+    border-color: var(--error);
+}
+
+.process-status-banner.none {
+    background: rgba(110, 118, 129, 0.1);
+}
+
+.process-status-text {
+    color: var(--text-secondary);
+}
+
+.process-status-running {
+    color: var(--success);
+    font-weight: 500;
+}
+
+.process-status-dead {
+    color: var(--error);
+    font-weight: 500;
+}
+
+.process-status-none {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.process-tab-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.process-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.process-refresh-btn {
+    padding: 6px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.process-info {
+    padding: 12px 16px;
+}
+
+.process-description {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.process-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 16px;
+}
+
+.process-action-btn {
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    min-height: 48px;
+    border: none;
+}
+
+.process-action-btn.primary {
+    background: var(--accent);
+    color: white;
+}
+
+.process-action-btn.warning {
+    background: var(--warning);
+    color: var(--bg-primary);
+}
+
+.process-action-btn.danger {
+    background: var(--error);
+    color: white;
+}
+
+.process-action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.process-result {
+    padding: 12px 16px;
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+}
+
+.process-result.hidden {
+    display: none;
+}
+
+.process-result.success {
+    background: rgba(63, 185, 80, 0.1);
+    border-color: var(--success);
+}
+
+.process-result.error {
+    background: rgba(248, 81, 73, 0.1);
+    border-color: var(--error);
+}
+
+.process-result pre {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    white-space: pre-wrap;
+    color: var(--text-secondary);
+}
+
+/* ============================================================================
+   RUNNER TAB STYLES
+   ============================================================================ */
+
+.runner-tab-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.runner-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.runner-commands {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    padding: 12px;
+}
+
+.runner-cmd-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    min-height: 64px;
+    transition: all 0.15s ease;
+}
+
+.runner-cmd-btn:hover {
+    background: var(--bg-secondary);
+    border-color: var(--accent);
+}
+
+.runner-cmd-btn:active {
+    transform: scale(0.98);
+}
+
+.runner-cmd-icon {
+    font-size: 20px;
+    margin-bottom: 4px;
+}
+
+.runner-cmd-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.runner-loading,
+.runner-error {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-secondary);
+}
+
+.runner-custom {
+    display: flex;
+    gap: 8px;
+    padding: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.runner-custom-input {
+    flex: 1;
+    padding: 10px 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 13px;
+}
+
+.runner-custom-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.runner-custom-btn {
+    padding: 10px 16px;
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    color: white;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.runner-custom-btn:active {
+    opacity: 0.8;
+}
+
+/* ============================================================================
+   TOAST NOTIFICATIONS
+   ============================================================================ */
+
+.toast-container {
+    position: fixed;
+    bottom: 100px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 500;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.toast {
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    animation: toastSlideUp 0.3s ease-out;
+    pointer-events: auto;
+}
+
+.toast.success {
+    background: var(--success);
+    color: white;
+}
+
+.toast.error {
+    background: var(--error);
+    color: white;
+}
+
+.toast.info {
+    background: var(--accent);
+    color: white;
+}
+
+@keyframes toastSlideUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes toastFadeOut {
+    from {
+        opacity: 1;
+    }
+    to {
+        opacity: 0;
+    }
 }

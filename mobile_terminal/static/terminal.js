@@ -24,6 +24,13 @@ let intentionalClose = false;  // Track intentional closes to skip auto-reconnec
 let isConnecting = false;  // Prevent concurrent connection attempts
 let reconnectTimer = null;  // Track pending reconnect
 let lastConnectionAttempt = 0;  // Timestamp of last connection attempt
+let reconnectAttempts = 0;  // Track consecutive failed reconnects
+const SHOW_HARD_REFRESH_AFTER = 3;  // Show hard refresh button after N failures
+
+// Hello handshake
+const HELLO_TIMEOUT = 2000;  // Expect hello within 2s of connection
+let helloTimer = null;
+let helloReceived = false;
 
 // Heartbeat for connection health monitoring
 const HEARTBEAT_INTERVAL = 15000;  // Send ping every 15s (was 30s) - faster detection
@@ -51,7 +58,7 @@ let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composePaste, composeInsert, composeRun;
 let composeAttach, composeFileInput, composeThinkMode, composeAttachments;
-let selectCopyBtn, viewBarQueue, challengeBtn;
+let selectCopyBtn, drawersBtn, challengeBtn;
 let challengeModal, challengeClose, challengeResult, challengeStatus, challengeRun;
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 let contextViewBtn, touchViewBtn, contextContainer, contextContent, touchContainer, touchContent;
@@ -72,7 +79,9 @@ let forceScrollToBottom = false;
 // Queue state
 let queueItems = [];
 let queuePaused = false;
-let queueDrawerOpen = false;
+
+// Unified drawer state
+let drawerOpen = false;
 
 // Terminal busy state - when busy, input box shows Q instead of Enter
 let terminalBusy = false;
@@ -95,6 +104,7 @@ let expandedSuperGroups = new Set();  // Stores group keys for expanded super-gr
 let previewMode = null;          // null = live, string = snapshot_id
 let previewSnapshot = null;      // Full snapshot data when in preview
 let previewSnapshots = [];       // Cached list of snapshots
+let previewFilter = 'all';       // Current filter: all, user_send, tool_call, claude_done, error
 
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
@@ -127,7 +137,7 @@ function initDOMElements() {
     composeThinkMode = document.getElementById('composeThinkMode');
     composeAttachments = document.getElementById('composeAttachments');
     selectCopyBtn = document.getElementById('selectCopyBtn');
-    viewBarQueue = document.getElementById('viewBarQueue');
+    drawersBtn = document.getElementById('drawersBtn');
     challengeBtn = document.getElementById('challengeBtn');
     challengeModal = document.getElementById('challengeModal');
     challengeClose = document.getElementById('challengeClose');
@@ -156,21 +166,20 @@ function initDOMElements() {
     terminalBlock = document.getElementById('terminalBlock');
     activePromptContent = document.getElementById('activePromptContent');
     quickResponses = document.getElementById('quickResponses');
-    // Queue elements
-    queueDrawer = document.getElementById('queueDrawer');
+    // Queue elements (now inside unified drawer)
     queueList = document.getElementById('queueList');
     queueCount = document.getElementById('queueCount');
     queueBadge = document.getElementById('queueBadge');
+    queueTabBadge = document.getElementById('queueTabBadge');
     queuePauseBtn = document.getElementById('queuePauseBtn');
-    queueDrawerClose = document.getElementById('queueDrawerClose');
     queueSendNext = document.getElementById('queueSendNext');
     queueFlush = document.getElementById('queueFlush');
 }
 
 // Additional DOM elements
 let terminalBlock, activePromptContent, quickResponses;
-let queueDrawer, queueList, queueCount, queueBadge;
-let queuePauseBtn, queueDrawerClose, queueSendNext, queueFlush;
+let queueList, queueCount, queueBadge, queueTabBadge;
+let queuePauseBtn, queueSendNext, queueFlush;
 
 /**
  * Initialize the terminal
@@ -615,6 +624,46 @@ function handlePong() {
 }
 
 /**
+ * Connection watchdog - catches stuck states
+ */
+let watchdogTimer = null;
+
+function startConnectionWatchdog() {
+    if (watchdogTimer) clearInterval(watchdogTimer);
+
+    watchdogTimer = setInterval(() => {
+        // Check if we're in a stuck state:
+        // - Not connecting
+        // - Socket is null or not OPEN
+        // - No reconnect timer scheduled
+        // - Overlay is hidden (user thinks they're connected)
+        const isStuck = (
+            !isConnecting &&
+            (!socket || socket.readyState !== WebSocket.OPEN) &&
+            !reconnectTimer &&
+            statusOverlay.classList.contains('hidden')
+        );
+
+        if (isStuck) {
+            console.warn('Watchdog: Connection stuck, forcing reconnect');
+            // Aggressively reset ALL state
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            isConnecting = false;
+            intentionalClose = false;
+            if (socket && socket.readyState !== WebSocket.CLOSED) {
+                try { socket.close(); } catch (e) {}
+            }
+            socket = null;
+            reconnectDelay = INITIAL_RECONNECT_DELAY;
+            connect();
+        }
+    }, 10000);  // Check every 10s
+}
+
+/**
  * Update last activity timestamp when terminal receives data
  */
 function updateLastActivity() {
@@ -676,6 +725,33 @@ function manualReconnect() {
 }
 
 /**
+ * Hard refresh - clears SW cache and reloads
+ */
+async function hardRefresh() {
+    try {
+        // Unregister service worker
+        if ('serviceWorker' in navigator) {
+            const registrations = await navigator.serviceWorker.getRegistrations();
+            for (const reg of registrations) {
+                await reg.unregister();
+            }
+        }
+        // Clear caches
+        if ('caches' in window) {
+            const cacheNames = await caches.keys();
+            for (const name of cacheNames) {
+                await caches.delete(name);
+            }
+        }
+        // Force reload bypassing cache
+        location.reload(true);
+    } catch (e) {
+        console.error('Hard refresh failed:', e);
+        location.reload(true);
+    }
+}
+
+/**
  * Connect to WebSocket
  */
 function connect() {
@@ -727,8 +803,21 @@ function connect() {
         console.log('WebSocket connected');
         isConnecting = false;
         statusOverlay.classList.add('hidden');
-        // Reset reconnect delay on successful connection
+        // Reset reconnect state on successful connection
         reconnectDelay = INITIAL_RECONNECT_DELAY;
+        reconnectAttempts = 0;
+        helloReceived = false;
+        const hardRefreshBtn = document.getElementById('hardRefreshBtn');
+        if (hardRefreshBtn) hardRefreshBtn.classList.add('hidden');
+
+        // Start hello timeout - expect server hello within 2s
+        if (helloTimer) clearTimeout(helloTimer);
+        helloTimer = setTimeout(() => {
+            if (!helloReceived) {
+                console.warn('Hello timeout - server did not send hello, forcing reconnect');
+                if (socket) socket.close();
+            }
+        }, HELLO_TIMEOUT);
 
         // Fit terminal to container (don't clear buffer - server will replay history)
         if (terminal && fitAddon) {
@@ -738,6 +827,7 @@ function connect() {
         sendResize();
         startHeartbeat();
         startIdleCheck();  // Start idle connection monitoring
+        startConnectionWatchdog();  // Catch stuck states
         updateConnectionIndicator('connected');
     };
 
@@ -751,10 +841,22 @@ function connect() {
                 updateLastActivity();
             });
         } else {
-            // Check for JSON messages (pong, queue updates, server ping, etc.)
+            // Check for JSON messages (pong, queue updates, server ping, hello, etc.)
             if (event.data.startsWith('{')) {
                 try {
                     const msg = JSON.parse(event.data);
+
+                    // Server hello handshake - confirms connection is fully established
+                    if (msg.type === 'hello') {
+                        console.log('Received hello:', msg);
+                        helloReceived = true;
+                        if (helloTimer) {
+                            clearTimeout(helloTimer);
+                            helloTimer = null;
+                        }
+                        return;
+                    }
+
                     if (msg.type === 'pong') {
                         handlePong();
                         return;
@@ -784,12 +886,44 @@ function connect() {
         stopHeartbeat();
         updateConnectionIndicator('disconnected');
 
-        // Skip auto-reconnect for:
-        // - intentionalClose flag (client-initiated)
-        // - code 4002 (replaced by another connection)
-        // - code 4003 (repo switch in progress)
-        if (intentionalClose || event.code === 4002 || event.code === 4003) {
+        // Clear hello timer
+        if (helloTimer) {
+            clearTimeout(helloTimer);
+            helloTimer = null;
+        }
+
+        const reconnectBtn = document.getElementById('reconnectBtn');
+
+        // Handle special close codes
+        if (intentionalClose) {
+            // Client-initiated close (e.g., repo switch) - don't auto-reconnect
+            // but repo switch handles its own reconnect
             intentionalClose = false;
+            return;
+        }
+
+        if (event.code === 4002) {
+            // Replaced by another connection - show manual reconnect option
+            console.log('Connection replaced by another client');
+            statusText.textContent = 'Replaced by another connection. Tap to reconnect.';
+            statusOverlay.classList.remove('hidden');
+            if (reconnectBtn) reconnectBtn.classList.remove('hidden');
+            return;
+        }
+
+        if (event.code === 4003) {
+            // Repo switch in progress - switch-repo handles reconnect
+            // But add fallback in case switch-repo fails
+            statusText.textContent = 'Switching repository...';
+            statusOverlay.classList.remove('hidden');
+            // Fallback reconnect after 5s if switch-repo doesn't reconnect
+            reconnectTimer = setTimeout(() => {
+                if (!socket || socket.readyState !== WebSocket.OPEN) {
+                    console.log('Repo switch fallback: reconnecting');
+                    reconnectDelay = INITIAL_RECONNECT_DELAY;
+                    connect();
+                }
+            }, 5000);
             return;
         }
 
@@ -799,12 +933,29 @@ function connect() {
             reconnectDelay = Math.max(reconnectDelay, 2000);
         }
 
+        // PTY died (4500) - terminal process died, will be recreated on reconnect
+        if (event.code === 4500) {
+            console.warn('PTY died - terminal process ended');
+            statusText.textContent = 'Terminal process ended. Reconnecting...';
+            statusOverlay.classList.remove('hidden');
+            // Reconnect immediately - server will recreate PTY
+            reconnectDelay = INITIAL_RECONNECT_DELAY;
+        }
+
+        // Track reconnect attempts
+        reconnectAttempts++;
+
         statusText.textContent = `Disconnected. Reconnecting in ${reconnectDelay / 1000}s...`;
         statusOverlay.classList.remove('hidden');
 
         // Show reconnect button
-        const reconnectBtn = document.getElementById('reconnectBtn');
         if (reconnectBtn) reconnectBtn.classList.remove('hidden');
+
+        // Show hard refresh button after multiple failures (likely SW cache issue)
+        const hardRefreshBtn = document.getElementById('hardRefreshBtn');
+        if (hardRefreshBtn && reconnectAttempts >= SHOW_HARD_REFRESH_AFTER) {
+            hardRefreshBtn.classList.remove('hidden');
+        }
 
         // Reconnect with exponential backoff
         reconnectTimer = setTimeout(connect, reconnectDelay);
@@ -1267,7 +1418,16 @@ function setupEventListeners() {
             } else if (keyName === 'tab') {
                 sendKeyWithSync(key, 200);  // Tab completion needs more time
             } else if (keyName === 'ctrl-c') {
+                // Ctrl+C with confirmation and toast
+                if (!confirm('Send interrupt (Ctrl+C)?\n\nThis will interrupt any running process.')) {
+                    return;
+                }
                 sendKeyDebounced(key, true);  // Force immediate (no debounce)
+                showToast('Interrupt sent', 'success');
+                // Audit log
+                fetch(`/api/rollback/audit/log?action=process_interrupt&token=${token}`, {
+                    method: 'POST'
+                }).catch(() => {});
             } else {
                 sendKeyDebounced(key);
             }
@@ -2152,6 +2312,7 @@ function setupCopyButton() {
     });
 
 }
+
 
 /**
  * Setup local command history
@@ -3768,6 +3929,7 @@ function stopLogAutoRefresh() {
 
 // Track last log modified time to avoid unnecessary re-renders
 let lastLogModified = 0;
+let lastDetectedTurn = null;  // Track last detected turn type for snapshot capture
 
 /**
  * Refresh log content without resetting logLoaded flag
@@ -3789,6 +3951,14 @@ async function refreshLogContent() {
         }
         lastLogModified = data.modified || 0;
 
+        // Detect turn type for auto-snapshot (before rendering)
+        const turnType = detectTurnType(data.content);
+        if (turnType && turnType !== lastDetectedTurn) {
+            lastDetectedTurn = turnType;
+            // Capture snapshot with detected label
+            captureSnapshot(turnType);
+        }
+
         // Re-render log entries
         renderLogEntries(data.content);
 
@@ -3798,6 +3968,38 @@ async function refreshLogContent() {
         // Silently fail on auto-refresh
         console.debug('Log auto-refresh failed:', error);
     }
+}
+
+/**
+ * Detect turn type from log content for auto-snapshot labeling
+ * Returns: 'tool_call', 'claude_done', 'error', or null (no significant change)
+ */
+function detectTurnType(content) {
+    if (!content) return null;
+
+    // Get last few lines to detect recent activity
+    const lines = content.split('\n').filter(l => l.trim());
+    const recentLines = lines.slice(-15).join('\n');
+
+    // Error patterns (highest priority)
+    if (/error|Error|ERROR|failed|Failed|FAILED|exception|Exception/.test(recentLines)) {
+        // Check if it's actually an error in the output, not just the word
+        if (/✗|error:|Error:|failed to|Failed to|exception:/i.test(recentLines)) {
+            return 'error';
+        }
+    }
+
+    // Tool call patterns
+    if (/^• (?:Read|Write|Edit|Bash|Grep|Glob|Task|WebFetch|WebSearch)/m.test(recentLines)) {
+        return 'tool_call';
+    }
+
+    // Claude done patterns (asking user, showing results)
+    if (/^❯\s*$|^\[1-9\]|\(y\/n\)|\?$/m.test(recentLines)) {
+        return 'claude_done';
+    }
+
+    return null;
 }
 
 /**
@@ -4068,15 +4270,15 @@ function setupHybridView() {
 // ================== Queue Functions ==================
 
 /**
- * Toggle queue drawer visibility
+ * Open unified drawer with Queue tab selected
  */
-function toggleQueueDrawer() {
-    queueDrawerOpen = !queueDrawerOpen;
-    if (queueDrawerOpen) {
-        queueDrawer.classList.remove('hidden');
+function openDrawerWithQueueTab() {
+    const drawer = document.getElementById('previewDrawer');
+    if (drawer) {
+        drawer.classList.remove('hidden');
+        drawerOpen = true;
+        switchRollbackTab('queue');
         refreshQueueList();
-    } else {
-        queueDrawer.classList.add('hidden');
     }
 }
 
@@ -4124,15 +4326,26 @@ function renderQueueList() {
 }
 
 /**
- * Update queue badge visibility and count
+ * Update queue badge visibility and count (both view bar and tab)
  */
 function updateQueueBadge(count) {
-    if (!queueBadge) return;
-    if (count > 0) {
-        queueBadge.textContent = count.toString();
-        queueBadge.classList.remove('hidden');
-    } else {
-        queueBadge.classList.add('hidden');
+    // Update view bar badge
+    if (queueBadge) {
+        if (count > 0) {
+            queueBadge.textContent = count.toString();
+            queueBadge.classList.remove('hidden');
+        } else {
+            queueBadge.classList.add('hidden');
+        }
+    }
+    // Update tab badge
+    if (queueTabBadge) {
+        if (count > 0) {
+            queueTabBadge.textContent = count.toString();
+            queueTabBadge.classList.remove('hidden');
+        } else {
+            queueTabBadge.classList.add('hidden');
+        }
     }
 }
 
@@ -4331,17 +4544,6 @@ function handleQueueMessage(msg) {
  * Setup queue event listeners
  */
 function setupQueue() {
-    if (viewBarQueue) {
-        viewBarQueue.addEventListener('click', toggleQueueDrawer);
-    }
-
-    if (queueDrawerClose) {
-        queueDrawerClose.addEventListener('click', () => {
-            queueDrawerOpen = false;
-            queueDrawer.classList.add('hidden');
-        });
-    }
-
     if (queuePauseBtn) {
         queuePauseBtn.addEventListener('click', toggleQueuePause);
     }
@@ -4529,20 +4731,25 @@ function isPreviewMode() {
 }
 
 /**
- * Open preview drawer
+ * Open unified drawer (defaults to queue tab)
  */
-function openPreviewDrawer() {
-    loadSnapshotList();
+function openDrawer() {
     const drawer = document.getElementById('previewDrawer');
-    if (drawer) drawer.classList.remove('hidden');
+    if (drawer) {
+        drawer.classList.remove('hidden');
+        drawerOpen = true;
+        // Default to queue tab, refresh list
+        switchRollbackTab('queue');
+    }
 }
 
 /**
- * Close preview drawer
+ * Close drawer
  */
 function closePreviewDrawer() {
     const drawer = document.getElementById('previewDrawer');
     if (drawer) drawer.classList.add('hidden');
+    drawerOpen = false;
 }
 
 /**
@@ -4583,34 +4790,73 @@ async function exportSnapshot(snapId) {
 }
 
 /**
- * Render the preview list in the drawer
+ * Render the preview list in the drawer with filtering
  */
 function renderPreviewList() {
     const list = document.getElementById('previewList');
     if (!list) return;
 
-    if (previewSnapshots.length === 0) {
-        list.innerHTML = '<div class="preview-empty">No snapshots yet</div>';
+    // Apply filter
+    const filteredSnapshots = previewFilter === 'all'
+        ? previewSnapshots
+        : previewSnapshots.filter(snap => snap.label === previewFilter);
+
+    if (filteredSnapshots.length === 0) {
+        const msg = previewFilter === 'all'
+            ? 'No snapshots yet'
+            : `No ${previewFilter} snapshots`;
+        list.innerHTML = `<div class="preview-empty">${msg}</div>`;
         return;
     }
 
-    list.innerHTML = previewSnapshots.map(snap => {
+    list.innerHTML = filteredSnapshots.map(snap => {
         const date = new Date(snap.timestamp);
         const time = date.toLocaleTimeString();
         const isActive = previewMode === snap.id;
         const isPinned = snap.pinned;
+        // Friendly label display
+        const labelDisplay = getLabelDisplay(snap.label);
         return `
             <div class="preview-list-item ${isActive ? 'active' : ''} ${isPinned ? 'pinned' : ''}" data-snap-id="${snap.id}">
                 <button class="preview-pin-btn ${isPinned ? 'pinned' : ''}" title="${isPinned ? 'Unpin' : 'Pin'}">
                     ${isPinned ? '&#x1F4CC;' : '&#x1F4CD;'}
                 </button>
                 <span class="preview-time">${time}</span>
-                <span class="preview-label-badge ${snap.label}">${snap.label}</span>
+                <span class="preview-label-badge ${snap.label}">${labelDisplay}</span>
                 <button class="preview-export-btn" title="Export JSON">&#x2B07;</button>
                 <button class="preview-load-btn">${isActive ? 'Current' : 'Load'}</button>
             </div>
         `;
     }).join('');
+}
+
+/**
+ * Get friendly display name for snapshot label
+ */
+function getLabelDisplay(label) {
+    const displays = {
+        'user_send': 'User',
+        'tool_call': 'Tool',
+        'claude_done': 'Done',
+        'error': 'Error',
+        'periodic': 'Auto',
+        'manual': 'Manual'
+    };
+    return displays[label] || label;
+}
+
+/**
+ * Set preview filter and re-render
+ */
+function setPreviewFilter(filter) {
+    previewFilter = filter;
+
+    // Update filter button states
+    document.querySelectorAll('.preview-filter-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.filter === filter);
+    });
+
+    renderPreviewList();
 }
 
 /**
@@ -4624,7 +4870,7 @@ function setupPreviewHandlers() {
     document.getElementById('previewDrawerClose')?.addEventListener('click', closePreviewDrawer);
 
     // Drawer open (from view bar)
-    document.getElementById('previewDrawerBtn')?.addEventListener('click', openPreviewDrawer);
+    drawersBtn?.addEventListener('click', openDrawer);
 
     // Snapshot button in drawer
     const snapBtn = document.getElementById('snapshotBtn');
@@ -4680,6 +4926,14 @@ function setupPreviewHandlers() {
         }
     }, 30000);
 
+    // Preview filter buttons
+    document.querySelectorAll('.preview-filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const filter = btn.dataset.filter;
+            if (filter) setPreviewFilter(filter);
+        });
+    });
+
     // Setup tab switching
     document.querySelectorAll('.rollback-tab').forEach(tab => {
         tab.addEventListener('click', () => {
@@ -4702,6 +4956,12 @@ function setupPreviewHandlers() {
             if (hash) showGitCommitDetail(hash);
         }
     });
+
+    // Process tab handlers
+    document.getElementById('processRefreshBtn')?.addEventListener('click', loadProcessStatus);
+    document.getElementById('processTerminateBtn')?.addEventListener('click', () => terminateProcess(false));
+    document.getElementById('processKillBtn')?.addEventListener('click', () => terminateProcess(true));
+    document.getElementById('processRespawnBtn')?.addEventListener('click', respawnProcess);
 }
 
 // ============================================================================
@@ -4712,6 +4972,7 @@ let gitCommits = [];
 let selectedCommitHash = null;
 let lastRevertCommit = null;  // The SHA of the revert commit (for undo = revert-the-revert)
 let gitStatus = null;  // Current git status (branch, dirty, ahead/behind)
+let dryRunValidatedHash = null;  // Commit hash that passed dry-run (safer revert UX)
 
 /**
  * Load git status (branch, dirty, ahead/behind)
@@ -4751,6 +5012,12 @@ async function loadGitStatus() {
             }
         }
 
+        // Show PR info if available
+        if (gitStatus.pr) {
+            const prState = gitStatus.pr.state === 'OPEN' ? 'open' : 'closed';
+            html += ` <a href="${escapeHtml(gitStatus.pr.url)}" target="_blank" class="git-status-pr ${prState}" title="${escapeHtml(gitStatus.pr.title)}">PR #${gitStatus.pr.number}</a>`;
+        }
+
         statusText.innerHTML = html;
 
         // Disable revert button if dirty
@@ -4764,22 +5031,42 @@ async function loadGitStatus() {
 }
 
 /**
- * Update revert button enabled state based on git status
+ * Update revert button enabled state based on git status and dry-run validation
  */
 function updateRevertButtonState() {
     const revertBtn = document.getElementById('gitRevertBtn');
-    if (revertBtn && gitStatus) {
-        revertBtn.disabled = gitStatus.is_dirty;
-        if (gitStatus.is_dirty) {
+    const dryRunBtn = document.getElementById('gitDryRunBtn');
+
+    if (revertBtn) {
+        // Revert requires: clean working dir + dry-run passed for this commit
+        const isDirty = gitStatus?.is_dirty;
+        const hasDryRun = dryRunValidatedHash === selectedCommitHash;
+
+        if (isDirty) {
+            revertBtn.disabled = true;
             revertBtn.title = 'Commit or stash changes first';
+        } else if (!hasDryRun) {
+            revertBtn.disabled = true;
+            revertBtn.title = 'Run dry-run first to preview changes';
         } else {
+            revertBtn.disabled = false;
             revertBtn.title = '';
+        }
+    }
+
+    // Dry-run only requires clean working dir
+    if (dryRunBtn && gitStatus) {
+        dryRunBtn.disabled = gitStatus.is_dirty;
+        if (gitStatus.is_dirty) {
+            dryRunBtn.title = 'Commit or stash changes first';
+        } else {
+            dryRunBtn.title = '';
         }
     }
 }
 
 /**
- * Switch between rollback drawer tabs
+ * Switch between drawer tabs (Queue / Runner / Preview / Git / Process)
  */
 function switchRollbackTab(tabName) {
     // Update tab buttons
@@ -4788,22 +5075,46 @@ function switchRollbackTab(tabName) {
     });
 
     // Update tab content
+    const queueContent = document.getElementById('queueTabContent');
+    const runnerContent = document.getElementById('runnerTabContent');
     const previewContent = document.getElementById('previewTabContent');
     const gitContent = document.getElementById('gitTabContent');
+    const processContent = document.getElementById('processTabContent');
 
-    if (tabName === 'preview') {
+    // Hide all tabs
+    queueContent?.classList.add('hidden');
+    queueContent?.classList.remove('active');
+    runnerContent?.classList.add('hidden');
+    runnerContent?.classList.remove('active');
+    previewContent?.classList.add('hidden');
+    previewContent?.classList.remove('active');
+    gitContent?.classList.add('hidden');
+    gitContent?.classList.remove('active');
+    processContent?.classList.add('hidden');
+    processContent?.classList.remove('active');
+
+    // Show selected tab
+    if (tabName === 'queue') {
+        queueContent?.classList.remove('hidden');
+        queueContent?.classList.add('active');
+        refreshQueueList();
+    } else if (tabName === 'runner') {
+        runnerContent?.classList.remove('hidden');
+        runnerContent?.classList.add('active');
+        loadRunnerCommands();
+    } else if (tabName === 'preview') {
         previewContent?.classList.remove('hidden');
         previewContent?.classList.add('active');
-        gitContent?.classList.add('hidden');
-        gitContent?.classList.remove('active');
     } else if (tabName === 'git') {
-        previewContent?.classList.add('hidden');
-        previewContent?.classList.remove('active');
         gitContent?.classList.remove('hidden');
         gitContent?.classList.add('active');
         // Load status and commits when switching to git tab
         loadGitStatus();
         loadGitCommits();
+    } else if (tabName === 'process') {
+        processContent?.classList.remove('hidden');
+        processContent?.classList.add('active');
+        loadProcessStatus();
     }
 }
 
@@ -4862,6 +5173,7 @@ function showGitCommitList() {
     detail?.classList.add('hidden');
     dryRunResult?.classList.add('hidden');
     selectedCommitHash = null;
+    dryRunValidatedHash = null;  // Reset dry-run validation
 }
 
 /**
@@ -4877,9 +5189,13 @@ async function showGitCommitDetail(hash) {
     if (!detail || !content) return;
 
     selectedCommitHash = hash;
+    dryRunValidatedHash = null;  // Reset dry-run validation for new commit
     list?.classList.add('hidden');
     detail.classList.remove('hidden');
     dryRunResult?.classList.add('hidden');
+
+    // Update button states (revert disabled until dry-run passes)
+    updateRevertButtonState();
 
     if (hashSpan) hashSpan.textContent = hash.substring(0, 7);
     content.innerHTML = '<div class="git-empty">Loading...</div>';
@@ -4930,17 +5246,22 @@ async function dryRunRevert() {
         if (data.success) {
             dryRunResult.classList.add('success');
             dryRunResult.innerHTML = `<pre>${escapeHtml(data.message)}\n\n${escapeHtml(data.changes || 'No changes')}</pre>`;
+            // Mark this commit as validated - enables Revert button
+            dryRunValidatedHash = selectedCommitHash;
         } else {
             dryRunResult.classList.add('error');
             dryRunResult.innerHTML = `<pre>Error: ${escapeHtml(data.error || 'Unknown error')}\n${escapeHtml(data.details || '')}</pre>`;
+            dryRunValidatedHash = null;  // Clear validation on failure
         }
     } catch (e) {
         console.error('Dry run failed:', e);
         dryRunResult.classList.add('error');
         dryRunResult.innerHTML = `<pre>Error: ${e.message}</pre>`;
+        dryRunValidatedHash = null;  // Clear validation on error
     } finally {
         dryRunBtn.disabled = false;
         dryRunBtn.textContent = 'Dry Run';
+        updateRevertButtonState();  // Update Revert button state
     }
 }
 
@@ -4972,9 +5293,11 @@ async function executeRevert() {
 
         if (data.success) {
             lastRevertCommit = data.new_commit;  // Store revert commit SHA for undo
+            dryRunValidatedHash = null;  // Clear validation after successful revert
             dryRunResult.classList.add('success');
             dryRunResult.innerHTML = `<pre>Revert successful!\nNew commit: ${data.new_commit.substring(0, 7)}\n\nTo undo, click "Undo Revert" (creates another revert commit).</pre>
                 <button id="gitUndoBtn" class="git-action-btn secondary" style="margin-top: 8px;">Undo Revert</button>`;
+            showToast('Revert successful', 'success');
 
             // Add undo handler
             document.getElementById('gitUndoBtn')?.addEventListener('click', undoRevert);
@@ -4990,8 +5313,8 @@ async function executeRevert() {
         dryRunResult.classList.add('error');
         dryRunResult.innerHTML = `<pre>Error: ${e.message}</pre>`;
     } finally {
-        revertBtn.disabled = false;
         revertBtn.textContent = 'Revert';
+        updateRevertButtonState();  // Update button state (will disable since dry-run cleared)
     }
 }
 
@@ -5021,6 +5344,7 @@ async function undoRevert() {
             dryRunResult.classList.add('success');
             dryRunResult.innerHTML = `<pre>Undo successful!\nCreated commit: ${data.new_commit.substring(0, 7)}</pre>`;
             lastRevertCommit = null;
+            showToast('Undo successful', 'success');
 
             // Refresh commits list and status
             loadGitStatus();
@@ -5036,6 +5360,301 @@ async function undoRevert() {
     }
 }
 
+// ============================================================================
+// PROCESS MANAGEMENT
+// ============================================================================
+
+let processStatus = null;
+
+/**
+ * Load process status
+ */
+async function loadProcessStatus() {
+    const banner = document.getElementById('processStatusBanner');
+    const statusText = document.getElementById('processStatusText');
+
+    if (!banner || !statusText) return;
+
+    try {
+        const resp = await fetch(`/api/process/status?token=${token}`);
+        processStatus = await resp.json();
+
+        let html = '';
+        if (processStatus.is_running) {
+            html = `<span class="process-status-running">Running</span> PID: ${processStatus.pid}`;
+            if (processStatus.session) {
+                html += ` | Session: ${escapeHtml(processStatus.session)}`;
+            }
+            banner.className = 'process-status-banner running';
+        } else if (processStatus.pid) {
+            html = `<span class="process-status-dead">Dead</span> (was PID: ${processStatus.pid})`;
+            banner.className = 'process-status-banner dead';
+        } else {
+            html = '<span class="process-status-none">No process</span>';
+            banner.className = 'process-status-banner none';
+        }
+
+        statusText.innerHTML = html;
+        updateProcessButtons();
+
+    } catch (e) {
+        console.error('Failed to load process status:', e);
+        banner.className = 'process-status-banner';
+        statusText.textContent = 'Error loading status';
+    }
+}
+
+/**
+ * Update process button states based on status
+ */
+function updateProcessButtons() {
+    const terminateBtn = document.getElementById('processTerminateBtn');
+    const killBtn = document.getElementById('processKillBtn');
+    const respawnBtn = document.getElementById('processRespawnBtn');
+
+    const isRunning = processStatus?.is_running;
+
+    if (terminateBtn) {
+        terminateBtn.disabled = !isRunning;
+        terminateBtn.title = isRunning ? '' : 'No process running';
+    }
+    if (killBtn) {
+        killBtn.disabled = !isRunning;
+        killBtn.title = isRunning ? '' : 'No process running';
+    }
+    if (respawnBtn) {
+        respawnBtn.disabled = false;  // Always available
+    }
+}
+
+/**
+ * Terminate process with SIGTERM
+ */
+async function terminateProcess(force = false) {
+    const resultDiv = document.getElementById('processResult');
+    if (!resultDiv) return;
+
+    const action = force ? 'force kill' : 'terminate';
+    if (!confirm(`Are you sure you want to ${action} the process?\n\nThis will end the current PTY session.`)) {
+        return;
+    }
+
+    resultDiv.classList.remove('hidden', 'success', 'error');
+    resultDiv.innerHTML = `<pre>${force ? 'Force killing' : 'Terminating'}...</pre>`;
+
+    try {
+        const resp = await fetch(`/api/process/terminate?token=${token}&force=${force}`, {
+            method: 'POST'
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            resultDiv.classList.add('success');
+            resultDiv.innerHTML = `<pre>Process terminated (${data.method})\nPID: ${data.pid}</pre>`;
+            showToast('Process terminated', 'success');
+        } else {
+            resultDiv.classList.add('error');
+            resultDiv.innerHTML = `<pre>Error: ${escapeHtml(data.error)}</pre>`;
+        }
+    } catch (e) {
+        console.error('Terminate failed:', e);
+        resultDiv.classList.add('error');
+        resultDiv.innerHTML = `<pre>Error: ${e.message}</pre>`;
+    }
+
+    // Refresh status
+    await loadProcessStatus();
+}
+
+/**
+ * Respawn the PTY process
+ */
+async function respawnProcess() {
+    const resultDiv = document.getElementById('processResult');
+    if (!resultDiv) return;
+
+    if (!confirm('Are you sure you want to respawn the process?\n\nThis will terminate the current session (if any) and create a new one.')) {
+        return;
+    }
+
+    resultDiv.classList.remove('hidden', 'success', 'error');
+    resultDiv.innerHTML = '<pre>Respawning...</pre>';
+
+    try {
+        const resp = await fetch(`/api/process/respawn?token=${token}`, {
+            method: 'POST'
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            resultDiv.classList.add('success');
+            let msg = `Process respawned!\nNew PID: ${data.new_pid}\nSession: ${data.session}`;
+            if (data.old_pid) {
+                msg = `Old PID: ${data.old_pid}\n` + msg;
+            }
+            resultDiv.innerHTML = `<pre>${escapeHtml(msg)}</pre>`;
+            showToast('Process respawned', 'success');
+
+            // Trigger reconnect to pick up new process
+            setTimeout(() => {
+                if (socket) {
+                    socket.close();
+                }
+            }, 500);
+        } else {
+            resultDiv.classList.add('error');
+            resultDiv.innerHTML = `<pre>Error: ${escapeHtml(data.error)}</pre>`;
+        }
+    } catch (e) {
+        console.error('Respawn failed:', e);
+        resultDiv.classList.add('error');
+        resultDiv.innerHTML = `<pre>Error: ${e.message}</pre>`;
+    }
+
+    // Refresh status
+    await loadProcessStatus();
+}
+
+// ============================================================================
+// END PROCESS MANAGEMENT
+// ============================================================================
+
+// ============================================================================
+// RUNNER (QUICK COMMANDS)
+// ============================================================================
+
+let runnerCommands = null;
+
+/**
+ * Load available runner commands
+ */
+async function loadRunnerCommands() {
+    const container = document.getElementById('runnerCommands');
+    if (!container) return;
+
+    // Use cached commands if available
+    if (runnerCommands) {
+        renderRunnerCommands();
+        return;
+    }
+
+    container.innerHTML = '<div class="runner-loading">Loading commands...</div>';
+
+    try {
+        const resp = await fetch(`/api/runner/commands?token=${token}`);
+        const data = await resp.json();
+        runnerCommands = data.commands;
+        renderRunnerCommands();
+    } catch (e) {
+        console.error('Failed to load runner commands:', e);
+        container.innerHTML = '<div class="runner-error">Failed to load commands</div>';
+    }
+}
+
+/**
+ * Render runner command buttons
+ */
+function renderRunnerCommands() {
+    const container = document.getElementById('runnerCommands');
+    if (!container || !runnerCommands) return;
+
+    container.innerHTML = Object.entries(runnerCommands).map(([id, cmd]) => {
+        return `
+            <button class="runner-cmd-btn" data-cmd-id="${id}" title="${escapeHtml(cmd.description)}">
+                <span class="runner-cmd-icon">${cmd.icon}</span>
+                <span class="runner-cmd-label">${escapeHtml(cmd.label)}</span>
+            </button>
+        `;
+    }).join('');
+
+    // Add click handlers
+    container.querySelectorAll('.runner-cmd-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const cmdId = btn.dataset.cmdId;
+            if (cmdId) executeRunnerCommand(cmdId);
+        });
+    });
+}
+
+/**
+ * Execute a runner command
+ */
+async function executeRunnerCommand(commandId) {
+    try {
+        const resp = await fetch(`/api/runner/execute?command_id=${commandId}&token=${token}`, {
+            method: 'POST'
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            showToast(`Running: ${data.label}`, 'success');
+            // Close drawer and switch to terminal view to see output
+            closePreviewDrawer();
+            if (currentView !== 'terminal') {
+                switchToTerminalView();
+            }
+        } else {
+            showToast(`Error: ${data.error}`, 'error');
+        }
+    } catch (e) {
+        console.error('Runner execute failed:', e);
+        showToast(`Error: ${e.message}`, 'error');
+    }
+}
+
+/**
+ * Execute custom runner command
+ */
+async function executeCustomCommand() {
+    const input = document.getElementById('runnerCustomInput');
+    if (!input) return;
+
+    const command = input.value.trim();
+    if (!command) return;
+
+    try {
+        const resp = await fetch(`/api/runner/custom?command=${encodeURIComponent(command)}&token=${token}`, {
+            method: 'POST'
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            showToast('Command sent', 'success');
+            input.value = '';
+            // Close drawer and switch to terminal view
+            closePreviewDrawer();
+            if (currentView !== 'terminal') {
+                switchToTerminalView();
+            }
+        } else {
+            showToast(`Error: ${data.error}`, 'error');
+        }
+    } catch (e) {
+        console.error('Custom command failed:', e);
+        showToast(`Error: ${e.message}`, 'error');
+    }
+}
+
+/**
+ * Setup runner event handlers
+ */
+function setupRunnerHandlers() {
+    // Custom command button
+    document.getElementById('runnerCustomBtn')?.addEventListener('click', executeCustomCommand);
+
+    // Custom command input Enter key
+    document.getElementById('runnerCustomInput')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            executeCustomCommand();
+        }
+    });
+}
+
+// ============================================================================
+// END RUNNER
+// ============================================================================
+
 /**
  * Escape HTML to prevent XSS
  */
@@ -5044,6 +5663,28 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+/**
+ * Show a toast notification
+ * @param {string} message - The message to display
+ * @param {string} type - 'success', 'error', or 'info'
+ * @param {number} duration - How long to show (ms), default 3000
+ */
+function showToast(message, type = 'success', duration = 3000) {
+    const container = document.getElementById('toastContainer');
+    if (!container) return;
+
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+
+    // Auto-remove after duration
+    setTimeout(() => {
+        toast.style.animation = 'toastFadeOut 0.3s ease-out forwards';
+        setTimeout(() => toast.remove(), 300);
+    }, duration);
 }
 
 
@@ -5081,6 +5722,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupScrollTracking();
     setupPlanPreviewHandler();
     setupPreviewHandlers();
+    setupRunnerHandlers();
 
     // Scroll input bar to the right so Enter button is visible
     if (inputBar) {

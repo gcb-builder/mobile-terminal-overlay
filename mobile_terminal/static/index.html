@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=128">
+    <link rel="stylesheet" href="/static/styles.css?v=134">
 </head>
 <body>
     <div class="app">
@@ -138,9 +138,8 @@
 
         <!-- Action bar: visible in Terminal view only -->
         <div id="viewBar" class="view-bar">
+            <button id="drawersBtn" class="view-btn drawers-btn">•••<span id="queueBadge" class="queue-badge hidden">0</span></button>
             <button id="selectCopyBtn" class="view-btn select-btn">Select</button>
-            <button id="viewBarQueue" class="view-btn queue-btn">Queue<span id="queueBadge" class="queue-badge hidden">0</span></button>
-            <button id="previewDrawerBtn" class="view-btn preview-btn">Preview</button>
             <button id="challengeBtn" class="view-btn challenge-btn">Challenge</button>
             <button id="composeBtn" class="view-btn compose-btn">Compose</button>
         </div>
@@ -251,35 +250,54 @@
             </div>
         </div>
 
-        <!-- Queue drawer (bottom sheet) -->
-        <div id="queueDrawer" class="queue-drawer hidden">
-            <div class="queue-drawer-header">
-                <span class="queue-title">Command Queue</span>
-                <span id="queueCount" class="queue-count">0</span>
-                <button id="queuePauseBtn" class="queue-pause-btn">Pause</button>
-                <button id="queueDrawerClose" class="queue-drawer-close">&times;</button>
-            </div>
-            <div id="queueList" class="queue-list"></div>
-            <div class="queue-drawer-footer">
-                <button id="queueSendNext" class="queue-action-btn primary">Send Next</button>
-                <button id="queueFlush" class="queue-action-btn secondary">Clear All</button>
-            </div>
-        </div>
-
-        <!-- Rollback drawer (tabbed: Preview / Git) -->
+        <!-- Unified drawer (tabbed: Queue / Preview / Git) -->
         <div id="previewDrawer" class="preview-drawer hidden">
             <div class="rollback-drawer-header">
                 <div class="rollback-tabs">
-                    <button class="rollback-tab active" data-tab="preview">Preview</button>
+                    <button class="rollback-tab active" data-tab="queue">Queue<span id="queueTabBadge" class="queue-tab-badge hidden">0</span></button>
+                    <button class="rollback-tab" data-tab="runner">Runner</button>
+                    <button class="rollback-tab" data-tab="preview">Preview</button>
                     <button class="rollback-tab" data-tab="git">Git</button>
+                    <button class="rollback-tab" data-tab="process">Process</button>
                 </div>
                 <button id="previewDrawerClose" class="preview-drawer-close">&times;</button>
             </div>
+            <!-- Queue tab content -->
+            <div id="queueTabContent" class="rollback-tab-content active">
+                <div class="queue-tab-header">
+                    <span class="queue-title">Command Queue</span>
+                    <span id="queueCount" class="queue-count">0</span>
+                    <button id="queuePauseBtn" class="queue-pause-btn">Pause</button>
+                </div>
+                <div id="queueList" class="queue-list"></div>
+                <div class="queue-tab-footer">
+                    <button id="queueSendNext" class="queue-action-btn primary">Send Next</button>
+                    <button id="queueFlush" class="queue-action-btn secondary">Clear All</button>
+                </div>
+            </div>
+            <!-- Runner tab content -->
+            <div id="runnerTabContent" class="rollback-tab-content hidden">
+                <div class="runner-tab-header">
+                    <span class="runner-title">Quick Commands</span>
+                </div>
+                <div id="runnerCommands" class="runner-commands"></div>
+                <div class="runner-custom">
+                    <input type="text" id="runnerCustomInput" class="runner-custom-input" placeholder="Custom command...">
+                    <button id="runnerCustomBtn" class="runner-custom-btn">Run</button>
+                </div>
+            </div>
             <!-- Preview tab content -->
-            <div id="previewTabContent" class="rollback-tab-content active">
+            <div id="previewTabContent" class="rollback-tab-content hidden">
                 <div class="preview-tab-header">
                     <span class="preview-title">Snapshots</span>
                     <button id="snapshotBtn" class="preview-snap-btn">+ Snap</button>
+                </div>
+                <div class="preview-filters">
+                    <button class="preview-filter-btn active" data-filter="all">All</button>
+                    <button class="preview-filter-btn" data-filter="user_send">User</button>
+                    <button class="preview-filter-btn" data-filter="tool_call">Tool</button>
+                    <button class="preview-filter-btn" data-filter="claude_done">Done</button>
+                    <button class="preview-filter-btn" data-filter="error">Error</button>
                 </div>
                 <div id="previewList" class="preview-list"></div>
             </div>
@@ -308,6 +326,25 @@
                     <div id="gitDryRunResult" class="git-dry-run-result hidden"></div>
                 </div>
             </div>
+            <!-- Process tab content -->
+            <div id="processTabContent" class="rollback-tab-content hidden">
+                <div id="processStatusBanner" class="process-status-banner">
+                    <span id="processStatusText" class="process-status-text">Loading...</span>
+                </div>
+                <div class="process-tab-header">
+                    <span class="process-title">Process Management</span>
+                    <button id="processRefreshBtn" class="process-refresh-btn">Refresh</button>
+                </div>
+                <div class="process-info">
+                    <p class="process-description">Manage the terminal PTY process. Use these controls when the process is stuck or unresponsive.</p>
+                </div>
+                <div class="process-actions">
+                    <button id="processTerminateBtn" class="process-action-btn warning">Terminate (SIGTERM)</button>
+                    <button id="processKillBtn" class="process-action-btn danger">Force Kill (SIGKILL)</button>
+                    <button id="processRespawnBtn" class="process-action-btn primary">Respawn Session</button>
+                </div>
+                <div id="processResult" class="process-result hidden"></div>
+            </div>
         </div>
 
         <!-- Connection status overlay -->
@@ -316,15 +353,19 @@
                 <div class="spinner"></div>
                 <p id="statusText">Connecting...</p>
                 <button id="reconnectBtn" class="reconnect-btn hidden" onclick="manualReconnect()">Reconnect Now</button>
+                <button id="hardRefreshBtn" class="hard-refresh-btn hidden" onclick="hardRefresh()">Hard Refresh</button>
             </div>
         </div>
+
+        <!-- Toast notifications -->
+        <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=161"></script>
+    <script src="/static/terminal.js?v=171"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js?v=43', { scope: '/' })
+            navigator.serviceWorker.register('/sw.js?v=52', { scope: '/' })
                 .catch(err => console.log('SW registration failed:', err));
         }
     </script>

@@ -3,8 +3,8 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Production-ready with PWA support
-- **Last Updated:** 2026-01-18
+- **Stage:** Production-ready with PWA support + V2 features
+- **Last Updated:** 2026-01-20
 
 ## Objective
 
@@ -38,6 +38,91 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] Always-on controls (lock removed, collapse toggle in tab bar)
 - [x] Unified collapse (view bar + control bars collapse together)
 - [x] Streamlined header (refresh in header, no working indicator)
+- [x] V2: Git PR-aware status + safer revert UX
+- [x] V2: Process management (terminate/respawn/status)
+- [x] V2: Preview filters + turn-based auto-snapshots
+- [x] V2: Runner with allowlisted quick commands
+- [x] V2: Connection resilience (hello handshake, watchdog, PTY death detection)
+
+## Recent Changes (2026-01-20) - V2 Features
+
+### Git v2
+- PR-aware status banner: Shows associated PR number/link when branch has an open PR (uses `gh pr view`)
+- Safer revert UX: Revert button disabled until dry-run passes; dry-run validates each commit separately
+
+### Process v2
+- `/api/process/terminate` - SIGTERM first, SIGKILL fallback (force=true)
+- `/api/process/respawn` - Recreate PTY session
+- `/api/process/status` - Check process health
+- Process tab in drawer with visual status banner and action buttons
+
+### Preview v2
+- Filter buttons: All | User | Tool | Done | Error
+- Turn detection: Auto-captures snapshots when log changes with `tool_call`, `claude_done`, or `error` labels
+- Friendly labels: Display names like "User", "Tool", "Done" instead of raw codes
+
+### Runner v2
+- Allowlisted commands: Build, Test, Lint, Format, Typecheck, Dev Server
+- Quick command buttons: Grid layout with icons in Runner tab
+- Custom command input: Run arbitrary commands with basic safety checks
+- `/api/runner/commands`, `/api/runner/execute`, `/api/runner/custom`
+
+### Connection Resilience
+- Server hello handshake on WebSocket connect (client expects within 2s)
+- PTY death detection with close code 4500
+- Connection watchdog for stuck states
+- Hard refresh button after 3 failed reconnects
+
+---
+
+## Portability: Using with Other Projects
+
+### Current Limitation
+
+`get_current_repo_path()` in `server.py` falls back to `Path.cwd()` which is the **server's** working directory, not the tmux session's. This means if you start the server from one directory but want to work on a different project, features like log viewing, git ops, and file search won't find the right files.
+
+### Solution: Query tmux for pane's cwd
+
+```python
+def get_current_repo_path() -> Optional[Path]:
+    # ... existing checks ...
+
+    # Get pane's actual working directory from tmux
+    result = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", session_name, "#{pane_current_path}"],
+        capture_output=True, text=True, timeout=2
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return Path(result.stdout.strip())
+
+    return Path.cwd()  # Last resort fallback
+```
+
+### Alternative: Config-based mapping
+
+Add to `~/.config/mobile-terminal/config.yaml`:
+```yaml
+repos:
+  - session: claude
+    path: /home/gbons/dev/mobile-terminal-overlay
+  - session: myproject
+    path: /home/gbons/dev/myproject
+```
+
+### Feature Portability Status
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Terminal I/O | Works | Pure relay, no path dependency |
+| Log file | Works* | Uses `~/.claude/projects/{project-id}` - works if Claude Code is running there |
+| Git ops | Needs fix | Uses `get_current_repo_path()` |
+| File search | Needs fix | Uses `get_current_repo_path()` |
+| Uploads | Needs fix | Goes to `.claude/uploads/` relative to repo path |
+| Pipe-pane | Works* | Logs to repo's `.claude/` if path is correct |
+
+**TODO:** Implement tmux pane cwd detection to make overlay fully portable.
+
+---
 
 ## Recent Changes (2026-01-18)
 

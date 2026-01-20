@@ -31,6 +31,12 @@ PROVIDERS = {
         "env_key": "OPENAI_API_KEY",
         "format": "openai",
     },
+    "openai_responses": {
+        "name": "OpenAI (Responses API)",
+        "url": "https://api.openai.com/v1/responses",
+        "env_key": "OPENAI_API_KEY",
+        "format": "openai_responses",
+    },
     "anthropic": {
         "name": "Anthropic",
         "url": "https://api.anthropic.com/v1/messages",
@@ -73,12 +79,12 @@ MODELS = {
     },
     "gpt-5.2": {
         "name": "GPT-5.2",
-        "provider": "openai",
+        "provider": "openai_responses",
         "model_id": "gpt-5.2",
     },
     "gpt-5.2-pro": {
         "name": "GPT-5.2 Pro",
-        "provider": "openai",
+        "provider": "openai_responses",
         "model_id": "gpt-5.2-pro",
     },
     "claude-sonnet": {
@@ -271,7 +277,7 @@ def build_challenge_bundle(repo_path: Path, log_content: str = "") -> str:
 # ============================================================================
 
 def build_openai_payload(model_id: str, bundle: str) -> dict:
-    """Build payload for OpenAI-compatible APIs (OpenAI, Together.ai)."""
+    """Build payload for OpenAI Chat Completions API."""
     payload = {
         "model": model_id,
         "messages": [
@@ -279,13 +285,22 @@ def build_openai_payload(model_id: str, bundle: str) -> dict:
             {"role": "user", "content": f"Review this project state and provide your skeptical analysis:\n\n{bundle}"},
         ],
         "temperature": TEMPERATURE,
+        "max_tokens": MAX_TOKENS,
     }
-    # GPT-5.x models use max_completion_tokens instead of max_tokens
-    if model_id.startswith("gpt-5"):
-        payload["max_completion_tokens"] = MAX_TOKENS
-    else:
-        payload["max_tokens"] = MAX_TOKENS
     return payload
+
+
+def build_openai_responses_payload(model_id: str, bundle: str) -> dict:
+    """Build payload for OpenAI Responses API (GPT-5.2+)."""
+    return {
+        "model": model_id,
+        "input": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"Review this project state and provide your skeptical analysis:\n\n{bundle}"},
+        ],
+        "temperature": TEMPERATURE,
+        "max_output_tokens": MAX_TOKENS,
+    }
 
 
 def build_anthropic_payload(model_id: str, bundle: str) -> dict:
@@ -319,8 +334,22 @@ def build_anthropic_headers(api_key: str) -> dict:
 
 
 def parse_openai_response(data: dict) -> str:
-    """Parse content from OpenAI-compatible response."""
+    """Parse content from OpenAI Chat Completions response."""
     return data["choices"][0]["message"]["content"]
+
+
+def parse_openai_responses_response(data: dict) -> str:
+    """Parse content from OpenAI Responses API response."""
+    # Responses API returns output array with message objects
+    output = data.get("output", [])
+    for item in output:
+        if item.get("type") == "message":
+            content = item.get("content", [])
+            for block in content:
+                if block.get("type") == "output_text":
+                    return block.get("text", "")
+    # Fallback: try to find any text content
+    return str(data)
 
 
 def parse_anthropic_response(data: dict) -> str:
@@ -378,6 +407,10 @@ async def call_api(model_key: str, bundle: str) -> dict:
         headers = build_openai_headers(api_key)
         payload = build_openai_payload(model_id, bundle)
         parse_response = parse_openai_response
+    elif fmt == "openai_responses":
+        headers = build_openai_headers(api_key)
+        payload = build_openai_responses_payload(model_id, bundle)
+        parse_response = parse_openai_responses_response
     elif fmt == "anthropic":
         headers = build_anthropic_headers(api_key)
         payload = build_anthropic_payload(model_id, bundle)
