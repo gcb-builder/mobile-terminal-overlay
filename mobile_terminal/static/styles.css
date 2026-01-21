@@ -1307,6 +1307,16 @@ html, body {
     background: rgba(88, 166, 255, 0.4) !important;
 }
 
+.btn-clear {
+    color: var(--text-secondary) !important;
+    border-color: rgba(139, 148, 158, 0.4) !important;
+    background: rgba(139, 148, 158, 0.1) !important;
+}
+
+.btn-clear:active {
+    background: rgba(139, 148, 158, 0.3) !important;
+}
+
 /* Input bar (Control mode - arrows, numbers, etc.) */
 .input-bar {
     display: flex;

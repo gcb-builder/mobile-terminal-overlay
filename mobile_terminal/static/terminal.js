@@ -1717,6 +1717,18 @@ function setupEventListeners() {
             const keyName = btn.dataset.key;
             const key = keyMap[keyName] || keyName;
 
+            // Clear: clear input box and terminal command line
+            if (keyName === 'clear') {
+                // Clear input box
+                if (logInput) {
+                    logInput.value = '';
+                    logInput.dataset.autoSuggestion = 'false';
+                }
+                // Send Ctrl+U to clear terminal command line
+                sendInput('\x15');
+                return;
+            }
+
             // Queue: add input box content to queue
             if (keyName === 'queue') {
                 const input = document.getElementById('logInput');
