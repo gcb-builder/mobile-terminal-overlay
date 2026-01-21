@@ -20,9 +20,11 @@ let reconnectDelay = 300;
 const MAX_RECONNECT_DELAY = 10000;  // Cap at 10s (was 30s) - mobile needs fast recovery
 const INITIAL_RECONNECT_DELAY = 300;  // Faster initial reconnect (was 500ms)
 const MIN_CONNECTION_INTERVAL = 300;  // Minimum ms between connection attempts
+const RECONNECT_OVERLAY_GRACE_MS = 2500;  // Don't show overlay for brief disconnects
 let intentionalClose = false;  // Track intentional closes to skip auto-reconnect
 let isConnecting = false;  // Prevent concurrent connection attempts
 let reconnectTimer = null;  // Track pending reconnect
+let reconnectOverlayTimer = null;  // Delayed overlay (grace period)
 let lastConnectionAttempt = 0;  // Timestamp of last connection attempt
 let reconnectAttempts = 0;  // Track consecutive failed reconnects
 const SHOW_HARD_REFRESH_AFTER = 3;  // Show hard refresh button after N failures
@@ -820,7 +822,14 @@ function connect() {
     socket.onopen = () => {
         console.log('WebSocket connected');
         isConnecting = false;
+
+        // Cancel overlay timer and hide overlay (may not have shown yet due to grace period)
+        if (reconnectOverlayTimer) {
+            clearTimeout(reconnectOverlayTimer);
+            reconnectOverlayTimer = null;
+        }
         statusOverlay.classList.add('hidden');
+
         // Reset reconnect state on successful connection
         reconnectDelay = INITIAL_RECONNECT_DELAY;
         reconnectAttempts = 0;
@@ -963,19 +972,31 @@ function connect() {
         // Track reconnect attempts
         reconnectAttempts++;
 
-        statusText.textContent = `Disconnected. Reconnecting in ${reconnectDelay / 1000}s...`;
-        statusOverlay.classList.remove('hidden');
-
-        // Show reconnect button
-        if (reconnectBtn) reconnectBtn.classList.remove('hidden');
-
-        // Show hard refresh button after multiple failures (likely SW cache issue)
-        const hardRefreshBtn = document.getElementById('hardRefreshBtn');
-        if (hardRefreshBtn && reconnectAttempts >= SHOW_HARD_REFRESH_AFTER) {
-            hardRefreshBtn.classList.remove('hidden');
+        // Clear any existing overlay timer before scheduling new one
+        if (reconnectOverlayTimer) {
+            clearTimeout(reconnectOverlayTimer);
+            reconnectOverlayTimer = null;
         }
 
-        // Reconnect with exponential backoff
+        // Grace period: delay showing overlay for brief disconnects
+        // This prevents flicker during background/foreground transitions
+        reconnectOverlayTimer = setTimeout(() => {
+            // Guard: only show if still disconnected
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                statusText.textContent = `Reconnecting...`;
+                statusOverlay.classList.remove('hidden');
+                if (reconnectBtn) reconnectBtn.classList.remove('hidden');
+
+                // Show hard refresh button after multiple failures
+                const hardRefreshBtn = document.getElementById('hardRefreshBtn');
+                if (hardRefreshBtn && reconnectAttempts >= SHOW_HARD_REFRESH_AFTER) {
+                    hardRefreshBtn.classList.remove('hidden');
+                }
+            }
+            reconnectOverlayTimer = null;
+        }, RECONNECT_OVERLAY_GRACE_MS);
+
+        // Reconnect with exponential backoff (starts immediately, overlay is delayed)
         reconnectTimer = setTimeout(connect, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
     };
@@ -1863,13 +1884,25 @@ function setupViewportHandler() {
     // Reconnect immediately when returning to app (visibility change)
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
+            // Render cached UI immediately (before reconnect completes)
+            // This gives instant feedback while connection is being restored
+            renderQueueList();  // Show cached queue items
+            // Note: log content is already in DOM, no need to re-render
+
             // If disconnected, reconnect immediately instead of waiting for backoff
             if (!socket || socket.readyState !== WebSocket.OPEN) {
                 console.log('Page visible, reconnecting immediately');
+
+                // Clear any pending timers to avoid races
                 if (reconnectTimer) {
                     clearTimeout(reconnectTimer);
                     reconnectTimer = null;
                 }
+                if (reconnectOverlayTimer) {
+                    clearTimeout(reconnectOverlayTimer);
+                    reconnectOverlayTimer = null;
+                }
+
                 reconnectDelay = INITIAL_RECONNECT_DELAY;
                 connect();
             }
@@ -1881,10 +1914,17 @@ function setupViewportHandler() {
         console.log('Network online - checking connection');
         if (!socket || socket.readyState !== WebSocket.OPEN) {
             console.log('Network back, reconnecting immediately');
+
+            // Clear any pending timers
             if (reconnectTimer) {
                 clearTimeout(reconnectTimer);
                 reconnectTimer = null;
             }
+            if (reconnectOverlayTimer) {
+                clearTimeout(reconnectOverlayTimer);
+                reconnectOverlayTimer = null;
+            }
+
             reconnectDelay = INITIAL_RECONNECT_DELAY;
             connect();
         }
