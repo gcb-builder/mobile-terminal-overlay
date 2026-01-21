@@ -3440,7 +3440,7 @@ async function loadLogContent() {
         }
 
         // Parse and render log entries
-        renderLogEntries(data.content);
+        renderLogEntries(data.content, data.cached);
         logLoaded = true;
 
         // Update last modified time for change detection
@@ -3458,8 +3458,10 @@ async function loadLogContent() {
 /**
  * Render log entries in the hybrid view log section
  * Parses conversation format: $ user | • Tool: | assistant text
+ * @param {string} content - The log content to render
+ * @param {boolean} cached - Whether content is from cache (after /clear)
  */
-function renderLogEntries(content) {
+function renderLogEntries(content, cached = false) {
     if (!logContent) return;
 
     // Strip ANSI codes
@@ -3471,6 +3473,12 @@ function renderLogEntries(content) {
     if (blocks.length === 0) {
         logContent.innerHTML = '<div class="log-empty">No recent activity</div>';
         return;
+    }
+
+    // Show cached indicator if serving from cache
+    let cachedBanner = '';
+    if (cached) {
+        cachedBanner = '<div class="log-cached-banner">Showing cached log (session was cleared)</div>';
     }
 
     // Group consecutive messages by role
@@ -3556,7 +3564,7 @@ function renderLogEntries(content) {
         html += `</div></div>`;
     }
 
-    logContent.innerHTML = html;
+    logContent.innerHTML = cachedBanner + html;
 
     // Schedule tool collapsing for idle time (non-blocking)
     scheduleCollapse();

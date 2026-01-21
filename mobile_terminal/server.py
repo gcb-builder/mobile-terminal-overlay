@@ -680,6 +680,9 @@ STATIC_DIR = Path(__file__).parent / "static"
 # Directory for transcript logs (pipe-pane output)
 TRANSCRIPT_DIR = Path.home() / ".cache" / "mobile-overlay" / "transcripts"
 
+# Directory for cached Claude conversation logs (persists across /clear)
+LOG_CACHE_DIR = Path.home() / ".cache" / "mobile-overlay" / "logs"
+
 
 def get_transcript_log_path(session_name: str, window: int = 0, pane: int = 0) -> Path:
     """Get the transcript log file path for a session/window/pane."""
@@ -1354,12 +1357,36 @@ def create_app(config: Config) -> FastAPI:
             logger.error(f"Error reading plan file: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    def get_log_cache_path(project_id: str) -> Path:
+        """Get the cache file path for a project's log."""
+        LOG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        return LOG_CACHE_DIR / f"{project_id}.log"
+
+    def read_cached_log(project_id: str) -> Optional[str]:
+        """Read cached log content if it exists."""
+        cache_path = get_log_cache_path(project_id)
+        if cache_path.exists():
+            try:
+                return cache_path.read_text(errors="replace")
+            except Exception as e:
+                logger.warning(f"Error reading log cache: {e}")
+        return None
+
+    def write_log_cache(project_id: str, content: str):
+        """Write log content to cache."""
+        cache_path = get_log_cache_path(project_id)
+        try:
+            cache_path.write_text(content)
+        except Exception as e:
+            logger.warning(f"Error writing log cache: {e}")
+
     @app.get("/api/log")
     async def get_log(token: Optional[str] = Query(None), limit: int = Query(200)):
         """
         Get the Claude conversation log from ~/.claude/projects/.
         Finds the most recently modified .jsonl file for the current repo.
         Parses JSONL and returns readable conversation text.
+        Falls back to cached log if source is cleared (e.g., after /clear).
         """
         import json
         import re
@@ -1376,7 +1403,17 @@ def create_app(config: Config) -> FastAPI:
         project_id = str(repo_path.resolve()).replace("/", "-")
         claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
 
-        if not claude_projects_dir.exists():
+        # Helper to return cached content
+        def return_cached():
+            cached = read_cached_log(project_id)
+            if cached:
+                return {
+                    "exists": True,
+                    "content": cached,
+                    "path": str(claude_projects_dir),
+                    "session": app.state.current_session,
+                    "cached": True,
+                }
             return {
                 "exists": False,
                 "content": "",
@@ -1384,15 +1421,13 @@ def create_app(config: Config) -> FastAPI:
                 "session": app.state.current_session,
             }
 
+        if not claude_projects_dir.exists():
+            return return_cached()
+
         # Find the most recently modified .jsonl file
         jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
         if not jsonl_files:
-            return {
-                "exists": False,
-                "content": "",
-                "path": str(claude_projects_dir),
-                "session": app.state.current_session,
-            }
+            return return_cached()
 
         # Sort by modification time, most recent first
         jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
@@ -1463,9 +1498,16 @@ def create_app(config: Config) -> FastAPI:
 
             content = '\n\n'.join(conversation)
 
+            # If log was cleared (empty), fall back to cache
+            if not content.strip():
+                return return_cached()
+
             # Redact potential secrets
             content = re.sub(r'(sk-[a-zA-Z0-9]{20,})', '[REDACTED_API_KEY]', content)
             content = re.sub(r'(ghp_[a-zA-Z0-9]{36,})', '[REDACTED_GITHUB_TOKEN]', content)
+
+            # Cache the content for persistence across /clear
+            write_log_cache(project_id, content)
 
             return {
                 "exists": True,
@@ -1478,6 +1520,30 @@ def create_app(config: Config) -> FastAPI:
         except Exception as e:
             logger.error(f"Error reading log file: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.delete("/api/log/cache")
+    async def clear_log_cache(token: Optional[str] = Query(None)):
+        """Clear the cached log for the current project."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return {"cleared": False, "error": "No repo path found"}
+
+        project_id = str(repo_path.resolve()).replace("/", "-")
+        cache_path = get_log_cache_path(project_id)
+
+        if cache_path.exists():
+            try:
+                cache_path.unlink()
+                logger.info(f"Cleared log cache: {cache_path}")
+                return {"cleared": True, "path": str(cache_path)}
+            except Exception as e:
+                logger.error(f"Error clearing log cache: {e}")
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        return {"cleared": False, "error": "No cache file exists"}
 
     @app.get("/api/terminal/capture")
     async def capture_terminal(
