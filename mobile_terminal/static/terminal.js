@@ -2090,6 +2090,7 @@ function setupChallenge() {
     const challengeProblem = document.getElementById('challengeProblem');
     const challengeIncludeTerminal = document.getElementById('challengeIncludeTerminal');
     const challengeIncludeDiff = document.getElementById('challengeIncludeDiff');
+    const challengeIncludePlan = document.getElementById('challengeIncludePlan');
     const challengePreview = document.getElementById('challengePreview');
     const challengePreviewContent = document.getElementById('challengePreviewContent');
     const challengeInputSection = document.getElementById('challengeInputSection');
@@ -2163,6 +2164,21 @@ function setupChallenge() {
             preview += `## Git Diff\n(Will include uncommitted changes)\n\n`;
         }
 
+        // Active plan
+        if (challengeIncludePlan?.checked) {
+            try {
+                const response = await fetch(`/api/plan/active?token=${token}&preview=true`);
+                const data = await response.json();
+                if (data.exists && data.content) {
+                    preview += `## Active Plan (${data.filename})\n${data.content}\n\n`;
+                } else {
+                    preview += `## Active Plan\n(No active plan found)\n\n`;
+                }
+            } catch (e) {
+                preview += `## Active Plan\n(Failed to load)\n\n`;
+            }
+        }
+
         preview += `## Git Status\n(Will include current status)`;
 
         challengePreviewContent.textContent = preview;
@@ -2204,6 +2220,9 @@ function setupChallenge() {
     if (challengeIncludeDiff) {
         challengeIncludeDiff.addEventListener('change', loadPreview);
     }
+    if (challengeIncludePlan) {
+        challengeIncludePlan.addEventListener('change', loadPreview);
+    }
     if (challengeProblem) {
         let previewDebounce = null;
         challengeProblem.addEventListener('input', () => {
@@ -2233,6 +2252,7 @@ function setupChallenge() {
         const problem = challengeProblem?.value?.trim() || '';
         const includeTerminal = challengeIncludeTerminal?.checked ?? true;
         const includeDiff = challengeIncludeDiff?.checked ?? true;
+        const includePlan = challengeIncludePlan?.checked ?? false;
 
         const modelName = challengeModelSelect.options[challengeModelSelect.selectedIndex]?.text || selectedModel;
 
@@ -2251,6 +2271,7 @@ function setupChallenge() {
                 include_terminal: includeTerminal,
                 terminal_lines: 50,
                 include_diff: includeDiff,
+                include_plan: includePlan,
             });
 
             const response = await fetch(`/api/challenge?${params}`, {
@@ -2887,6 +2908,8 @@ function switchToLogView() {
     startLogAutoRefresh();
     // Start tail viewport refresh
     startTailViewport();
+    // Check for active plan
+    checkActivePlan();
 }
 
 function switchToTerminalView() {
@@ -4035,6 +4058,81 @@ function setupPlanPreviewHandler() {
             console.error('Failed to fetch plan preview:', err);
         } finally {
             planRef.classList.remove('loading');
+        }
+    });
+}
+
+/**
+ * Check for active plan and show/hide the Plan button
+ */
+async function checkActivePlan() {
+    const planBtn = document.getElementById('planBtn');
+    const logHeader = document.getElementById('logHeader');
+    if (!planBtn || !logHeader) return;
+
+    try {
+        const response = await fetch(`/api/plan/active?token=${token}&preview=false`);
+        const data = await response.json();
+
+        if (data.exists) {
+            planBtn.dataset.filename = data.filename;
+            logHeader.classList.remove('hidden');
+        } else {
+            logHeader.classList.add('hidden');
+        }
+    } catch (e) {
+        console.error('Failed to check active plan:', e);
+        logHeader.classList.add('hidden');
+    }
+}
+
+/**
+ * Setup plan button and modal handlers
+ */
+function setupPlanButton() {
+    const planBtn = document.getElementById('planBtn');
+    const planModal = document.getElementById('planModal');
+    const planModalClose = document.getElementById('planModalClose');
+    const planModalTitle = document.getElementById('planModalTitle');
+    const planModalBody = document.getElementById('planModalBody');
+
+    if (!planBtn || !planModal) return;
+
+    planBtn.addEventListener('click', async () => {
+        planModal.classList.remove('hidden');
+        planModalBody.innerHTML = '<div class="loading">Loading plan...</div>';
+
+        try {
+            const response = await fetch(`/api/plan/active?token=${token}&preview=false`);
+            const data = await response.json();
+
+            if (data.exists && data.content) {
+                planModalTitle.textContent = data.filename;
+                // Render markdown
+                try {
+                    planModalBody.innerHTML = marked.parse(data.content);
+                } catch (e) {
+                    planModalBody.innerHTML = `<pre>${escapeHtml(data.content)}</pre>`;
+                }
+            } else {
+                planModalBody.innerHTML = '<p>No active plan found</p>';
+            }
+        } catch (e) {
+            console.error('Failed to load plan:', e);
+            planModalBody.innerHTML = '<p style="color: var(--danger);">Error loading plan</p>';
+        }
+    });
+
+    if (planModalClose) {
+        planModalClose.addEventListener('click', () => {
+            planModal.classList.add('hidden');
+        });
+    }
+
+    // Close on backdrop click
+    planModal.addEventListener('click', (e) => {
+        if (e.target === planModal) {
+            planModal.classList.add('hidden');
         }
     });
 }
@@ -6086,6 +6184,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupSuperCollapseHandler();
     setupScrollTracking();
     setupPlanPreviewHandler();
+    setupPlanButton();
     setupPreviewHandlers();
     setupRunnerHandlers();
 

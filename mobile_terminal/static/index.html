@@ -82,6 +82,9 @@
 
         <!-- Log view: Log + Command input (primary view) -->
         <div id="logView" class="log-view">
+            <div id="logHeader" class="log-header hidden">
+                <button id="planBtn" class="plan-btn" title="View active plan">Plan</button>
+            </div>
             <div id="logContent" class="log-view-content"></div>
             <!-- Terminal block: active prompt + input as one unit -->
             <div id="terminalBlock" class="terminal-block">
@@ -234,6 +237,10 @@
                             <input type="checkbox" id="challengeIncludeDiff" checked>
                             <span>Include uncommitted changes</span>
                         </label>
+                        <label class="challenge-option">
+                            <input type="checkbox" id="challengeIncludePlan">
+                            <span>Include active plan</span>
+                        </label>
                     </div>
 
                     <!-- Preview (collapsible) -->
@@ -258,6 +265,19 @@
                         <button id="challengeToCompose" class="challenge-action secondary hidden">Edit</button>
                         <button id="challengeRun" class="challenge-action primary">Run</button>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Plan modal (view active plan) -->
+        <div id="planModal" class="plan-modal hidden">
+            <div class="plan-modal-content">
+                <div class="plan-modal-header">
+                    <span id="planModalTitle" class="plan-modal-title">Active Plan</span>
+                    <button id="planModalClose" class="plan-modal-close">&times;</button>
+                </div>
+                <div id="planModalBody" class="plan-modal-body">
+                    Loading...
                 </div>
             </div>
         </div>

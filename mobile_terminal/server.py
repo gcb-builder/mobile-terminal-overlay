@@ -1357,6 +1357,48 @@ def create_app(config: Config) -> FastAPI:
             logger.error(f"Error reading plan file: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.get("/api/plan/active")
+    async def get_active_plan(
+        token: Optional[str] = Query(None),
+        preview: bool = Query(True, description="Return only first 15 lines"),
+    ):
+        """
+        Get the most recently modified plan file from ~/.claude/plans/.
+        Used to surface the "active" plan Claude is working on.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        plans_dir = Path.home() / ".claude" / "plans"
+        if not plans_dir.exists():
+            return {"exists": False, "content": "", "error": "No plans directory"}
+
+        # Find most recently modified .md file
+        plan_files = list(plans_dir.glob("*.md"))
+        if not plan_files:
+            return {"exists": False, "content": "", "error": "No plan files"}
+
+        plan_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        active_plan = plan_files[0]
+
+        try:
+            content = active_plan.read_text(errors="replace")
+            if preview:
+                lines = content.split('\n')[:15]
+                content = '\n'.join(lines)
+                if len(active_plan.read_text().split('\n')) > 15:
+                    content += '\n...'
+
+            return {
+                "exists": True,
+                "content": content,
+                "filename": active_plan.name,
+                "modified": active_plan.stat().st_mtime,
+            }
+        except Exception as e:
+            logger.error(f"Error reading active plan: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     def get_log_cache_path(project_id: str) -> Path:
         """Get the cache file path for a project's log."""
         LOG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1623,6 +1665,7 @@ def create_app(config: Config) -> FastAPI:
         include_terminal: bool = Query(True),
         terminal_lines: int = Query(50),
         include_diff: bool = Query(True),
+        include_plan: bool = Query(False),
     ):
         """
         Run problem-focused code review using AI models.
@@ -1634,6 +1677,7 @@ def create_app(config: Config) -> FastAPI:
         - User's problem description (required for focused review)
         - Terminal output (optional, captures current state)
         - Git diff (optional, shows recent changes)
+        - Active plan (optional, shows what Claude is working on)
         - Minimal project context
 
         Returns AI's analysis focused on the specific problem.
@@ -1700,7 +1744,24 @@ def create_app(config: Config) -> FastAPI:
             except Exception as e:
                 logger.warning(f"Failed to get git diff: {e}")
 
-        # 4. Minimal project context (git status + branch)
+        # 4. Active plan (shows what Claude is working towards)
+        if include_plan:
+            try:
+                plans_dir = Path.home() / ".claude" / "plans"
+                if plans_dir.exists():
+                    plan_files = list(plans_dir.glob("*.md"))
+                    if plan_files:
+                        plan_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+                        active_plan = plan_files[0]
+                        plan_content = active_plan.read_text(errors="replace")
+                        # Truncate if too long
+                        if len(plan_content) > 4000:
+                            plan_content = plan_content[:4000] + "\n... [plan truncated]"
+                        bundle_parts.append(f"## Active Plan ({active_plan.name})\n```markdown\n{plan_content}\n```")
+            except Exception as e:
+                logger.warning(f"Failed to read active plan: {e}")
+
+        # 5. Minimal project context (git status + branch)
         try:
             status = subprocess.run(
                 ["git", "status", "-sb"],
