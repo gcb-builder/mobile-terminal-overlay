@@ -677,14 +677,39 @@ logger = logging.getLogger(__name__)
 # Directory containing static files
 STATIC_DIR = Path(__file__).parent / "static"
 
-# Directory for transcript logs (pipe-pane output)
-TRANSCRIPT_DIR = Path.home() / ".cache" / "mobile-overlay" / "transcripts"
-
 # Directory for cached Claude conversation logs (persists across /clear)
 LOG_CACHE_DIR = Path.home() / ".cache" / "mobile-overlay" / "logs"
 
 # Plan links file (maps plan filenames to repos)
 PLAN_LINKS_FILE = Path.home() / ".claude" / "plan-links.json"
+
+# Capture-pane cache to prevent DoS from rapid polling
+# Key: (session, pane_id, lines), Value: (timestamp, result)
+_capture_cache: dict = {}
+CAPTURE_CACHE_TTL = 0.3  # 300ms TTL
+
+
+def get_cached_capture(session: str, pane_id: str, lines: int) -> Optional[dict]:
+    """Get cached capture-pane result if still valid."""
+    import time
+    key = (session, pane_id, lines)
+    if key in _capture_cache:
+        ts, result = _capture_cache[key]
+        if time.time() - ts < CAPTURE_CACHE_TTL:
+            return result
+    return None
+
+
+def set_cached_capture(session: str, pane_id: str, lines: int, result: dict):
+    """Cache capture-pane result."""
+    import time
+    key = (session, pane_id, lines)
+    _capture_cache[key] = (time.time(), result)
+    # Clean old entries (keep cache small)
+    now = time.time()
+    stale = [k for k, (ts, _) in _capture_cache.items() if now - ts > CAPTURE_CACHE_TTL * 10]
+    for k in stale:
+        del _capture_cache[k]
 
 
 def get_plan_links() -> dict:
@@ -748,128 +773,6 @@ def get_plans_for_repo(repo_path: Path) -> list:
     # Sort by score desc, then mtime desc
     scored.sort(key=lambda x: (x[1], x[0].stat().st_mtime), reverse=True)
     return scored
-
-
-# Transcript rotation settings
-TRANSCRIPT_MAX_SIZE = 5 * 1024 * 1024  # 5MB
-TRANSCRIPT_MAX_ROTATIONS = 5  # Keep 5 archived files
-
-
-def get_transcript_log_path(session_name: str, window: int = 0, pane: int = 0) -> Path:
-    """Get the transcript log file path for a session/window/pane."""
-    TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
-    return TRANSCRIPT_DIR / f"{session_name}_w{window}_p{pane}.log"
-
-
-def rotate_transcript(log_path: Path) -> bool:
-    """
-    Rotate transcript log file if it exceeds max size.
-    Uses copytruncate approach: copy content to .1, truncate original.
-    This keeps pipe-pane working without restart.
-
-    Returns True if rotation occurred.
-    """
-    if not log_path.exists():
-        return False
-
-    try:
-        size = log_path.stat().st_size
-        if size < TRANSCRIPT_MAX_SIZE:
-            return False
-
-        logger.info(f"Rotating transcript {log_path} (size: {size / 1024 / 1024:.1f}MB)")
-
-        # Rotate existing archives: .4 -> .5 (delete), .3 -> .4, etc.
-        for i in range(TRANSCRIPT_MAX_ROTATIONS, 0, -1):
-            old_path = Path(f"{log_path}.{i}")
-            if old_path.exists():
-                if i == TRANSCRIPT_MAX_ROTATIONS:
-                    old_path.unlink()  # Delete oldest
-                else:
-                    old_path.rename(f"{log_path}.{i + 1}")
-
-        # Copy current to .1
-        archive_path = Path(f"{log_path}.1")
-        import shutil
-        shutil.copy2(log_path, archive_path)
-
-        # Truncate original (copytruncate style - keeps pipe-pane working)
-        with open(log_path, 'w') as f:
-            f.truncate(0)
-
-        logger.info(f"Rotated transcript to {archive_path}")
-        return True
-
-    except Exception as e:
-        logger.error(f"Error rotating transcript: {e}")
-        return False
-
-
-def is_spinner_frame(line: str) -> bool:
-    """
-    Detect if a line is just a spinner animation frame.
-    These are high-frequency visual noise that don't need to be persisted.
-    """
-    # Spinner characters used by Claude and common TUIs
-    spinners = {'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
-                '|', '/', '-', '\\', '◐', '◓', '◑', '◒'}
-
-    # Strip ANSI escape codes for analysis
-    import re
-    clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', line).strip()
-
-    # If after stripping escapes, only spinner chars or empty
-    if not clean or clean in spinners:
-        return True
-
-    # Line is primarily cursor movement + single spinner char
-    if len(clean) <= 2 and any(c in spinners for c in clean):
-        return True
-
-    return False
-
-
-def enable_pipe_pane(session_name: str, window: int = 0, pane: int = 0) -> Optional[Path]:
-    """
-    Enable tmux pipe-pane for a session to capture output to a log file.
-    Uses transcript_filter.py to strip ANSI codes and spinner noise.
-    Returns the log file path if successful, None otherwise.
-    """
-    import subprocess
-
-    log_path = get_transcript_log_path(session_name, window, pane)
-    target = f"{session_name}:{window}.{pane}"
-
-    # Rotate transcript if needed before enabling pipe-pane
-    rotate_transcript(log_path)
-
-    # Path to the transcript filter script
-    filter_script = Path(__file__).parent / "tools" / "transcript_filter.py"
-
-    try:
-        # Use filter script if it exists, otherwise fall back to cat
-        if filter_script.exists():
-            pipe_cmd = f"python3 -u {filter_script} >> {log_path}"
-        else:
-            logger.warning(f"Filter script not found at {filter_script}, using cat")
-            pipe_cmd = f"cat >> {log_path}"
-
-        # -o = don't double-pipe if already enabled
-        result = subprocess.run(
-            ["tmux", "pipe-pane", "-o", "-t", target, pipe_cmd],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            logger.info(f"Enabled pipe-pane for {target} -> {log_path}")
-            return log_path
-        else:
-            logger.warning(f"pipe-pane failed for {target}: {result.stderr}")
-            return None
-    except Exception as e:
-        logger.error(f"Error enabling pipe-pane: {e}")
-        return None
 
 
 def list_tmux_sessions(prefix: str = "") -> list:
@@ -1185,141 +1088,66 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/transcript")
     async def get_transcript(
         token: Optional[str] = Query(None),
-        lines: int = Query(10000),
-        source: str = Query("auto"),  # "auto", "log", or "capture"
+        lines: int = Query(500),
+        session: Optional[str] = Query(None),
+        pane: int = Query(0),
     ):
         """
-        Get terminal transcript.
+        Get terminal transcript using tmux capture-pane.
+        Returns last N lines of terminal history.
 
-        Sources:
-        - "log": Read from pipe-pane log file (cleanest, if available)
-        - "capture": Use tmux capture-pane (fallback)
-        - "auto": Try log first, fall back to capture-pane
+        Params:
+            session: tmux session name (defaults to current_session)
+            pane: pane index within session (default 0)
+            lines: number of lines to capture (default 500)
+
+        Uses same 300ms cache as /api/terminal/capture.
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        session_name = app.state.current_session
-        log_path = get_transcript_log_path(session_name)
+        target_session = session or app.state.current_session
+        if not target_session:
+            return JSONResponse({"error": "No session"}, status_code=400)
 
-        # Rotate transcript if needed (keeps live file fresh)
-        rotated = rotate_transcript(log_path)
+        pane_id = str(pane)
+        target = f"{target_session}:{0}.{pane}"
 
-        # Try reading from log file first (if source is auto or log)
-        # Only reads from live file - archives are not replayed
-        if source in ("auto", "log") and log_path.exists():
-            try:
-                with open(log_path, "r", errors="replace") as f:
-                    # Read last N lines efficiently
-                    content = f.read()
-                    all_lines = content.split("\n")
-                    if len(all_lines) > lines:
-                        all_lines = all_lines[-lines:]
-                    text = "\n".join(all_lines)
-                return {
-                    "text": text,
-                    "session": session_name,
-                    "source": "log",
-                    "log_path": str(log_path),
-                    "rotated": rotated,
-                }
-            except Exception as e:
-                logger.warning(f"Error reading log file: {e}")
-                if source == "log":
-                    return JSONResponse({"error": f"Log file error: {e}"}, status_code=500)
-                # Fall through to capture-pane
+        # Check cache first
+        cached = get_cached_capture(target_session, pane_id, lines)
+        if cached and "text" in cached:
+            return cached
 
-        # Fallback to tmux capture-pane
         try:
             import subprocess
             result = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-J", "-S", f"-{lines}", "-t", session_name],
+                ["tmux", "capture-pane", "-p", "-J", "-S", f"-{lines}", "-t", target],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
             if result.returncode != 0:
+                if "can't find" in result.stderr.lower() or "no such" in result.stderr.lower():
+                    return JSONResponse(
+                        {"error": f"Target not found: {target}", "session": target_session, "pane": pane},
+                        status_code=409,
+                    )
                 return JSONResponse(
                     {"error": f"tmux capture-pane failed: {result.stderr}"},
                     status_code=500,
                 )
-            return {
+            response = {
                 "text": result.stdout,
-                "session": session_name,
-                "source": "capture",
+                "session": target_session,
+                "pane": pane,
             }
+            set_cached_capture(target_session, pane_id, lines, response)
+            return response
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "Capture timeout"}, status_code=504)
         except Exception as e:
             logger.error(f"Transcript error: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
-
-    @app.get("/api/transcript/status")
-    async def transcript_status(token: Optional[str] = Query(None)):
-        """Get transcript log status including size and rotation info."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-        session_name = app.state.current_session
-        log_path = get_transcript_log_path(session_name)
-
-        result = {
-            "live_file": str(log_path),
-            "live_exists": log_path.exists(),
-            "live_size_bytes": 0,
-            "live_size_mb": 0,
-            "max_size_mb": TRANSCRIPT_MAX_SIZE / 1024 / 1024,
-            "archives": [],
-            "total_size_mb": 0,
-        }
-
-        if log_path.exists():
-            size = log_path.stat().st_size
-            result["live_size_bytes"] = size
-            result["live_size_mb"] = round(size / 1024 / 1024, 2)
-            result["total_size_mb"] = result["live_size_mb"]
-
-        # Check for archived files
-        for i in range(1, TRANSCRIPT_MAX_ROTATIONS + 1):
-            archive = Path(f"{log_path}.{i}")
-            if archive.exists():
-                size_mb = round(archive.stat().st_size / 1024 / 1024, 2)
-                result["archives"].append({
-                    "file": str(archive),
-                    "size_mb": size_mb,
-                })
-                result["total_size_mb"] += size_mb
-
-        result["total_size_mb"] = round(result["total_size_mb"], 2)
-        return result
-
-    @app.post("/api/transcript/rotate")
-    async def force_rotate_transcript(token: Optional[str] = Query(None)):
-        """Force rotation of transcript log."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-        session_name = app.state.current_session
-        log_path = get_transcript_log_path(session_name)
-
-        if not log_path.exists():
-            return {"rotated": False, "error": "No transcript file exists"}
-
-        # Force rotation regardless of size
-        size_before = log_path.stat().st_size
-
-        # Temporarily set max to 0 to force rotation
-        global TRANSCRIPT_MAX_SIZE
-        old_max = TRANSCRIPT_MAX_SIZE
-        TRANSCRIPT_MAX_SIZE = 0
-        rotated = rotate_transcript(log_path)
-        TRANSCRIPT_MAX_SIZE = old_max
-
-        return {
-            "rotated": rotated,
-            "size_before_bytes": size_before,
-            "size_before_mb": round(size_before / 1024 / 1024, 2),
-        }
 
     @app.get("/api/refresh")
     async def refresh_terminal(token: Optional[str] = Query(None)):
@@ -1980,6 +1808,8 @@ def create_app(config: Config) -> FastAPI:
     async def capture_terminal(
         token: Optional[str] = Query(None),
         lines: int = Query(50),
+        session: Optional[str] = Query(None),
+        pane: int = Query(0),
     ):
         """
         Capture recent terminal output from tmux pane.
@@ -1987,20 +1817,36 @@ def create_app(config: Config) -> FastAPI:
         Uses tmux capture-pane to get scrollback buffer.
         Returns last N lines of terminal content.
         Also returns pane_title which Claude Code uses to signal its state.
+
+        Params:
+            session: tmux session name (defaults to current_session)
+            pane: pane index within session (default 0)
+            lines: number of lines to capture (default 50)
+
+        Includes 300ms cache to prevent DoS from rapid polling.
         """
         import subprocess
 
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        session = app.state.current_session
-        if not session:
+        # Use provided session or fall back to current
+        target_session = session or app.state.current_session
+        if not target_session:
             return {"content": "", "error": "No session"}
+
+        pane_id = str(pane)
+        target = f"{target_session}:{0}.{pane}"
+
+        # Check cache first
+        cached = get_cached_capture(target_session, pane_id, lines)
+        if cached:
+            return cached
 
         try:
             # Capture last N lines from tmux pane
             result = subprocess.run(
-                ["tmux", "capture-pane", "-t", session, "-p", "-S", f"-{lines}"],
+                ["tmux", "capture-pane", "-t", target, "-p", "-S", f"-{lines}"],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -2011,7 +1857,7 @@ def create_app(config: Config) -> FastAPI:
             pane_title = ""
             try:
                 title_result = subprocess.run(
-                    ["tmux", "display-message", "-p", "-t", session, "#{pane_title}"],
+                    ["tmux", "display-message", "-p", "-t", target, "#{pane_title}"],
                     capture_output=True,
                     text=True,
                     timeout=2,
@@ -2022,13 +1868,25 @@ def create_app(config: Config) -> FastAPI:
                 pass
 
             if result.returncode == 0:
-                return {
+                response = {
                     "content": result.stdout,
                     "lines": lines,
                     "pane_title": pane_title,
+                    "session": target_session,
+                    "pane": pane,
                 }
+                set_cached_capture(target_session, pane_id, lines, response)
+                return response
             else:
+                # Target missing or invalid
+                if "can't find" in result.stderr.lower() or "no such" in result.stderr.lower():
+                    return JSONResponse(
+                        {"error": f"Target not found: {target}", "session": target_session, "pane": pane},
+                        status_code=409,
+                    )
                 return {"content": "", "error": result.stderr, "pane_title": pane_title}
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Capture timeout"}, status_code=504)
         except Exception as e:
             logger.error(f"Failed to capture terminal: {e}")
             return {"content": "", "error": str(e)}
@@ -2959,10 +2817,6 @@ Output format:
             app.state.master_fd = master_fd
             app.state.child_pid = child_pid
 
-            # Enable pipe-pane after short delay
-            await asyncio.sleep(0.5)
-            enable_pipe_pane(session_name)
-
             app.state.audit_log.log("process_respawn", {
                 "old_pid": old_pid,
                 "new_pid": child_pid,
@@ -3767,22 +3621,11 @@ Output format:
                 app.state.master_fd = master_fd
                 app.state.child_pid = child_pid
                 logger.info(f"Spawned tmux session: {session_name}")
-
-                # Enable pipe-pane for transcript logging (after short delay for tmux to be ready)
-                await asyncio.sleep(0.5)
-                log_path = enable_pipe_pane(session_name)
-                if log_path:
-                    logger.info(f"Transcript logging enabled: {log_path}")
             except Exception as e:
                 logger.error(f"Failed to spawn tmux: {e}")
                 await websocket.send_json({"type": "error", "message": str(e)})
                 await websocket.close()
                 return
-        else:
-            # Existing session - ensure pipe-pane is enabled
-            session_name = app.state.current_session
-            enable_pipe_pane(session_name)
-
         master_fd = app.state.master_fd
         output_buffer = app.state.output_buffer
 
