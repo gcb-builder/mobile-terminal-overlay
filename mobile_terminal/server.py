@@ -1199,6 +1199,51 @@ def create_app(config: Config) -> FastAPI:
         """Get the path of the current repo based on session name and target."""
         return get_repo_path_info()["path"]
 
+    def validate_target(session: Optional[str], pane_id: Optional[str]) -> dict:
+        """
+        Validate that the client's session and pane_id match server state.
+        Returns dict with 'valid' bool and 'error' message if invalid.
+
+        Used to prevent state-changing operations on wrong target.
+        """
+        result = {"valid": True, "error": None, "expected": {}, "received": {}}
+
+        expected_session = app.state.current_session
+        expected_pane = app.state.active_target
+
+        result["expected"] = {"session": expected_session, "pane_id": expected_pane}
+        result["received"] = {"session": session, "pane_id": pane_id}
+
+        # Validate session
+        if session and session != expected_session:
+            result["valid"] = False
+            result["error"] = f"Session mismatch: expected '{expected_session}', got '{session}'"
+            return result
+
+        # Validate pane_id (only if server has an active target set)
+        if expected_pane and pane_id and pane_id != expected_pane:
+            result["valid"] = False
+            result["error"] = f"Target mismatch: expected '{expected_pane}', got '{pane_id}'"
+            return result
+
+        # If pane_id provided, verify it exists in current session
+        if pane_id:
+            try:
+                check = subprocess.run(
+                    ["tmux", "list-panes", "-s", "-t", expected_session,
+                     "-F", "#{window_index}:#{pane_index}"],
+                    capture_output=True, text=True, timeout=2
+                )
+                valid_panes = check.stdout.strip().split("\n") if check.returncode == 0 else []
+                if pane_id not in valid_panes:
+                    result["valid"] = False
+                    result["error"] = f"Pane '{pane_id}' not found in session '{expected_session}'"
+                    return result
+            except Exception as e:
+                logger.warning(f"Could not verify pane: {e}")
+
+        return result
+
     @app.get("/api/context")
     async def get_context(token: Optional[str] = Query(None)):
         """
@@ -2249,6 +2294,8 @@ Output format:
     async def terminate_process(
         token: Optional[str] = Query(None),
         force: bool = Query(False),
+        session: Optional[str] = Query(None),
+        pane_id: Optional[str] = Query(None),
     ):
         """
         Terminate the PTY process.
@@ -2257,6 +2304,16 @@ Output format:
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate target before destructive operation
+        target_check = validate_target(session, pane_id)
+        if not target_check["valid"]:
+            return JSONResponse({
+                "error": "Target mismatch",
+                "message": target_check["error"],
+                "expected": target_check["expected"],
+                "received": target_check["received"]
+            }, status_code=409)
 
         child_pid = app.state.child_pid
         if not child_pid:
@@ -2310,6 +2367,8 @@ Output format:
     @app.post("/api/process/respawn")
     async def respawn_process(
         token: Optional[str] = Query(None),
+        session: Optional[str] = Query(None),
+        pane_id: Optional[str] = Query(None),
     ):
         """
         Respawn the PTY process.
@@ -2318,6 +2377,16 @@ Output format:
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate target before destructive operation
+        target_check = validate_target(session, pane_id)
+        if not target_check["valid"]:
+            return JSONResponse({
+                "error": "Target mismatch",
+                "message": target_check["error"],
+                "expected": target_check["expected"],
+                "received": target_check["received"]
+            }, status_code=409)
 
         old_pid = app.state.child_pid
 
@@ -2457,6 +2526,8 @@ Output format:
         command_id: str = Query(...),
         variant: int = Query(0),  # Which command variant to use
         token: Optional[str] = Query(None),
+        session: Optional[str] = Query(None),
+        pane_id: Optional[str] = Query(None),
     ):
         """
         Execute an allowlisted runner command.
@@ -2466,6 +2537,16 @@ Output format:
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate target before executing
+        target_check = validate_target(session, pane_id)
+        if not target_check["valid"]:
+            return JSONResponse({
+                "error": "Target mismatch",
+                "message": target_check["error"],
+                "expected": target_check["expected"],
+                "received": target_check["received"]
+            }, status_code=409)
 
         if command_id not in RUNNER_COMMANDS:
             return JSONResponse({"error": "Unknown command"}, status_code=400)
@@ -2504,6 +2585,8 @@ Output format:
     async def execute_custom_command(
         command: str = Query(...),
         token: Optional[str] = Query(None),
+        session: Optional[str] = Query(None),
+        pane_id: Optional[str] = Query(None),
     ):
         """
         Execute a custom command (with basic safety checks).
@@ -2512,6 +2595,16 @@ Output format:
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate target before executing
+        target_check = validate_target(session, pane_id)
+        if not target_check["valid"]:
+            return JSONResponse({
+                "error": "Target mismatch",
+                "message": target_check["error"],
+                "expected": target_check["expected"],
+                "received": target_check["received"]
+            }, status_code=409)
 
         # Basic safety checks
         dangerous_patterns = [
@@ -2810,10 +2903,22 @@ Output format:
     async def execute_revert(
         commit_hash: str = Query(...),
         token: Optional[str] = Query(None),
+        session: Optional[str] = Query(None),
+        pane_id: Optional[str] = Query(None),
     ):
         """Execute git revert."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate target before destructive operation
+        target_check = validate_target(session, pane_id)
+        if not target_check["valid"]:
+            return JSONResponse({
+                "error": "Target mismatch",
+                "message": target_check["error"],
+                "expected": target_check["expected"],
+                "received": target_check["received"]
+            }, status_code=409)
 
         # Validate hash format
         if not re.match(r'^[a-f0-9]{7,40}$', commit_hash):

@@ -54,7 +54,7 @@ let currentInput = '';
 let terminalContainer, controlBarsContainer;
 let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
-let targetBtn, targetLabel, targetDropdown;
+let targetBtn, targetLabel, targetDropdown, targetLockBtn, targetLockIcon;
 let cwdMismatchBanner, cwdMismatchText, cwdFixBtn, cwdDismissBtn;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let composeBtn, composeModal;
@@ -112,6 +112,7 @@ let previewFilter = 'all';       // Current filter: all, user_send, tool_call, c
 let targets = [];                // List of panes in current session
 let activeTarget = null;         // Currently selected target pane ID (e.g., "0:0")
 let expectedRepoPath = null;     // Expected repo path from config
+let targetLocked = true;         // Lock mode (true = locked, false = follow active pane)
 
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
@@ -129,6 +130,8 @@ function initDOMElements() {
     targetBtn = document.getElementById('targetBtn');
     targetLabel = document.getElementById('targetLabel');
     targetDropdown = document.getElementById('targetDropdown');
+    targetLockBtn = document.getElementById('targetLockBtn');
+    targetLockIcon = document.getElementById('targetLockIcon');
     cwdMismatchBanner = document.getElementById('cwdMismatchBanner');
     cwdMismatchText = document.getElementById('cwdMismatchText');
     cwdFixBtn = document.getElementById('cwdFixBtn');
@@ -1205,6 +1208,7 @@ async function switchRepo(session) {
         activeTarget = null;
         localStorage.removeItem('mto_active_target');
         targetBtn.classList.add('hidden');
+        targetLockBtn.classList.add('hidden');
         cwdMismatchBanner.classList.add('hidden');
 
         // Update UI
@@ -1286,12 +1290,19 @@ async function loadTargets() {
             expectedRepoPath = currentRepo ? currentRepo.path : null;
         }
 
-        // Show target button only if multiple panes exist
+        // Show target button and lock button only if multiple panes exist
         if (targets.length > 1) {
             targetBtn.classList.remove('hidden');
+            targetLockBtn.classList.remove('hidden');
             updateTargetLabel();
         } else {
             targetBtn.classList.add('hidden');
+            targetLockBtn.classList.add('hidden');
+        }
+
+        // Check if locked target still exists
+        if (targetLocked && activeTarget && !data.active_exists) {
+            showTargetMissingWarning();
         }
 
         // Check for cwd mismatch
@@ -1304,6 +1315,19 @@ async function loadTargets() {
 }
 
 /**
+ * Show warning when locked target pane no longer exists
+ */
+function showTargetMissingWarning() {
+    cwdMismatchText.textContent = 'Target pane no longer exists. Please select a new target.';
+    cwdMismatchBanner.classList.remove('hidden');
+    cwdFixBtn.style.display = 'none';  // Hide cd button, not relevant here
+
+    // Clear the invalid target
+    activeTarget = null;
+    localStorage.removeItem('mto_active_target');
+}
+
+/**
  * Check if pane cwd matches expected repo and show warning if not
  */
 function checkCwdMismatch(resolution) {
@@ -1311,6 +1335,9 @@ function checkCwdMismatch(resolution) {
         cwdMismatchBanner.classList.add('hidden');
         return;
     }
+
+    // Restore cd button visibility (may have been hidden by showTargetMissingWarning)
+    cwdFixBtn.style.display = '';
 
     const currentCwd = resolution.path;
     // Check if cwd is inside expected repo path
@@ -1449,16 +1476,65 @@ function setupTargetSelector() {
         }
     });
 
+    // Lock toggle button
+    targetLockBtn.addEventListener('click', toggleTargetLock);
+
     // CWD mismatch banner buttons
     cwdFixBtn.addEventListener('click', cdToRepoRoot);
     cwdDismissBtn.addEventListener('click', () => {
         cwdMismatchBanner.classList.add('hidden');
     });
 
-    // Restore saved target on startup
+    // Restore saved state on startup
     const savedTarget = localStorage.getItem('mto_active_target');
+    const savedLocked = localStorage.getItem('mto_target_locked');
+
+    // Default to locked if not set
+    targetLocked = savedLocked !== 'false';
+    updateLockUI();
+
     if (savedTarget) {
         selectTarget(savedTarget);
+    }
+}
+
+/**
+ * Get target params for API calls (session + pane_id)
+ */
+function getTargetParams() {
+    const params = new URLSearchParams();
+    if (currentSession) params.append('session', currentSession);
+    if (activeTarget) params.append('pane_id', activeTarget);
+    return params.toString();
+}
+
+/**
+ * Toggle target lock mode
+ */
+function toggleTargetLock() {
+    targetLocked = !targetLocked;
+    localStorage.setItem('mto_target_locked', targetLocked);
+    updateLockUI();
+
+    if (targetLocked) {
+        showToast('Target locked - stays on selected pane', 'success');
+    } else {
+        showToast('Follow mode - follows tmux active pane', 'warning');
+    }
+}
+
+/**
+ * Update lock button UI
+ */
+function updateLockUI() {
+    if (targetLocked) {
+        targetLockIcon.textContent = '🔒';
+        targetLockBtn.classList.remove('unlocked');
+        targetLockBtn.title = 'Target locked (click to follow active)';
+    } else {
+        targetLockIcon.textContent = '👁';
+        targetLockBtn.classList.add('unlocked');
+        targetLockBtn.title = 'Following active pane (click to lock)';
     }
 }
 
@@ -3482,13 +3558,8 @@ function renderLogEntries(content) {
     // Extract and show suggestions from last message
     extractAndShowSuggestions(content);
 
-    // Only scroll to bottom if user was already at bottom
-    if (userAtBottom) {
-        logContent.scrollTop = logContent.scrollHeight;
-    } else {
-        // Show new content indicator
-        showNewContentIndicator();
-    }
+    // Scroll to bottom (render is only called when user is at bottom or explicitly requested)
+    logContent.scrollTop = logContent.scrollHeight;
 }
 
 /**
@@ -3752,9 +3823,15 @@ function setupScrollTracking() {
         const scrollBottom = logContent.scrollHeight - logContent.scrollTop - logContent.clientHeight;
         userAtBottom = scrollBottom < 50;
 
-        // Hide indicator if user scrolled to bottom
+        // If user scrolled to bottom and there's pending content, render it
         if (userAtBottom) {
             hideNewContentIndicator();
+            if (pendingLogContent) {
+                renderLogEntries(pendingLogContent);
+                pendingLogContent = null;
+                // Scroll to actual bottom after render
+                logContent.scrollTop = logContent.scrollHeight;
+            }
         }
     });
 }
@@ -3771,6 +3848,11 @@ function showNewContentIndicator() {
         newContentIndicator.className = 'new-content-indicator';
         newContentIndicator.innerHTML = '↓ New content';
         newContentIndicator.addEventListener('click', () => {
+            // Render pending content first, then scroll to bottom
+            if (pendingLogContent) {
+                renderLogEntries(pendingLogContent);
+                pendingLogContent = null;
+            }
             logContent.scrollTop = logContent.scrollHeight;
             userAtBottom = true;
             hideNewContentIndicator();
@@ -4164,6 +4246,9 @@ let lastDetectedTurn = null;  // Track last detected turn type for snapshot capt
  * Refresh log content without resetting logLoaded flag
  * (for auto-refresh to get new content)
  */
+// Store pending content when user is scrolling
+let pendingLogContent = null;
+
 async function refreshLogContent() {
     if (!logContent) return;
 
@@ -4188,8 +4273,17 @@ async function refreshLogContent() {
             captureSnapshot(turnType);
         }
 
-        // Re-render log entries
+        // If user is NOT at bottom, don't re-render (would cause scroll jump)
+        // Just store the content and show indicator
+        if (!userAtBottom) {
+            pendingLogContent = data.content;
+            showNewContentIndicator();
+            return;
+        }
+
+        // User is at bottom - safe to re-render
         renderLogEntries(data.content);
+        pendingLogContent = null;
 
         // Load suggestions from terminal capture (not JSONL log)
         loadTerminalSuggestions();
@@ -4503,8 +4597,10 @@ function setupHybridView() {
  */
 function openDrawerWithQueueTab() {
     const drawer = document.getElementById('previewDrawer');
+    const backdrop = document.getElementById('drawerBackdrop');
     if (drawer) {
         drawer.classList.remove('hidden');
+        if (backdrop) backdrop.classList.remove('hidden');
         drawerOpen = true;
         switchRollbackTab('queue');
         refreshQueueList();
@@ -4964,8 +5060,10 @@ function isPreviewMode() {
  */
 function openDrawer() {
     const drawer = document.getElementById('previewDrawer');
+    const backdrop = document.getElementById('drawerBackdrop');
     if (drawer) {
         drawer.classList.remove('hidden');
+        if (backdrop) backdrop.classList.remove('hidden');
         drawerOpen = true;
         // Default to queue tab, refresh list
         switchRollbackTab('queue');
@@ -4977,7 +5075,9 @@ function openDrawer() {
  */
 function closePreviewDrawer() {
     const drawer = document.getElementById('previewDrawer');
+    const backdrop = document.getElementById('drawerBackdrop');
     if (drawer) drawer.classList.add('hidden');
+    if (backdrop) backdrop.classList.add('hidden');
     drawerOpen = false;
 }
 
@@ -5097,6 +5197,9 @@ function setupPreviewHandlers() {
 
     // Drawer close
     document.getElementById('previewDrawerClose')?.addEventListener('click', closePreviewDrawer);
+
+    // Backdrop tap to close drawer
+    document.getElementById('drawerBackdrop')?.addEventListener('click', closePreviewDrawer);
 
     // Drawer open (from view bar)
     drawersBtn?.addEventListener('click', openDrawer);
@@ -5515,7 +5618,7 @@ async function executeRevert() {
     dryRunResult.innerHTML = '<pre>Executing revert...</pre>';
 
     try {
-        const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedCommitHash}&token=${token}`, {
+        const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedCommitHash}&token=${token}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -5672,7 +5775,7 @@ async function terminateProcess(force = false) {
     resultDiv.innerHTML = `<pre>${force ? 'Force killing' : 'Terminating'}...</pre>`;
 
     try {
-        const resp = await fetch(`/api/process/terminate?token=${token}&force=${force}`, {
+        const resp = await fetch(`/api/process/terminate?token=${token}&force=${force}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -5710,7 +5813,7 @@ async function respawnProcess() {
     resultDiv.innerHTML = '<pre>Respawning...</pre>';
 
     try {
-        const resp = await fetch(`/api/process/respawn?token=${token}`, {
+        const resp = await fetch(`/api/process/respawn?token=${token}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -5810,7 +5913,7 @@ function renderRunnerCommands() {
  */
 async function executeRunnerCommand(commandId) {
     try {
-        const resp = await fetch(`/api/runner/execute?command_id=${commandId}&token=${token}`, {
+        const resp = await fetch(`/api/runner/execute?command_id=${commandId}&token=${token}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -5842,7 +5945,7 @@ async function executeCustomCommand() {
     if (!command) return;
 
     try {
-        const resp = await fetch(`/api/runner/custom?command=${encodeURIComponent(command)}&token=${token}`, {
+        const resp = await fetch(`/api/runner/custom?command=${encodeURIComponent(command)}&token=${token}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();

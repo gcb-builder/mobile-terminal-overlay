@@ -38,6 +38,9 @@
                 <button id="targetBtn" class="target-btn hidden" title="Select target pane">
                     <span id="targetLabel">0:0</span>
                 </button>
+                <button id="targetLockBtn" class="target-lock-btn hidden" title="Toggle target lock">
+                    <span id="targetLockIcon">🔒</span>
+                </button>
                 <div id="targetDropdown" class="target-dropdown hidden"></div>
             </div>
             <div class="header-right">
@@ -261,6 +264,9 @@
                 </div>
             </div>
         </div>
+
+        <!-- Drawer backdrop (tap to close) -->
+        <div id="drawerBackdrop" class="drawer-backdrop hidden"></div>
 
         <!-- Unified drawer (tabbed: Queue / Preview / Git) -->
         <div id="previewDrawer" class="preview-drawer hidden">
