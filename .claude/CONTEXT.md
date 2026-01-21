@@ -45,6 +45,24 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] V2: Connection resilience (hello handshake, watchdog, PTY death detection)
 - [x] Target Selector: Explicit pane selection for multi-project workflows
 
+## Recent Changes (2026-01-21) - Safety & UX
+
+### Target Safety Checks (v0.2.0)
+- **Server-side validation:** All action endpoints now validate session+pane_id
+- **Client sends params:** Every action API call includes `getTargetParams()`
+- **409 Conflict:** Server returns expected vs received if mismatch
+- **Lock toggle:** Target locked by default (prevents auto-follow of tmux focus)
+
+### Log Scroll Fix
+- **Problem:** Scroll jumped to random positions when new content arrived while reading
+- **Solution:** Don't re-render while user is scrolling - store pending content
+- **Indicator:** "↓ New content" shows when updates are pending
+- **Render on demand:** Content renders when user scrolls to bottom or clicks indicator
+
+### Drawer Backdrop
+- Tap outside drawer to close (semi-transparent overlay)
+- Backdrop appears when drawer opens, hides when closed
+
 ## Recent Changes (2026-01-20) - Target Selector
 
 ### Multi-Project Target Selector

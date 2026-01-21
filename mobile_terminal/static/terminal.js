@@ -1717,6 +1717,25 @@ function setupEventListeners() {
             const keyName = btn.dataset.key;
             const key = keyMap[keyName] || keyName;
 
+            // Queue: add input box content to queue
+            if (keyName === 'queue') {
+                const input = document.getElementById('logInput');
+                const text = input?.value?.trim();
+                if (text) {
+                    enqueueCommand(text).then(success => {
+                        if (success) {
+                            input.value = '';
+                            showToast('Added to queue', 'success');
+                        } else {
+                            showToast('Failed to add to queue', 'error');
+                        }
+                    });
+                } else {
+                    showToast('Enter a command first', 'error');
+                }
+                return;
+            }
+
             // Up/Down/Tab: send with sync-back to input box
             if (keyName === 'up' || keyName === 'down') {
                 sendKeyWithSync(key, 100);

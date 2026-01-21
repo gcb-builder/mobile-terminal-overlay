@@ -1287,6 +1287,16 @@ html, body {
     background: rgba(188, 140, 255, 0.3) !important;
 }
 
+.btn-queue {
+    color: var(--cyan) !important;
+    border-color: rgba(88, 166, 255, 0.5) !important;
+    background: rgba(88, 166, 255, 0.15) !important;
+}
+
+.btn-queue:active {
+    background: rgba(88, 166, 255, 0.4) !important;
+}
+
 /* Input bar (Control mode - arrows, numbers, etc.) */
 .input-bar {
     display: flex;

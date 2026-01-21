@@ -471,3 +471,62 @@ Click to expand and see individual tools (which can still have ×N badges).
 
 **Commits:**
 - (pending)
+
+---
+
+## 2026-01-21: Target Safety Checks, Log Scroll Fix, Drawer Backdrop
+
+**Goal:** Add safety features for multi-project workflows, fix log scroll jumping, improve drawer UX
+
+### Target Safety Checks
+
+**Problem:** Actions could execute against wrong project if target changed mid-request.
+
+**Solution:** Server validates session+pane_id on all action endpoints.
+
+**Server Changes (server.py):**
+- Added `validate_target(session, pane_id)` helper function
+- Returns 409 Conflict with expected vs received values on mismatch
+- Updated 5 action endpoints: `/api/rollback/git/revert/execute`, `/api/process/terminate`, `/api/process/respawn`, `/api/runner/execute`, `/api/runner/custom`
+
+**Client Changes (terminal.js):**
+- Added `getTargetParams()` helper - returns `session=X&pane_id=Y`
+- All 5 action API calls now include target params
+
+### Log Scroll Fix
+
+**Problem:** When new content arrived while user was scrolling/reading, the log would jump to random positions because innerHTML replacement resets scroll.
+
+**Solution:** Don't re-render while user is scrolling - defer until they scroll to bottom.
+
+**Changes (terminal.js):**
+- Added `pendingLogContent` variable to store content during scroll
+- `refreshLogContent()` - If `!userAtBottom`, store content and show indicator, skip render
+- `setupScrollTracking()` - Render pending content when user scrolls to bottom
+- Indicator click handler - Render pending content before scrolling
+- `renderLogEntries()` - Simplified, always scrolls to bottom (only called when appropriate)
+
+### Drawer Backdrop
+
+**Problem:** No way to close drawer by tapping outside.
+
+**Solution:** Added semi-transparent backdrop overlay.
+
+**Changes:**
+- `index.html` - Added `<div id="drawerBackdrop">` before drawer
+- `styles.css` - Added `.drawer-backdrop` styles (fixed overlay, z-index 340, fadeIn animation)
+- `terminal.js` - `openDrawer()` and `openDrawerWithQueueTab()` show backdrop; `closePreviewDrawer()` hides it; backdrop click closes drawer
+
+### Version Bump
+
+- `pyproject.toml` - Version 0.1.0 → 0.2.0
+
+**Files Changed:**
+- `mobile_terminal/server.py` - validate_target(), target validation on 5 endpoints
+- `mobile_terminal/static/terminal.js` - getTargetParams(), pendingLogContent, backdrop handling
+- `mobile_terminal/static/index.html` - drawerBackdrop element
+- `mobile_terminal/static/styles.css` - .drawer-backdrop styles
+- `pyproject.toml` - version bump
+
+**Commits:**
+- `578fc03` Add target safety checks, fix log scroll, add drawer backdrop
