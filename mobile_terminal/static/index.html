@@ -62,6 +62,12 @@
             <button id="cwdDismissBtn" class="cwd-dismiss-btn">×</button>
         </div>
 
+        <!-- Multi-project session warning banner -->
+        <div id="multiProjectBanner" class="multi-project-banner hidden">
+            <span class="multi-project-text">Session has multiple projects. Select a target.</span>
+            <button id="multiProjectSelectBtn" class="multi-project-select-btn">Select</button>
+        </div>
+
         <!-- File search modal -->
         <div id="searchModal" class="search-modal hidden">
             <div class="search-modal-content">
@@ -101,6 +107,10 @@
 
         <!-- Terminal view (secondary, swipe to access) -->
         <div id="terminalView" class="terminal-view hidden">
+            <div class="terminal-header">
+                <span class="terminal-title">Terminal</span>
+                <button id="terminalRefresh" class="terminal-refresh">Refresh</button>
+            </div>
             <div id="terminal-container" class="terminal-container"></div>
         </div>
 
@@ -396,7 +406,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=174"></script>
+    <script src="/static/terminal.js?v=175"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

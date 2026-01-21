@@ -65,7 +65,7 @@ let challengeModal, challengeClose, challengeResult, challengeStatus, challengeR
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 let contextViewBtn, touchViewBtn, contextContainer, contextContent, touchContainer, touchContent;
 let logView, logInput, logSend, logContent, refreshBtn;
-let terminalView;
+let terminalView, terminalRefresh;
 
 // Attachments state for compose modal
 let pendingAttachments = [];
@@ -180,6 +180,7 @@ function initDOMElements() {
     logContent = document.getElementById('logContent');
     refreshBtn = document.getElementById('refreshBtn');
     terminalView = document.getElementById('terminalView');
+    terminalRefresh = document.getElementById('terminalRefresh');
     terminalBlock = document.getElementById('terminalBlock');
     activePromptContent = document.getElementById('activePromptContent');
     quickResponses = document.getElementById('quickResponses');
@@ -1219,6 +1220,20 @@ async function switchRepo(session) {
             repoLabel.textContent = session;
         }
 
+        // Re-render dropdown to update active state
+        populateRepoDropdown();
+
+        // Clear terminal and log content immediately (don't show old session's output)
+        if (term) {
+            term.clear();
+        }
+        if (logContent) {
+            logContent.innerHTML = '<div class="loading">Switching session...</div>';
+        }
+        // Reset log state to force fresh load
+        logLoaded = false;
+        lastLogModified = 0;
+
         // Server already closed WebSocket, reconnect after cleanup delay
         setTimeout(() => {
             connect();
@@ -1257,6 +1272,8 @@ function setupRepoDropdown() {
     // Toggle dropdown on button click
     repoBtn.addEventListener('click', (e) => {
         e.stopPropagation();
+        // Re-populate dropdown every time to ensure correct active state
+        populateRepoDropdown();
         toggleRepoDropdown();
     });
 
@@ -1308,6 +1325,9 @@ async function loadTargets() {
         // Check for cwd mismatch
         checkCwdMismatch(data.resolution);
 
+        // Check for multi-project session without explicit target
+        checkMultiProjectWarning(data);
+
         renderTargetDropdown();
     } catch (error) {
         console.error('Error loading targets:', error);
@@ -1347,6 +1367,28 @@ function checkCwdMismatch(resolution) {
         cwdMismatchBanner.classList.remove('hidden');
     } else {
         cwdMismatchBanner.classList.add('hidden');
+    }
+}
+
+/**
+ * Check for multi-project session without explicit target selection
+ * Shows warning if session contains multiple projects but no target is pinned
+ */
+function checkMultiProjectWarning(data) {
+    const multiProjectBanner = document.getElementById('multiProjectBanner');
+    if (!multiProjectBanner) return;
+
+    // Show warning if: multi-project session AND (no explicit target OR using fallback)
+    const needsWarning = data.multi_project &&
+        (!data.active || data.resolution?.is_fallback);
+
+    if (needsWarning) {
+        const count = data.unique_projects || 'multiple';
+        multiProjectBanner.querySelector('.multi-project-text').textContent =
+            `Session has ${count} projects. Select a target to avoid mistakes.`;
+        multiProjectBanner.classList.remove('hidden');
+    } else {
+        multiProjectBanner.classList.add('hidden');
     }
 }
 
@@ -1484,6 +1526,15 @@ function setupTargetSelector() {
     cwdDismissBtn.addEventListener('click', () => {
         cwdMismatchBanner.classList.add('hidden');
     });
+
+    // Multi-project banner select button
+    const multiProjectSelectBtn = document.getElementById('multiProjectSelectBtn');
+    if (multiProjectSelectBtn) {
+        multiProjectSelectBtn.addEventListener('click', () => {
+            targetDropdown.classList.remove('hidden');
+            loadTargets();
+        });
+    }
 
     // Restore saved state on startup
     const savedTarget = localStorage.getItem('mto_active_target');
@@ -2902,7 +2953,8 @@ function switchToLogView() {
         controlBarsContainer.classList.remove('hidden');
     }
     updateTabIndicator();
-    // Load log content
+    // Reset and load log content fresh
+    logLoaded = false;
     loadLogContent();
     // Start auto-refresh
     startLogAutoRefresh();
@@ -4064,6 +4116,7 @@ function setupPlanPreviewHandler() {
 
 /**
  * Check for active plan and show/hide the Plan button
+ * Shows button for: found, ambiguous, or fallback plans
  */
 async function checkActivePlan() {
     const planBtn = document.getElementById('planBtn');
@@ -4071,11 +4124,18 @@ async function checkActivePlan() {
     if (!planBtn || !logHeader) return;
 
     try {
-        const response = await fetch(`/api/plan/active?token=${token}&preview=false`);
+        const response = await fetch(`/api/plan/active?token=${token}&preview=true`);
         const data = await response.json();
 
         if (data.exists) {
-            planBtn.dataset.filename = data.filename;
+            planBtn.dataset.filename = data.filename || '';
+            planBtn.dataset.status = data.status || 'none';
+            // Indicate ambiguous state on button
+            if (data.status === 'ambiguous') {
+                planBtn.textContent = 'Plan...';
+            } else {
+                planBtn.textContent = 'Plan';
+            }
             logHeader.classList.remove('hidden');
         } else {
             logHeader.classList.add('hidden');
@@ -4088,6 +4148,7 @@ async function checkActivePlan() {
 
 /**
  * Setup plan button and modal handlers
+ * Handles: found (with/without link), ambiguous (candidate selection), none
  */
 function setupPlanButton() {
     const planBtn = document.getElementById('planBtn');
@@ -4098,6 +4159,119 @@ function setupPlanButton() {
 
     if (!planBtn || !planModal) return;
 
+    // Helper to link a plan to current repo
+    async function linkPlan(filename) {
+        try {
+            const response = await fetch(`/api/plan/link?token=${token}&filename=${encodeURIComponent(filename)}`, { method: 'POST' });
+            const data = await response.json();
+            if (data.success) {
+                // Refresh modal to show linked state
+                planBtn.click();
+            }
+        } catch (e) {
+            console.error('Failed to link plan:', e);
+        }
+    }
+
+    // Helper to unlink plan from current repo
+    async function unlinkPlan() {
+        try {
+            const response = await fetch(`/api/plan/link?token=${token}`, { method: 'DELETE' });
+            const data = await response.json();
+            if (data.success) {
+                planBtn.click();
+            }
+        } catch (e) {
+            console.error('Failed to unlink plan:', e);
+        }
+    }
+
+    // Render plan content with optional unlink button
+    function renderPlanContent(data) {
+        let header = '';
+        if (data.linked) {
+            header = `<div class="plan-link-status"><span class="plan-linked-badge">Linked</span> <button class="plan-unlink-btn" id="unlinkPlanBtn">Unpin</button></div>`;
+        } else if (data.status === 'found') {
+            header = `<div class="plan-link-status"><button class="plan-link-btn" id="linkPlanBtn">Pin to this repo</button></div>`;
+        }
+
+        let content;
+        try {
+            content = marked.parse(data.content);
+        } catch (e) {
+            content = `<pre>${escapeHtml(data.content)}</pre>`;
+        }
+
+        planModalBody.innerHTML = header + content;
+
+        // Wire up link/unlink buttons
+        const linkBtn = document.getElementById('linkPlanBtn');
+        if (linkBtn) {
+            linkBtn.addEventListener('click', () => linkPlan(data.filename));
+        }
+        const unlinkBtn = document.getElementById('unlinkPlanBtn');
+        if (unlinkBtn) {
+            unlinkBtn.addEventListener('click', unlinkPlan);
+        }
+    }
+
+    // Render candidate list for ambiguous state or browse all
+    function renderCandidates(candidates, showScore = true, hint = 'Multiple plans match this repo. Select one to pin:') {
+        planModalTitle.textContent = 'Select a Plan';
+        let html = `<div class="plan-candidates"><p class="plan-candidates-hint">${hint}</p>`;
+        for (const c of candidates) {
+            const date = new Date(c.modified * 1000).toLocaleDateString();
+            const meta = showScore ? `Score: ${c.score} | ${date}` : date;
+            const title = c.title || c.filename;
+            html += `
+                <div class="plan-candidate" data-filename="${escapeHtml(c.filename)}">
+                    <div class="plan-candidate-header">
+                        <span class="plan-candidate-name">${escapeHtml(title)}</span>
+                        <span class="plan-candidate-meta">${meta}</span>
+                    </div>
+                    <div class="plan-candidate-preview">${escapeHtml(c.preview)}</div>
+                </div>
+            `;
+        }
+        html += '</div>';
+        planModalBody.innerHTML = html;
+
+        // Wire up candidate clicks
+        planModalBody.querySelectorAll('.plan-candidate').forEach(el => {
+            el.addEventListener('click', () => {
+                linkPlan(el.dataset.filename);
+            });
+        });
+    }
+
+    // Browse all plans
+    async function browseAllPlans() {
+        planModalBody.innerHTML = '<div class="loading">Loading all plans...</div>';
+        try {
+            const response = await fetch(`/api/plans?token=${token}`);
+            const data = await response.json();
+            if (data.plans && data.plans.length > 0) {
+                renderCandidates(data.plans, false, 'All plans (tap to pin):');
+            } else {
+                planModalBody.innerHTML = '<p class="plan-none">No plan files found</p>';
+            }
+        } catch (e) {
+            console.error('Failed to load plans:', e);
+            planModalBody.innerHTML = '<p style="color: var(--danger);">Error loading plans</p>';
+        }
+    }
+
+    // Add browse all button to current content
+    function addBrowseAllButton() {
+        const existing = planModalBody.querySelector('.plan-browse-all-btn');
+        if (existing) return;
+        const btn = document.createElement('button');
+        btn.className = 'plan-browse-all-btn';
+        btn.textContent = 'Browse all plans';
+        btn.addEventListener('click', browseAllPlans);
+        planModalBody.appendChild(btn);
+    }
+
     planBtn.addEventListener('click', async () => {
         planModal.classList.remove('hidden');
         planModalBody.innerHTML = '<div class="loading">Loading plan...</div>';
@@ -4106,16 +4280,24 @@ function setupPlanButton() {
             const response = await fetch(`/api/plan/active?token=${token}&preview=false`);
             const data = await response.json();
 
-            if (data.exists && data.content) {
+            if (data.status === 'found') {
                 planModalTitle.textContent = data.filename;
-                // Render markdown
-                try {
-                    planModalBody.innerHTML = marked.parse(data.content);
-                } catch (e) {
-                    planModalBody.innerHTML = `<pre>${escapeHtml(data.content)}</pre>`;
-                }
+                renderPlanContent(data);
+                addBrowseAllButton();
+            } else if (data.status === 'ambiguous') {
+                renderCandidates(data.candidates);
+                addBrowseAllButton();
+            } else if (data.status === 'none' && data.fallback) {
+                // Show fallback with warning
+                planModalTitle.textContent = data.filename + ' (global)';
+                planModalBody.innerHTML = `
+                    <div class="plan-fallback-warning">No plan matches this repo. Showing most recent:</div>
+                    ${marked.parse(data.content)}
+                `;
+                addBrowseAllButton();
             } else {
-                planModalBody.innerHTML = '<p>No active plan found</p>';
+                planModalBody.innerHTML = '<p class="plan-none">No active plan found</p>';
+                addBrowseAllButton();
             }
         } catch (e) {
             console.error('Failed to load plan:', e);
@@ -4715,6 +4897,28 @@ function setupHybridView() {
             loadLogContent();
             // Sync terminal prompt to input box
             syncPromptToInput();
+        });
+    }
+
+    // Terminal view refresh button - re-fetches terminal content
+    if (terminalRefresh) {
+        terminalRefresh.addEventListener('click', async () => {
+            terminalRefresh.textContent = 'Refreshing...';
+            terminalRefresh.disabled = true;
+            try {
+                const response = await fetch(`/api/refresh?token=${token}`);
+                const data = await response.json();
+                if (data.content && term) {
+                    // Clear and write fresh content
+                    term.clear();
+                    term.write(data.content);
+                }
+            } catch (e) {
+                console.error('Terminal refresh failed:', e);
+            } finally {
+                terminalRefresh.textContent = 'Refresh';
+                terminalRefresh.disabled = false;
+            }
         });
     }
 }

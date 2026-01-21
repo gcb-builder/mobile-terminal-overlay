@@ -683,6 +683,77 @@ TRANSCRIPT_DIR = Path.home() / ".cache" / "mobile-overlay" / "transcripts"
 # Directory for cached Claude conversation logs (persists across /clear)
 LOG_CACHE_DIR = Path.home() / ".cache" / "mobile-overlay" / "logs"
 
+# Plan links file (maps plan filenames to repos)
+PLAN_LINKS_FILE = Path.home() / ".claude" / "plan-links.json"
+
+
+def get_plan_links() -> dict:
+    """Read plan-links.json, return empty dict if not found."""
+    if PLAN_LINKS_FILE.exists():
+        try:
+            import json
+            return json.loads(PLAN_LINKS_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def save_plan_links(links: dict):
+    """Write plan-links.json."""
+    import json
+    PLAN_LINKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PLAN_LINKS_FILE.write_text(json.dumps(links, indent=2))
+
+
+def score_plan_for_repo(plan_path: Path, repo_path: Path) -> int:
+    """
+    Score how well a plan matches a repo based on content.
+    Higher score = better match.
+    """
+    try:
+        text = plan_path.read_text(errors="replace")
+    except Exception:
+        return 0
+
+    repo_str = str(repo_path)
+    repo_name = repo_path.name
+    parent_str = str(repo_path.parent)
+
+    score = 0
+    if repo_str in text:
+        score += 3  # Full path match
+    if repo_name in text:
+        score += 2  # Repo name match
+    if parent_str in text:
+        score += 1  # Parent path match
+
+    return score
+
+
+def get_plans_for_repo(repo_path: Path) -> list:
+    """
+    Get plans matching a repo, sorted by score then modification time.
+    Returns list of (plan_path, score) tuples.
+    """
+    plans_dir = Path.home() / ".claude" / "plans"
+    if not plans_dir.exists():
+        return []
+
+    scored = []
+    for plan in plans_dir.glob("*.md"):
+        score = score_plan_for_repo(plan, repo_path)
+        if score > 0:
+            scored.append((plan, score))
+
+    # Sort by score desc, then mtime desc
+    scored.sort(key=lambda x: (x[1], x[0].stat().st_mtime), reverse=True)
+    return scored
+
+
+# Transcript rotation settings
+TRANSCRIPT_MAX_SIZE = 5 * 1024 * 1024  # 5MB
+TRANSCRIPT_MAX_ROTATIONS = 5  # Keep 5 archived files
+
 
 def get_transcript_log_path(session_name: str, window: int = 0, pane: int = 0) -> Path:
     """Get the transcript log file path for a session/window/pane."""
@@ -690,9 +761,78 @@ def get_transcript_log_path(session_name: str, window: int = 0, pane: int = 0) -
     return TRANSCRIPT_DIR / f"{session_name}_w{window}_p{pane}.log"
 
 
+def rotate_transcript(log_path: Path) -> bool:
+    """
+    Rotate transcript log file if it exceeds max size.
+    Uses copytruncate approach: copy content to .1, truncate original.
+    This keeps pipe-pane working without restart.
+
+    Returns True if rotation occurred.
+    """
+    if not log_path.exists():
+        return False
+
+    try:
+        size = log_path.stat().st_size
+        if size < TRANSCRIPT_MAX_SIZE:
+            return False
+
+        logger.info(f"Rotating transcript {log_path} (size: {size / 1024 / 1024:.1f}MB)")
+
+        # Rotate existing archives: .4 -> .5 (delete), .3 -> .4, etc.
+        for i in range(TRANSCRIPT_MAX_ROTATIONS, 0, -1):
+            old_path = Path(f"{log_path}.{i}")
+            if old_path.exists():
+                if i == TRANSCRIPT_MAX_ROTATIONS:
+                    old_path.unlink()  # Delete oldest
+                else:
+                    old_path.rename(f"{log_path}.{i + 1}")
+
+        # Copy current to .1
+        archive_path = Path(f"{log_path}.1")
+        import shutil
+        shutil.copy2(log_path, archive_path)
+
+        # Truncate original (copytruncate style - keeps pipe-pane working)
+        with open(log_path, 'w') as f:
+            f.truncate(0)
+
+        logger.info(f"Rotated transcript to {archive_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error rotating transcript: {e}")
+        return False
+
+
+def is_spinner_frame(line: str) -> bool:
+    """
+    Detect if a line is just a spinner animation frame.
+    These are high-frequency visual noise that don't need to be persisted.
+    """
+    # Spinner characters used by Claude and common TUIs
+    spinners = {'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
+                '|', '/', '-', '\\', '◐', '◓', '◑', '◒'}
+
+    # Strip ANSI escape codes for analysis
+    import re
+    clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', line).strip()
+
+    # If after stripping escapes, only spinner chars or empty
+    if not clean or clean in spinners:
+        return True
+
+    # Line is primarily cursor movement + single spinner char
+    if len(clean) <= 2 and any(c in spinners for c in clean):
+        return True
+
+    return False
+
+
 def enable_pipe_pane(session_name: str, window: int = 0, pane: int = 0) -> Optional[Path]:
     """
     Enable tmux pipe-pane for a session to capture output to a log file.
+    Uses transcript_filter.py to strip ANSI codes and spinner noise.
     Returns the log file path if successful, None otherwise.
     """
     import subprocess
@@ -700,10 +840,23 @@ def enable_pipe_pane(session_name: str, window: int = 0, pane: int = 0) -> Optio
     log_path = get_transcript_log_path(session_name, window, pane)
     target = f"{session_name}:{window}.{pane}"
 
+    # Rotate transcript if needed before enabling pipe-pane
+    rotate_transcript(log_path)
+
+    # Path to the transcript filter script
+    filter_script = Path(__file__).parent / "tools" / "transcript_filter.py"
+
     try:
+        # Use filter script if it exists, otherwise fall back to cat
+        if filter_script.exists():
+            pipe_cmd = f"python3 -u {filter_script} >> {log_path}"
+        else:
+            logger.warning(f"Filter script not found at {filter_script}, using cat")
+            pipe_cmd = f"cat >> {log_path}"
+
         # -o = don't double-pipe if already enabled
         result = subprocess.run(
-            ["tmux", "pipe-pane", "-o", "-t", target, f"cat >> {log_path}"],
+            ["tmux", "pipe-pane", "-o", "-t", target, pipe_cmd],
             capture_output=True,
             text=True,
             timeout=5,
@@ -928,11 +1081,17 @@ def create_app(config: Config) -> FastAPI:
         # Get current path resolution info
         path_info = get_repo_path_info()
 
+        # Check if session has multiple distinct projects
+        unique_cwds = set(t["cwd"] for t in targets)
+        multi_project = len(unique_cwds) > 1
+
         return {
             "targets": targets,
             "active": app.state.active_target,
             "active_exists": active_exists,
             "session": session,
+            "multi_project": multi_project,
+            "unique_projects": len(unique_cwds),
             "resolution": {
                 "path": str(path_info["path"]) if path_info["path"] else None,
                 "source": path_info["source"],
@@ -1043,7 +1202,11 @@ def create_app(config: Config) -> FastAPI:
         session_name = app.state.current_session
         log_path = get_transcript_log_path(session_name)
 
+        # Rotate transcript if needed (keeps live file fresh)
+        rotated = rotate_transcript(log_path)
+
         # Try reading from log file first (if source is auto or log)
+        # Only reads from live file - archives are not replayed
         if source in ("auto", "log") and log_path.exists():
             try:
                 with open(log_path, "r", errors="replace") as f:
@@ -1058,6 +1221,7 @@ def create_app(config: Config) -> FastAPI:
                     "session": session_name,
                     "source": "log",
                     "log_path": str(log_path),
+                    "rotated": rotated,
                 }
             except Exception as e:
                 logger.warning(f"Error reading log file: {e}")
@@ -1089,6 +1253,73 @@ def create_app(config: Config) -> FastAPI:
         except Exception as e:
             logger.error(f"Transcript error: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/transcript/status")
+    async def transcript_status(token: Optional[str] = Query(None)):
+        """Get transcript log status including size and rotation info."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session_name = app.state.current_session
+        log_path = get_transcript_log_path(session_name)
+
+        result = {
+            "live_file": str(log_path),
+            "live_exists": log_path.exists(),
+            "live_size_bytes": 0,
+            "live_size_mb": 0,
+            "max_size_mb": TRANSCRIPT_MAX_SIZE / 1024 / 1024,
+            "archives": [],
+            "total_size_mb": 0,
+        }
+
+        if log_path.exists():
+            size = log_path.stat().st_size
+            result["live_size_bytes"] = size
+            result["live_size_mb"] = round(size / 1024 / 1024, 2)
+            result["total_size_mb"] = result["live_size_mb"]
+
+        # Check for archived files
+        for i in range(1, TRANSCRIPT_MAX_ROTATIONS + 1):
+            archive = Path(f"{log_path}.{i}")
+            if archive.exists():
+                size_mb = round(archive.stat().st_size / 1024 / 1024, 2)
+                result["archives"].append({
+                    "file": str(archive),
+                    "size_mb": size_mb,
+                })
+                result["total_size_mb"] += size_mb
+
+        result["total_size_mb"] = round(result["total_size_mb"], 2)
+        return result
+
+    @app.post("/api/transcript/rotate")
+    async def force_rotate_transcript(token: Optional[str] = Query(None)):
+        """Force rotation of transcript log."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session_name = app.state.current_session
+        log_path = get_transcript_log_path(session_name)
+
+        if not log_path.exists():
+            return {"rotated": False, "error": "No transcript file exists"}
+
+        # Force rotation regardless of size
+        size_before = log_path.stat().st_size
+
+        # Temporarily set max to 0 to force rotation
+        global TRANSCRIPT_MAX_SIZE
+        old_max = TRANSCRIPT_MAX_SIZE
+        TRANSCRIPT_MAX_SIZE = 0
+        rotated = rotate_transcript(log_path)
+        TRANSCRIPT_MAX_SIZE = old_max
+
+        return {
+            "rotated": rotated,
+            "size_before_bytes": size_before,
+            "size_before_mb": round(size_before / 1024 / 1024, 2),
+        }
 
     @app.get("/api/refresh")
     async def refresh_terminal(token: Optional[str] = Query(None)):
@@ -1363,41 +1594,199 @@ def create_app(config: Config) -> FastAPI:
         preview: bool = Query(True, description="Return only first 15 lines"),
     ):
         """
-        Get the most recently modified plan file from ~/.claude/plans/.
-        Used to surface the "active" plan Claude is working on.
+        Get the active plan for the current repo.
+        Priority: 1) Explicit link, 2) Content grep with scoring.
+        Returns status: "found" | "ambiguous" | "none"
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         plans_dir = Path.home() / ".claude" / "plans"
         if not plans_dir.exists():
-            return {"exists": False, "content": "", "error": "No plans directory"}
+            return {"status": "none", "exists": False, "error": "No plans directory"}
 
-        # Find most recently modified .md file
-        plan_files = list(plans_dir.glob("*.md"))
-        if not plan_files:
-            return {"exists": False, "content": "", "error": "No plan files"}
+        repo_path = get_current_repo_path()
+        repo_str = str(repo_path) if repo_path else None
 
-        plan_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-        active_plan = plan_files[0]
-
-        try:
-            content = active_plan.read_text(errors="replace")
-            if preview:
+        def read_plan_content(plan_path: Path, preview_mode: bool) -> str:
+            content = plan_path.read_text(errors="replace")
+            if preview_mode:
                 lines = content.split('\n')[:15]
                 content = '\n'.join(lines)
-                if len(active_plan.read_text().split('\n')) > 15:
+                if len(plan_path.read_text().split('\n')) > 15:
                     content += '\n...'
+            return content
 
+        def plan_response(plan_path: Path, status: str, linked: bool = False):
             return {
+                "status": status,
                 "exists": True,
-                "content": content,
-                "filename": active_plan.name,
-                "modified": active_plan.stat().st_mtime,
+                "content": read_plan_content(plan_path, preview),
+                "filename": plan_path.name,
+                "modified": plan_path.stat().st_mtime,
+                "linked": linked,
+                "repo": repo_str,
             }
-        except Exception as e:
-            logger.error(f"Error reading active plan: {e}")
-            return JSONResponse({"error": str(e)}, status_code=500)
+
+        # Priority 1: Check explicit link
+        if repo_str:
+            links = get_plan_links()
+            for filename, link_data in links.items():
+                if link_data.get("repo") == repo_str:
+                    plan_path = plans_dir / filename
+                    if plan_path.exists():
+                        return plan_response(plan_path, "found", linked=True)
+
+        # Priority 2: Content grep with scoring
+        if repo_path:
+            matches = get_plans_for_repo(repo_path)
+            if len(matches) == 1:
+                return plan_response(matches[0][0], "found")
+            elif len(matches) > 1:
+                # Check if scores are close (ambiguous)
+                top_score = matches[0][1]
+                close_matches = [(p, s) for p, s in matches if s >= top_score - 1]
+                if len(close_matches) > 1:
+                    # Ambiguous - return candidates
+                    candidates = []
+                    for plan_path, score in close_matches[:5]:  # Max 5 candidates
+                        candidates.append({
+                            "filename": plan_path.name,
+                            "score": score,
+                            "modified": plan_path.stat().st_mtime,
+                            "preview": read_plan_content(plan_path, True)[:200],
+                        })
+                    return {
+                        "status": "ambiguous",
+                        "exists": True,
+                        "candidates": candidates,
+                        "repo": repo_str,
+                    }
+                else:
+                    # Clear winner
+                    return plan_response(matches[0][0], "found")
+
+        # Fallback: most recent plan (global)
+        plan_files = list(plans_dir.glob("*.md"))
+        if not plan_files:
+            return {"status": "none", "exists": False, "error": "No plan files"}
+
+        plan_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        return {
+            "status": "none",
+            "exists": True,
+            "fallback": True,
+            "content": read_plan_content(plan_files[0], preview),
+            "filename": plan_files[0].name,
+            "modified": plan_files[0].stat().st_mtime,
+            "repo": repo_str,
+        }
+
+    @app.get("/api/plans")
+    async def list_all_plans(token: Optional[str] = Query(None)):
+        """List all plan files for manual browsing/selection."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        plans_dir = Path.home() / ".claude" / "plans"
+        if not plans_dir.exists():
+            return {"plans": []}
+
+        plan_files = list(plans_dir.glob("*.md"))
+        plan_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+
+        plans = []
+        for p in plan_files:
+            try:
+                content = p.read_text(errors="replace")
+                # First line as title (strip # prefix)
+                title = content.split('\n')[0].lstrip('#').strip() or p.name
+                preview = content[:200]
+                plans.append({
+                    "filename": p.name,
+                    "title": title,
+                    "preview": preview,
+                    "modified": p.stat().st_mtime,
+                })
+            except Exception:
+                plans.append({
+                    "filename": p.name,
+                    "title": p.name,
+                    "preview": "",
+                    "modified": p.stat().st_mtime,
+                })
+
+        return {"plans": plans}
+
+    @app.post("/api/plan/link")
+    async def link_plan(
+        filename: str = Query(..., description="Plan filename to link"),
+        token: Optional[str] = Query(None),
+    ):
+        """
+        Link a plan to the current repo.
+        Creates an explicit mapping in plan-links.json.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo path found"}, status_code=400)
+
+        plans_dir = Path.home() / ".claude" / "plans"
+        plan_path = plans_dir / filename
+        if not plan_path.exists():
+            return JSONResponse({"error": f"Plan file not found: {filename}"}, status_code=404)
+
+        repo_str = str(repo_path)
+        links = get_plan_links()
+
+        # Remove any existing link for this repo (one plan per repo)
+        links = {k: v for k, v in links.items() if v.get("repo") != repo_str}
+
+        # Add new link
+        from datetime import datetime
+        links[filename] = {
+            "repo": repo_str,
+            "linked_at": datetime.utcnow().isoformat() + "Z",
+        }
+        save_plan_links(links)
+
+        logger.info(f"Linked plan {filename} to repo {repo_str}")
+        return {"success": True, "filename": filename, "repo": repo_str}
+
+    @app.delete("/api/plan/link")
+    async def unlink_plan(
+        token: Optional[str] = Query(None),
+    ):
+        """
+        Unlink the plan for the current repo.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo path found"}, status_code=400)
+
+        repo_str = str(repo_path)
+        links = get_plan_links()
+
+        # Find and remove link for this repo
+        removed = None
+        for filename, link_data in list(links.items()):
+            if link_data.get("repo") == repo_str:
+                removed = filename
+                del links[filename]
+                break
+
+        if removed:
+            save_plan_links(links)
+            logger.info(f"Unlinked plan {removed} from repo {repo_str}")
+            return {"success": True, "removed": removed, "repo": repo_str}
+        else:
+            return {"success": False, "error": "No plan linked to this repo"}
 
     def get_log_cache_path(project_id: str) -> Path:
         """Get the cache file path for a project's log."""
@@ -1745,19 +2134,40 @@ def create_app(config: Config) -> FastAPI:
                 logger.warning(f"Failed to get git diff: {e}")
 
         # 4. Active plan (shows what Claude is working towards)
+        # Uses same resolution as /api/plan/active: explicit link > content grep > fallback
         if include_plan:
             try:
                 plans_dir = Path.home() / ".claude" / "plans"
-                if plans_dir.exists():
+                active_plan = None
+
+                # Check explicit link first
+                if repo_path:
+                    links = get_plan_links()
+                    for filename, link_data in links.items():
+                        if link_data.get("repo") == str(repo_path):
+                            plan_path = plans_dir / filename
+                            if plan_path.exists():
+                                active_plan = plan_path
+                                break
+
+                # Content grep if no link
+                if not active_plan and repo_path:
+                    matches = get_plans_for_repo(repo_path)
+                    if matches:
+                        active_plan = matches[0][0]
+
+                # Fallback to most recent
+                if not active_plan and plans_dir.exists():
                     plan_files = list(plans_dir.glob("*.md"))
                     if plan_files:
                         plan_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
                         active_plan = plan_files[0]
-                        plan_content = active_plan.read_text(errors="replace")
-                        # Truncate if too long
-                        if len(plan_content) > 4000:
-                            plan_content = plan_content[:4000] + "\n... [plan truncated]"
-                        bundle_parts.append(f"## Active Plan ({active_plan.name})\n```markdown\n{plan_content}\n```")
+
+                if active_plan:
+                    plan_content = active_plan.read_text(errors="replace")
+                    if len(plan_content) > 4000:
+                        plan_content = plan_content[:4000] + "\n... [plan truncated]"
+                    bundle_parts.append(f"## Active Plan ({active_plan.name})\n```markdown\n{plan_content}\n```")
             except Exception as e:
                 logger.warning(f"Failed to read active plan: {e}")
 

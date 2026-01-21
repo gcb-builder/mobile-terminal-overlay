@@ -295,6 +295,38 @@ html, body {
     padding: 0 4px;
 }
 
+/* Multi-project session warning banner */
+.multi-project-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: rgba(59, 130, 246, 0.15);
+    border-bottom: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.multi-project-banner.hidden {
+    display: none;
+}
+
+.multi-project-text {
+    flex: 1;
+}
+
+.multi-project-select-btn {
+    padding: 4px 10px;
+    background: var(--accent);
+    border: none;
+    border-radius: 4px;
+    color: white;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
 .header-right {
     display: flex;
     align-items: center;
@@ -2541,6 +2573,135 @@ html, body {
     background: var(--bg-secondary);
 }
 
+/* Plan link status */
+.plan-link-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    margin-bottom: 12px;
+}
+
+.plan-linked-badge {
+    background: var(--success);
+    color: white;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.plan-link-btn,
+.plan-unlink-btn {
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.plan-link-btn:hover,
+.plan-unlink-btn:hover {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+/* Plan candidates (ambiguous state) */
+.plan-candidates {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.plan-candidates-hint {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+
+.plan-candidate {
+    padding: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.plan-candidate:hover {
+    border-color: var(--accent);
+    background: var(--bg-tertiary);
+}
+
+.plan-candidate-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.plan-candidate-name {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.plan-candidate-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.plan-candidate-preview {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Plan fallback warning */
+.plan-fallback-warning {
+    background: var(--warning-bg, rgba(255, 193, 7, 0.15));
+    border: 1px solid var(--warning, #ffc107);
+    color: var(--warning, #ffc107);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    margin-bottom: 12px;
+}
+
+.plan-none {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 24px;
+}
+
+/* Browse all plans button */
+.plan-browse-all-btn {
+    display: block;
+    width: 100%;
+    margin-top: 16px;
+    padding: 10px 16px;
+    background: var(--bg-tertiary);
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.plan-browse-all-btn:hover {
+    background: var(--bg-secondary);
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
 /* View toggle (Terminal | Transcript) */
 .view-toggle {
     display: flex;
@@ -2795,7 +2956,8 @@ html, body {
 }
 
 .context-header,
-.touch-header {
+.touch-header,
+.terminal-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -2806,14 +2968,16 @@ html, body {
 }
 
 .context-title,
-.touch-title {
+.touch-title,
+.terminal-title {
     font-size: 14px;
     font-weight: 500;
     color: var(--text-secondary);
 }
 
 .context-refresh,
-.touch-refresh {
+.touch-refresh,
+.terminal-refresh {
     padding: 6px 12px;
     background: var(--bg-tertiary);
     border: 1px solid var(--border);
@@ -2824,7 +2988,8 @@ html, body {
 }
 
 .context-refresh:active,
-.touch-refresh:active {
+.touch-refresh:active,
+.terminal-refresh:active {
     background: var(--bg-primary);
 }
 
