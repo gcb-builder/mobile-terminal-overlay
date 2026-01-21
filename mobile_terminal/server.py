@@ -381,16 +381,51 @@ class CommandQueue:
         self._running = False
         self._processor_task = None
         self._app = None  # Set during startup
+        self._loaded_sessions: set = set()  # Track which sessions loaded from disk
 
     def set_app(self, app):
         """Set the FastAPI app reference for accessing state."""
         self._app = app
 
     def _get_queue(self, session: str) -> List[QueueItem]:
-        """Get or create queue for session."""
+        """Get or create queue for session, loading from disk if needed."""
         if session not in self._queues:
             self._queues[session] = []
+            # Load from disk on first access
+            if session not in self._loaded_sessions:
+                self._load_from_disk(session)
+                self._loaded_sessions.add(session)
         return self._queues[session]
+
+    def _load_from_disk(self, session: str):
+        """Load queue from disk for a session."""
+        items_data = load_queue_from_disk(session)
+        items = []
+        for data in items_data:
+            try:
+                item = QueueItem(
+                    id=data["id"],
+                    text=data["text"],
+                    policy=data.get("policy", "safe"),
+                    status=data.get("status", "queued"),
+                    created_at=data.get("created_at", time.time()),
+                    sent_at=data.get("sent_at"),
+                    error=data.get("error"),
+                )
+                # Only load items that are still queued (not sent/failed)
+                if item.status in ("queued", "pending"):
+                    items.append(item)
+            except Exception as e:
+                logger.warning(f"Skipping invalid queue item: {e}")
+        if items:
+            self._queues[session] = items
+            logger.info(f"Loaded {len(items)} queued items for session {session}")
+
+    def _save_to_disk(self, session: str):
+        """Save queue to disk for a session."""
+        queue = self._queues.get(session, [])
+        items_data = [asdict(item) for item in queue]
+        save_queue_to_disk(session, items_data)
 
     def _classify_policy(self, text: str) -> str:
         """Determine if command is safe or unsafe."""
@@ -417,23 +452,35 @@ class CommandQueue:
         # Default to safe for short, simple commands
         return "safe"
 
-    def enqueue(self, session: str, text: str, policy: str = "auto") -> QueueItem:
-        """Add a command to the queue."""
+    def enqueue(self, session: str, text: str, policy: str = "auto", item_id: Optional[str] = None) -> tuple:
+        """
+        Add a command to the queue.
+
+        Returns (item, is_new) tuple. If item_id already exists, returns existing item
+        with is_new=False (idempotency).
+        """
         queue = self._get_queue(session)
+
+        # Idempotency check: if ID provided and exists, return existing
+        if item_id:
+            for existing in queue:
+                if existing.id == item_id:
+                    return (existing, False)  # Already exists
 
         # Determine policy
         if policy == "auto":
             policy = self._classify_policy(text)
 
         item = QueueItem(
-            id=str(uuid.uuid4()),
+            id=item_id or str(uuid.uuid4()),
             text=text,
             policy=policy,
             status="queued",
             created_at=time.time(),
         )
         queue.append(item)
-        return item
+        self._save_to_disk(session)
+        return (item, True)
 
     def dequeue(self, session: str, item_id: str) -> bool:
         """Remove an item from the queue."""
@@ -441,6 +488,7 @@ class CommandQueue:
         for i, item in enumerate(queue):
             if item.id == item_id:
                 queue.pop(i)
+                self._save_to_disk(session)
                 return True
         return False
 
@@ -452,6 +500,7 @@ class CommandQueue:
                 queue.pop(i)
                 new_index = max(0, min(new_index, len(queue)))
                 queue.insert(new_index, item)
+                self._save_to_disk(session)
                 return True
         return False
 
@@ -476,6 +525,7 @@ class CommandQueue:
         queue = self._get_queue(session)
         count = len(queue)
         queue.clear()
+        self._save_to_disk(session)
         return count
 
     def get_next_unsafe(self, session: str) -> Optional[QueueItem]:
@@ -560,6 +610,7 @@ class CommandQueue:
             if success:
                 item.status = "sent"
                 item.sent_at = time.time()
+                self._save_to_disk(session)  # Persist sent status
 
                 # Notify client
                 if websocket:
@@ -576,11 +627,13 @@ class CommandQueue:
             else:
                 item.status = "failed"
                 item.error = "Send timeout"
+                self._save_to_disk(session)  # Persist failed status
                 return False
 
         except Exception as e:
             item.status = "failed"
             item.error = str(e)
+            self._save_to_disk(session)  # Persist failed status
             return False
 
     async def send_next_unsafe(self, session: str, item_id: Optional[str] = None) -> Optional[QueueItem]:
@@ -680,8 +733,49 @@ STATIC_DIR = Path(__file__).parent / "static"
 # Directory for cached Claude conversation logs (persists across /clear)
 LOG_CACHE_DIR = Path.home() / ".cache" / "mobile-overlay" / "logs"
 
+# Directory for persistent command queue (survives server restart)
+QUEUE_DIR = Path.home() / ".cache" / "mobile-overlay" / "queue"
+
 # Plan links file (maps plan filenames to repos)
 PLAN_LINKS_FILE = Path.home() / ".claude" / "plan-links.json"
+
+
+def get_queue_file(session: str) -> Path:
+    """Get the queue file path for a session."""
+    QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    # Sanitize session name for filename
+    safe_name = session.replace("/", "_").replace(":", "_")
+    return QUEUE_DIR / f"{safe_name}.jsonl"
+
+
+def load_queue_from_disk(session: str) -> list:
+    """Load queue items from JSONL file."""
+    import json
+    queue_file = get_queue_file(session)
+    items = []
+    if queue_file.exists():
+        try:
+            with open(queue_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        items.append(json.loads(line))
+        except Exception as e:
+            logger.warning(f"Error loading queue for {session}: {e}")
+    return items
+
+
+def save_queue_to_disk(session: str, items: list):
+    """Save queue items to JSONL file."""
+    import json
+    queue_file = get_queue_file(session)
+    try:
+        QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(queue_file, "w") as f:
+            for item in items:
+                f.write(json.dumps(item) + "\n")
+    except Exception as e:
+        logger.error(f"Error saving queue for {session}: {e}")
 
 # Capture-pane cache to prevent DoS from rapid polling
 # Key: (session, pane_id, lines), Value: (timestamp, result)
@@ -2292,6 +2386,7 @@ Output format:
         text: str = Query(...),
         session: str = Query(...),
         policy: str = Query("auto"),  # "auto" | "safe" | "unsafe"
+        id: Optional[str] = Query(None),  # Client-provided ID for idempotency
         token: Optional[str] = Query(None),
     ):
         """
@@ -2301,14 +2396,17 @@ Output format:
         - "auto": server determines safe/unsafe based on text
         - "safe": force auto-send when ready
         - "unsafe": always require manual confirmation
+
+        If `id` is provided and already exists, returns the existing item
+        without creating a duplicate (idempotency).
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        item = app.state.command_queue.enqueue(session, text, policy)
+        item, is_new = app.state.command_queue.enqueue(session, text, policy, item_id=id)
 
-        # Notify connected clients
-        if app.state.active_websocket:
+        # Notify connected clients only for new items
+        if is_new and app.state.active_websocket:
             try:
                 await app.state.active_websocket.send_json({
                     "type": "queue_update",
@@ -2318,7 +2416,7 @@ Output format:
             except Exception:
                 pass
 
-        return {"status": "ok", "item": asdict(item)}
+        return {"status": "ok", "item": asdict(item), "is_new": is_new}
 
     @app.get("/api/queue/list")
     async def queue_list(
