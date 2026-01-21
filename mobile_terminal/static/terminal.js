@@ -1742,16 +1742,9 @@ function setupEventListeners() {
             } else if (keyName === 'tab') {
                 sendKeyWithSync(key, 200);  // Tab completion needs more time
             } else if (keyName === 'ctrl-c') {
-                // Ctrl+C with confirmation and toast
-                if (!confirm('Send interrupt (Ctrl+C)?\n\nThis will interrupt any running process.')) {
-                    return;
-                }
+                // Ctrl+C - immediate, no confirmation
                 sendKeyDebounced(key, true);  // Force immediate (no debounce)
                 showToast('Interrupt sent', 'success');
-                // Audit log
-                fetch(`/api/rollback/audit/log?action=process_interrupt&token=${token}`, {
-                    method: 'POST'
-                }).catch(() => {});
             } else {
                 sendKeyDebounced(key);
             }
