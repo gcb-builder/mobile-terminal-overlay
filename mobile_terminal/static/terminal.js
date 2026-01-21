@@ -1237,11 +1237,12 @@ async function switchRepo(session) {
         // Server already closed WebSocket, reconnect after cleanup delay
         setTimeout(() => {
             connect();
-            // Refresh log and targets after connection established
+            // Refresh log, targets, and queue after connection established
             setTimeout(async () => {
                 await loadTargets();
                 refreshLogContent();
                 loadContextFile();
+                await reconcileQueue();  // Reconcile queue for new session
             }, 500);
         }, 1000);
 
@@ -4926,6 +4927,156 @@ function setupHybridView() {
 
 // ================== Queue Functions ==================
 
+// Queue persistence constants
+const QUEUE_STORAGE_PREFIX = 'mto_queue_';
+const QUEUE_SENDING_TIMEOUT_MS = 30000;  // 30s - stale "sending" becomes "queued"
+
+/**
+ * Generate a unique ID for queue items (client-side)
+ */
+function makeQueueId() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+    // Fallback for older browsers
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+}
+
+/**
+ * Get localStorage key for queue (scoped to session)
+ */
+function getQueueStorageKey(session) {
+    return QUEUE_STORAGE_PREFIX + (session || 'default');
+}
+
+/**
+ * Save queue to localStorage
+ */
+function saveQueueToStorage() {
+    if (!currentSession) return;
+    try {
+        const key = getQueueStorageKey(currentSession);
+        const data = {
+            items: queueItems,
+            savedAt: Date.now()
+        };
+        localStorage.setItem(key, JSON.stringify(data));
+    } catch (e) {
+        console.warn('Failed to save queue to storage:', e);
+    }
+}
+
+/**
+ * Load queue from localStorage
+ * Converts stale "sending" items back to "queued"
+ */
+function loadQueueFromStorage() {
+    if (!currentSession) return [];
+    try {
+        const key = getQueueStorageKey(currentSession);
+        const raw = localStorage.getItem(key);
+        if (!raw) return [];
+
+        const data = JSON.parse(raw);
+        const items = data.items || [];
+        const now = Date.now();
+
+        // Convert stale "sending" items back to "queued"
+        for (const item of items) {
+            if (item.status === 'sending') {
+                const age = now - (item.lastAttemptAt || item.createdAt || 0);
+                if (age > QUEUE_SENDING_TIMEOUT_MS) {
+                    item.status = 'queued';
+                    item.attempts = (item.attempts || 0);
+                }
+            }
+        }
+
+        // Filter out sent/failed items (they don't need to persist)
+        return items.filter(i => i.status === 'queued' || i.status === 'sending');
+    } catch (e) {
+        console.warn('Failed to load queue from storage:', e);
+        return [];
+    }
+}
+
+/**
+ * Reconcile local queue with server state
+ * - Server status wins for items on both sides
+ * - Local items not on server get re-enqueued (idempotent)
+ * - Server items not local get added
+ */
+async function reconcileQueue() {
+    if (!currentSession) return;
+
+    // Load local state first
+    const localItems = loadQueueFromStorage();
+
+    // Fetch server state
+    let serverItems = [];
+    try {
+        const resp = await fetch(`/api/queue/list?session=${encodeURIComponent(currentSession)}&token=${token}`);
+        if (resp.ok) {
+            const data = await resp.json();
+            serverItems = data.items || [];
+            queuePaused = data.paused || false;
+            updatePauseButton();
+        }
+    } catch (e) {
+        console.warn('Failed to fetch server queue for reconciliation:', e);
+    }
+
+    // Build ID maps
+    const serverMap = new Map(serverItems.map(i => [i.id, i]));
+    const localMap = new Map(localItems.map(i => [i.id, i]));
+
+    // Merge: start with server items (authoritative for status)
+    const merged = [...serverItems];
+
+    // Add local items not on server (re-enqueue them)
+    const toEnqueue = [];
+    for (const local of localItems) {
+        if (!serverMap.has(local.id)) {
+            // Local item missing from server - need to re-enqueue
+            toEnqueue.push(local);
+        }
+    }
+
+    // Re-enqueue missing items (idempotent - server will dedupe by ID)
+    for (const item of toEnqueue) {
+        try {
+            const params = new URLSearchParams({
+                session: currentSession,
+                text: item.text,
+                policy: item.policy || 'auto',
+                id: item.id,  // Pass our ID for idempotency
+                token: token
+            });
+            const resp = await fetch(`/api/queue/enqueue?${params}`, { method: 'POST' });
+            if (resp.ok) {
+                const data = await resp.json();
+                if (data.is_new) {
+                    merged.push(data.item);
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to re-enqueue item:', item.id, e);
+            // Keep in local state anyway
+            merged.push(item);
+        }
+    }
+
+    // Update global state
+    queueItems = merged;
+    saveQueueToStorage();
+    renderQueueList();
+
+    console.log(`Queue reconciled: ${serverItems.length} server, ${localItems.length} local, ${toEnqueue.length} re-enqueued`);
+}
+
 /**
  * Open unified drawer with Queue tab selected
  */
@@ -5030,15 +5181,42 @@ async function refreshQueueList() {
 
 /**
  * Enqueue a command
+ * Generates client-side ID for idempotency and persists to localStorage
  */
 async function enqueueCommand(text, policy = 'auto') {
     if (!currentSession) return false;
 
+    // Generate client-side ID for idempotency
+    const itemId = makeQueueId();
+
+    // Create local item immediately (optimistic)
+    const localItem = {
+        id: itemId,
+        text: text,
+        policy: policy,
+        status: 'queued',
+        createdAt: Date.now(),
+        attempts: 0
+    };
+
+    // Check for duplicate (shouldn't happen, but be safe)
+    if (queueItems.some(i => i.id === itemId)) {
+        console.warn('Duplicate queue item ID:', itemId);
+        return false;
+    }
+
+    // Add to local state and persist
+    queueItems.push(localItem);
+    saveQueueToStorage();
+    renderQueueList();
+
+    // Send to server (idempotent)
     try {
         const params = new URLSearchParams({
             session: currentSession,
             text: text,
             policy: policy,
+            id: itemId,  // Client-generated ID for idempotency
             token: token
         });
         const resp = await fetch(`/api/queue/enqueue?${params}`, {
@@ -5047,39 +5225,47 @@ async function enqueueCommand(text, policy = 'auto') {
 
         if (resp.ok) {
             const data = await resp.json();
-            // Add to local state
-            queueItems.push(data.item);
-            renderQueueList();
+            // Update local item with server response (policy may have been auto-classified)
+            const idx = queueItems.findIndex(i => i.id === itemId);
+            if (idx >= 0) {
+                queueItems[idx] = { ...queueItems[idx], ...data.item };
+                saveQueueToStorage();
+                renderQueueList();
+            }
             return true;
         }
     } catch (e) {
-        console.error('Failed to enqueue:', e);
+        console.error('Failed to enqueue to server:', e);
+        // Item is still in local storage, will be re-synced on reconnect
     }
-    return false;
+    return true;  // Return true since item is queued locally
 }
 
 /**
  * Remove item from queue
+ * Removes from local storage immediately, then syncs with server
  */
 async function removeQueueItem(itemId) {
     if (!currentSession) return;
 
+    // Remove from local state immediately
+    queueItems = queueItems.filter(item => item.id !== itemId);
+    saveQueueToStorage();
+    renderQueueList();
+
+    // Sync with server
     try {
         const params = new URLSearchParams({
             session: currentSession,
             item_id: itemId,
             token: token
         });
-        const resp = await fetch(`/api/queue/remove?${params}`, {
+        await fetch(`/api/queue/remove?${params}`, {
             method: 'POST'
         });
-
-        if (resp.ok) {
-            queueItems = queueItems.filter(item => item.id !== itemId);
-            renderQueueList();
-        }
     } catch (e) {
-        console.error('Failed to remove queue item:', e);
+        console.error('Failed to remove queue item from server:', e);
+        // Item already removed locally, server will sync on next reconcile
     }
 }
 
@@ -5170,24 +5356,30 @@ async function flushQueue() {
 
 /**
  * Handle queue WebSocket messages
+ * Persists changes to localStorage
  */
 function handleQueueMessage(msg) {
     switch (msg.type) {
         case 'queue_update':
             if (msg.action === 'add') {
-                queueItems.push(msg.item);
+                // Idempotent: don't add if already exists
+                if (!queueItems.some(i => i.id === msg.item.id)) {
+                    queueItems.push(msg.item);
+                }
             } else if (msg.action === 'update') {
                 const idx = queueItems.findIndex(i => i.id === msg.item.id);
                 if (idx >= 0) queueItems[idx] = msg.item;
             } else if (msg.action === 'remove') {
                 queueItems = queueItems.filter(i => i.id !== msg.item.id);
             }
+            saveQueueToStorage();
             renderQueueList();
             break;
 
         case 'queue_sent':
             // Item was sent, remove from local state
             queueItems = queueItems.filter(i => i.id !== msg.id);
+            saveQueueToStorage();
             renderQueueList();
             break;
 
@@ -6400,6 +6592,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Load current session first, then config
     await loadCurrentSession();
     await loadConfig();
+
+    // Load local queue and reconcile with server
+    await reconcileQueue();
 
     connect();
 
