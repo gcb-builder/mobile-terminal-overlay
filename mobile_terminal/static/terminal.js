@@ -28,6 +28,8 @@ let reconnectOverlayTimer = null;  // Delayed overlay (grace period)
 let lastConnectionAttempt = 0;  // Timestamp of last connection attempt
 let reconnectAttempts = 0;  // Track consecutive failed reconnects
 const SHOW_HARD_REFRESH_AFTER = 3;  // Show hard refresh button after N failures
+let hasConnectedOnce = false;  // Track if we've ever connected (to detect reconnects)
+let reconcileInFlight = false;  // Prevent overlapping reconciliations
 
 // Hello handshake
 const HELLO_TIMEOUT = 2000;  // Expect hello within 2s of connection
@@ -856,6 +858,25 @@ function connect() {
         startIdleCheck();  // Start idle connection monitoring
         startConnectionWatchdog();  // Catch stuck states
         updateConnectionIndicator('connected');
+
+        // Reconcile queue and log on reconnect (not initial connect)
+        const isReconnect = hasConnectedOnce;
+        hasConnectedOnce = true;
+
+        if (isReconnect && !reconcileInFlight) {
+            reconcileInFlight = true;
+            (async () => {
+                try {
+                    console.log('Reconnect detected, syncing queue and log...');
+                    await reconcileQueue();
+                    await refreshLogContent();
+                } catch (e) {
+                    console.warn('Post-reconnect sync failed:', e);
+                } finally {
+                    reconcileInFlight = false;
+                }
+            })();
+        }
     };
 
     socket.onmessage = (event) => {
