@@ -69,7 +69,7 @@ let challengeModal, challengeClose, challengeResult, challengeStatus, challengeR
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 let contextViewBtn, touchViewBtn, contextContainer, contextContent, touchContainer, touchContent;
 let logView, logInput, logSend, logContent, refreshBtn;
-let terminalView, terminalRefresh;
+let terminalView;
 
 // Attachments state for compose modal
 let pendingAttachments = [];
@@ -184,7 +184,6 @@ function initDOMElements() {
     logContent = document.getElementById('logContent');
     refreshBtn = document.getElementById('refreshBtn');
     terminalView = document.getElementById('terminalView');
-    terminalRefresh = document.getElementById('terminalRefresh');
     terminalBlock = document.getElementById('terminalBlock');
     activePromptContent = document.getElementById('activePromptContent');
     quickResponses = document.getElementById('quickResponses');
@@ -4183,8 +4182,7 @@ function setupPlanPreviewHandler() {
  */
 async function checkActivePlan() {
     const planBtn = document.getElementById('planBtn');
-    const logHeader = document.getElementById('logHeader');
-    if (!planBtn || !logHeader) return;
+    if (!planBtn) return;
 
     try {
         const response = await fetch(`/api/plan/active?token=${token}&preview=true`);
@@ -4199,13 +4197,13 @@ async function checkActivePlan() {
             } else {
                 planBtn.textContent = 'Plan';
             }
-            logHeader.classList.remove('hidden');
+            planBtn.classList.remove('hidden');
         } else {
-            logHeader.classList.add('hidden');
+            planBtn.classList.add('hidden');
         }
     } catch (e) {
         console.error('Failed to check active plan:', e);
-        logHeader.classList.add('hidden');
+        planBtn.classList.add('hidden');
     }
 }
 
@@ -4965,12 +4963,12 @@ function setupHybridView() {
     document.addEventListener('mousemove', onPointerMove);
     document.addEventListener('mouseup', onPointerUp);
 
-    // Header refresh button - refreshes log AND syncs input box
-    // Double-tap to toggle debug mode
+    // Header refresh button - refreshes log or terminal based on current view
+    // Triple-tap to toggle debug mode
     let refreshClickCount = 0;
     let refreshClickTimer = null;
     if (refreshBtn) {
-        refreshBtn.addEventListener('click', () => {
+        refreshBtn.addEventListener('click', async () => {
             refreshClickCount++;
             if (refreshClickTimer) clearTimeout(refreshClickTimer);
 
@@ -4984,58 +4982,53 @@ function setupHybridView() {
                 return;
             }
 
-            refreshClickTimer = setTimeout(() => {
-                // Single/double click: force refresh and render
-                logLoaded = false;
-                lastLogModified = 0;
-                lastLogContentHash = '';
-                userAtBottom = true;  // Force render even if scrolled up
-                if (pendingLogContent) {
-                    renderLogEntries(pendingLogContent);
-                    pendingLogContent = null;
-                }
-                loadLogContent();
-                syncPromptToInput();
+            refreshClickTimer = setTimeout(async () => {
                 refreshClickCount = 0;
+
+                if (currentView === 'terminal') {
+                    // Terminal view: refresh terminal content and reconnect if needed
+                    refreshBtn.disabled = true;
+                    try {
+                        if (!socket || socket.readyState !== WebSocket.OPEN) {
+                            showToast('Reconnecting...', 'info');
+                            connect();
+                            await new Promise(r => setTimeout(r, 1000));
+                        }
+
+                        const response = await fetch(`/api/refresh?token=${token}`);
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+                        const data = await response.json();
+                        if (data.error) {
+                            showToast(`Refresh failed: ${data.error}`, 'error');
+                        } else if (data.content && term) {
+                            term.clear();
+                            term.write(data.content);
+                            showToast('Terminal refreshed', 'success');
+                        } else if (!data.content) {
+                            showToast('No terminal content', 'info');
+                        }
+                    } catch (e) {
+                        console.error('Terminal refresh failed:', e);
+                        showToast(`Refresh failed: ${e.message}`, 'error');
+                    } finally {
+                        refreshBtn.disabled = false;
+                    }
+                } else {
+                    // Log view: force refresh and render
+                    logLoaded = false;
+                    lastLogModified = 0;
+                    lastLogContentHash = '';
+                    userAtBottom = true;
+                    if (pendingLogContent) {
+                        renderLogEntries(pendingLogContent);
+                        pendingLogContent = null;
+                    }
+                    loadLogContent();
+                    syncPromptToInput();
+                }
             }, 300);
-        });
-    }
-
-    // Terminal view refresh button - re-fetches terminal content and reconnects if needed
-    if (terminalRefresh) {
-        terminalRefresh.addEventListener('click', async () => {
-            terminalRefresh.textContent = 'Refreshing...';
-            terminalRefresh.disabled = true;
-            try {
-                // Check if WebSocket is disconnected - if so, reconnect
-                if (!socket || socket.readyState !== WebSocket.OPEN) {
-                    showToast('Reconnecting...', 'info');
-                    connect();
-                    // Wait a bit for connection
-                    await new Promise(r => setTimeout(r, 1000));
-                }
-
-                const response = await fetch(`/api/refresh?token=${token}`);
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                const data = await response.json();
-                if (data.error) {
-                    showToast(`Refresh failed: ${data.error}`, 'error');
-                } else if (data.content && term) {
-                    term.clear();
-                    term.write(data.content);
-                    showToast('Terminal refreshed', 'success');
-                } else if (!data.content) {
-                    showToast('No terminal content', 'info');
-                }
-            } catch (e) {
-                console.error('Terminal refresh failed:', e);
-                showToast(`Refresh failed: ${e.message}`, 'error');
-            } finally {
-                terminalRefresh.textContent = 'Refresh';
-                terminalRefresh.disabled = false;
-            }
         });
     }
 }

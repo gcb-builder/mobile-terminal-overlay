@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=135">
+    <link rel="stylesheet" href="/static/styles.css?v=136">
 </head>
 <body>
     <div class="app">
@@ -44,8 +44,9 @@
                 <div id="targetDropdown" class="target-dropdown hidden"></div>
             </div>
             <div class="header-right">
+                <button id="planBtn" class="plan-btn hidden" title="View active plan">Plan</button>
                 <span id="lastActivity" class="last-activity" title="Last activity">--</span>
-                <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh log and sync">
+                <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh">
                     <span>↻</span>
                 </button>
                 <button id="searchBtn" class="icon-btn" aria-label="Search files">
@@ -89,9 +90,6 @@
         <!-- Log view: Log + Command input (primary view) -->
         <div id="logView" class="log-view">
             <div id="logDebug" class="log-debug" style="display:none; padding:4px 8px; background:#333; color:#0f0; font-size:10px; font-family:monospace;"></div>
-            <div id="logHeader" class="log-header hidden">
-                <button id="planBtn" class="plan-btn" title="View active plan">Plan</button>
-            </div>
             <div id="logContent" class="log-view-content"></div>
             <!-- Terminal block: active prompt + input as one unit -->
             <div id="terminalBlock" class="terminal-block">
@@ -108,10 +106,6 @@
 
         <!-- Terminal view (secondary, swipe to access) -->
         <div id="terminalView" class="terminal-view hidden">
-            <div class="terminal-header">
-                <span class="terminal-title">Terminal</span>
-                <button id="terminalRefresh" class="terminal-refresh">Refresh</button>
-            </div>
             <div id="terminal-container" class="terminal-container"></div>
         </div>
 
@@ -429,7 +423,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=181"></script>
+    <script src="/static/terminal.js?v=182"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
