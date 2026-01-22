@@ -301,6 +301,7 @@
                 <div class="rollback-tabs">
                     <button class="rollback-tab active" data-tab="queue">Queue<span id="queueTabBadge" class="queue-tab-badge hidden">0</span></button>
                     <button class="rollback-tab" data-tab="runner">Runner</button>
+                    <button class="rollback-tab" data-tab="dev">Dev</button>
                     <button class="rollback-tab" data-tab="preview">Preview</button>
                     <button class="rollback-tab" data-tab="git">Git</button>
                     <button class="rollback-tab" data-tab="process">Process</button>
@@ -329,6 +330,27 @@
                 <div class="runner-custom">
                     <input type="text" id="runnerCustomInput" class="runner-custom-input" placeholder="Custom command...">
                     <button id="runnerCustomBtn" class="runner-custom-btn">Run</button>
+                </div>
+            </div>
+            <!-- Dev Preview tab content -->
+            <div id="devTabContent" class="rollback-tab-content hidden">
+                <div id="devStatusBanner" class="dev-status-banner">
+                    <span id="devStatusText">No services configured</span>
+                </div>
+                <div class="dev-service-tabs" id="devServiceTabs"></div>
+                <div class="dev-controls">
+                    <button id="devStartBtn" class="dev-btn primary">Start</button>
+                    <button id="devRestartBtn" class="dev-btn">Restart</button>
+                    <button id="devStopBtn" class="dev-btn danger">Stop</button>
+                    <button id="devOpenBtn" class="dev-btn">Open</button>
+                    <button id="devCopyBtn" class="dev-btn">Copy</button>
+                </div>
+                <div class="dev-preview-container" id="devPreviewContainer">
+                    <iframe id="devPreviewFrame" class="dev-preview-frame hidden"
+                            sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+                    <div id="devPreviewPlaceholder" class="dev-preview-placeholder">
+                        Select a service to preview
+                    </div>
                 </div>
             </div>
             <!-- Preview tab content -->

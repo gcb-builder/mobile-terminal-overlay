@@ -4234,6 +4234,187 @@ html, body {
 }
 
 /* ============================================================================
+   DEV PREVIEW TAB STYLES
+   ============================================================================ */
+
+.dev-status-banner {
+    padding: 8px 16px;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#devStatusText {
+    color: var(--text-secondary);
+}
+
+.dev-service-tabs {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.dev-service-tab {
+    min-width: 80px;
+    min-height: 44px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border: 2px solid transparent;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    color: var(--text-primary);
+    font-family: inherit;
+}
+
+.dev-service-tab:active {
+    background: var(--bg-secondary);
+}
+
+.dev-service-tab.active {
+    border-color: var(--accent);
+    background: var(--bg-secondary);
+}
+
+.dev-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.dev-status-dot.running {
+    background: var(--success);
+}
+
+.dev-status-dot.stopped {
+    background: var(--text-muted);
+}
+
+.dev-status-dot.error {
+    background: var(--error);
+}
+
+.dev-status-dot.unknown {
+    background: var(--warning);
+}
+
+.dev-service-label {
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.dev-service-port {
+    font-size: 10px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
+
+.dev-controls {
+    display: flex;
+    gap: 8px;
+    padding: 8px 16px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+}
+
+.dev-btn {
+    min-height: 44px;
+    min-width: 60px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.dev-btn:active {
+    background: var(--bg-secondary);
+}
+
+.dev-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.dev-btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+.dev-btn.primary:active {
+    background: var(--accent-hover);
+}
+
+.dev-btn.danger {
+    background: var(--error);
+    border-color: var(--error);
+    color: white;
+}
+
+.dev-btn.danger:active {
+    opacity: 0.8;
+}
+
+.dev-preview-container {
+    flex: 1;
+    min-height: 200px;
+    position: relative;
+    background: var(--bg-primary);
+    display: flex;
+    flex-direction: column;
+}
+
+.dev-preview-frame {
+    width: 100%;
+    flex: 1;
+    min-height: 200px;
+    border: none;
+    background: white;
+}
+
+.dev-preview-frame.hidden {
+    display: none;
+}
+
+.dev-preview-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    font-size: 14px;
+    text-align: center;
+    padding: 16px;
+}
+
+.dev-preview-placeholder.hidden {
+    display: none;
+}
+
+.dev-empty {
+    padding: 16px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    text-align: center;
+}
+
+/* ============================================================================
    RUNNER TAB STYLES
    ============================================================================ */
 

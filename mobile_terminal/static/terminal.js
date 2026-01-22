@@ -5996,6 +5996,7 @@ function switchRollbackTab(tabName) {
     // Update tab content
     const queueContent = document.getElementById('queueTabContent');
     const runnerContent = document.getElementById('runnerTabContent');
+    const devContent = document.getElementById('devTabContent');
     const previewContent = document.getElementById('previewTabContent');
     const gitContent = document.getElementById('gitTabContent');
     const processContent = document.getElementById('processTabContent');
@@ -6005,6 +6006,8 @@ function switchRollbackTab(tabName) {
     queueContent?.classList.remove('active');
     runnerContent?.classList.add('hidden');
     runnerContent?.classList.remove('active');
+    devContent?.classList.add('hidden');
+    devContent?.classList.remove('active');
     previewContent?.classList.add('hidden');
     previewContent?.classList.remove('active');
     gitContent?.classList.add('hidden');
@@ -6021,6 +6024,10 @@ function switchRollbackTab(tabName) {
         runnerContent?.classList.remove('hidden');
         runnerContent?.classList.add('active');
         loadRunnerCommands();
+    } else if (tabName === 'dev') {
+        devContent?.classList.remove('hidden');
+        devContent?.classList.add('active');
+        loadDevPreviewConfig();
     } else if (tabName === 'preview') {
         previewContent?.classList.remove('hidden');
         previewContent?.classList.add('active');
@@ -6574,6 +6581,286 @@ function setupRunnerHandlers() {
 // END RUNNER
 // ============================================================================
 
+// ============================================================================
+// DEV PREVIEW
+// ============================================================================
+
+let devPreviewConfig = null;
+let devPreviewStatus = {};  // { serviceId: { status, latency } }
+let activeDevService = null;
+let devStatusTimer = null;
+const DEV_STATUS_POLL_INTERVAL = 5000;
+
+/**
+ * Load preview config for current repo
+ */
+async function loadDevPreviewConfig() {
+    try {
+        const resp = await fetch(`/api/preview/config?token=${token}`);
+        const data = await resp.json();
+        devPreviewConfig = data.exists ? data : null;
+        renderDevServices();
+        if (devPreviewConfig && devPreviewConfig.services?.length) {
+            startDevStatusPolling();
+        } else {
+            stopDevStatusPolling();
+        }
+    } catch (e) {
+        console.error('Failed to load preview config:', e);
+        devPreviewConfig = null;
+        renderDevServices();
+    }
+}
+
+/**
+ * Render service tabs with status dots
+ */
+function renderDevServices() {
+    const container = document.getElementById('devServiceTabs');
+    const banner = document.getElementById('devStatusBanner');
+    const statusText = document.getElementById('devStatusText');
+
+    if (!devPreviewConfig || !devPreviewConfig.services?.length) {
+        if (statusText) statusText.textContent = 'No services configured';
+        if (container) container.innerHTML = '<div class="dev-empty">Add preview.config.json to enable</div>';
+        updateDevControls(false);
+        return;
+    }
+
+    if (statusText) {
+        const runningCount = Object.values(devPreviewStatus).filter(s => s.status === 'running').length;
+        statusText.textContent = `${runningCount}/${devPreviewConfig.services.length} running`;
+    }
+
+    if (container) {
+        container.innerHTML = devPreviewConfig.services.map(svc => {
+            const status = devPreviewStatus[svc.id]?.status || 'unknown';
+            const isActive = activeDevService === svc.id;
+            return `
+                <button class="dev-service-tab ${isActive ? 'active' : ''}" data-service-id="${svc.id}">
+                    <span class="dev-status-dot ${status}"></span>
+                    <span class="dev-service-label">${escapeHtml(svc.label)}</span>
+                    <span class="dev-service-port">:${svc.port}</span>
+                </button>
+            `;
+        }).join('');
+
+        // Click handlers
+        container.querySelectorAll('.dev-service-tab').forEach(btn => {
+            btn.addEventListener('click', () => selectDevService(btn.dataset.serviceId));
+        });
+    }
+
+    updateDevControls(!!activeDevService);
+}
+
+/**
+ * Update control button states
+ */
+function updateDevControls(enabled) {
+    const startBtn = document.getElementById('devStartBtn');
+    const restartBtn = document.getElementById('devRestartBtn');
+    const stopBtn = document.getElementById('devStopBtn');
+    const openBtn = document.getElementById('devOpenBtn');
+    const copyBtn = document.getElementById('devCopyBtn');
+
+    [startBtn, restartBtn, stopBtn, openBtn, copyBtn].forEach(btn => {
+        if (btn) btn.disabled = !enabled;
+    });
+}
+
+/**
+ * Select a service and load its preview
+ */
+function selectDevService(serviceId) {
+    activeDevService = serviceId;
+    const svc = devPreviewConfig?.services?.find(s => s.id === serviceId);
+    if (!svc) return;
+
+    renderDevServices();  // Update active state
+
+    const frame = document.getElementById('devPreviewFrame');
+    const placeholder = document.getElementById('devPreviewPlaceholder');
+    const status = devPreviewStatus[serviceId]?.status;
+
+    if (status === 'running') {
+        const url = buildDevPreviewUrl(svc);
+        if (frame) {
+            frame.src = url;
+            frame.classList.remove('hidden');
+        }
+        if (placeholder) placeholder.classList.add('hidden');
+    } else {
+        if (frame) {
+            frame.src = 'about:blank';
+            frame.classList.add('hidden');
+        }
+        if (placeholder) {
+            placeholder.classList.remove('hidden');
+            placeholder.textContent = status === 'stopped'
+                ? `${svc.label} is not running`
+                : `${svc.label} status: ${status || 'unknown'}`;
+        }
+    }
+}
+
+/**
+ * Build preview URL for service (using Tailscale config or localhost fallback)
+ */
+function buildDevPreviewUrl(service) {
+    if (devPreviewConfig?.tailscaleServe?.urlPattern) {
+        return devPreviewConfig.tailscaleServe.urlPattern
+            .replace('{hostname}', devPreviewConfig.tailscaleServe.hostname || '')
+            .replace('{port}', service.port);
+    }
+    // Fallback to localhost (works if on same network)
+    const path = service.path || '/';
+    return `http://localhost:${service.port}${path}`;
+}
+
+/**
+ * Poll service status periodically
+ */
+function startDevStatusPolling() {
+    if (devStatusTimer) clearInterval(devStatusTimer);
+    refreshDevStatus();
+    devStatusTimer = setInterval(refreshDevStatus, DEV_STATUS_POLL_INTERVAL);
+}
+
+function stopDevStatusPolling() {
+    if (devStatusTimer) {
+        clearInterval(devStatusTimer);
+        devStatusTimer = null;
+    }
+}
+
+async function refreshDevStatus() {
+    try {
+        const resp = await fetch(`/api/preview/status?token=${token}`);
+        const data = await resp.json();
+        devPreviewStatus = {};
+        data.services?.forEach(s => {
+            devPreviewStatus[s.id] = { status: s.status, latency: s.latency };
+        });
+        renderDevServices();
+
+        // If active service just became running, reload iframe
+        if (activeDevService) {
+            const status = devPreviewStatus[activeDevService]?.status;
+            const frame = document.getElementById('devPreviewFrame');
+            if (status === 'running' && frame && frame.classList.contains('hidden')) {
+                selectDevService(activeDevService);
+            }
+        }
+    } catch (e) {
+        console.error('Dev status check failed:', e);
+    }
+}
+
+/**
+ * Start the active preview service
+ */
+async function startDevService() {
+    if (!activeDevService) {
+        showToast('Select a service first', 'error');
+        return;
+    }
+    const svc = devPreviewConfig?.services?.find(s => s.id === activeDevService);
+    if (!svc?.startCommand) {
+        showToast('No start command configured', 'error');
+        return;
+    }
+
+    try {
+        const resp = await fetch(`/api/preview/start?service_id=${activeDevService}&token=${token}&${getTargetParams()}`, {
+            method: 'POST'
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast(`Starting ${svc.label}...`, 'success');
+            closePreviewDrawer();
+            switchToTerminalView();
+        } else {
+            showToast(`Error: ${data.error || data.message}`, 'error');
+        }
+    } catch (e) {
+        showToast(`Error: ${e.message}`, 'error');
+    }
+}
+
+/**
+ * Stop the active preview service (sends Ctrl+C)
+ */
+async function stopDevService() {
+    if (!activeDevService) {
+        showToast('Select a service first', 'error');
+        return;
+    }
+
+    try {
+        const resp = await fetch(`/api/preview/stop?service_id=${activeDevService}&token=${token}&${getTargetParams()}`, {
+            method: 'POST'
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast('Sent stop signal', 'success');
+            setTimeout(refreshDevStatus, 1000);
+        } else {
+            showToast(`Error: ${data.error || data.message}`, 'error');
+        }
+    } catch (e) {
+        showToast(`Error: ${e.message}`, 'error');
+    }
+}
+
+/**
+ * Restart the active preview service
+ */
+async function restartDevService() {
+    await stopDevService();
+    setTimeout(startDevService, 1500);
+}
+
+/**
+ * Open preview in new tab
+ */
+function openDevPreview() {
+    const svc = devPreviewConfig?.services?.find(s => s.id === activeDevService);
+    if (svc) {
+        window.open(buildDevPreviewUrl(svc), '_blank');
+    }
+}
+
+/**
+ * Copy preview URL to clipboard
+ */
+function copyDevPreviewUrl() {
+    const svc = devPreviewConfig?.services?.find(s => s.id === activeDevService);
+    if (svc) {
+        const url = buildDevPreviewUrl(svc);
+        navigator.clipboard.writeText(url).then(() => {
+            showToast('URL copied', 'success');
+        }).catch(() => {
+            showToast('Copy failed', 'error');
+        });
+    }
+}
+
+/**
+ * Setup Dev Preview event handlers
+ */
+function setupDevPreview() {
+    document.getElementById('devStartBtn')?.addEventListener('click', startDevService);
+    document.getElementById('devStopBtn')?.addEventListener('click', stopDevService);
+    document.getElementById('devRestartBtn')?.addEventListener('click', restartDevService);
+    document.getElementById('devOpenBtn')?.addEventListener('click', openDevPreview);
+    document.getElementById('devCopyBtn')?.addEventListener('click', copyDevPreviewUrl);
+}
+
+// ============================================================================
+// END DEV PREVIEW
+// ============================================================================
+
 /**
  * Escape HTML to prevent XSS
  */
@@ -6644,6 +6931,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupPlanButton();
     setupPreviewHandlers();
     setupRunnerHandlers();
+    setupDevPreview();
 
     // Scroll input bar to the right so Enter button is visible
     if (inputBar) {
