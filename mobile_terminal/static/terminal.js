@@ -5001,21 +5001,37 @@ function setupHybridView() {
         });
     }
 
-    // Terminal view refresh button - re-fetches terminal content
+    // Terminal view refresh button - re-fetches terminal content and reconnects if needed
     if (terminalRefresh) {
         terminalRefresh.addEventListener('click', async () => {
             terminalRefresh.textContent = 'Refreshing...';
             terminalRefresh.disabled = true;
             try {
+                // Check if WebSocket is disconnected - if so, reconnect
+                if (!socket || socket.readyState !== WebSocket.OPEN) {
+                    showToast('Reconnecting...', 'info');
+                    connect();
+                    // Wait a bit for connection
+                    await new Promise(r => setTimeout(r, 1000));
+                }
+
                 const response = await fetch(`/api/refresh?token=${token}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
                 const data = await response.json();
-                if (data.content && term) {
-                    // Clear and write fresh content
+                if (data.error) {
+                    showToast(`Refresh failed: ${data.error}`, 'error');
+                } else if (data.content && term) {
                     term.clear();
                     term.write(data.content);
+                    showToast('Terminal refreshed', 'success');
+                } else if (!data.content) {
+                    showToast('No terminal content', 'info');
                 }
             } catch (e) {
                 console.error('Terminal refresh failed:', e);
+                showToast(`Refresh failed: ${e.message}`, 'error');
             } finally {
                 terminalRefresh.textContent = 'Refresh';
                 terminalRefresh.disabled = false;
