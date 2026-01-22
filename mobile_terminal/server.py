@@ -1837,6 +1837,24 @@ def create_app(config: Config) -> FastAPI:
                                                     label = opt.get('label', '')
                                                     desc = opt.get('description', '')
                                                     conversation.append(f"  {i}. {label}" + (f" - {desc}" if desc else ""))
+                                        elif tool_name == 'EnterPlanMode':
+                                            conversation.append("📋 Entering plan mode...")
+                                        elif tool_name == 'ExitPlanMode':
+                                            conversation.append("✅ Exiting plan mode")
+                                        elif tool_name == 'Task':
+                                            # Show agent spawning with description
+                                            desc = tool_input.get('description', '')
+                                            agent_type = tool_input.get('subagent_type', '')
+                                            if desc:
+                                                conversation.append(f"🤖 Task ({agent_type}): {desc[:80]}")
+                                            else:
+                                                conversation.append(f"🤖 Task: {agent_type}")
+                                        elif tool_name == 'TodoWrite':
+                                            # Show todo updates
+                                            todos = tool_input.get('todos', [])
+                                            in_progress = [t for t in todos if t.get('status') == 'in_progress']
+                                            if in_progress:
+                                                conversation.append(f"📝 {in_progress[0].get('activeForm', 'Working...')}")
                                         else:
                                             conversation.append(f"• {tool_name}")
                 except json.JSONDecodeError:

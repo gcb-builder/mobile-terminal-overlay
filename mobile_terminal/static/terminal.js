@@ -1275,6 +1275,7 @@ async function switchRepo(session) {
         // Reset log state to force fresh load
         logLoaded = false;
         lastLogModified = 0;
+        lastLogContentHash = '';
 
         // Server already closed WebSocket, reconnect after cleanup delay
         setTimeout(() => {
@@ -4612,9 +4613,20 @@ function stopLogAutoRefresh() {
     }
 }
 
-// Track last log modified time to avoid unnecessary re-renders
+// Track last log modified time and content hash to avoid unnecessary re-renders
 let lastLogModified = 0;
+let lastLogContentHash = '';  // Simple hash to detect content changes
 let lastDetectedTurn = null;  // Track last detected turn type for snapshot capture
+
+function simpleHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        const char = str.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;  // Convert to 32bit integer
+    }
+    return hash.toString();
+}
 
 /**
  * Refresh log content without resetting logLoaded flag
@@ -4633,11 +4645,13 @@ async function refreshLogContent() {
         const data = await response.json();
         if (!data.exists || !data.content) return;
 
-        // Only re-render if content actually changed
-        if (data.modified && data.modified === lastLogModified) {
+        // Only re-render if content actually changed (check both mtime and hash)
+        const contentHash = simpleHash(data.content);
+        if (data.modified === lastLogModified && contentHash === lastLogContentHash) {
             return;  // No change, skip re-render
         }
         lastLogModified = data.modified || 0;
+        lastLogContentHash = contentHash;
 
         // Detect turn type for auto-snapshot (before rendering)
         const turnType = detectTurnType(data.content);
@@ -4783,7 +4797,8 @@ function sendLogCommand() {
     // Force refresh log after a short delay
     setTimeout(() => {
         logLoaded = false;
-        lastLogModified = 0;  // Force re-fetch
+        lastLogModified = 0;
+        lastLogContentHash = '';  // Force re-fetch
         loadLogContent();
     }, 500);
 }
@@ -4951,14 +4966,38 @@ function setupHybridView() {
     document.addEventListener('mouseup', onPointerUp);
 
     // Header refresh button - refreshes log AND syncs input box
+    // Double-tap to toggle debug mode
+    let refreshClickCount = 0;
+    let refreshClickTimer = null;
     if (refreshBtn) {
         refreshBtn.addEventListener('click', () => {
-            // Refresh log content
-            logLoaded = false;
-            lastLogModified = 0;  // Force re-fetch
-            loadLogContent();
-            // Sync terminal prompt to input box
-            syncPromptToInput();
+            refreshClickCount++;
+            if (refreshClickTimer) clearTimeout(refreshClickTimer);
+
+            if (refreshClickCount >= 3) {
+                // Triple-click: toggle debug banner
+                const debugEl = document.getElementById('logDebug');
+                if (debugEl) {
+                    debugEl.style.display = debugEl.style.display === 'none' ? 'block' : 'none';
+                }
+                refreshClickCount = 0;
+                return;
+            }
+
+            refreshClickTimer = setTimeout(() => {
+                // Single/double click: force refresh and render
+                logLoaded = false;
+                lastLogModified = 0;
+                lastLogContentHash = '';
+                userAtBottom = true;  // Force render even if scrolled up
+                if (pendingLogContent) {
+                    renderLogEntries(pendingLogContent);
+                    pendingLogContent = null;
+                }
+                loadLogContent();
+                syncPromptToInput();
+                refreshClickCount = 0;
+            }, 300);
         });
     }
 
