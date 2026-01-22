@@ -4021,17 +4021,19 @@ Output format:
 
         # Track PTY death for proper close code
         pty_died = False
+        # Track connection closed to prevent send-after-close errors
+        connection_closed = False
 
         # Create tasks for bidirectional I/O
         async def read_from_terminal():
             """Read from terminal and send to WebSocket with batching."""
-            nonlocal pty_died
+            nonlocal pty_died, connection_closed
             loop = asyncio.get_event_loop()
             batch = bytearray()
             last_flush = time.time()
             flush_interval = 0.03  # 30ms batching window
 
-            while app.state.active_websocket == websocket:
+            while app.state.active_websocket == websocket and not connection_closed:
                 try:
                     # Non-blocking read with select-like behavior
                     data = await loop.run_in_executor(
@@ -4055,18 +4057,21 @@ Output format:
                     # Flush if batch is large or enough time has passed
                     now = time.time()
                     if len(batch) >= 8192 or (now - last_flush) >= flush_interval:
-                        if app.state.active_websocket == websocket and batch:
+                        if app.state.active_websocket == websocket and batch and not connection_closed:
                             await websocket.send_bytes(bytes(batch))
                             batch.clear()
                             last_flush = now
 
                 except Exception as e:
+                    # Ignore send-after-close errors (expected during disconnect)
+                    if connection_closed or "after sending" in str(e) or "websocket.close" in str(e):
+                        break
                     if app.state.active_websocket == websocket:
                         logger.error(f"Error reading from terminal: {e}")
                     break
 
             # Flush remaining data
-            if batch and app.state.active_websocket == websocket:
+            if batch and app.state.active_websocket == websocket and not connection_closed:
                 try:
                     await websocket.send_bytes(bytes(batch))
                 except Exception:
@@ -4074,7 +4079,7 @@ Output format:
 
         async def write_to_terminal():
             """Read from WebSocket and write to terminal."""
-            while app.state.active_websocket == websocket:
+            while app.state.active_websocket == websocket and not connection_closed:
                 try:
                     message = await websocket.receive()
 
@@ -4112,7 +4117,8 @@ Output format:
                                         os.write(master_fd, input_data.encode())
                                 elif data.get("type") == "ping":
                                     # Respond to heartbeat ping with pong
-                                    await websocket.send_json({"type": "pong"})
+                                    if not connection_closed:
+                                        await websocket.send_json({"type": "pong"})
                                 elif data.get("type") == "pong":
                                     # Client responding to server_ping - connection is alive
                                     pass  # No action needed, connection confirmed alive
@@ -4139,10 +4145,10 @@ Output format:
         async def server_keepalive():
             """Send periodic pings from server to keep connection alive."""
             SERVER_PING_INTERVAL = 20  # Send ping every 20s from server
-            while app.state.active_websocket == websocket:
+            while app.state.active_websocket == websocket and not connection_closed:
                 try:
                     await asyncio.sleep(SERVER_PING_INTERVAL)
-                    if app.state.active_websocket == websocket:
+                    if app.state.active_websocket == websocket and not connection_closed:
                         # Send server-initiated ping (client will respond with pong)
                         await websocket.send_json({"type": "server_ping"})
                 except Exception:
@@ -4162,6 +4168,8 @@ Output format:
         except Exception as e:
             logger.error(f"WebSocket error: {e}")
         finally:
+            # Signal tasks to stop sending before canceling
+            connection_closed = True
             read_task.cancel()
             write_task.cancel()
             keepalive_task.cancel()
