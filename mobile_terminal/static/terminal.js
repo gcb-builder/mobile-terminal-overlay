@@ -2203,7 +2203,7 @@ function setupChallenge() {
     const challengeProblem = document.getElementById('challengeProblem');
     const challengeIncludeTerminal = document.getElementById('challengeIncludeTerminal');
     const challengeIncludeDiff = document.getElementById('challengeIncludeDiff');
-    const challengeIncludePlan = document.getElementById('challengeIncludePlan');
+    const challengePlanSelect = document.getElementById('challengePlanSelect');
     const challengePreview = document.getElementById('challengePreview');
     const challengePreviewContent = document.getElementById('challengePreviewContent');
     const challengeInputSection = document.getElementById('challengeInputSection');
@@ -2216,6 +2216,8 @@ function setupChallenge() {
     let lastResponseText = '';
 
     let modelsLoaded = false;
+    let plansLoaded = false;
+    let plansCache = [];
 
     // Fetch available models
     async function loadModels() {
@@ -2249,6 +2251,35 @@ function setupChallenge() {
         }
     }
 
+    // Fetch available plans for dropdown
+    async function loadPlans() {
+        if (!challengePlanSelect) return;
+
+        try {
+            const response = await fetch(`/api/plans?token=${token}`);
+            if (!response.ok) throw new Error('Failed to load plans');
+            const data = await response.json();
+
+            plansCache = data.plans || [];
+            challengePlanSelect.innerHTML = '<option value="">None</option>';
+
+            if (plansCache.length > 0) {
+                plansCache.forEach(plan => {
+                    const option = document.createElement('option');
+                    option.value = plan.filename;
+                    // Truncate title if too long
+                    const title = plan.title.length > 40 ? plan.title.slice(0, 40) + '...' : plan.title;
+                    option.textContent = title;
+                    challengePlanSelect.appendChild(option);
+                });
+            }
+            plansLoaded = true;
+        } catch (error) {
+            console.error('Failed to load plans:', error);
+            challengePlanSelect.innerHTML = '<option value="">Error loading plans</option>';
+        }
+    }
+
     // Load preview content
     async function loadPreview() {
         if (!challengePreviewContent) return;
@@ -2277,18 +2308,20 @@ function setupChallenge() {
             preview += `## Git Diff\n(Will include uncommitted changes)\n\n`;
         }
 
-        // Active plan
-        if (challengeIncludePlan?.checked) {
+        // Selected plan
+        const selectedPlan = challengePlanSelect?.value;
+        if (selectedPlan) {
             try {
-                const response = await fetch(`/api/plan/active?token=${token}&preview=true`);
+                const response = await fetch(`/api/plan?token=${token}&filename=${encodeURIComponent(selectedPlan)}`);
                 const data = await response.json();
-                if (data.exists && data.content) {
-                    preview += `## Active Plan (${data.filename})\n${data.content}\n\n`;
+                if (data.content) {
+                    const planTitle = plansCache.find(p => p.filename === selectedPlan)?.title || selectedPlan;
+                    preview += `## Plan: ${planTitle}\n${data.content}\n\n`;
                 } else {
-                    preview += `## Active Plan\n(No active plan found)\n\n`;
+                    preview += `## Plan\n(Failed to load)\n\n`;
                 }
             } catch (e) {
-                preview += `## Active Plan\n(Failed to load)\n\n`;
+                preview += `## Plan\n(Failed to load)\n\n`;
             }
         }
 
@@ -2311,6 +2344,7 @@ function setupChallenge() {
         if (challengeToCompose) challengeToCompose.classList.add('hidden');
         lastResponseText = '';
         loadModels();
+        loadPlans();
         loadPreview();
     });
 
@@ -2333,8 +2367,8 @@ function setupChallenge() {
     if (challengeIncludeDiff) {
         challengeIncludeDiff.addEventListener('change', loadPreview);
     }
-    if (challengeIncludePlan) {
-        challengeIncludePlan.addEventListener('change', loadPreview);
+    if (challengePlanSelect) {
+        challengePlanSelect.addEventListener('change', loadPreview);
     }
     if (challengeProblem) {
         let previewDebounce = null;
@@ -2365,7 +2399,7 @@ function setupChallenge() {
         const problem = challengeProblem?.value?.trim() || '';
         const includeTerminal = challengeIncludeTerminal?.checked ?? true;
         const includeDiff = challengeIncludeDiff?.checked ?? true;
-        const includePlan = challengeIncludePlan?.checked ?? false;
+        const selectedPlanFile = challengePlanSelect?.value || '';
 
         const modelName = challengeModelSelect.options[challengeModelSelect.selectedIndex]?.text || selectedModel;
 
@@ -2384,8 +2418,10 @@ function setupChallenge() {
                 include_terminal: includeTerminal,
                 terminal_lines: 50,
                 include_diff: includeDiff,
-                include_plan: includePlan,
             });
+            if (selectedPlanFile) {
+                params.set('plan_filename', selectedPlanFile);
+            }
 
             const response = await fetch(`/api/challenge?${params}`, {
                 method: 'POST',

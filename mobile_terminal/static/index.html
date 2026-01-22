@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=136">
+    <link rel="stylesheet" href="/static/styles.css?v=137">
 </head>
 <body>
     <div class="app">
@@ -242,10 +242,12 @@
                             <input type="checkbox" id="challengeIncludeDiff" checked>
                             <span>Include uncommitted changes</span>
                         </label>
-                        <label class="challenge-option">
-                            <input type="checkbox" id="challengeIncludePlan">
-                            <span>Include active plan</span>
-                        </label>
+                        <div class="challenge-plan-row">
+                            <label class="challenge-plan-label">Plan:</label>
+                            <select id="challengePlanSelect" class="challenge-plan-select">
+                                <option value="">None</option>
+                            </select>
+                        </div>
                     </div>
 
                     <!-- Preview (collapsible) -->
@@ -423,7 +425,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=182"></script>
+    <script src="/static/terminal.js?v=183"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

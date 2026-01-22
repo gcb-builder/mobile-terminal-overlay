@@ -2024,7 +2024,7 @@ def create_app(config: Config) -> FastAPI:
         include_terminal: bool = Query(True),
         terminal_lines: int = Query(50),
         include_diff: bool = Query(True),
-        include_plan: bool = Query(False),
+        plan_filename: Optional[str] = Query(None, description="Specific plan filename to include"),
     ):
         """
         Run problem-focused code review using AI models.
@@ -2103,43 +2103,20 @@ def create_app(config: Config) -> FastAPI:
             except Exception as e:
                 logger.warning(f"Failed to get git diff: {e}")
 
-        # 4. Active plan (shows what Claude is working towards)
-        # Uses same resolution as /api/plan/active: explicit link > content grep > fallback
-        if include_plan:
+        # 4. Plan (if specified by filename)
+        if plan_filename:
             try:
                 plans_dir = Path.home() / ".claude" / "plans"
-                active_plan = None
-
-                # Check explicit link first
-                if repo_path:
-                    links = get_plan_links()
-                    for filename, link_data in links.items():
-                        if link_data.get("repo") == str(repo_path):
-                            plan_path = plans_dir / filename
-                            if plan_path.exists():
-                                active_plan = plan_path
-                                break
-
-                # Content grep if no link
-                if not active_plan and repo_path:
-                    matches = get_plans_for_repo(repo_path)
-                    if matches:
-                        active_plan = matches[0][0]
-
-                # Fallback to most recent
-                if not active_plan and plans_dir.exists():
-                    plan_files = list(plans_dir.glob("*.md"))
-                    if plan_files:
-                        plan_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-                        active_plan = plan_files[0]
-
-                if active_plan:
-                    plan_content = active_plan.read_text(errors="replace")
+                plan_path = plans_dir / plan_filename
+                if plan_path.exists():
+                    plan_content = plan_path.read_text(errors="replace")
+                    # Extract title from first line
+                    plan_title = plan_content.split('\n')[0].lstrip('#').strip() or plan_filename
                     if len(plan_content) > 4000:
                         plan_content = plan_content[:4000] + "\n... [plan truncated]"
-                    bundle_parts.append(f"## Active Plan ({active_plan.name})\n```markdown\n{plan_content}\n```")
+                    bundle_parts.append(f"## Plan: {plan_title}\n```markdown\n{plan_content}\n```")
             except Exception as e:
-                logger.warning(f"Failed to read active plan: {e}")
+                logger.warning(f"Failed to read plan {plan_filename}: {e}")
 
         # 5. Minimal project context (git status + branch)
         try:

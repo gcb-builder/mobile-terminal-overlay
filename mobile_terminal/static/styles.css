@@ -2224,6 +2224,30 @@ html, body {
     accent-color: var(--accent);
 }
 
+.challenge-plan-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-top: 4px;
+}
+
+.challenge-plan-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+    min-width: 40px;
+}
+
+.challenge-plan-select {
+    flex: 1;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 13px;
+    min-height: 36px;
+}
+
 /* Challenge collapsible input section */
 .challenge-input-section {
     margin: 0;
