@@ -2658,7 +2658,7 @@ Only the top 1–3 risks worth caring about.
             terminal_text = ""
 
         # Get queue state
-        queue_state = [item.to_dict() for item in app.state.command_queue.list_items(session)]
+        queue_state = [asdict(item) for item in app.state.command_queue.list_items(session)]
 
         # Capture snapshot
         logger.info(f"Capturing snapshot: session={session}, label={label}, log_len={len(log_content)}, term_len={len(terminal_text)}")
