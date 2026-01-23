@@ -4650,7 +4650,6 @@ function stopLogAutoRefresh() {
 // Track last log modified time and content hash to avoid unnecessary re-renders
 let lastLogModified = 0;
 let lastLogContentHash = '';  // Simple hash to detect content changes
-let lastDetectedTurn = null;  // Track last detected turn type for snapshot capture
 
 function simpleHash(str) {
     let hash = 0;
@@ -4687,14 +4686,6 @@ async function refreshLogContent() {
         lastLogModified = data.modified || 0;
         lastLogContentHash = contentHash;
 
-        // Detect turn type for auto-snapshot (before rendering)
-        const turnType = detectTurnType(data.content);
-        if (turnType && turnType !== lastDetectedTurn) {
-            lastDetectedTurn = turnType;
-            // Capture snapshot with detected label
-            captureSnapshot(turnType);
-        }
-
         // If user is NOT at bottom, don't re-render (would cause scroll jump)
         // Just store the content and show indicator
         if (!userAtBottom) {
@@ -4713,38 +4704,6 @@ async function refreshLogContent() {
         // Silently fail on auto-refresh
         console.debug('Log auto-refresh failed:', error);
     }
-}
-
-/**
- * Detect turn type from log content for auto-snapshot labeling
- * Returns: 'tool_call', 'claude_done', 'error', or null (no significant change)
- */
-function detectTurnType(content) {
-    if (!content) return null;
-
-    // Get last few lines to detect recent activity
-    const lines = content.split('\n').filter(l => l.trim());
-    const recentLines = lines.slice(-15).join('\n');
-
-    // Error patterns (highest priority)
-    if (/error|Error|ERROR|failed|Failed|FAILED|exception|Exception/.test(recentLines)) {
-        // Check if it's actually an error in the output, not just the word
-        if (/✗|error:|Error:|failed to|Failed to|exception:/i.test(recentLines)) {
-            return 'error';
-        }
-    }
-
-    // Tool call patterns
-    if (/^• (?:Read|Write|Edit|Bash|Grep|Glob|Task|WebFetch|WebSearch)/m.test(recentLines)) {
-        return 'tool_call';
-    }
-
-    // Claude done patterns (asking user, showing results)
-    if (/^❯\s*$|^\[1-9\]|\(y\/n\)|\?$/m.test(recentLines)) {
-        return 'claude_done';
-    }
-
-    return null;
 }
 
 /**
@@ -5922,12 +5881,7 @@ function setupPreviewHandlers() {
         }
     });
 
-    // Periodic snapshot capture (every 30s)
-    setInterval(() => {
-        if (!isPreviewMode()) {
-            captureSnapshot('periodic');
-        }
-    }, 30000);
+    // Periodic snapshot capture disabled - only user_send and manual snapshots now
 
     // Preview filter buttons
     document.querySelectorAll('.preview-filter-btn').forEach(btn => {

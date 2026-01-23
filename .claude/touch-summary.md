@@ -530,3 +530,63 @@ Click to expand and see individual tools (which can still have ×N badges).
 
 **Commits:**
 - `578fc03` Add target safety checks, fix log scroll, add drawer backdrop
+
+---
+
+## 2026-01-23: Dev Preview Tab & UX Polish
+
+**Goal:** Add Replit-like dev preview tab, improve Challenge with plan selector, polish UI
+
+### Dev Preview Tab (Replit-like)
+
+**Files Changed:**
+- `mobile_terminal/server.py` - Added 4 preview endpoints: `/api/preview/config`, `/api/preview/status`, `/api/preview/start`, `/api/preview/stop`
+- `mobile_terminal/static/index.html` - Added Dev tab button and content in drawer
+- `mobile_terminal/static/terminal.js` - Added preview module (~200 lines): loadPreviewConfig, renderPreviewServices, selectPreviewService, startPreviewService, stopPreviewService, refreshPreviewStatus, buildPreviewUrl
+- `mobile_terminal/static/styles.css` - Added dev preview styles (.dev-status-banner, .dev-service-tabs, .dev-controls, .dev-preview-frame)
+
+**Config Format:** `preview.config.json` per repo with services array and tailscaleServe settings
+
+### Challenge Plan Selector
+
+**Files Changed:**
+- `mobile_terminal/server.py` - Changed `include_plan` bool to `plan_filename` string parameter
+- `mobile_terminal/static/index.html` - Replaced checkbox with `<select id="challengePlanSelect">`
+- `mobile_terminal/static/terminal.js` - Added loadPlans() to populate dropdown, updated preview and submit to use selected plan
+- `mobile_terminal/static/styles.css` - Added .challenge-plan-row, .challenge-plan-select styles
+
+### UI Reorganization
+
+**Files Changed:**
+- `mobile_terminal/static/index.html` - Moved planBtn to header-right, removed terminal-header with "Terminal" title
+- `mobile_terminal/static/terminal.js` - Unified refresh button logic (view-aware), updated plan visibility to use classList
+
+### Queue Persistence & Reconnect
+
+**Files Changed:**
+- `mobile_terminal/static/terminal.js` - Added QUEUE_STORAGE_PREFIX, persistQueue(), loadPersistedQueue(), reconcileQueues(), grace period for overlay
+- `mobile_terminal/server.py` - Added /api/queue/reconcile endpoint
+
+### Log View Fixes
+
+**Files Changed:**
+- `mobile_terminal/static/terminal.js` - Added lastLogContentHash, simpleHash(), fixed refresh to force userAtBottom=true, added plan mode tool logging
+
+### WebSocket Stability
+
+**Files Changed:**
+- `mobile_terminal/server.py` - Added connection_closed flag, checked before all WebSocket sends
+
+**Commits:**
+- `fdd2221` Add plan selector dropdown to Challenge modal
+- `28f10c5` Fix WebSocket send-after-close errors during disconnect
+- `2265e4f` Move Plan button to top bar, remove terminal header, unify refresh
+- `695d849` Improve terminal refresh: add toast feedback and WebSocket reconnect
+- `9723043` Fix log stuck after plan mode and improve change detection
+- `f6a988b` Add Dev Preview tab for Replit-like service preview
+- `d7267fc` Add queue/log reconciliation after reconnect
+- `6e62cbe` Add grace period for reconnect overlay to reduce flicker
+- `6bd4a18` Add client-side queue persistence with reconciliation
+- `bf4a501` Add persistent command queue with idempotency
+- `7547299` Add plan-repo linking, multi-project warnings, transcript rotation
+- `3c63e6c` Add active plan access to Challenge and log view

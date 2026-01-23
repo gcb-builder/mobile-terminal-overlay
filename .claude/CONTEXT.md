@@ -4,7 +4,7 @@
 
 - **Branch:** master
 - **Stage:** Production-ready with PWA support + V2 features
-- **Last Updated:** 2026-01-20
+- **Last Updated:** 2026-01-23
 
 ## Objective
 
@@ -44,6 +44,42 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] V2: Runner with allowlisted quick commands
 - [x] V2: Connection resilience (hello handshake, watchdog, PTY death detection)
 - [x] Target Selector: Explicit pane selection for multi-project workflows
+
+## Recent Changes (2026-01-23) - Dev Preview & UX Polish
+
+### Dev Preview Tab (Replit-like)
+- **New "Dev" tab** in drawer for previewing running services
+- Configuration via `preview.config.json` per repo
+- Health status indicators (green/red dots)
+- Start/Stop/Restart controls send commands to PTY
+- Open/Copy buttons for Tailscale URLs
+- Iframe preview with sandbox
+
+### Challenge Improvements
+- **Plan selector dropdown** - pick any plan from ~/.claude/plans
+- Replaces "Include active plan" checkbox
+- Preview updates when plan selection changes
+
+### UI Reorganization
+- **Plan button moved to top bar** (visible when plan exists)
+- **Removed "Terminal" header** from terminal view
+- **Unified refresh button** - refreshes log or terminal based on active view
+- Refresh shows toast feedback and reconnects WebSocket if needed
+
+### Queue Persistence
+- **Client-side queue persistence** via localStorage
+- Queue survives page reload and reconnects
+- Reconciliation on reconnect (dedup, reorder)
+- Grace period for reconnect overlay (reduces flicker)
+
+### Log View Fixes
+- **Fixed log stuck after plan mode** - force render on refresh
+- **Content hash comparison** for change detection
+- Plan mode tool logging (EnterPlanMode, ExitPlanMode, Task, TodoWrite)
+
+### WebSocket Stability
+- **Send-after-close fix** - prevents errors during disconnect
+- Connection closed flag checked before all sends
 
 ## Recent Changes (2026-01-21) - Safety & UX
 
