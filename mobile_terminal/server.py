@@ -3466,8 +3466,11 @@ Only the top 1–3 risks worth caring about.
                 ["git", "status", "--porcelain"],
                 cwd=repo_path, capture_output=True, text=True, timeout=5
             )
-            is_dirty = bool(status_result.stdout.strip())
-            dirty_files = len(status_result.stdout.strip().split('\n')) if status_result.stdout.strip() else 0
+            status_lines = [l for l in status_result.stdout.strip().split('\n') if l]
+            is_dirty = bool(status_lines)
+            # Count untracked separately (lines starting with ??)
+            untracked_files = sum(1 for l in status_lines if l.startswith('??'))
+            dirty_files = len(status_lines) - untracked_files  # Modified/staged files
 
             # Get ahead/behind (may fail if no upstream)
             ahead = 0
@@ -3518,6 +3521,7 @@ Only the top 1–3 risks worth caring about.
                 "branch": branch,
                 "is_dirty": is_dirty,
                 "dirty_files": dirty_files,
+                "untracked_files": untracked_files,
                 "has_upstream": has_upstream,
                 "ahead": ahead,
                 "behind": behind,
@@ -3906,6 +3910,291 @@ Only the top 1–3 risks worth caring about.
                 "success": True,
                 "reverted_commit": revert_commit,
                 "new_commit": new_head
+            }
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            app.state.git_op_lock.release()
+
+    # ========== Git Stash API ==========
+
+    @app.post("/api/git/stash/push")
+    async def stash_push(
+        token: Optional[str] = Query(None),
+    ):
+        """Create a stash with auto-generated message."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo found"}, status_code=400)
+
+        # Acquire git operation lock
+        if not await app.state.git_op_lock.acquire("stash_push"):
+            return JSONResponse({
+                "error": "Another git operation in progress",
+                "current_op": app.state.git_op_lock.current_operation
+            }, status_code=409)
+
+        try:
+            import time
+            timestamp = int(time.time())
+            message = f"mobile-overlay-auto-stash-{timestamp}"
+
+            # Stash including untracked files
+            result = subprocess.run(
+                ["git", "stash", "push", "-u", "-m", message],
+                cwd=repo_path, capture_output=True, text=True, timeout=30
+            )
+
+            if result.returncode != 0:
+                return JSONResponse({
+                    "error": "Stash failed",
+                    "details": result.stderr
+                }, status_code=500)
+
+            # Check if anything was actually stashed
+            if "No local changes to save" in result.stdout:
+                return JSONResponse({
+                    "error": "No changes to stash"
+                }, status_code=400)
+
+            app.state.audit_log.log("stash_push", {"message": message})
+
+            return {
+                "success": True,
+                "stash_ref": "stash@{0}",
+                "message": message
+            }
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            app.state.git_op_lock.release()
+
+    @app.get("/api/git/stash/list")
+    async def stash_list(
+        token: Optional[str] = Query(None),
+    ):
+        """List all stashes."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo found"}, status_code=400)
+
+        try:
+            result = subprocess.run(
+                ["git", "stash", "list", "--format=%gd|%s|%ar"],
+                cwd=repo_path, capture_output=True, text=True, timeout=10
+            )
+
+            stashes = []
+            for line in result.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                parts = line.split("|", 2)
+                if len(parts) >= 2:
+                    stashes.append({
+                        "ref": parts[0],
+                        "message": parts[1],
+                        "date": parts[2] if len(parts) > 2 else ""
+                    })
+
+            return {"stashes": stashes}
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/api/git/stash/apply")
+    async def stash_apply(
+        ref: str = Query("stash@{0}"),
+        token: Optional[str] = Query(None),
+    ):
+        """Apply a stash without removing it."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate stash ref format
+        if not re.match(r'^stash@\{\d+\}$', ref):
+            return JSONResponse({"error": "Invalid stash ref format"}, status_code=400)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo found"}, status_code=400)
+
+        # Acquire git operation lock
+        if not await app.state.git_op_lock.acquire("stash_apply"):
+            return JSONResponse({
+                "error": "Another git operation in progress",
+                "current_op": app.state.git_op_lock.current_operation
+            }, status_code=409)
+
+        try:
+            result = subprocess.run(
+                ["git", "stash", "apply", ref],
+                cwd=repo_path, capture_output=True, text=True, timeout=30
+            )
+
+            if result.returncode != 0:
+                # Check for conflicts
+                if "CONFLICT" in result.stdout or "conflict" in result.stderr.lower():
+                    return {
+                        "success": False,
+                        "conflict": True,
+                        "details": result.stdout + result.stderr
+                    }
+                return JSONResponse({
+                    "error": "Apply failed",
+                    "details": result.stderr
+                }, status_code=500)
+
+            app.state.audit_log.log("stash_apply", {"ref": ref})
+
+            return {
+                "success": True,
+                "ref": ref
+            }
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            app.state.git_op_lock.release()
+
+    @app.post("/api/git/stash/drop")
+    async def stash_drop(
+        ref: str = Query("stash@{0}"),
+        token: Optional[str] = Query(None),
+    ):
+        """Drop a stash."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate stash ref format
+        if not re.match(r'^stash@\{\d+\}$', ref):
+            return JSONResponse({"error": "Invalid stash ref format"}, status_code=400)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo found"}, status_code=400)
+
+        # Acquire git operation lock
+        if not await app.state.git_op_lock.acquire("stash_drop"):
+            return JSONResponse({
+                "error": "Another git operation in progress",
+                "current_op": app.state.git_op_lock.current_operation
+            }, status_code=409)
+
+        try:
+            result = subprocess.run(
+                ["git", "stash", "drop", ref],
+                cwd=repo_path, capture_output=True, text=True, timeout=10
+            )
+
+            if result.returncode != 0:
+                return JSONResponse({
+                    "error": "Drop failed",
+                    "details": result.stderr
+                }, status_code=500)
+
+            app.state.audit_log.log("stash_drop", {"ref": ref})
+
+            return {"success": True, "ref": ref}
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            app.state.git_op_lock.release()
+
+    # ========== Git Discard API ==========
+
+    @app.post("/api/git/discard")
+    async def git_discard(
+        include_untracked: bool = Query(False),
+        token: Optional[str] = Query(None),
+        session: Optional[str] = Query(None),
+        pane_id: Optional[str] = Query(None),
+    ):
+        """Discard all uncommitted changes. Optionally remove untracked files."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Validate target before destructive operation
+        target_check = validate_target(session, pane_id)
+        if not target_check["valid"]:
+            return JSONResponse({
+                "error": "Target mismatch",
+                "message": target_check["error"],
+                "expected": target_check["expected"],
+                "received": target_check["received"]
+            }, status_code=409)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo found"}, status_code=400)
+
+        # Acquire git operation lock
+        if not await app.state.git_op_lock.acquire("discard"):
+            return JSONResponse({
+                "error": "Another git operation in progress",
+                "current_op": app.state.git_op_lock.current_operation
+            }, status_code=409)
+
+        try:
+            # Get list of files that will be discarded (for logging)
+            status_result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_path, capture_output=True, text=True, timeout=5
+            )
+            files_to_discard = [
+                line[3:] for line in status_result.stdout.strip().split("\n")
+                if line and not line.startswith("??")
+            ]
+            untracked_files = [
+                line[3:] for line in status_result.stdout.strip().split("\n")
+                if line and line.startswith("??")
+            ]
+
+            # Reset tracked files
+            result = subprocess.run(
+                ["git", "reset", "--hard", "HEAD"],
+                cwd=repo_path, capture_output=True, text=True, timeout=30
+            )
+
+            if result.returncode != 0:
+                return JSONResponse({
+                    "error": "Reset failed",
+                    "details": result.stderr
+                }, status_code=500)
+
+            # Optionally clean untracked files
+            cleaned_files = []
+            if include_untracked and untracked_files:
+                clean_result = subprocess.run(
+                    ["git", "clean", "-fd"],
+                    cwd=repo_path, capture_output=True, text=True, timeout=30
+                )
+                if clean_result.returncode == 0:
+                    cleaned_files = untracked_files
+
+            app.state.audit_log.log("git_discard", {
+                "files_reset": files_to_discard,
+                "files_cleaned": cleaned_files,
+                "include_untracked": include_untracked
+            })
+
+            return {
+                "success": True,
+                "files_discarded": files_to_discard,
+                "files_cleaned": cleaned_files
             }
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "Git command timed out"}, status_code=500)
