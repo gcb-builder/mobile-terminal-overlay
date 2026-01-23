@@ -590,3 +590,83 @@ Click to expand and see individual tools (which can still have ×N badges).
 - `bf4a501` Add persistent command queue with idempotency
 - `7547299` Add plan-repo linking, multi-project warnings, transcript rotation
 - `3c63e6c` Add active plan access to Challenge and log view
+
+---
+
+## 2026-01-23: Git Revert Dirty Directory Handling
+
+**Goal:** Transform "Working directory not clean" error into a choice point with stash and discard options.
+
+### Server Changes (server.py)
+
+**New Endpoints:**
+- `POST /api/git/stash/push` - Create auto-stash with timestamp message
+- `GET /api/git/stash/list` - List all stashes
+- `POST /api/git/stash/apply` - Apply stash (safer than pop, preserves stash on conflict)
+- `POST /api/git/stash/drop` - Drop a stash
+- `POST /api/git/discard` - Reset hard + optional git clean -fd
+
+**Modified:**
+- `/api/rollback/git/status` - Now returns `untracked_files` count separately from `dirty_files`
+
+### Client Changes (terminal.js)
+
+**New State:**
+- `pendingDirtyAction` - Tracks what action triggered dirty modal ('dry-run' or 'revert')
+- `lastStashRef` - Tracks stash created during revert flow for post-revert management
+
+**New Functions:**
+- `showDirtyChoiceModal(action)` / `hideDirtyChoiceModal()` - Choice modal management
+- `handleStashChoice()` - Stash and continue with pending action
+- `showDiscardConfirmModal()` / `hideDiscardConfirmModal()` - 2-step discard confirmation
+- `handleDiscardConfirm()` - Discard (with optional untracked) and continue
+- `historyExecuteRevertWithStash()` - Revert variant that shows stash result modal
+- `showStashResultModal()` / `hideStashResultModal()` - Post-revert stash management
+- `applyStash()` / `dropStash()` - Stash management actions
+- `setupDirtyChoiceModals()` - Wire up all modal event handlers
+
+**Modified:**
+- `updateRevertButtonState()` - Buttons now enabled even when dirty (dirty handled by modal)
+- `historyDryRunRevert()` - Added dirty check at start, shows choice modal if needed
+- `historyExecuteRevert()` - Added dirty check at start, shows choice modal if needed
+
+### UI Changes (index.html)
+
+**New Modals:**
+- `#dirtyChoiceModal` - Choice between stash and discard
+- `#discardConfirmModal` - 2-step discard confirmation with untracked checkbox
+- `#stashResultModal` - Post-revert stash management (apply/drop)
+
+### Style Changes (styles.css)
+
+**New Classes:**
+- `.dirty-choice-modal` - Base modal (centered, dark overlay)
+- `.dirty-choice-content` - Modal content container
+- `.dirty-choice-header` - Header with warning/success variants
+- `.dirty-choice-btn` - Large touch-friendly option buttons
+- `.discard-confirm-*` - Discard confirmation specific styles
+- `.stash-result-*` - Stash result modal styles
+
+### UX Flow
+
+1. User clicks Dry Run or Revert
+2. If dirty, shows choice modal:
+   - "Stash changes and continue" - Safe, preserves work
+   - "Discard all changes" - Shows confirmation with optional untracked removal
+   - Cancel - Returns to previous state
+3. If stash chosen and revert succeeds, shows stash management modal:
+   - Apply Stash - Restore changes
+   - Drop Stash - Discard stash
+   - Close - Keep stash for later
+
+**Files Changed:**
+- `mobile_terminal/server.py` - 5 new endpoints, git status enhancement
+- `mobile_terminal/static/terminal.js` - Dirty handling functions, modal setup
+- `mobile_terminal/static/index.html` - 3 new modals
+- `mobile_terminal/static/styles.css` - Modal styling
+
+**Design Decisions:**
+- Use `git stash apply` not `pop` (safer - stash preserved if apply fails)
+- Discard requires explicit 2-step confirmation
+- `git clean -fd` opt-in via checkbox (unchecked by default)
+- Buttons enabled when dirty (modal intercepts, not disabled state)
