@@ -4167,6 +4167,10 @@ html, body {
     padding: 8px;
 }
 
+.history-list.hidden {
+    display: none;
+}
+
 .history-empty {
     text-align: center;
     padding: 24px;
