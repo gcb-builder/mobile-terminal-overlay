@@ -6214,9 +6214,14 @@ async function historyExecuteRevert() {
         const data = await resp.json();
 
         if (data.success) {
-            showToast('Commit reverted', 'success');
             hideHistoryCommitDetail();
             loadHistory();
+            // If we have a pending stash from earlier, show the stash management modal
+            if (lastStashRef) {
+                showStashResultModal();
+            } else {
+                showToast('Commit reverted', 'success');
+            }
         } else {
             showToast(`Revert failed: ${data.error}`, 'error');
         }
