@@ -5926,6 +5926,7 @@ function setupPreviewHandlers() {
 // ============================================================================
 
 let gitCommits = [];
+let lastKnownCommitHash = null;  // Track for auto-clearing snapshots on new commit
 let selectedCommitHash = null;
 let lastRevertCommit = null;  // The SHA of the revert commit (for undo = revert-the-revert)
 let gitStatus = null;  // Current git status (branch, dirty, ahead/behind)
@@ -6097,10 +6098,34 @@ async function loadGitCommits() {
 
         const data = await resp.json();
         gitCommits = data.commits || [];
+
+        // Auto-clear snapshots when a new commit is detected
+        if (gitCommits.length > 0) {
+            const latestHash = gitCommits[0].hash;
+            if (lastKnownCommitHash && lastKnownCommitHash !== latestHash) {
+                // New commit detected - clear snapshots
+                console.log('New commit detected, clearing snapshots');
+                await clearSnapshots();
+                showToast('Snapshots cleared (new commit)', 'info', 2000);
+            }
+            lastKnownCommitHash = latestHash;
+        }
+
         renderGitCommitList();
     } catch (e) {
         console.error('Failed to load git commits:', e);
         list.innerHTML = '<div class="git-empty">Failed to load commits</div>';
+    }
+}
+
+/**
+ * Clear all snapshots
+ */
+async function clearSnapshots() {
+    try {
+        await fetch(`/api/rollback/preview/clear?token=${token}`, { method: 'POST' });
+    } catch (e) {
+        console.error('Failed to clear snapshots:', e);
     }
 }
 

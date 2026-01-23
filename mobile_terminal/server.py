@@ -129,6 +129,16 @@ class SnapshotBuffer:
         with self._lock:
             return self._snapshots.get(session, {}).get(snap_id)
 
+    def clear(self, session: str) -> int:
+        """Clear all snapshots for a session. Returns count cleared."""
+        with self._lock:
+            if session not in self._snapshots:
+                return 0
+            count = len(self._snapshots[session])
+            self._snapshots[session] = OrderedDict()
+            self._last_hash[session] = ""
+            return count
+
     def pin_snapshot(self, session: str, snap_id: str, pinned: bool = True) -> bool:
         """Pin or unpin a snapshot to prevent eviction."""
         with self._lock:
@@ -2794,6 +2804,20 @@ Only the top 1–3 risks worth caring about.
             "terminal_changed": a["terminal_text"] != b["terminal_text"],
             "queue_changed": a["queue_state"] != b["queue_state"],
         }
+
+    @app.post("/api/rollback/preview/clear")
+    async def clear_previews(
+        token: Optional[str] = Query(None),
+    ):
+        """Clear all snapshots for current session."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session = app.state.current_session
+        count = app.state.snapshot_buffer.clear(session)
+        app.state.audit_log.log("snapshots_cleared", {"count": count})
+        logger.info(f"Cleared {count} snapshots for session {session}")
+        return {"success": True, "cleared": count}
 
     @app.get("/api/rollback/audit")
     async def get_audit_log(
