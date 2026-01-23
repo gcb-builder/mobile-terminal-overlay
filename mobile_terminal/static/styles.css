@@ -4113,6 +4113,146 @@ html, body {
 }
 
 /* ============================================================================
+   HISTORY TAB STYLES (unified commits + snapshots)
+   ============================================================================ */
+
+.history-tab-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+}
+
+.history-filters {
+    display: flex;
+    gap: 4px;
+}
+
+.history-filter-btn {
+    padding: 4px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.history-filter-btn.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+.history-snap-btn {
+    padding: 4px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.history-snap-btn:active {
+    background: var(--accent);
+    color: white;
+}
+
+.history-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+}
+
+.history-empty {
+    text-align: center;
+    padding: 24px;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.history-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+}
+
+.history-item:active {
+    background: var(--bg-secondary);
+}
+
+.history-icon {
+    font-size: 16px;
+    flex-shrink: 0;
+}
+
+.history-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.history-id {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--accent);
+}
+
+.history-subject {
+    font-size: 12px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.history-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.history-time {
+    font-size: 11px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.history-action-btn {
+    padding: 4px 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.history-action-btn:active {
+    background: var(--bg-secondary);
+}
+
+.history-commit-detail {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+}
+
+.history-commit-detail.hidden {
+    display: none;
+}
+
+/* ============================================================================
    PROCESS TAB STYLES
    ============================================================================ */
 

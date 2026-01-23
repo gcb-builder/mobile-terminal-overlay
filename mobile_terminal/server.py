@@ -3568,6 +3568,61 @@ Only the top 1–3 risks worth caring about.
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.get("/api/history")
+    async def get_unified_history(
+        limit: int = Query(30),
+        token: Optional[str] = Query(None),
+    ):
+        """Get unified history: commits + snapshots merged chronologically."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        items = []
+        session = app.state.current_session
+
+        # Get commits with unix timestamps
+        repo_path = get_current_repo_path()
+        if repo_path:
+            try:
+                result = subprocess.run(
+                    ["git", "log", f"--max-count={limit}", "--format=%H|%s|%an|%at"],
+                    cwd=repo_path, capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.strip().split("\n"):
+                        if "|" in line:
+                            parts = line.split("|", 3)
+                            ts = int(parts[3]) * 1000 if len(parts) > 3 else 0
+                            items.append({
+                                "type": "commit",
+                                "id": parts[0][:7],
+                                "hash": parts[0],
+                                "subject": parts[1],
+                                "author": parts[2] if len(parts) > 2 else "",
+                                "timestamp": ts,
+                            })
+            except Exception as e:
+                logger.warning(f"Failed to get commits for history: {e}")
+
+        # Get snapshots
+        snapshots = app.state.snapshot_buffer.list_snapshots(session, limit)
+        for snap in snapshots:
+            items.append({
+                "type": "snapshot",
+                "id": snap["id"],
+                "label": snap["label"],
+                "timestamp": snap["timestamp"],
+                "pinned": snap.get("pinned", False),
+            })
+
+        # Sort by timestamp descending (newest first)
+        items.sort(key=lambda x: x["timestamp"], reverse=True)
+
+        # Limit total
+        items = items[:limit]
+
+        return {"items": items, "session": session}
+
     @app.get("/api/rollback/git/commit/{commit_hash}")
     async def get_git_commit_detail(
         commit_hash: str,

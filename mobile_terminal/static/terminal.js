@@ -5899,18 +5899,58 @@ function setupPreviewHandlers() {
         });
     });
 
-    // Git tab handlers
-    document.getElementById('gitRefreshBtn')?.addEventListener('click', loadGitCommits);
-    document.getElementById('gitBackBtn')?.addEventListener('click', showGitCommitList);
-    document.getElementById('gitDryRunBtn')?.addEventListener('click', dryRunRevert);
-    document.getElementById('gitRevertBtn')?.addEventListener('click', executeRevert);
+    // History tab handlers
+    document.getElementById('historyBackBtn')?.addEventListener('click', hideHistoryCommitDetail);
+    document.getElementById('historyDryRunBtn')?.addEventListener('click', historyDryRunRevert);
+    document.getElementById('historyRevertBtn')?.addEventListener('click', historyExecuteRevert);
+    document.getElementById('historySnapBtn')?.addEventListener('click', async () => {
+        const btn = document.getElementById('historySnapBtn');
+        if (btn) btn.disabled = true;
+        await captureSnapshot('manual');
+        setTimeout(() => {
+            loadHistory();
+            if (btn) btn.disabled = false;
+        }, 500);
+    });
 
-    // Git commit list click handler
-    document.getElementById('gitCommitList')?.addEventListener('click', (e) => {
-        const item = e.target.closest('.git-commit-item');
-        if (item) {
-            const hash = item.dataset.hash;
-            if (hash) showGitCommitDetail(hash);
+    // History filter buttons
+    document.querySelectorAll('.history-filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.history-filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            historyFilter = btn.dataset.filter;
+            renderHistoryList();
+        });
+    });
+
+    // History list click handler (commits and snapshots)
+    document.getElementById('historyList')?.addEventListener('click', async (e) => {
+        // Handle action buttons
+        const actionBtn = e.target.closest('.history-action-btn');
+        if (actionBtn) {
+            const action = actionBtn.dataset.action;
+            if (action === 'revert') {
+                const hash = actionBtn.dataset.hash;
+                if (hash) showHistoryCommitDetail(hash);
+            } else if (action === 'preview') {
+                const id = actionBtn.dataset.id;
+                if (id) enterPreviewMode(id);
+            }
+            return;
+        }
+
+        // Handle item clicks
+        const commitItem = e.target.closest('.history-commit');
+        if (commitItem) {
+            const hash = commitItem.dataset.hash;
+            if (hash) showHistoryCommitDetail(hash);
+            return;
+        }
+
+        const snapshotItem = e.target.closest('.history-snapshot');
+        if (snapshotItem) {
+            const id = snapshotItem.dataset.id;
+            if (id) enterPreviewMode(id);
         }
     });
 
@@ -5922,11 +5962,261 @@ function setupPreviewHandlers() {
 }
 
 // ============================================================================
-// GIT TAB FUNCTIONS
+// HISTORY TAB FUNCTIONS (unified commits + snapshots)
 // ============================================================================
 
-let gitCommits = [];
+let historyItems = [];
+let historyFilter = 'all';  // 'all', 'commit', 'snapshot'
+let selectedHistoryCommit = null;
 let lastKnownCommitHash = null;  // Track for auto-clearing snapshots on new commit
+let historyDryRunValidatedHash = null;  // Commit hash that passed dry-run
+
+/**
+ * Load unified history (commits + snapshots)
+ */
+async function loadHistory() {
+    const list = document.getElementById('historyList');
+    if (!list) return;
+
+    list.innerHTML = '<div class="history-empty">Loading...</div>';
+
+    try {
+        const resp = await fetch(`/api/history?token=${token}&limit=40`);
+        if (!resp.ok) throw new Error('Failed to load history');
+
+        const data = await resp.json();
+        historyItems = data.items || [];
+
+        // Check for new commits and auto-clear snapshots
+        const latestCommit = historyItems.find(i => i.type === 'commit');
+        if (latestCommit) {
+            if (lastKnownCommitHash && lastKnownCommitHash !== latestCommit.hash) {
+                console.log('New commit detected, clearing snapshots');
+                await clearSnapshots();
+                showToast('Snapshots cleared (new commit)', 'info', 2000);
+                // Reload to get updated list
+                const resp2 = await fetch(`/api/history?token=${token}&limit=40`);
+                const data2 = await resp2.json();
+                historyItems = data2.items || [];
+            }
+            lastKnownCommitHash = latestCommit.hash;
+        }
+
+        renderHistoryList();
+    } catch (e) {
+        console.error('Failed to load history:', e);
+        list.innerHTML = '<div class="history-empty">Failed to load history</div>';
+    }
+}
+
+/**
+ * Render history list with current filter
+ */
+function renderHistoryList() {
+    const list = document.getElementById('historyList');
+    if (!list) return;
+
+    // Filter items
+    let items = historyItems;
+    if (historyFilter === 'commit') {
+        items = historyItems.filter(i => i.type === 'commit');
+    } else if (historyFilter === 'snapshot') {
+        items = historyItems.filter(i => i.type === 'snapshot');
+    }
+
+    if (items.length === 0) {
+        list.innerHTML = '<div class="history-empty">No items</div>';
+        return;
+    }
+
+    list.innerHTML = items.map(item => {
+        const timeAgo = formatTimeAgo(item.timestamp);
+        if (item.type === 'commit') {
+            return `
+                <div class="history-item history-commit" data-hash="${item.hash}">
+                    <span class="history-icon">🔀</span>
+                    <div class="history-info">
+                        <span class="history-id">${item.id}</span>
+                        <span class="history-subject">${escapeHtml(item.subject)}</span>
+                    </div>
+                    <span class="history-time">${timeAgo}</span>
+                    <button class="history-action-btn" data-action="revert" data-hash="${item.hash}" title="Revert">↩️</button>
+                </div>`;
+        } else {
+            const labelDisplay = item.label === 'user_send' ? 'cmd' : item.label;
+            return `
+                <div class="history-item history-snapshot" data-id="${item.id}">
+                    <span class="history-icon">${item.pinned ? '📌' : '📸'}</span>
+                    <div class="history-info">
+                        <span class="history-label">${labelDisplay}</span>
+                    </div>
+                    <span class="history-time">${timeAgo}</span>
+                    <button class="history-action-btn" data-action="preview" data-id="${item.id}" title="Preview">👁️</button>
+                </div>`;
+        }
+    }).join('');
+}
+
+/**
+ * Format timestamp as relative time
+ */
+function formatTimeAgo(timestamp) {
+    const now = Date.now();
+    const diff = now - timestamp;
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    if (days > 0) return `${days}d`;
+    if (hours > 0) return `${hours}h`;
+    if (minutes > 0) return `${minutes}m`;
+    return `${seconds}s`;
+}
+
+/**
+ * Show commit detail in history tab
+ */
+async function showHistoryCommitDetail(hash) {
+    const list = document.getElementById('historyList');
+    const detail = document.getElementById('historyCommitDetail');
+    const hashEl = document.getElementById('historyDetailHash');
+    const content = document.getElementById('historyDetailContent');
+    const dryRunResult = document.getElementById('historyDryRunResult');
+
+    if (!list || !detail) return;
+
+    selectedHistoryCommit = hash;
+    historyDryRunValidatedHash = null;
+
+    list.classList.add('hidden');
+    detail.classList.remove('hidden');
+    hashEl.textContent = hash.slice(0, 7);
+    content.innerHTML = '<div class="loading">Loading...</div>';
+    dryRunResult?.classList.add('hidden');
+
+    // Disable revert until dry-run passes
+    const revertBtn = document.getElementById('historyRevertBtn');
+    if (revertBtn) {
+        revertBtn.disabled = true;
+        revertBtn.title = 'Run dry-run first';
+    }
+
+    try {
+        const resp = await fetch(`/api/rollback/git/commit/${hash}?token=${token}`);
+        if (!resp.ok) throw new Error('Failed to load commit');
+
+        const data = await resp.json();
+        content.innerHTML = `
+            <div class="commit-subject">${escapeHtml(data.subject)}</div>
+            <div class="commit-meta">${escapeHtml(data.author)} · ${data.date}</div>
+            ${data.body ? `<pre class="commit-body">${escapeHtml(data.body)}</pre>` : ''}
+            <pre class="commit-stat">${escapeHtml(data.stat)}</pre>
+        `;
+    } catch (e) {
+        content.innerHTML = `<div class="error">Failed to load: ${e.message}</div>`;
+    }
+}
+
+/**
+ * Hide commit detail, show list
+ */
+function hideHistoryCommitDetail() {
+    const list = document.getElementById('historyList');
+    const detail = document.getElementById('historyCommitDetail');
+    if (list) list.classList.remove('hidden');
+    if (detail) detail.classList.add('hidden');
+    selectedHistoryCommit = null;
+}
+
+/**
+ * Dry-run revert for history commit
+ */
+async function historyDryRunRevert() {
+    if (!selectedHistoryCommit) return;
+
+    const dryRunResult = document.getElementById('historyDryRunResult');
+    const revertBtn = document.getElementById('historyRevertBtn');
+    const dryRunBtn = document.getElementById('historyDryRunBtn');
+
+    if (dryRunBtn) {
+        dryRunBtn.disabled = true;
+        dryRunBtn.textContent = 'Running...';
+    }
+    if (dryRunResult) {
+        dryRunResult.classList.remove('hidden');
+        dryRunResult.innerHTML = '<div class="loading">Running dry-run...</div>';
+    }
+
+    try {
+        const resp = await fetch(`/api/rollback/git/revert/dry-run?commit_hash=${selectedHistoryCommit}&token=${token}`, {
+            method: 'POST'
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            dryRunResult.innerHTML = `<div class="dry-run-success">✓ Dry-run passed. Safe to revert.</div>`;
+            historyDryRunValidatedHash = selectedHistoryCommit;
+            if (revertBtn) {
+                revertBtn.disabled = false;
+                revertBtn.title = 'Revert this commit';
+            }
+        } else {
+            dryRunResult.innerHTML = `<div class="dry-run-error">✗ Dry-run failed: ${escapeHtml(data.error || 'Unknown error')}</div>`;
+        }
+    } catch (e) {
+        dryRunResult.innerHTML = `<div class="dry-run-error">✗ Error: ${e.message}</div>`;
+    } finally {
+        if (dryRunBtn) {
+            dryRunBtn.disabled = false;
+            dryRunBtn.textContent = 'Dry Run';
+        }
+    }
+}
+
+/**
+ * Execute revert for history commit
+ */
+async function historyExecuteRevert() {
+    if (!selectedHistoryCommit) return;
+    if (historyDryRunValidatedHash !== selectedHistoryCommit) {
+        showToast('Run dry-run first', 'error');
+        return;
+    }
+
+    if (!confirm(`Revert commit ${selectedHistoryCommit.slice(0, 7)}?`)) return;
+
+    const revertBtn = document.getElementById('historyRevertBtn');
+    if (revertBtn) {
+        revertBtn.disabled = true;
+        revertBtn.textContent = 'Reverting...';
+    }
+
+    try {
+        const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedHistoryCommit}&token=${token}&${getTargetParams()}`, {
+            method: 'POST'
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            showToast('Commit reverted', 'success');
+            hideHistoryCommitDetail();
+            loadHistory();
+        } else {
+            showToast(`Revert failed: ${data.error}`, 'error');
+        }
+    } catch (e) {
+        showToast(`Revert error: ${e.message}`, 'error');
+    } finally {
+        if (revertBtn) {
+            revertBtn.disabled = false;
+            revertBtn.textContent = 'Revert';
+        }
+    }
+}
+
+// Keep old git variables for compatibility with other code
+let gitCommits = [];
 let selectedCommitHash = null;
 let lastRevertCommit = null;  // The SHA of the revert commit (for undo = revert-the-revert)
 let gitStatus = null;  // Current git status (branch, dirty, ahead/behind)
@@ -6024,7 +6314,7 @@ function updateRevertButtonState() {
 }
 
 /**
- * Switch between drawer tabs (Queue / Runner / Preview / Git / Process)
+ * Switch between drawer tabs (Queue / Runner / Dev / History / Process)
  */
 function switchRollbackTab(tabName) {
     // Update tab buttons
@@ -6036,8 +6326,7 @@ function switchRollbackTab(tabName) {
     const queueContent = document.getElementById('queueTabContent');
     const runnerContent = document.getElementById('runnerTabContent');
     const devContent = document.getElementById('devTabContent');
-    const previewContent = document.getElementById('previewTabContent');
-    const gitContent = document.getElementById('gitTabContent');
+    const historyContent = document.getElementById('historyTabContent');
     const processContent = document.getElementById('processTabContent');
 
     // Hide all tabs
@@ -6047,10 +6336,8 @@ function switchRollbackTab(tabName) {
     runnerContent?.classList.remove('active');
     devContent?.classList.add('hidden');
     devContent?.classList.remove('active');
-    previewContent?.classList.add('hidden');
-    previewContent?.classList.remove('active');
-    gitContent?.classList.add('hidden');
-    gitContent?.classList.remove('active');
+    historyContent?.classList.add('hidden');
+    historyContent?.classList.remove('active');
     processContent?.classList.add('hidden');
     processContent?.classList.remove('active');
 
@@ -6067,15 +6354,10 @@ function switchRollbackTab(tabName) {
         devContent?.classList.remove('hidden');
         devContent?.classList.add('active');
         loadDevPreviewConfig();
-    } else if (tabName === 'preview') {
-        previewContent?.classList.remove('hidden');
-        previewContent?.classList.add('active');
-    } else if (tabName === 'git') {
-        gitContent?.classList.remove('hidden');
-        gitContent?.classList.add('active');
-        // Load status and commits when switching to git tab
-        loadGitStatus();
-        loadGitCommits();
+    } else if (tabName === 'history') {
+        historyContent?.classList.remove('hidden');
+        historyContent?.classList.add('active');
+        loadHistory();
     } else if (tabName === 'process') {
         processContent?.classList.remove('hidden');
         processContent?.classList.add('active');
