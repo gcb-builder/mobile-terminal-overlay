@@ -289,71 +289,6 @@
             </div>
         </div>
 
-        <!-- Dirty directory choice modal -->
-        <div id="dirtyChoiceModal" class="dirty-choice-modal hidden">
-            <div class="dirty-choice-content">
-                <div class="dirty-choice-header">
-                    <span class="dirty-choice-title">Working directory has changes</span>
-                </div>
-                <div class="dirty-choice-info">
-                    <span id="dirtyChoiceFiles"></span>
-                </div>
-                <div class="dirty-choice-options">
-                    <button id="dirtyChoiceStash" class="dirty-choice-btn stash">
-                        <span class="dirty-choice-icon">📦</span>
-                        <span class="dirty-choice-label">Stash changes and continue</span>
-                        <span class="dirty-choice-desc">Can restore after revert</span>
-                    </button>
-                    <button id="dirtyChoiceDiscard" class="dirty-choice-btn discard">
-                        <span class="dirty-choice-icon">🗑️</span>
-                        <span class="dirty-choice-label">Discard all changes</span>
-                        <span class="dirty-choice-desc">Permanent, cannot undo</span>
-                    </button>
-                </div>
-                <div class="dirty-choice-footer">
-                    <button id="dirtyChoiceCancel" class="dirty-choice-cancel">Cancel</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Discard confirmation modal -->
-        <div id="discardConfirmModal" class="dirty-choice-modal hidden">
-            <div class="dirty-choice-content">
-                <div class="dirty-choice-header warning">
-                    <span class="dirty-choice-title">⚠️ Confirm Discard</span>
-                </div>
-                <div class="discard-confirm-info">
-                    <p>This will permanently delete:</p>
-                    <ul id="discardFileList" class="discard-file-list"></ul>
-                    <label class="discard-untracked-option">
-                        <input type="checkbox" id="discardUntrackedCheckbox">
-                        <span id="discardUntrackedLabel">Also remove untracked files</span>
-                    </label>
-                </div>
-                <div class="discard-confirm-actions">
-                    <button id="discardConfirmCancel" class="dirty-choice-cancel">Cancel</button>
-                    <button id="discardConfirmYes" class="dirty-choice-btn danger">Yes, Discard All</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Stash result modal (after revert with stash) -->
-        <div id="stashResultModal" class="dirty-choice-modal hidden">
-            <div class="dirty-choice-content">
-                <div class="dirty-choice-header success">
-                    <span class="dirty-choice-title">✓ Revert successful</span>
-                </div>
-                <div class="stash-result-info">
-                    <p>📦 Stash saved: <code id="stashResultRef">stash@{0}</code></p>
-                </div>
-                <div class="stash-result-actions">
-                    <button id="stashResultApply" class="dirty-choice-btn stash">Apply Stash</button>
-                    <button id="stashResultDrop" class="dirty-choice-btn discard">Drop Stash</button>
-                    <button id="stashResultClose" class="dirty-choice-cancel">Close</button>
-                </div>
-            </div>
-        </div>
-
         <!-- Drawer backdrop (tap to close) -->
         <div id="drawerBackdrop" class="drawer-backdrop hidden"></div>
 
@@ -474,7 +409,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=187"></script>
+    <script src="/static/terminal.js?v=186"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

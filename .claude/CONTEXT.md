@@ -45,25 +45,6 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] V2: Connection resilience (hello handshake, watchdog, PTY death detection)
 - [x] Target Selector: Explicit pane selection for multi-project workflows
 
-## Recent Changes (2026-01-23) - Git Revert Dirty Handling
-
-### Safe Revert with Dirty Directory
-- **Dirty choice modal** - When repo is dirty, shows choice instead of blocking:
-  - "Stash changes and continue" (safe, preserves work)
-  - "Discard all changes" (requires 2-step confirmation)
-- **Post-revert stash management** - After revert with stash, shows Apply/Drop options
-- **Untracked files checkbox** - Opt-in removal of untracked files on discard
-- **Safer stash handling** - Uses `git stash apply` not `pop` (preserves stash on conflict)
-
-### New Endpoints
-- `POST /api/git/stash/push` - Auto-stash with timestamp
-- `GET /api/git/stash/list` - List stashes
-- `POST /api/git/stash/apply` - Apply stash (non-destructive)
-- `POST /api/git/stash/drop` - Drop stash
-- `POST /api/git/discard` - Reset hard + optional clean
-
----
-
 ## Recent Changes (2026-01-23) - Dev Preview & UX Polish
 
 ### Dev Preview Tab (Replit-like)
