@@ -1763,7 +1763,8 @@ def create_app(config: Config) -> FastAPI:
 
         # Convert repo path to Claude's project identifier format
         # e.g., /home/user/dev/myproject -> -home-user-dev-myproject
-        project_id = str(repo_path.resolve()).replace("/", "-")
+        # Note: Claude Code strips ~ from paths before converting
+        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
         claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
 
         # Helper to return cached content
@@ -1912,7 +1913,7 @@ def create_app(config: Config) -> FastAPI:
         if not repo_path:
             return {"cleared": False, "error": "No repo path found"}
 
-        project_id = str(repo_path.resolve()).replace("/", "-")
+        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
         cache_path = get_log_cache_path(project_id)
 
         if cache_path.exists():
@@ -2647,7 +2648,7 @@ Only the top 1–3 risks worth caring about.
         try:
             repo_path = get_current_repo_path()
             if repo_path:
-                project_id = str(repo_path.resolve()).replace("/", "-").lstrip("-")
+                project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-").lstrip("-")
                 claude_dir = Path.home() / ".claude" / "projects" / project_id
                 jsonl_files = sorted(claude_dir.glob("*.jsonl"),
                                    key=lambda f: f.stat().st_mtime, reverse=True)
