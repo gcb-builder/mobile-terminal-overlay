@@ -953,6 +953,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.audit_log = AuditLog()  # Audit log for rollback operations
     app.state.git_op_lock = GitOpLock()  # Lock for git write operations
     app.state.active_target = None  # Explicit target pane (window:pane like "0:0")
+    app.state.target_log_mapping = {}  # Maps pane_id -> log_file_path
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -1138,6 +1139,11 @@ def create_app(config: Config) -> FastAPI:
             logger.error(f"Error verifying target: {e}")
             # Allow selection even if verification fails
             pass
+
+        # Clear old target's log mapping to force re-detection
+        old_target = app.state.active_target
+        if old_target and old_target in app.state.target_log_mapping:
+            del app.state.target_log_mapping[old_target]
 
         app.state.active_target = target_id
         app.state.audit_log.log("target_select", {"target": target_id})
@@ -1743,6 +1749,172 @@ def create_app(config: Config) -> FastAPI:
         except Exception as e:
             logger.warning(f"Error writing log cache: {e}")
 
+    def detect_target_log_file(target_id: Optional[str], session_name: str, claude_projects_dir: Path) -> Optional[Path]:
+        """
+        Detect which .jsonl log file belongs to a specific target pane.
+
+        Strategy:
+        1. Check cached mapping
+        2. Find Claude process in the target pane
+        3. Match Claude process start time to log file creation/first-entry time
+        4. Fall back to most recently modified if detection fails
+        """
+        import subprocess
+        import os
+        import json
+
+        jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
+        if not jsonl_files:
+            return None
+
+        # Check if we have a cached mapping for this target
+        if target_id:
+            cached = app.state.target_log_mapping.get(target_id)
+            if cached:
+                cached_path = Path(cached)
+                if cached_path.exists():
+                    logger.debug(f"Using cached log file for target {target_id}: {cached_path.name}")
+                    return cached_path
+
+        # Determine which pane to check
+        pane_target = f"{session_name}:{target_id}" if target_id else session_name
+
+        def fallback():
+            """Return most recently modified file."""
+            jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+            logger.debug(f"Falling back to most recent log file: {jsonl_files[0].name}")
+            return jsonl_files[0]
+
+        try:
+            # Get PID of the shell in the target pane
+            result = subprocess.run(
+                ["tmux", "list-panes", "-t", pane_target, "-F", "#{pane_pid}"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode != 0:
+                logger.debug(f"Could not get pane PID for {pane_target}")
+                return fallback()
+
+            pane_pid = result.stdout.strip().split('\n')[0]
+            if not pane_pid:
+                return fallback()
+
+            # Find Claude process (direct child named 'claude')
+            result = subprocess.run(
+                ["pgrep", "-P", pane_pid, "-x", "claude"],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                logger.debug(f"No claude process found under pane PID {pane_pid}")
+                return fallback()
+
+            claude_pid = result.stdout.strip().split('\n')[0]
+
+            # Get Claude process start time (in seconds since boot)
+            stat_path = Path(f"/proc/{claude_pid}/stat")
+            if not stat_path.exists():
+                return fallback()
+
+            stat_content = stat_path.read_text()
+            # Field 22 is starttime (in clock ticks since boot)
+            # Format: pid (comm) state ... field22 ...
+            # Need to handle comm field which may contain spaces/parens
+            # Find the last ')' and parse from there
+            last_paren = stat_content.rfind(')')
+            if last_paren == -1:
+                return fallback()
+            fields_after_comm = stat_content[last_paren + 2:].split()
+            if len(fields_after_comm) < 20:
+                return fallback()
+            starttime_ticks = int(fields_after_comm[19])  # 22nd field, 0-indexed after comm
+
+            # Get system boot time and clock ticks per second
+            with open('/proc/stat') as f:
+                for line in f:
+                    if line.startswith('btime '):
+                        boot_time = int(line.split()[1])
+                        break
+                else:
+                    return fallback()
+
+            clock_ticks = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
+            process_start_unix = boot_time + (starttime_ticks / clock_ticks)
+
+            logger.debug(f"Claude process {claude_pid} started at {process_start_unix}")
+
+            # Find log file whose first entry timestamp is closest to process start
+            best_match = None
+            best_diff = float('inf')
+
+            for log_file in jsonl_files:
+                try:
+                    # Read first line to get session start timestamp
+                    with open(log_file, 'r') as f:
+                        first_line = f.readline().strip()
+                        if not first_line:
+                            continue
+                        entry = json.loads(first_line)
+                        # Timestamp may be nested in snapshot object
+                        ts_str = entry.get('timestamp', '')
+                        if not ts_str and 'snapshot' in entry:
+                            ts_str = entry['snapshot'].get('timestamp', '')
+                        if not ts_str:
+                            continue
+                        # Parse ISO timestamp (format: "2026-01-24T10:54:56.123Z")
+                        from datetime import datetime
+                        ts_str = ts_str.replace('Z', '+00:00')
+                        dt = datetime.fromisoformat(ts_str)
+                        log_start_unix = dt.timestamp()
+
+                        diff = abs(log_start_unix - process_start_unix)
+                        logger.debug(f"Log {log_file.name}: start={log_start_unix}, diff={diff}s")
+
+                        if diff < best_diff:
+                            best_diff = diff
+                            best_match = log_file
+                except Exception as e:
+                    logger.debug(f"Error parsing log file {log_file.name}: {e}")
+                    continue
+
+            # Accept match if within 60 seconds of process start
+            if best_match and best_diff < 60:
+                if target_id:
+                    app.state.target_log_mapping[target_id] = str(best_match)
+                logger.info(f"Matched log file for target {target_id}: {best_match.name} (diff={best_diff:.1f}s)")
+                return best_match
+
+            logger.debug(f"No close timestamp match found (best diff: {best_diff}s)")
+
+            # Fallback strategy: Find file that's been modified recently
+            # If the target's Claude process is active, its log should have recent modifications
+            import time
+            now = time.time()
+            recent_threshold = 300  # 5 minutes
+
+            # Sort by modification time
+            jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+
+            for log_file in jsonl_files:
+                mtime = log_file.stat().st_mtime
+                age = now - mtime
+                if age < recent_threshold:
+                    # This file was modified recently - likely belongs to an active session
+                    # If we haven't assigned this file to another target, use it
+                    already_assigned = any(
+                        v == str(log_file) for k, v in app.state.target_log_mapping.items()
+                        if k != target_id
+                    )
+                    if not already_assigned:
+                        if target_id:
+                            app.state.target_log_mapping[target_id] = str(log_file)
+                        logger.info(f"Assigned recent log file to target {target_id}: {log_file.name} (age={age:.0f}s)")
+                        return log_file
+
+        except Exception as e:
+            logger.debug(f"Target log detection failed: {e}")
+
+        return fallback()
+
     @app.get("/api/log")
     async def get_log(token: Optional[str] = Query(None), limit: int = Query(200)):
         """
@@ -1788,14 +1960,10 @@ def create_app(config: Config) -> FastAPI:
         if not claude_projects_dir.exists():
             return return_cached()
 
-        # Find the most recently modified .jsonl file
-        jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
-        if not jsonl_files:
+        # Detect which log file belongs to this target
+        log_file = detect_target_log_file(app.state.active_target, app.state.current_session, claude_projects_dir)
+        if not log_file:
             return return_cached()
-
-        # Sort by modification time, most recent first
-        jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-        log_file = jsonl_files[0]
 
         try:
             raw_content = log_file.read_text(errors="replace")
@@ -2430,8 +2598,9 @@ Only the top 1–3 risks worth caring about.
         # Clear output buffer (don't replay old session's content)
         app.state.output_buffer.clear()
 
-        # Clear target selection (pane IDs are session-specific)
+        # Clear target selection and log mappings (pane IDs are session-specific)
         app.state.active_target = None
+        app.state.target_log_mapping.clear()
 
         # Update current session
         app.state.current_session = session

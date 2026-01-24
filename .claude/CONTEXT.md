@@ -4,7 +4,47 @@
 
 - **Branch:** master
 - **Stage:** Production-ready with PWA support + V2 features
-- **Last Updated:** 2026-01-23
+- **Last Updated:** 2026-01-24
+
+## Active Work: Session-to-Log Mapping (Implemented)
+
+### Problem
+When multiple Claude Code instances run in the same directory (different tmux sessions), the `/api/log` endpoint picks the most recently modified `.jsonl` file, which may not match the session being viewed.
+
+### Solution Implemented
+Target-to-log mapping using `pane_id` as the key (not session_name):
+
+```python
+app.state.target_log_mapping = {}  # Maps pane_id -> log_file_path
+```
+
+**Detection strategy** in `detect_target_log_file()`:
+1. Check cached mapping first
+2. Find Claude process in target pane via `pgrep -P {pane_pid} -x claude`
+3. Get process start time from `/proc/{pid}/stat`
+4. Match against first entry timestamp in each `.jsonl` file (within 60s)
+5. If no timestamp match, assign most recently modified file not assigned elsewhere
+6. Cache the mapping for future requests
+
+**Cache invalidation:**
+- On target selection change (`/api/target/select`)
+- On session switch (`/api/switch`)
+
+### Known Limitations
+- **Same-directory sessions**: When multiple Claude instances share a working directory, detection relies on:
+  - Timestamp correlation (works for fresh sessions)
+  - Active file modification (works when session is actively writing)
+- **Idle sessions**: If a session's Claude is idle, detection may pick wrong file
+- **File not kept open**: Claude opens/closes `.jsonl` files transiently, so `/proc/fd` detection doesn't work
+
+### Workaround for Users
+When drift occurs:
+1. Make the target session active (type something)
+2. Refresh the mobile terminal
+3. The recently-modified file will be assigned to the target
+
+### Files Modified
+- `mobile_terminal/server.py`: Added `detect_target_log_file()` and `target_log_mapping` state
 
 ## Objective
 
