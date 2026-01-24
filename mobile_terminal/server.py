@@ -1147,6 +1147,10 @@ def create_app(config: Config) -> FastAPI:
 
         app.state.active_target = target_id
         app.state.audit_log.log("target_select", {"target": target_id})
+
+        # Start background file monitor to detect which log file this target uses
+        asyncio.create_task(monitor_log_file_for_target(target_id))
+
         return {"success": True, "active": target_id}
 
     @app.get("/api/files/search")
@@ -1748,6 +1752,65 @@ def create_app(config: Config) -> FastAPI:
             cache_path.write_text(content)
         except Exception as e:
             logger.warning(f"Error writing log cache: {e}")
+
+    async def monitor_log_file_for_target(target_id: str):
+        """
+        Background task that monitors log file modifications to detect which
+        .jsonl file belongs to the selected target.
+
+        Watches for 10 seconds and associates any modified file with the target.
+        """
+        import time
+
+        # Get project directory for the target
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return
+
+        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+        claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
+
+        if not claude_projects_dir.exists():
+            return
+
+        jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
+        if not jsonl_files:
+            return
+
+        # Skip if already cached
+        if target_id in app.state.target_log_mapping:
+            return
+
+        # Record initial mtimes
+        initial_mtimes = {str(f): f.stat().st_mtime for f in jsonl_files}
+        logger.debug(f"Starting log file monitor for target {target_id}")
+
+        # Monitor for 10 seconds
+        for _ in range(20):
+            await asyncio.sleep(0.5)
+
+            # Check if target changed while we were monitoring
+            if app.state.active_target != target_id:
+                logger.debug(f"Target changed, stopping monitor for {target_id}")
+                return
+
+            # Check if already cached (by another code path)
+            if target_id in app.state.target_log_mapping:
+                return
+
+            # Check for mtime changes
+            for f in jsonl_files:
+                try:
+                    current_mtime = f.stat().st_mtime
+                    if current_mtime > initial_mtimes.get(str(f), 0):
+                        # File was modified - associate with this target
+                        app.state.target_log_mapping[target_id] = str(f)
+                        logger.info(f"Monitor detected log file for target {target_id}: {f.name}")
+                        return
+                except Exception:
+                    pass
+
+        logger.debug(f"Monitor timeout for target {target_id}, no file changes detected")
 
     def detect_target_log_file(target_id: Optional[str], session_name: str, claude_projects_dir: Path) -> Optional[Path]:
         """
