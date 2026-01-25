@@ -67,7 +67,6 @@ let composeAttach, composeFileInput, composeThinkMode, composeAttachments;
 let selectCopyBtn, drawersBtn, challengeBtn;
 let challengeModal, challengeClose, challengeResult, challengeStatus, challengeRun;
 let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
-let contextViewBtn, touchViewBtn, contextContainer, contextContent, touchContainer, touchContent;
 let logView, logInput, logSend, logContent, refreshBtn;
 let terminalView;
 
@@ -171,12 +170,6 @@ function initDOMElements() {
     transcriptContent = document.getElementById('transcriptContent');
     transcriptSearch = document.getElementById('transcriptSearch');
     transcriptSearchCount = document.getElementById('transcriptSearchCount');
-    contextViewBtn = document.getElementById('contextViewBtn');
-    touchViewBtn = document.getElementById('touchViewBtn');
-    contextContainer = document.getElementById('contextContainer');
-    contextContent = document.getElementById('contextContent');
-    touchContainer = document.getElementById('touchContainer');
-    touchContent = document.getElementById('touchContent');
     lastActivityElement = document.getElementById('lastActivity');
     logView = document.getElementById('logView');
     logInput = document.getElementById('logInput');
@@ -2888,25 +2881,16 @@ function stopTailViewport() { stopActivePrompt(); }
 function updateTailViewport() { refreshActivePrompt(); }
 
 function setupViewToggle() {
-    // Views are now: log (primary), terminal, context, touch
+    // Views are now: log (primary), terminal
+    // Context and touch moved to Docs modal
     // Tab buttons removed - using swipe and dots now
-
-    // Refresh buttons for context and touch views
-    const contextRefresh = document.getElementById('contextRefresh');
-    const touchRefresh = document.getElementById('touchRefresh');
-    if (contextRefresh) {
-        contextRefresh.addEventListener('click', fetchContext);
-    }
-    if (touchRefresh) {
-        touchRefresh.addEventListener('click', fetchTouch);
-    }
 
     // Log input handling
     setupLogInput();
 }
 
-// Tab order for swipe navigation
-const tabOrder = ['log', 'terminal', 'context', 'touch'];
+// Tab order for swipe navigation (context/touch moved to Docs modal)
+const tabOrder = ['log', 'terminal'];
 
 function clearAllTabActive() {
     // Tab buttons removed from header - dots handle indication now
@@ -2959,12 +2943,6 @@ function switchToView(viewName) {
         case 'terminal':
             switchToTerminalView();
             break;
-        case 'context':
-            switchToContextView();
-            break;
-        case 'touch':
-            switchToTouchView();
-            break;
     }
 }
 
@@ -2975,8 +2953,6 @@ function setupSwipeNavigation() {
     const containers = [
         document.getElementById('logView'),
         document.getElementById('terminalView'),
-        document.getElementById('contextContainer'),
-        document.getElementById('touchContainer'),
     ];
 
     const SWIPE_THRESHOLD = 80;    // Minimum px to trigger
@@ -3034,8 +3010,6 @@ function hideAllContainers() {
     if (logView) logView.classList.add('hidden');
     if (terminalView) terminalView.classList.add('hidden');
     if (transcriptContainer) transcriptContainer.classList.add('hidden');
-    contextContainer.classList.add('hidden');
-    touchContainer.classList.add('hidden');
     // Stop auto-refresh when leaving log view
     stopLogAutoRefresh();
     stopTailViewport();
@@ -3077,112 +3051,6 @@ function switchToTerminalView() {
         if (fitAddon) fitAddon.fit();
         sendResize();
     }, 100);
-}
-
-async function switchToContextView() {
-    currentView = 'context';
-    hideAllContainers();
-    contextContainer.classList.remove('hidden');
-    viewBar.classList.add('hidden');
-    controlBarsContainer.classList.add('hidden');
-    updateTabIndicator();
-
-    await fetchContext();
-}
-
-async function switchToTouchView() {
-    currentView = 'touch';
-    hideAllContainers();
-    touchContainer.classList.remove('hidden');
-    viewBar.classList.add('hidden');
-    controlBarsContainer.classList.add('hidden');
-    updateTabIndicator();
-
-    await fetchTouch();
-}
-
-async function fetchContext() {
-    const cacheKey = `cache_context_${currentSession || 'default'}`;
-    const cached = localStorage.getItem(cacheKey);
-
-    // Show cached content immediately if available
-    if (cached) {
-        try {
-            const { content } = JSON.parse(cached);
-            contextContent.innerHTML = marked.parse(content);
-        } catch (e) {
-            // Invalid cache, ignore
-        }
-    } else {
-        contextContent.textContent = 'Loading CONTEXT.md...';
-    }
-
-    try {
-        const response = await fetch(`/api/context?token=${token}`);
-        if (!response.ok) {
-            throw new Error('Failed to fetch context');
-        }
-        const data = await response.json();
-
-        if (!data.exists) {
-            contextContent.innerHTML = '<p class="no-content">No CONTEXT.md file found in .claude/ directory.</p>';
-            localStorage.removeItem(cacheKey);
-            return;
-        }
-
-        contextContent.innerHTML = marked.parse(data.content);
-        localStorage.setItem(cacheKey, JSON.stringify({
-            content: data.content,
-            timestamp: Date.now()
-        }));
-    } catch (error) {
-        console.error('Context error:', error);
-        if (!cached) {
-            contextContent.innerHTML = '<p class="error-content">Error loading context: ' + error.message + '</p>';
-        }
-    }
-}
-
-async function fetchTouch() {
-    const cacheKey = `cache_touch_${currentSession || 'default'}`;
-    const cached = localStorage.getItem(cacheKey);
-
-    // Show cached content immediately if available
-    if (cached) {
-        try {
-            const { content } = JSON.parse(cached);
-            touchContent.innerHTML = marked.parse(content);
-        } catch (e) {
-            // Invalid cache, ignore
-        }
-    } else {
-        touchContent.textContent = 'Loading touch-summary.md...';
-    }
-
-    try {
-        const response = await fetch(`/api/touch?token=${token}`);
-        if (!response.ok) {
-            throw new Error('Failed to fetch touch summary');
-        }
-        const data = await response.json();
-
-        if (!data.exists) {
-            touchContent.innerHTML = '<p class="no-content">No touch-summary.md file found in .claude/ directory.</p>';
-            localStorage.removeItem(cacheKey);
-            return;
-        }
-
-        touchContent.innerHTML = marked.parse(data.content);
-        localStorage.setItem(cacheKey, JSON.stringify({
-            content: data.content,
-            timestamp: Date.now()
-        }));
-    } catch (error) {
-        console.error('Touch error:', error);
-        if (!cached) {
-            touchContent.innerHTML = '<p class="error-content">Error loading touch summary: ' + error.message + '</p>';
-        }
-    }
 }
 
 let transcriptSource = '';  // 'log' or 'capture'
