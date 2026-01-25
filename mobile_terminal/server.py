@@ -1840,12 +1840,21 @@ def create_app(config: Config) -> FastAPI:
                     return cached_path
 
         # Determine which pane to check
-        pane_target = f"{session_name}:{target_id}" if target_id else session_name
+        # target_id format is "window:pane" (e.g., "0:0")
+        # tmux target format is "session:window.pane" (e.g., "claude:0.0")
+        if target_id:
+            parts = target_id.split(':')
+            if len(parts) == 2:
+                pane_target = f"{session_name}:{parts[0]}.{parts[1]}"
+            else:
+                pane_target = f"{session_name}:{target_id}"
+        else:
+            pane_target = session_name
 
-        def fallback():
+        def fallback(reason="unknown"):
             """Return most recently modified file."""
             jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-            logger.debug(f"Falling back to most recent log file: {jsonl_files[0].name}")
+            logger.debug(f"Detection fallback ({reason}): using {jsonl_files[0].name}")
             return jsonl_files[0]
 
         try:
@@ -1856,11 +1865,11 @@ def create_app(config: Config) -> FastAPI:
             )
             if result.returncode != 0:
                 logger.debug(f"Could not get pane PID for {pane_target}")
-                return fallback()
+                return fallback("no pane PID")
 
             pane_pid = result.stdout.strip().split('\n')[0]
             if not pane_pid:
-                return fallback()
+                return fallback("empty pane PID")
 
             # Find Claude process (direct child named 'claude')
             result = subprocess.run(
@@ -1869,7 +1878,7 @@ def create_app(config: Config) -> FastAPI:
             )
             if result.returncode != 0 or not result.stdout.strip():
                 logger.debug(f"No claude process found under pane PID {pane_pid}")
-                return fallback()
+                return fallback("no claude process")
 
             claude_pid = result.stdout.strip().split('\n')[0]
 
@@ -1903,9 +1912,43 @@ def create_app(config: Config) -> FastAPI:
             clock_ticks = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
             process_start_unix = boot_time + (starttime_ticks / clock_ticks)
 
-            logger.debug(f"Claude process {claude_pid} started at {process_start_unix}")
+            logger.debug(f"Detection: Claude PID {claude_pid} for target {target_id}, process_start={process_start_unix}")
 
-            # Find log file whose first entry timestamp is closest to process start
+            # Strategy A: Check debug files to find the session UUID
+            # Debug files in ~/.claude/debug/ have the same UUID as log files
+            # The first line timestamp should match the process start time
+            debug_dir = Path.home() / ".claude" / "debug"
+            if debug_dir.exists():
+                from datetime import datetime
+                debug_files = [f for f in debug_dir.glob("*.txt") if f.name != "latest"]
+                for debug_file in debug_files:
+                    try:
+                        # Read first line to get debug session start time
+                        with open(debug_file, 'r') as f:
+                            first_line = f.readline().strip()
+                            if not first_line:
+                                continue
+                            # Format: "2026-01-24T19:35:38.660Z [DEBUG] ..."
+                            ts_str = first_line.split(' ')[0]
+                            ts_str = ts_str.replace('Z', '+00:00')
+                            dt = datetime.fromisoformat(ts_str)
+                            debug_start_unix = dt.timestamp()
+
+                            # Check if debug file start matches process start (within 5 seconds)
+                            diff = abs(debug_start_unix - process_start_unix)
+                            if diff < 5:
+                                session_uuid = debug_file.stem
+                                matching_log = claude_projects_dir / f"{session_uuid}.jsonl"
+                                if matching_log.exists():
+                                    if target_id:
+                                        app.state.target_log_mapping[target_id] = str(matching_log)
+                                    logger.info(f"Matched log file via debug for target {target_id}: {matching_log.name} (diff={diff:.1f}s)")
+                                    return matching_log
+                    except Exception as e:
+                        logger.debug(f"Error checking debug file {debug_file.name}: {e}")
+                        continue
+
+            # Strategy B: Find log file whose first entry timestamp is closest to process start
             best_match = None
             best_diff = float('inf')
 
