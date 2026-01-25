@@ -4,22 +4,22 @@
 
 - **Branch:** master
 - **Stage:** Production-ready with PWA support + V2 features
-- **Last Updated:** 2026-01-24
+- **Last Updated:** 2026-01-25
 
-## Active Work: Session-to-Log Mapping (Implemented - Working)
+## Active Work: Session-to-Log Mapping + Manual Selection (Implemented)
 
 ### Problem
 When multiple Claude Code instances run in the same directory (different tmux sessions), the `/api/log` endpoint picks the most recently modified `.jsonl` file, which may not match the session being viewed.
 
 ### Solution Implemented
-Target-to-log mapping using `pane_id` as the key:
+Target-to-log mapping using `pane_id` as the key with pinning support:
 
 ```python
-app.state.target_log_mapping = {}  # Maps pane_id -> log_file_path
+app.state.target_log_mapping = {}  # Maps pane_id -> {"path": str, "pinned": bool}
 ```
 
-**Detection strategy** in `detect_target_log_file()`:
-1. Check cached mapping first
+**Auto-detection strategy** in `detect_target_log_file()`:
+1. Check cached/pinned mapping first (pinned = user manually selected)
 2. Find Claude process in target pane via `pgrep -P {pane_pid} -x claude`
 3. Get process start time from `/proc/{pid}/stat`
 4. **Strategy A: Debug file correlation** (most reliable)
@@ -28,17 +28,23 @@ app.state.target_log_mapping = {}  # Maps pane_id -> log_file_path
    - Debug file UUID = log file UUID
 5. Strategy B: Match against first entry timestamp in each `.jsonl` file (within 60s)
 6. Fallback: Most recently modified file not assigned elsewhere
-7. Cache the mapping for future requests
+7. Cache the mapping for future requests (pinned=False)
+
+**Manual session selection** (2026-01-25):
+- `GET /api/log/sessions` - List all log files with metadata (preview, timestamps, size)
+- `POST /api/log/select?session_id=UUID` - Pin a specific log to current target
+- `POST /api/log/unpin` - Revert to auto-detection
 
 **Key fix (2026-01-25):**
 - Fixed tmux target format: `session:window.pane` (e.g., `claude:0.0`) not `session:window:pane`
 
 **Cache invalidation:**
-- On target selection change (`/api/target/select`)
+- On target selection change (`/api/target/select`) - only if not pinned
 - On session switch (`/api/switch`)
+- On explicit unpin (`/api/log/unpin`)
 
 ### Files Modified
-- `mobile_terminal/server.py`: Added `detect_target_log_file()` and `target_log_mapping` state
+- `mobile_terminal/server.py`: Added `detect_target_log_file()`, `target_log_mapping` state, session selector endpoints
 
 ## Objective
 

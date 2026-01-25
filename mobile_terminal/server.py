@@ -953,7 +953,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.audit_log = AuditLog()  # Audit log for rollback operations
     app.state.git_op_lock = GitOpLock()  # Lock for git write operations
     app.state.active_target = None  # Explicit target pane (window:pane like "0:0")
-    app.state.target_log_mapping = {}  # Maps pane_id -> log_file_path
+    app.state.target_log_mapping = {}  # Maps pane_id -> {"path": str, "pinned": bool}
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -1140,10 +1140,12 @@ def create_app(config: Config) -> FastAPI:
             # Allow selection even if verification fails
             pass
 
-        # Clear old target's log mapping to force re-detection
+        # Clear old target's log mapping if not pinned (force re-detection)
         old_target = app.state.active_target
         if old_target and old_target in app.state.target_log_mapping:
-            del app.state.target_log_mapping[old_target]
+            old_mapping = app.state.target_log_mapping[old_target]
+            if not (isinstance(old_mapping, dict) and old_mapping.get("pinned")):
+                del app.state.target_log_mapping[old_target]
 
         app.state.active_target = target_id
         app.state.audit_log.log("target_select", {"target": target_id})
@@ -1803,8 +1805,8 @@ def create_app(config: Config) -> FastAPI:
                 try:
                     current_mtime = f.stat().st_mtime
                     if current_mtime > initial_mtimes.get(str(f), 0):
-                        # File was modified - associate with this target
-                        app.state.target_log_mapping[target_id] = str(f)
+                        # File was modified - associate with this target (not pinned)
+                        app.state.target_log_mapping[target_id] = {"path": str(f), "pinned": False}
                         logger.info(f"Monitor detected log file for target {target_id}: {f.name}")
                         return
                 except Exception:
@@ -1830,13 +1832,14 @@ def create_app(config: Config) -> FastAPI:
         if not jsonl_files:
             return None
 
-        # Check if we have a cached mapping for this target
+        # Check if we have a cached/pinned mapping for this target
         if target_id:
             cached = app.state.target_log_mapping.get(target_id)
             if cached:
-                cached_path = Path(cached)
+                cached_path = Path(cached["path"]) if isinstance(cached, dict) else Path(cached)
                 if cached_path.exists():
-                    logger.debug(f"Using cached log file for target {target_id}: {cached_path.name}")
+                    is_pinned = cached.get("pinned", False) if isinstance(cached, dict) else False
+                    logger.debug(f"Using {'pinned' if is_pinned else 'cached'} log file for target {target_id}: {cached_path.name}")
                     return cached_path
 
         # Determine which pane to check
@@ -1941,7 +1944,7 @@ def create_app(config: Config) -> FastAPI:
                                 matching_log = claude_projects_dir / f"{session_uuid}.jsonl"
                                 if matching_log.exists():
                                     if target_id:
-                                        app.state.target_log_mapping[target_id] = str(matching_log)
+                                        app.state.target_log_mapping[target_id] = {"path": str(matching_log), "pinned": False}
                                     logger.info(f"Matched log file via debug for target {target_id}: {matching_log.name} (diff={diff:.1f}s)")
                                     return matching_log
                     except Exception as e:
@@ -1985,7 +1988,7 @@ def create_app(config: Config) -> FastAPI:
             # Accept match if within 60 seconds of process start
             if best_match and best_diff < 60:
                 if target_id:
-                    app.state.target_log_mapping[target_id] = str(best_match)
+                    app.state.target_log_mapping[target_id] = {"path": str(best_match), "pinned": False}
                 logger.info(f"Matched log file for target {target_id}: {best_match.name} (diff={best_diff:.1f}s)")
                 return best_match
 
@@ -2007,12 +2010,13 @@ def create_app(config: Config) -> FastAPI:
                     # This file was modified recently - likely belongs to an active session
                     # If we haven't assigned this file to another target, use it
                     already_assigned = any(
-                        v == str(log_file) for k, v in app.state.target_log_mapping.items()
+                        (v.get("path") if isinstance(v, dict) else v) == str(log_file)
+                        for k, v in app.state.target_log_mapping.items()
                         if k != target_id
                     )
                     if not already_assigned:
                         if target_id:
-                            app.state.target_log_mapping[target_id] = str(log_file)
+                            app.state.target_log_mapping[target_id] = {"path": str(log_file), "pinned": False}
                         logger.info(f"Assigned recent log file to target {target_id}: {log_file.name} (age={age:.0f}s)")
                         return log_file
 
@@ -2200,6 +2204,160 @@ def create_app(config: Config) -> FastAPI:
                 return JSONResponse({"error": str(e)}, status_code=500)
 
         return {"cleared": False, "error": "No cache file exists"}
+
+    @app.get("/api/log/sessions")
+    async def list_log_sessions(token: Optional[str] = Query(None)):
+        """
+        List available log files for the current project directory.
+        Returns metadata for each session log to allow manual selection.
+        """
+        import json
+        from datetime import datetime
+
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return {"sessions": [], "error": "No repo path found"}
+
+        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+        claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
+
+        if not claude_projects_dir.exists():
+            return {"sessions": [], "current": None, "detection_method": None}
+
+        jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
+        if not jsonl_files:
+            return {"sessions": [], "current": None, "detection_method": None}
+
+        # Get the currently detected/pinned log file
+        target_id = app.state.active_target
+        current_log = detect_target_log_file(target_id, app.state.current_session, claude_projects_dir)
+        current_id = current_log.stem if current_log else None
+
+        # Check if current is pinned
+        cached = app.state.target_log_mapping.get(target_id) if target_id else None
+        is_pinned = cached.get("pinned", False) if isinstance(cached, dict) else False
+        detection_method = "pinned" if is_pinned else "auto"
+
+        sessions = []
+        for log_file in jsonl_files:
+            try:
+                stat = log_file.stat()
+                session_id = log_file.stem
+
+                # Get first user message as preview and session start time
+                preview = ""
+                started = None
+                try:
+                    with open(log_file, 'r') as f:
+                        for line in f:
+                            if not line.strip():
+                                continue
+                            entry = json.loads(line)
+                            # Get timestamp from first entry
+                            if started is None:
+                                ts_str = entry.get('timestamp', '')
+                                if not ts_str and 'snapshot' in entry:
+                                    ts_str = entry['snapshot'].get('timestamp', '')
+                                if ts_str:
+                                    started = ts_str
+                            # Get first user message as preview
+                            if entry.get('type') == 'user':
+                                msg = entry.get('message', {})
+                                content = msg.get('content', '')
+                                if isinstance(content, str) and content.strip():
+                                    preview = content.strip()[:100]
+                                    break
+                except Exception:
+                    pass
+
+                sessions.append({
+                    "id": session_id,
+                    "started": started,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat() + "Z",
+                    "size": stat.st_size,
+                    "preview": preview,
+                    "is_current": session_id == current_id,
+                    "is_pinned": is_pinned and session_id == current_id,
+                })
+            except Exception as e:
+                logger.debug(f"Error reading log file {log_file}: {e}")
+                continue
+
+        # Sort by modification time (most recent first)
+        sessions.sort(key=lambda s: s.get("modified", ""), reverse=True)
+
+        return {
+            "sessions": sessions,
+            "current": current_id,
+            "detection_method": detection_method,
+        }
+
+    @app.post("/api/log/select")
+    async def select_log_session(
+        token: Optional[str] = Query(None),
+        session_id: str = Query(..., description="Session UUID to pin"),
+    ):
+        """
+        Pin a specific log file to the current target.
+        This overrides auto-detection until unpinned.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo path found"}, status_code=400)
+
+        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+        claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
+
+        log_file = claude_projects_dir / f"{session_id}.jsonl"
+        if not log_file.exists():
+            return JSONResponse({"error": f"Log file not found: {session_id}"}, status_code=404)
+
+        target_id = app.state.active_target
+        if not target_id:
+            return JSONResponse({"error": "No active target selected"}, status_code=400)
+
+        # Pin the log file to this target
+        app.state.target_log_mapping[target_id] = {"path": str(log_file), "pinned": True}
+        logger.info(f"Pinned log file for target {target_id}: {session_id}")
+
+        return {
+            "success": True,
+            "target": target_id,
+            "session_id": session_id,
+            "pinned": True,
+        }
+
+    @app.post("/api/log/unpin")
+    async def unpin_log_session(token: Optional[str] = Query(None)):
+        """
+        Unpin the current target's log file, reverting to auto-detection.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        target_id = app.state.active_target
+        if not target_id:
+            return JSONResponse({"error": "No active target selected"}, status_code=400)
+
+        cached = app.state.target_log_mapping.get(target_id)
+        if not cached:
+            return {"success": True, "message": "No mapping to unpin"}
+
+        # Remove the mapping so auto-detection runs again
+        del app.state.target_log_mapping[target_id]
+        logger.info(f"Unpinned log file for target {target_id}")
+
+        return {
+            "success": True,
+            "target": target_id,
+            "message": "Reverted to auto-detection",
+        }
 
     @app.get("/api/terminal/capture")
     async def capture_terminal(
