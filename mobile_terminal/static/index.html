@@ -44,7 +44,7 @@
                 <div id="targetDropdown" class="target-dropdown hidden"></div>
             </div>
             <div class="header-right">
-                <button id="planBtn" class="plan-btn hidden" title="View active plan">Plan</button>
+                <button id="docsBtn" class="docs-btn" title="View project docs">Docs</button>
                 <span id="lastActivity" class="last-activity" title="Last activity">--</span>
                 <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh">
                     <span>↻</span>
@@ -276,14 +276,20 @@
             </div>
         </div>
 
-        <!-- Plan modal (view active plan) -->
-        <div id="planModal" class="plan-modal hidden">
-            <div class="plan-modal-content">
-                <div class="plan-modal-header">
-                    <span id="planModalTitle" class="plan-modal-title">Active Plan</span>
-                    <button id="planModalClose" class="plan-modal-close">&times;</button>
+        <!-- Docs modal (plans, context, touch, sessions) -->
+        <div id="docsModal" class="docs-modal hidden">
+            <div class="docs-modal-content">
+                <div class="docs-modal-header">
+                    <span id="docsModalTitle" class="docs-modal-title">Docs</span>
+                    <button id="docsModalClose" class="docs-modal-close">&times;</button>
                 </div>
-                <div id="planModalBody" class="plan-modal-body">
+                <div class="docs-tabs">
+                    <button class="docs-tab active" data-tab="plans">Plans</button>
+                    <button class="docs-tab" data-tab="context">Context</button>
+                    <button class="docs-tab" data-tab="touch">Touch</button>
+                    <button class="docs-tab" data-tab="sessions">Sessions</button>
+                </div>
+                <div id="docsModalBody" class="docs-modal-body">
                     Loading...
                 </div>
             </div>

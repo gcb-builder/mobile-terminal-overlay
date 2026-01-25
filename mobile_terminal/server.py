@@ -2026,12 +2026,18 @@ def create_app(config: Config) -> FastAPI:
         return fallback()
 
     @app.get("/api/log")
-    async def get_log(token: Optional[str] = Query(None), limit: int = Query(200)):
+    async def get_log(
+        token: Optional[str] = Query(None),
+        limit: int = Query(200),
+        session_id: Optional[str] = Query(None, description="Specific session UUID to view (for Docs browser)"),
+    ):
         """
         Get the Claude conversation log from ~/.claude/projects/.
         Finds the most recently modified .jsonl file for the current repo.
         Parses JSONL and returns readable conversation text.
         Falls back to cached log if source is cleared (e.g., after /clear).
+
+        If session_id is provided, loads that specific session log (read-only view).
         """
         import json
         import re
@@ -2070,10 +2076,16 @@ def create_app(config: Config) -> FastAPI:
         if not claude_projects_dir.exists():
             return return_cached()
 
-        # Detect which log file belongs to this target
-        log_file = detect_target_log_file(app.state.active_target, app.state.current_session, claude_projects_dir)
-        if not log_file:
-            return return_cached()
+        # If specific session_id provided, load that directly (for Docs browser)
+        if session_id:
+            log_file = claude_projects_dir / f"{session_id}.jsonl"
+            if not log_file.exists():
+                return {"exists": False, "content": "", "error": f"Session not found: {session_id}"}
+        else:
+            # Detect which log file belongs to this target
+            log_file = detect_target_log_file(app.state.active_target, app.state.current_session, claude_projects_dir)
+            if not log_file:
+                return return_cached()
 
         try:
             raw_content = log_file.read_text(errors="replace")
@@ -2358,6 +2370,72 @@ def create_app(config: Config) -> FastAPI:
             "target": target_id,
             "message": "Reverted to auto-detection",
         }
+
+    @app.get("/api/docs/context")
+    async def get_context_doc(token: Optional[str] = Query(None)):
+        """
+        Read .claude/CONTEXT.md from the current target's repo.
+        Returns the raw markdown content for display in Docs modal.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return {"exists": False, "content": "", "error": "No repo path found"}
+
+        context_file = repo_path / ".claude" / "CONTEXT.md"
+        if not context_file.exists():
+            return {
+                "exists": False,
+                "content": "",
+                "path": str(context_file),
+            }
+
+        try:
+            content = context_file.read_text(errors="replace")
+            return {
+                "exists": True,
+                "content": content,
+                "path": str(context_file),
+                "modified": context_file.stat().st_mtime,
+            }
+        except Exception as e:
+            logger.error(f"Error reading CONTEXT.md: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/docs/touch")
+    async def get_touch_summary(token: Optional[str] = Query(None)):
+        """
+        Read .claude/touch-summary.md from the current target's repo.
+        Returns the raw markdown content for display in Docs modal.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return {"exists": False, "content": "", "error": "No repo path found"}
+
+        touch_file = repo_path / ".claude" / "touch-summary.md"
+        if not touch_file.exists():
+            return {
+                "exists": False,
+                "content": "",
+                "path": str(touch_file),
+            }
+
+        try:
+            content = touch_file.read_text(errors="replace")
+            return {
+                "exists": True,
+                "content": content,
+                "path": str(touch_file),
+                "modified": touch_file.stat().st_mtime,
+            }
+        except Exception as e:
+            logger.error(f"Error reading touch-summary.md: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/api/terminal/capture")
     async def capture_terminal(

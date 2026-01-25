@@ -44,7 +44,30 @@ app.state.target_log_mapping = {}  # Maps pane_id -> {"path": str, "pinned": boo
 - On explicit unpin (`/api/log/unpin`)
 
 ### Files Modified
-- `mobile_terminal/server.py`: Added `detect_target_log_file()`, `target_log_mapping` state, session selector endpoints
+- `mobile_terminal/server.py`: Added `detect_target_log_file()`, `target_log_mapping` state, session selector endpoints, docs endpoints
+
+## Docs Modal (2026-01-25)
+
+Unified document viewer accessible via "Docs" button in header. Replaces the old Plan button.
+
+### Tabs
+| Tab | Content | Features |
+|-----|---------|----------|
+| **Plans** | ~/.claude/plans/*.md | Dropdown selector to pick plan |
+| **Context** | .claude/CONTEXT.md | Read-only view |
+| **Touch** | .claude/touch-summary.md | Read-only view |
+| **Sessions** | Other session logs | Read-only viewer with Back button |
+
+### New Endpoints
+- `GET /api/docs/context` - Read CONTEXT.md from target repo
+- `GET /api/docs/touch` - Read touch-summary.md from target repo
+- `GET /api/log?session_id=xxx` - Load specific session log (for Sessions tab)
+
+### Files Modified
+- `mobile_terminal/server.py` - Added `/api/docs/context`, `/api/docs/touch`, `session_id` param to `/api/log`
+- `mobile_terminal/static/index.html` - Changed planBtn to docsBtn, planModal to docsModal with tabs
+- `mobile_terminal/static/styles.css` - Added docs-modal and docs-tab styles
+- `mobile_terminal/static/terminal.js` - Replaced setupPlanButton with setupDocsButton, tab switching logic
 
 ## Objective
 
@@ -84,6 +107,7 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] V2: Runner with allowlisted quick commands
 - [x] V2: Connection resilience (hello handshake, watchdog, PTY death detection)
 - [x] Target Selector: Explicit pane selection for multi-project workflows
+- [x] Docs Modal: Unified viewer for Plans, Context, Touch, and Sessions
 
 ## Recent Changes (2026-01-23) - Git Revert Dirty Handling
 

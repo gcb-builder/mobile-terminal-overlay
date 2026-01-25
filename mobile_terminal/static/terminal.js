@@ -4213,205 +4213,309 @@ function setupPlanPreviewHandler() {
 }
 
 /**
- * Check for active plan and show/hide the Plan button
- * Shows button for: found, ambiguous, or fallback plans
+ * Legacy function - no longer needed since Docs button is always visible
+ * Kept for compatibility with existing call sites
  */
 async function checkActivePlan() {
-    const planBtn = document.getElementById('planBtn');
-    if (!planBtn) return;
-
-    try {
-        const response = await fetch(`/api/plan/active?token=${token}&preview=true`);
-        const data = await response.json();
-
-        if (data.exists) {
-            planBtn.dataset.filename = data.filename || '';
-            planBtn.dataset.status = data.status || 'none';
-            // Indicate ambiguous state on button
-            if (data.status === 'ambiguous') {
-                planBtn.textContent = 'Plan...';
-            } else {
-                planBtn.textContent = 'Plan';
-            }
-            planBtn.classList.remove('hidden');
-        } else {
-            planBtn.classList.add('hidden');
-        }
-    } catch (e) {
-        console.error('Failed to check active plan:', e);
-        planBtn.classList.add('hidden');
-    }
+    // No-op: docsBtn is always visible
 }
 
 /**
- * Setup plan button and modal handlers
- * Handles: found (with/without link), ambiguous (candidate selection), none
+ * Setup docs button and modal handlers
+ * Tabs: Plans (with selector), Context, Touch, Sessions (read-only viewer)
  */
-function setupPlanButton() {
-    const planBtn = document.getElementById('planBtn');
-    const planModal = document.getElementById('planModal');
-    const planModalClose = document.getElementById('planModalClose');
-    const planModalTitle = document.getElementById('planModalTitle');
-    const planModalBody = document.getElementById('planModalBody');
+function setupDocsButton() {
+    const docsBtn = document.getElementById('docsBtn');
+    const docsModal = document.getElementById('docsModal');
+    const docsModalClose = document.getElementById('docsModalClose');
+    const docsModalTitle = document.getElementById('docsModalTitle');
+    const docsModalBody = document.getElementById('docsModalBody');
 
-    if (!planBtn || !planModal) return;
+    if (!docsBtn || !docsModal) return;
 
-    // Helper to link a plan to current repo
-    async function linkPlan(filename) {
-        try {
-            const response = await fetch(`/api/plan/link?token=${token}&filename=${encodeURIComponent(filename)}`, { method: 'POST' });
-            const data = await response.json();
-            if (data.success) {
-                // Refresh modal to show linked state
-                planBtn.click();
-            }
-        } catch (e) {
-            console.error('Failed to link plan:', e);
-        }
-    }
+    let currentTab = 'plans';
+    let plansCache = null;
+    let selectedPlan = null;
+    let sessionsCache = null;
+    let viewingSessionId = null;
 
-    // Helper to unlink plan from current repo
-    async function unlinkPlan() {
-        try {
-            const response = await fetch(`/api/plan/link?token=${token}`, { method: 'DELETE' });
-            const data = await response.json();
-            if (data.success) {
-                planBtn.click();
-            }
-        } catch (e) {
-            console.error('Failed to unlink plan:', e);
-        }
-    }
-
-    // Render plan content with optional unlink button
-    function renderPlanContent(data) {
-        let header = '';
-        if (data.linked) {
-            header = `<div class="plan-link-status"><span class="plan-linked-badge">Linked</span> <button class="plan-unlink-btn" id="unlinkPlanBtn">Unpin</button></div>`;
-        } else if (data.status === 'found') {
-            header = `<div class="plan-link-status"><button class="plan-link-btn" id="linkPlanBtn">Pin to this repo</button></div>`;
-        }
-
-        let content;
-        try {
-            content = marked.parse(data.content);
-        } catch (e) {
-            content = `<pre>${escapeHtml(data.content)}</pre>`;
-        }
-
-        planModalBody.innerHTML = header + content;
-
-        // Wire up link/unlink buttons
-        const linkBtn = document.getElementById('linkPlanBtn');
-        if (linkBtn) {
-            linkBtn.addEventListener('click', () => linkPlan(data.filename));
-        }
-        const unlinkBtn = document.getElementById('unlinkPlanBtn');
-        if (unlinkBtn) {
-            unlinkBtn.addEventListener('click', unlinkPlan);
-        }
-    }
-
-    // Render candidate list for ambiguous state or browse all
-    function renderCandidates(candidates, showScore = true, hint = 'Multiple plans match this repo. Select one to pin:') {
-        planModalTitle.textContent = 'Select a Plan';
-        let html = `<div class="plan-candidates"><p class="plan-candidates-hint">${hint}</p>`;
-        for (const c of candidates) {
-            const date = new Date(c.modified * 1000).toLocaleDateString();
-            const meta = showScore ? `Score: ${c.score} | ${date}` : date;
-            const title = c.title || c.filename;
-            html += `
-                <div class="plan-candidate" data-filename="${escapeHtml(c.filename)}">
-                    <div class="plan-candidate-header">
-                        <span class="plan-candidate-name">${escapeHtml(title)}</span>
-                        <span class="plan-candidate-meta">${meta}</span>
-                    </div>
-                    <div class="plan-candidate-preview">${escapeHtml(c.preview)}</div>
-                </div>
-            `;
-        }
-        html += '</div>';
-        planModalBody.innerHTML = html;
-
-        // Wire up candidate clicks
-        planModalBody.querySelectorAll('.plan-candidate').forEach(el => {
-            el.addEventListener('click', () => {
-                linkPlan(el.dataset.filename);
-            });
+    // Tab click handlers
+    const tabs = docsModal.querySelectorAll('.docs-tab');
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            const tabName = tab.dataset.tab;
+            switchTab(tabName);
         });
+    });
+
+    function switchTab(tabName) {
+        currentTab = tabName;
+        viewingSessionId = null; // Reset session detail view
+        tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
+        loadTabContent(tabName);
     }
 
-    // Browse all plans
-    async function browseAllPlans() {
-        planModalBody.innerHTML = '<div class="loading">Loading all plans...</div>';
+    async function loadTabContent(tabName) {
+        docsModalBody.innerHTML = '<div class="docs-loading">Loading...</div>';
+
+        switch (tabName) {
+            case 'plans':
+                await loadPlansTab();
+                break;
+            case 'context':
+                await loadContextTab();
+                break;
+            case 'touch':
+                await loadTouchTab();
+                break;
+            case 'sessions':
+                await loadSessionsTab();
+                break;
+        }
+    }
+
+    // Plans tab with dropdown selector
+    async function loadPlansTab() {
         try {
-            const response = await fetch(`/api/plans?token=${token}`);
-            const data = await response.json();
-            if (data.plans && data.plans.length > 0) {
-                renderCandidates(data.plans, false, 'All plans (tap to pin):');
-            } else {
-                planModalBody.innerHTML = '<p class="plan-none">No plan files found</p>';
+            // Load plans list if not cached
+            if (!plansCache) {
+                const response = await fetch(`/api/plans?token=${token}`);
+                const data = await response.json();
+                plansCache = data.plans || [];
+            }
+
+            if (plansCache.length === 0) {
+                docsModalBody.innerHTML = '<div class="docs-empty">No plan files found in ~/.claude/plans/</div>';
+                return;
+            }
+
+            // Build dropdown + content area
+            let html = '<div class="docs-plan-selector"><select class="docs-plan-select" id="docsPlanSelect">';
+            html += '<option value="">Select a plan...</option>';
+            for (const p of plansCache) {
+                const title = p.title || p.filename;
+                const selected = selectedPlan === p.filename ? 'selected' : '';
+                html += `<option value="${escapeHtml(p.filename)}" ${selected}>${escapeHtml(title)}</option>`;
+            }
+            html += '</select></div>';
+            html += '<div id="docsPlanContent"></div>';
+
+            docsModalBody.innerHTML = html;
+
+            // Wire up dropdown
+            const select = document.getElementById('docsPlanSelect');
+            select.addEventListener('change', async () => {
+                selectedPlan = select.value;
+                if (selectedPlan) {
+                    await loadPlanContent(selectedPlan);
+                } else {
+                    document.getElementById('docsPlanContent').innerHTML = '';
+                }
+            });
+
+            // Load selected plan if any
+            if (selectedPlan) {
+                await loadPlanContent(selectedPlan);
             }
         } catch (e) {
             console.error('Failed to load plans:', e);
-            planModalBody.innerHTML = '<p style="color: var(--danger);">Error loading plans</p>';
+            docsModalBody.innerHTML = '<div class="docs-empty" style="color: var(--danger);">Error loading plans</div>';
         }
     }
 
-    // Add browse all button to current content
-    function addBrowseAllButton() {
-        const existing = planModalBody.querySelector('.plan-browse-all-btn');
-        if (existing) return;
-        const btn = document.createElement('button');
-        btn.className = 'plan-browse-all-btn';
-        btn.textContent = 'Browse all plans';
-        btn.addEventListener('click', browseAllPlans);
-        planModalBody.appendChild(btn);
-    }
-
-    planBtn.addEventListener('click', async () => {
-        planModal.classList.remove('hidden');
-        planModalBody.innerHTML = '<div class="loading">Loading plan...</div>';
+    async function loadPlanContent(filename) {
+        const contentDiv = document.getElementById('docsPlanContent');
+        if (!contentDiv) return;
+        contentDiv.innerHTML = '<div class="docs-loading">Loading plan...</div>';
 
         try {
-            const response = await fetch(`/api/plan/active?token=${token}&preview=false`);
+            const response = await fetch(`/api/plan?token=${token}&filename=${encodeURIComponent(filename)}&preview=false`);
             const data = await response.json();
 
-            if (data.status === 'found') {
-                planModalTitle.textContent = data.filename;
-                renderPlanContent(data);
-                addBrowseAllButton();
-            } else if (data.status === 'ambiguous') {
-                renderCandidates(data.candidates);
-                addBrowseAllButton();
-            } else if (data.status === 'none' && data.fallback) {
-                // Show fallback with warning
-                planModalTitle.textContent = data.filename + ' (global)';
-                planModalBody.innerHTML = `
-                    <div class="plan-fallback-warning">No plan matches this repo. Showing most recent:</div>
-                    ${marked.parse(data.content)}
-                `;
-                addBrowseAllButton();
+            if (data.exists && data.content) {
+                try {
+                    contentDiv.innerHTML = marked.parse(data.content);
+                } catch (e) {
+                    contentDiv.innerHTML = `<pre>${escapeHtml(data.content)}</pre>`;
+                }
             } else {
-                planModalBody.innerHTML = '<p class="plan-none">No active plan found</p>';
-                addBrowseAllButton();
+                contentDiv.innerHTML = '<div class="docs-empty">Plan file not found</div>';
             }
         } catch (e) {
-            console.error('Failed to load plan:', e);
-            planModalBody.innerHTML = '<p style="color: var(--danger);">Error loading plan</p>';
+            console.error('Failed to load plan content:', e);
+            contentDiv.innerHTML = '<div class="docs-empty" style="color: var(--danger);">Error loading plan</div>';
         }
+    }
+
+    // Context tab
+    async function loadContextTab() {
+        try {
+            const response = await fetch(`/api/docs/context?token=${token}`);
+            const data = await response.json();
+
+            if (data.exists && data.content) {
+                try {
+                    docsModalBody.innerHTML = marked.parse(data.content);
+                } catch (e) {
+                    docsModalBody.innerHTML = `<pre>${escapeHtml(data.content)}</pre>`;
+                }
+            } else {
+                docsModalBody.innerHTML = '<div class="docs-empty">No .claude/CONTEXT.md found</div>';
+            }
+        } catch (e) {
+            console.error('Failed to load context:', e);
+            docsModalBody.innerHTML = '<div class="docs-empty" style="color: var(--danger);">Error loading context</div>';
+        }
+    }
+
+    // Touch summary tab
+    async function loadTouchTab() {
+        try {
+            const response = await fetch(`/api/docs/touch?token=${token}`);
+            const data = await response.json();
+
+            if (data.exists && data.content) {
+                try {
+                    docsModalBody.innerHTML = marked.parse(data.content);
+                } catch (e) {
+                    docsModalBody.innerHTML = `<pre>${escapeHtml(data.content)}</pre>`;
+                }
+            } else {
+                docsModalBody.innerHTML = '<div class="docs-empty">No .claude/touch-summary.md found</div>';
+            }
+        } catch (e) {
+            console.error('Failed to load touch summary:', e);
+            docsModalBody.innerHTML = '<div class="docs-empty" style="color: var(--danger);">Error loading touch summary</div>';
+        }
+    }
+
+    // Sessions tab
+    async function loadSessionsTab() {
+        // If viewing a specific session, show its content
+        if (viewingSessionId) {
+            await loadSessionContent(viewingSessionId);
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/log/sessions?token=${token}`);
+            const data = await response.json();
+            sessionsCache = data.sessions || [];
+
+            if (sessionsCache.length === 0) {
+                docsModalBody.innerHTML = '<div class="docs-empty">No session logs found</div>';
+                return;
+            }
+
+            let html = '<div class="docs-session-list">';
+            for (const s of sessionsCache) {
+                const isCurrent = s.is_current;
+                const shortId = s.id.substring(0, 8) + '...';
+                const preview = s.preview || '(empty)';
+                const modified = s.modified ? formatRelativeTime(new Date(s.modified)) : '';
+                const size = s.size ? formatBytes(s.size) : '';
+
+                html += `
+                    <div class="docs-session-item ${isCurrent ? 'current' : ''}">
+                        <div class="docs-session-indicator"></div>
+                        <div class="docs-session-info">
+                            <div class="docs-session-id">${escapeHtml(shortId)}${isCurrent ? ' (current)' : ''}</div>
+                            <div class="docs-session-preview">"${escapeHtml(preview)}"</div>
+                            <div class="docs-session-meta">${modified}${size ? ' · ' + size : ''}</div>
+                        </div>
+                        ${!isCurrent ? `<button class="docs-session-view-btn" data-session="${escapeHtml(s.id)}">View</button>` : ''}
+                    </div>
+                `;
+            }
+            html += '</div>';
+
+            docsModalBody.innerHTML = html;
+
+            // Wire up view buttons
+            docsModalBody.querySelectorAll('.docs-session-view-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    viewingSessionId = btn.dataset.session;
+                    loadSessionContent(viewingSessionId);
+                });
+            });
+        } catch (e) {
+            console.error('Failed to load sessions:', e);
+            docsModalBody.innerHTML = '<div class="docs-empty" style="color: var(--danger);">Error loading sessions</div>';
+        }
+    }
+
+    async function loadSessionContent(sessionId) {
+        docsModalBody.innerHTML = '<div class="docs-loading">Loading session...</div>';
+
+        try {
+            const response = await fetch(`/api/log?token=${token}&session_id=${encodeURIComponent(sessionId)}`);
+            const data = await response.json();
+
+            const shortId = sessionId.substring(0, 8) + '...';
+            let html = `<button class="docs-back-btn" id="docsSessionBack">← Back to sessions</button>`;
+            html += `<div style="margin-bottom: 8px; color: var(--text-muted); font-size: 12px;">Session: ${escapeHtml(shortId)}</div>`;
+
+            if (data.exists && data.content) {
+                // Format content as simple text with some styling
+                html += `<pre style="white-space: pre-wrap; font-size: 12px; line-height: 1.5;">${escapeHtml(data.content)}</pre>`;
+            } else {
+                html += '<div class="docs-empty">Session log is empty or not found</div>';
+            }
+
+            docsModalBody.innerHTML = html;
+
+            // Wire up back button
+            document.getElementById('docsSessionBack')?.addEventListener('click', () => {
+                viewingSessionId = null;
+                loadSessionsTab();
+            });
+        } catch (e) {
+            console.error('Failed to load session content:', e);
+            docsModalBody.innerHTML = '<div class="docs-empty" style="color: var(--danger);">Error loading session</div>';
+        }
+    }
+
+    // Helper functions
+    function formatRelativeTime(date) {
+        const now = new Date();
+        const diff = now - date;
+        const minutes = Math.floor(diff / 60000);
+        const hours = Math.floor(diff / 3600000);
+        const days = Math.floor(diff / 86400000);
+
+        if (minutes < 1) return 'just now';
+        if (minutes < 60) return `${minutes}m ago`;
+        if (hours < 24) return `${hours}h ago`;
+        return `${days}d ago`;
+    }
+
+    function formatBytes(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    // Open modal
+    docsBtn.addEventListener('click', () => {
+        docsModal.classList.remove('hidden');
+        // Reset caches on open to get fresh data
+        plansCache = null;
+        sessionsCache = null;
+        viewingSessionId = null;
+        switchTab(currentTab);
     });
 
-    if (planModalClose) {
-        planModalClose.addEventListener('click', () => {
-            planModal.classList.add('hidden');
+    // Close modal
+    if (docsModalClose) {
+        docsModalClose.addEventListener('click', () => {
+            docsModal.classList.add('hidden');
         });
     }
 
     // Close on backdrop click
-    planModal.addEventListener('click', (e) => {
-        if (e.target === planModal) {
-            planModal.classList.add('hidden');
+    docsModal.addEventListener('click', (e) => {
+        if (e.target === docsModal) {
+            docsModal.classList.add('hidden');
         }
     });
 }
@@ -7582,7 +7686,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupSuperCollapseHandler();
     setupScrollTracking();
     setupPlanPreviewHandler();
-    setupPlanButton();
+    setupDocsButton();
     setupPreviewHandlers();
     setupRunnerHandlers();
     setupDevPreview();
