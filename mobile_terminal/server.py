@@ -729,7 +729,7 @@ class CommandQueue:
             self._processor_task = None
 
 
-from fastapi import FastAPI, File, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -954,6 +954,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.git_op_lock = GitOpLock()  # Lock for git write operations
     app.state.active_target = None  # Explicit target pane (window:pane like "0:0")
     app.state.target_log_mapping = {}  # Maps pane_id -> {"path": str, "pinned": bool}
+    app.state.last_restart_time = 0.0  # Timestamp of last server restart request
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -1312,6 +1313,98 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": "Refresh timeout"}, status_code=504)
         except Exception as e:
             logger.error(f"Refresh error: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/api/restart")
+    async def restart_server(request: Request, token: Optional[str] = Query(None)):
+        """
+        Trigger a safe server restart without affecting tmux/Claude sessions.
+
+        - Debounced: 429 if restarted within last 30 seconds
+        - Tries systemd first, falls back to execv
+        - Returns 202 immediately, restart happens after response flushes
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Debounce: prevent restart loops
+        RESTART_COOLDOWN = 30  # seconds
+        now = time.time()
+        time_since_last = now - app.state.last_restart_time
+        if time_since_last < RESTART_COOLDOWN:
+            retry_after = int(RESTART_COOLDOWN - time_since_last) + 1
+            logger.warning(f"Restart request rejected: cooldown ({retry_after}s remaining)")
+            return JSONResponse(
+                {"error": "Restart too soon", "retry_after": retry_after},
+                status_code=429,
+            )
+
+        # Get client info for logging
+        client_ip = "unknown"
+        if request.client:
+            client_ip = request.client.host
+
+        app.state.last_restart_time = now
+        logger.info(f"Restart requested by {client_ip}")
+
+        async def do_restart():
+            """Perform restart after response flushes."""
+            await asyncio.sleep(0.3)  # Let response flush
+
+            # Try systemd first
+            try:
+                result = subprocess.run(
+                    ["systemctl", "--user", "is-active", "mobile-terminal.service"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                if result.returncode == 0:
+                    logger.info(f"Restarting via systemd (requested by {client_ip})")
+                    subprocess.Popen(
+                        ["systemctl", "--user", "restart", "mobile-terminal.service"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
+
+            # Fallback: execv (replaces process in-place)
+            # Note: Not compatible with uvicorn --reload or multiple workers
+            logger.info(f"Restarting via execv (requested by {client_ip})")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        # Schedule restart in background
+        asyncio.create_task(do_restart())
+
+        return JSONResponse({"status": "restarting"}, status_code=202)
+
+    @app.post("/api/reload-env")
+    async def reload_env(token: Optional[str] = Query(None)):
+        """
+        Reload environment variables from .env file.
+        Useful for updating API keys without full server restart.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        try:
+            from dotenv import load_dotenv
+            # override=True replaces existing env vars with .env values
+            loaded = load_dotenv(override=True)
+            if loaded:
+                logger.info("Reloaded .env file")
+                return {"status": "reloaded", "message": "Environment variables refreshed from .env"}
+            else:
+                return {"status": "no_file", "message": "No .env file found (env unchanged)"}
+        except ImportError:
+            return JSONResponse(
+                {"error": "python-dotenv not installed"},
+                status_code=500,
+            )
+        except Exception as e:
+            logger.error(f"Failed to reload .env: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
     def get_repo_path_info() -> dict:

@@ -31,6 +31,12 @@ const SHOW_HARD_REFRESH_AFTER = 3;  // Show hard refresh button after N failures
 let hasConnectedOnce = false;  // Track if we've ever connected (to detect reconnects)
 let reconcileInFlight = false;  // Prevent overlapping reconciliations
 
+// Server restart on failed reconnect
+const RESTART_TIMEOUT = 2500;   // Try restart if no connection within 2.5s
+const RESTART_COOLDOWN = 60000; // Client-side 60s cooldown between restart attempts
+let lastRestartAttempt = 0;     // Timestamp of last restart request
+let restartPending = false;     // Track if restart is in progress
+
 // Hello handshake
 const HELLO_TIMEOUT = 2000;  // Expect hello within 2s of connection
 let helloTimer = null;
@@ -1919,6 +1925,57 @@ function setupViewportHandler() {
 
                 reconnectDelay = INITIAL_RECONNECT_DELAY;
                 connect();
+
+                // If still not connected after timeout, try server restart
+                setTimeout(async () => {
+                    if (socket && socket.readyState === WebSocket.OPEN) {
+                        return; // Connected successfully, no restart needed
+                    }
+
+                    // Check cooldown
+                    const now = Date.now();
+                    if (now - lastRestartAttempt < RESTART_COOLDOWN) {
+                        console.log('Restart skipped: cooldown active');
+                        return;
+                    }
+
+                    if (restartPending) {
+                        console.log('Restart skipped: already pending');
+                        return;
+                    }
+
+                    console.log('Connection failed after timeout, requesting server restart');
+                    restartPending = true;
+                    lastRestartAttempt = now;
+
+                    try {
+                        const response = await fetch(`/api/restart?token=${token}`, {
+                            method: 'POST',
+                        });
+                        const data = await response.json();
+
+                        if (response.status === 202) {
+                            console.log('Server restart initiated');
+                            showToast('Server restarting...', 'info');
+                            // Wait for server to come back, then reconnect
+                            setTimeout(() => {
+                                restartPending = false;
+                                reconnectDelay = INITIAL_RECONNECT_DELAY;
+                                connect();
+                            }, 1500);
+                        } else if (response.status === 429) {
+                            console.log(`Restart throttled, retry after ${data.retry_after}s`);
+                            restartPending = false;
+                        } else {
+                            console.error('Restart failed:', data.error);
+                            restartPending = false;
+                        }
+                    } catch (e) {
+                        console.error('Restart request failed:', e);
+                        restartPending = false;
+                        // Server might already be down, just keep trying to reconnect
+                    }
+                }, RESTART_TIMEOUT);
             }
         }
     });

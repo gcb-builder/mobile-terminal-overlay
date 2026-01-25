@@ -6,6 +6,40 @@
 - **Stage:** Production-ready with PWA support + V2 features
 - **Last Updated:** 2026-01-25
 
+## Recent: Server Auto-Restart on Resume (2026-01-25)
+
+### Problem
+When PWA resumes from background, server code changes aren't picked up until manual restart. This breaks the mobile workflow.
+
+### Solution
+Safe server restart endpoint that PWA calls automatically on failed reconnect.
+
+### Endpoint: POST /api/restart
+- **Auth:** Same token mechanism as other APIs
+- **Response:** 202 `{"status": "restarting"}` on success
+- **Debounce:** 429 `{"error": "Restart too soon", "retry_after": N}` if within 30s
+- **Logging:** Logs client IP and restart mechanism used
+
+### Restart Mechanism Priority
+1. **systemd (preferred):** `systemctl --user restart mobile-terminal.service`
+   - Checks if service is active first
+   - Clean restart, maintains socket activation benefits
+2. **execv (fallback):** `os.execv(sys.executable, [sys.executable] + sys.argv)`
+   - Used when systemd unavailable
+   - Not compatible with uvicorn --reload or multiple workers
+
+### Client Behavior (terminal.js)
+1. On `visibilitychange` → visible: attempt normal reconnect
+2. If still disconnected after 2.5s: call POST /api/restart
+3. Client-side cooldown: 60s between restart attempts
+4. On 202 response: wait 1.5s, then reconnect
+
+### Safety Features
+- Server-side 30s debounce prevents restart loops
+- Client-side 60s cooldown provides additional protection
+- tmux/Claude sessions completely unaffected (only web server restarts)
+- Restart happens in background task after response flushes
+
 ## Active Work: Session-to-Log Mapping + Manual Selection (Implemented)
 
 ### Problem
