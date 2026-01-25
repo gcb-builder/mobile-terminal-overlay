@@ -4953,7 +4953,7 @@ function setupHybridView() {
                 refreshClickCount = 0;
 
                 if (currentView === 'terminal') {
-                    // Terminal view: refresh terminal content and reconnect if needed
+                    // Terminal view: resize tmux pane to fix garbled output, then refresh
                     refreshBtn.disabled = true;
                     try {
                         if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -4962,7 +4962,15 @@ function setupHybridView() {
                             await new Promise(r => setTimeout(r, 1000));
                         }
 
-                        const response = await fetch(`/api/refresh?token=${token}`);
+                        // Fit terminal and get current dimensions
+                        if (terminal && fitAddon) {
+                            fitAddon.fit();
+                        }
+                        const cols = terminal ? terminal.cols : 80;
+                        const rows = terminal ? terminal.rows : 24;
+
+                        // Send dimensions to resize tmux pane before capture
+                        const response = await fetch(`/api/refresh?token=${token}&cols=${cols}&rows=${rows}`);
                         if (!response.ok) {
                             throw new Error(`HTTP ${response.status}`);
                         }

@@ -1266,9 +1266,14 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/api/refresh")
-    async def refresh_terminal(token: Optional[str] = Query(None)):
+    async def refresh_terminal(
+        token: Optional[str] = Query(None),
+        cols: Optional[int] = Query(None),
+        rows: Optional[int] = Query(None),
+    ):
         """
-        Get current terminal snapshot for refresh (without full history).
+        Get current terminal snapshot for refresh.
+        If cols/rows provided, resizes tmux pane first to fix garbled output.
         Uses capture-pane with visible content only.
         """
         if not app.state.no_auth and token != app.state.token:
@@ -1277,6 +1282,20 @@ def create_app(config: Config) -> FastAPI:
         try:
             import subprocess
             session_name = app.state.current_session
+
+            # Resize tmux pane if dimensions provided (fixes garbled output)
+            if cols and rows:
+                resize_result = subprocess.run(
+                    ["tmux", "resize-pane", "-t", session_name, "-x", str(cols), "-y", str(rows)],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                if resize_result.returncode != 0:
+                    logger.warning(f"tmux resize-pane failed: {resize_result.stderr}")
+                else:
+                    logger.info(f"Resized tmux pane to {cols}x{rows}")
+
             result = subprocess.run(
                 ["tmux", "capture-pane", "-p", "-J", "-S", "-5000", "-t", session_name],
                 capture_output=True,
@@ -1288,7 +1307,7 @@ def create_app(config: Config) -> FastAPI:
                     {"error": f"tmux capture-pane failed: {result.stderr}"},
                     status_code=500,
                 )
-            return {"text": result.stdout, "session": session_name}
+            return {"content": result.stdout, "session": session_name}
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "Refresh timeout"}, status_code=504)
         except Exception as e:
