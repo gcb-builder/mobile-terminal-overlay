@@ -1388,11 +1388,17 @@ async function loadTargets() {
             expectedRepoPath = currentRepo ? currentRepo.path : null;
         }
 
-        // Show target button and lock button only if multiple panes exist
-        if (targets.length > 1) {
+        // Show target button if multiple panes exist OR if repos are configured (for new window creation)
+        const hasRepos = config && config.repos && config.repos.length > 0;
+        if (targets.length > 1 || hasRepos) {
             targetBtn.classList.remove('hidden');
-            targetLockBtn.classList.remove('hidden');
             updateTargetLabel();
+            // Only show lock button if multiple panes (lock irrelevant with single pane)
+            if (targets.length > 1) {
+                targetLockBtn.classList.remove('hidden');
+            } else {
+                targetLockBtn.classList.add('hidden');
+            }
         } else {
             targetBtn.classList.add('hidden');
             targetLockBtn.classList.add('hidden');
