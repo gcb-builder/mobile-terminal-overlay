@@ -358,6 +358,9 @@ async function refreshActivePrompt() {
             setTerminalBusy(false);
         }
 
+        // Detect permission prompts from terminal capture
+        extractPermissionPrompt(content);
+
     } catch (error) {
         console.debug('Active prompt refresh failed:', error);
     }
@@ -4073,8 +4076,11 @@ function extractPendingPrompt(content) {
         }
     }
 
-    // No pending prompt detected
-    clearPendingPrompt();
+    // No pending prompt detected in log
+    // But don't clear if we have a permission prompt from terminal capture
+    if (!pendingPrompt || pendingPrompt.kind !== 'permission') {
+        clearPendingPrompt();
+    }
 }
 
 /**
@@ -4083,6 +4089,86 @@ function extractPendingPrompt(content) {
 function clearPendingPrompt() {
     pendingPrompt = null;
     hidePromptBanner();
+}
+
+/**
+ * Extract permission prompts from terminal capture
+ * Detects Claude Code's built-in permission prompts like:
+ * "Do you want to proceed?"
+ * "❯ 1. Yes"
+ * "  2. Yes, and don't ask again..."
+ */
+function extractPermissionPrompt(terminalContent) {
+    if (!terminalContent) return;
+
+    // Look for permission prompt patterns
+    // Pattern: question line followed by numbered options with ❯ selector
+    const lines = terminalContent.split('\n');
+
+    let questionLine = null;
+    let choices = [];
+    let inOptions = false;
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+
+        // Detect question line (ends with ?)
+        if (line.endsWith('?') && !line.startsWith('❯') && !line.match(/^\d+\./)) {
+            questionLine = line;
+            choices = [];
+            inOptions = true;
+            continue;
+        }
+
+        // Detect option lines (❯ 1. or just 1. or 2. etc)
+        if (inOptions) {
+            const optMatch = line.match(/^[❯>]?\s*(\d+)\.\s*(.+)$/);
+            if (optMatch) {
+                choices.push({
+                    num: optMatch[1],
+                    label: optMatch[2].trim().slice(0, 50),  // Truncate long labels
+                    description: ''
+                });
+            } else if (line && !line.match(/^\s/) && choices.length > 0) {
+                // Non-indented non-option line - end of options
+                break;
+            }
+        }
+    }
+
+    // Need a question and at least one choice
+    if (!questionLine || choices.length === 0) {
+        // No permission prompt in terminal - clear if we had one
+        if (pendingPrompt && pendingPrompt.kind === 'permission') {
+            clearPendingPrompt();
+        }
+        return;
+    }
+
+    const promptId = simpleHash(questionLine + choices.map(c => c.label).join(''));
+
+    // Check if dismissed
+    if (dismissedPrompts.has(promptId)) {
+        return;
+    }
+
+    // Check if same prompt already showing
+    if (pendingPrompt && pendingPrompt.id === promptId) {
+        return;
+    }
+
+    console.debug('[PermissionPrompt] Detected:', questionLine, choices);
+
+    pendingPrompt = {
+        id: promptId,
+        kind: 'permission',
+        text: questionLine,
+        choices: choices,
+        answered: false,
+        sentChoice: null
+    };
+
+    showPromptBanner();
 }
 
 /**
@@ -4138,8 +4224,11 @@ function setupPromptBannerHandlers() {
 
     // Choice buttons
     promptBanner.querySelectorAll('.prompt-choice-btn').forEach(btn => {
-        btn.onclick = () => {
+        btn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             const choice = btn.dataset.choice;
+            console.log('[PromptBanner] Button clicked, choice:', choice);
             sendPromptChoice(choice);
         };
     });
@@ -4160,10 +4249,16 @@ function setupPromptBannerHandlers() {
  * Send user's choice to terminal (idempotent)
  */
 function sendPromptChoice(choice) {
-    if (!pendingPrompt) return;
+    console.log('[sendPromptChoice] called with:', choice, 'pendingPrompt:', pendingPrompt);
+
+    if (!pendingPrompt) {
+        console.log('[sendPromptChoice] No pending prompt, returning');
+        return;
+    }
 
     // Idempotency: don't re-send if already sent this choice
     if (pendingPrompt.answered && pendingPrompt.sentChoice === choice) {
+        console.log('[sendPromptChoice] Already sent this choice, returning');
         return;
     }
 
@@ -4171,14 +4266,24 @@ function sendPromptChoice(choice) {
     pendingPrompt.answered = true;
     pendingPrompt.sentChoice = choice;
 
-    // Update banner UI to show selected state
-    showPromptBanner();
+    // Update button UI to show selected state (without full re-render)
+    if (promptBanner) {
+        promptBanner.querySelectorAll('.prompt-choice-btn').forEach(btn => {
+            if (btn.dataset.choice === choice) {
+                btn.classList.add('selected');
+            }
+        });
+    }
 
     // Send to terminal
+    console.log('[sendPromptChoice] Socket state:', socket?.readyState, 'WebSocket.OPEN:', WebSocket.OPEN);
     if (socket && socket.readyState === WebSocket.OPEN) {
+        console.log('[sendPromptChoice] Sending:', JSON.stringify(choice + '\r'));
         sendInput(choice + '\r');
         setTerminalBusy(true);
         captureSnapshot('user_send');
+    } else {
+        console.error('[sendPromptChoice] Socket not open!');
     }
 
     // Clear prompt after short delay (let the answer process)
