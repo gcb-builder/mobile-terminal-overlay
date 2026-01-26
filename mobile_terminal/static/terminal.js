@@ -3909,6 +3909,8 @@ function extractPendingPrompt(content) {
         lastAssistantBlocks.unshift(trimmed);
     }
 
+    console.debug('[PromptDetect] lastAssistantBlocks:', lastAssistantBlocks.length);
+
     if (lastAssistantBlocks.length === 0) {
         clearPendingPrompt();
         return;
@@ -4025,11 +4027,20 @@ function extractPendingPrompt(content) {
         /\(yes\/no\)/i,
         /would you like (me )?to\b/i,
         /should I\b/i,
-        /do you want (me )?to\b/i
+        /do you want (me )?to\b/i,
+        /ready to (commit|proceed|continue)\?/i,
+        /shall I\b/i,
+        /\bcommit (these|the|this|your)?\s*(changes?)?\s*\?/i,
+        /is (this|that) (ok|okay|correct|right)\s*\?/i
     ];
 
-    // Filter to text blocks only (not tool calls starting with •)
-    const textBlocks = lastAssistantBlocks.filter(b => !b.startsWith('•'));
+    // Filter to text blocks only (not tool calls starting with •, ❓, 📋, ✅, 🤖, 📝)
+    const textBlocks = lastAssistantBlocks.filter(b =>
+        !b.startsWith('•') && !b.startsWith('❓') && !b.startsWith('📋') &&
+        !b.startsWith('✅') && !b.startsWith('🤖') && !b.startsWith('📝')
+    );
+
+    console.debug('[PromptDetect] textBlocks:', textBlocks.length, textBlocks.map(b => b.slice(0, 50)));
 
     for (const block of textBlocks) {
         for (const pattern of confirmPatterns) {
