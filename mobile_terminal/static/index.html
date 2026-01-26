@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=143">
+    <link rel="stylesheet" href="/static/styles.css?v=145">
 </head>
 <body>
     <div class="app">
@@ -49,9 +49,6 @@
                 <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh">
                     <span>↻</span>
                 </button>
-                <button id="searchBtn" class="icon-btn" aria-label="Search files">
-                    <span>&#x1F50D;</span>
-                </button>
                 <span id="connectionIndicator" class="connection-indicator connected" title="Connected"></span>
             </div>
         </header>
@@ -76,16 +73,6 @@
             <button id="claudeCrashDismissBtn" class="claude-crash-dismiss-btn">&times;</button>
         </div>
 
-        <!-- File search modal -->
-        <div id="searchModal" class="search-modal hidden">
-            <div class="search-modal-content">
-                <div class="search-header">
-                    <input type="text" id="searchInput" placeholder="Search files..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-                    <button id="searchClose" class="search-close">&times;</button>
-                </div>
-                <div id="searchResults" class="search-results"></div>
-            </div>
-        </div>
 
         <!-- Preview mode banner -->
         <div id="previewBanner" class="preview-banner hidden">
@@ -265,7 +252,7 @@
             </div>
         </div>
 
-        <!-- Docs modal (plans, context, touch, sessions) -->
+        <!-- Docs modal (plans, context, touch, sessions, search) -->
         <div id="docsModal" class="docs-modal hidden">
             <div class="docs-modal-content">
                 <div class="docs-modal-header">
@@ -277,6 +264,7 @@
                     <button class="docs-tab" data-tab="context">Context</button>
                     <button class="docs-tab" data-tab="touch">Touch</button>
                     <button class="docs-tab" data-tab="sessions">Sessions</button>
+                    <button class="docs-tab" data-tab="search">&#x1F50D;</button>
                 </div>
                 <div id="docsModalBody" class="docs-modal-body">
                     Loading...
@@ -503,7 +491,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=201"></script>
+    <script src="/static/terminal.js?v=203"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

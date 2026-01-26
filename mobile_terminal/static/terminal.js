@@ -67,7 +67,7 @@ let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let targetBtn, targetLabel, targetDropdown, targetLockBtn, targetLockIcon;
 let cwdMismatchBanner, cwdMismatchText, cwdFixBtn, cwdDismissBtn;
 let claudeCrashBanner, claudeRespawnBtn, claudeCrashDismissBtn;
-let searchBtn, searchModal, searchInput, searchClose, searchResults;
+// searchBtn removed - search is now in docs modal
 let composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composePaste, composeInsert, composeRun;
 let composeAttach, composeFileInput, composeThinkMode, composeAttachments;
@@ -161,11 +161,7 @@ function initDOMElements() {
     claudeCrashBanner = document.getElementById('claudeCrashBanner');
     claudeRespawnBtn = document.getElementById('claudeRespawnBtn');
     claudeCrashDismissBtn = document.getElementById('claudeCrashDismissBtn');
-    searchBtn = document.getElementById('searchBtn');
-    searchModal = document.getElementById('searchModal');
-    searchInput = document.getElementById('searchInput');
-    searchClose = document.getElementById('searchClose');
-    searchResults = document.getElementById('searchResults');
+    // searchBtn/searchModal removed - search is now in docs modal
     composeBtn = document.getElementById('composeBtn');
     composeModal = document.getElementById('composeModal');
     composeInput = document.getElementById('composeInput');
@@ -1208,48 +1204,150 @@ function populateUI() {
 }
 
 /**
- * Populate repo dropdown from config
+ * Update navigation label to show "repo • pane" format
+ */
+function updateNavLabel() {
+    // Get current repo label
+    let repoName = config?.session_name || 'Terminal';
+    if (config && config.repos) {
+        const currentRepo = config.repos.find(r => r.session === currentSession);
+        if (currentRepo) {
+            repoName = currentRepo.label;
+        }
+    }
+
+    // Get current pane info
+    let paneInfo = '';
+    if (activeTarget && targets.length > 0) {
+        const target = targets.find(t => t.id === activeTarget);
+        if (target) {
+            paneInfo = target.window_name || activeTarget;
+        } else {
+            paneInfo = activeTarget;
+        }
+    } else if (targets.length === 1) {
+        const target = targets[0];
+        paneInfo = target.window_name || target.id;
+    }
+
+    // Combine: "repo • pane" or just "repo" if single pane with matching name
+    if (paneInfo && (targets.length > 1 || paneInfo !== repoName)) {
+        repoLabel.textContent = `${repoName} • ${paneInfo}`;
+    } else {
+        repoLabel.textContent = repoName;
+    }
+}
+
+/**
+ * Populate unified navigation dropdown
+ * Sections: Current Session panes, Actions, Other Sessions
  */
 function populateRepoDropdown() {
-    if (!config || !config.repos || config.repos.length === 0) {
-        // No repos configured, hide the dropdown arrow
+    const hasRepos = config && config.repos && config.repos.length > 0;
+    const hasMultiplePanes = targets.length > 1;
+    const hasContent = hasRepos || hasMultiplePanes;
+
+    // Update nav label
+    updateNavLabel();
+
+    // Hide arrow if nothing to show
+    if (!hasContent) {
         repoBtn.querySelector('.repo-arrow').style.display = 'none';
-        repoLabel.textContent = config?.session_name || 'Terminal';
         return;
     }
 
-    // Show dropdown arrow
     repoBtn.querySelector('.repo-arrow').style.display = '';
-
-    // Update label to show current repo
-    const currentRepo = config.repos.find(r => r.session === currentSession);
-    if (currentRepo) {
-        repoLabel.textContent = currentRepo.label;
-    } else {
-        repoLabel.textContent = config.session_name || 'Terminal';
-    }
-
-    // Populate dropdown options
     repoDropdown.innerHTML = '';
 
-    // Add default session option if not in repos list
-    const defaultInRepos = config.repos.some(r => r.session === config.session_name);
-    if (!defaultInRepos) {
-        const defaultOpt = document.createElement('button');
-        defaultOpt.className = 'repo-option' + (currentSession === config.session_name ? ' active' : '');
-        defaultOpt.innerHTML = `<span>${config.session_name}</span><span class="repo-path">Default</span>`;
-        defaultOpt.addEventListener('click', () => switchRepo(config.session_name));
-        repoDropdown.appendChild(defaultOpt);
+    // Section 1: Current Session panes (only if multiple panes)
+    if (targets.length > 0) {
+        const header = document.createElement('div');
+        header.className = 'nav-section-header';
+        header.textContent = 'Current Session';
+        repoDropdown.appendChild(header);
+
+        targets.forEach((target) => {
+            const opt = document.createElement('button');
+            const isActive = target.id === activeTarget;
+            opt.className = 'nav-pane-option' + (isActive ? ' active' : '');
+
+            const shortPath = target.cwd.replace(/^\/home\/[^/]+/, '~');
+            const windowName = target.window_name || '';
+
+            // Check for layout name mismatch hint
+            const dirName = target.cwd.split('/').filter(Boolean).pop() || '';
+            const normDir = dirName.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const normWindow = windowName.toLowerCase().replace(/-[a-f0-9]{4,}$/, '').replace(/[^a-z0-9]/g, '');
+            const nameMatches = normDir && normWindow && (normWindow.includes(normDir) || normDir.includes(normWindow));
+            const hintBadge = (!nameMatches && windowName && dirName) ? '<span class="target-name-hint" title="Window name differs from directory">?</span>' : '';
+
+            const checkMark = isActive ? '<span class="nav-check">✓</span>' : '';
+
+            opt.innerHTML = `
+                ${checkMark}<span class="nav-project">${target.project}</span>
+                <span class="nav-pane-info">${windowName}${hintBadge} • ${target.pane_id}</span>
+                <span class="nav-path">${shortPath}</span>
+            `;
+            opt.addEventListener('click', () => selectTarget(target.id));
+            repoDropdown.appendChild(opt);
+        });
     }
 
-    // Add configured repos
-    config.repos.forEach((repo) => {
-        const opt = document.createElement('button');
-        opt.className = 'repo-option' + (currentSession === repo.session ? ' active' : '');
-        opt.innerHTML = `<span>${repo.label}</span><span class="repo-path">${repo.path}</span>`;
-        opt.addEventListener('click', () => switchRepo(repo.session));
-        repoDropdown.appendChild(opt);
-    });
+    // Section 2: Actions (+ New Window)
+    if (hasRepos) {
+        if (targets.length > 0) {
+            const divider = document.createElement('div');
+            divider.className = 'nav-section-divider';
+            repoDropdown.appendChild(divider);
+        }
+
+        const newWindowOpt = document.createElement('button');
+        newWindowOpt.className = 'nav-action-option';
+        newWindowOpt.textContent = '+ New Window in Repo...';
+        newWindowOpt.addEventListener('click', () => {
+            repoDropdown.classList.add('hidden');
+            showNewWindowModal();
+        });
+        repoDropdown.appendChild(newWindowOpt);
+    }
+
+    // Section 3: Other Sessions
+    if (hasRepos) {
+        // Get sessions that are not current
+        const otherRepos = config.repos.filter(r => r.session !== currentSession);
+
+        // Also add default session if not in repos and not current
+        const defaultInRepos = config.repos.some(r => r.session === config.session_name);
+        const otherSessions = [...otherRepos];
+        if (!defaultInRepos && config.session_name !== currentSession) {
+            otherSessions.unshift({ label: config.session_name, path: 'Default', session: config.session_name });
+        }
+
+        if (otherSessions.length > 0) {
+            const divider = document.createElement('div');
+            divider.className = 'nav-section-divider';
+            repoDropdown.appendChild(divider);
+
+            const header = document.createElement('div');
+            header.className = 'nav-section-header';
+            header.textContent = 'Other Sessions';
+            repoDropdown.appendChild(header);
+
+            otherSessions.forEach((repo) => {
+                const opt = document.createElement('button');
+                opt.className = 'nav-session-option';
+                opt.innerHTML = `
+                    <div>
+                        <span class="nav-session-label">${repo.label}</span>
+                        <span class="nav-session-path">${repo.path}</span>
+                    </div>
+                    <span class="reconnect-pill">Switch</span>
+                `;
+                opt.addEventListener('click', () => switchRepo(repo.session));
+                repoDropdown.appendChild(opt);
+            });
+        }
+    }
 }
 
 /**
@@ -1287,20 +1385,10 @@ async function switchRepo(session) {
         // Clear target selection (pane IDs are session-specific)
         activeTarget = null;
         localStorage.removeItem('mto_active_target');
-        targetBtn.classList.add('hidden');
-        targetLockBtn.classList.add('hidden');
         cwdMismatchBanner.classList.add('hidden');
 
-        // Update UI
-        const currentRepo = config.repos.find(r => r.session === session);
-        if (currentRepo) {
-            repoLabel.textContent = currentRepo.label;
-        } else {
-            repoLabel.textContent = session;
-        }
-
-        // Re-render dropdown to update active state
-        populateRepoDropdown();
+        // Update unified nav label
+        updateNavLabel();
 
         // Clear terminal and log content immediately (don't show old session's output)
         if (terminal) {
@@ -1337,11 +1425,15 @@ async function switchRepo(session) {
 }
 
 /**
- * Toggle repo dropdown visibility
+ * Toggle unified nav dropdown visibility
  */
 function toggleRepoDropdown() {
-    if (!config || !config.repos || config.repos.length === 0) {
-        return; // No repos to show
+    const hasRepos = config && config.repos && config.repos.length > 0;
+    const hasMultiplePanes = targets.length > 1;
+
+    // Only show dropdown if there's content
+    if (!hasRepos && !hasMultiplePanes) {
+        return;
     }
     repoDropdown.classList.toggle('hidden');
 }
@@ -1388,21 +1480,8 @@ async function loadTargets() {
             expectedRepoPath = currentRepo ? currentRepo.path : null;
         }
 
-        // Show target button if multiple panes exist OR if repos are configured (for new window creation)
-        const hasRepos = config && config.repos && config.repos.length > 0;
-        if (targets.length > 1 || hasRepos) {
-            targetBtn.classList.remove('hidden');
-            updateTargetLabel();
-            // Only show lock button if multiple panes (lock irrelevant with single pane)
-            if (targets.length > 1) {
-                targetLockBtn.classList.remove('hidden');
-            } else {
-                targetLockBtn.classList.add('hidden');
-            }
-        } else {
-            targetBtn.classList.add('hidden');
-            targetLockBtn.classList.add('hidden');
-        }
+        // Update unified nav label
+        updateNavLabel();
 
         // Check if locked target still exists
         if (targetLocked && activeTarget && !data.active_exists) {
@@ -1414,8 +1493,6 @@ async function loadTargets() {
 
         // Check for multi-project session without explicit target
         checkMultiProjectWarning(data);
-
-        renderTargetDropdown();
     } catch (error) {
         console.error('Error loading targets:', error);
     }
@@ -1480,73 +1557,24 @@ function checkMultiProjectWarning(data) {
 }
 
 /**
- * Update target label in header
+ * Update target label in header (legacy - now handled by updateNavLabel)
  */
 function updateTargetLabel() {
-    if (activeTarget) {
-        targetLabel.textContent = activeTarget;
-    } else if (targets.length > 0) {
-        targetLabel.textContent = targets[0].id;
-    }
+    updateNavLabel();
 }
 
 /**
- * Render target dropdown options
+ * Render target dropdown options (legacy - now handled by populateRepoDropdown)
  */
 function renderTargetDropdown() {
-    targetDropdown.innerHTML = '';
-
-    if (targets.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'target-option';
-        empty.textContent = 'No panes found';
-        targetDropdown.appendChild(empty);
-    } else {
-        targets.forEach((target) => {
-            const opt = document.createElement('button');
-            const isActive = target.id === activeTarget;
-            opt.className = 'target-option' + (isActive ? ' active' : '');
-
-            const shortPath = target.cwd.replace(/^\/home\/[^/]+/, '~');
-
-            // Check for layout name mismatch hint
-            // Extract dir name from cwd and compare with window_name (normalized)
-            const dirName = target.cwd.split('/').filter(Boolean).pop() || '';
-            const windowName = target.window_name || '';
-            // Normalize: lowercase, remove random suffix pattern (-xxxx), remove non-alphanum
-            const normDir = dirName.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const normWindow = windowName.toLowerCase().replace(/-[a-f0-9]{4,}$/, '').replace(/[^a-z0-9]/g, '');
-            const nameMatches = normDir && normWindow && (normWindow.includes(normDir) || normDir.includes(normWindow));
-            const hintBadge = (!nameMatches && windowName && dirName) ? '<span class="target-name-hint" title="Window name differs from directory">?</span>' : '';
-
-            opt.innerHTML = `
-                <span class="target-project">${target.project}</span>
-                <span class="target-pane-info">${windowName}${hintBadge} • ${target.pane_id}</span>
-                <span class="target-path">${shortPath}</span>
-            `;
-            opt.addEventListener('click', () => selectTarget(target.id));
-            targetDropdown.appendChild(opt);
-        });
-    }
-
-    // Add "+ New Window" option if repos are configured
-    if (config && config.repos && config.repos.length > 0) {
-        const newWindowOpt = document.createElement('button');
-        newWindowOpt.className = 'target-option new-window';
-        newWindowOpt.innerHTML = '<span class="target-project">+ New Window in Repo...</span>';
-        newWindowOpt.addEventListener('click', () => {
-            targetDropdown.classList.add('hidden');
-            showNewWindowModal();
-        });
-        targetDropdown.appendChild(newWindowOpt);
-    }
+    // No-op: target dropdown is now unified into repo dropdown
 }
 
 /**
  * Select a target pane
  */
 async function selectTarget(targetId) {
-    targetDropdown.classList.add('hidden');
+    repoDropdown.classList.add('hidden');
 
     if (targetId === activeTarget) return;
 
@@ -1566,8 +1594,7 @@ async function selectTarget(targetId) {
 
         activeTarget = targetId;
         localStorage.setItem('mto_active_target', targetId);
-        updateTargetLabel();
-        renderTargetDropdown();
+        updateNavLabel();
 
         // Reset Claude health state for new target
         lastClaudeHealth = null;
@@ -1941,40 +1968,21 @@ function setupNewWindowModal() {
 
 /**
  * Setup target selector event listeners
+ * Note: Target button/dropdown are now unified into repo dropdown
  */
 function setupTargetSelector() {
-    // Toggle dropdown on button click
-    targetBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        targetDropdown.classList.toggle('hidden');
-        // Refresh targets when opening
-        if (!targetDropdown.classList.contains('hidden')) {
-            loadTargets();
-        }
-    });
-
-    // Close dropdown when clicking outside
-    document.addEventListener('click', (e) => {
-        if (!targetDropdown.contains(e.target) && e.target !== targetBtn) {
-            targetDropdown.classList.add('hidden');
-        }
-    });
-
-    // Lock toggle button
-    targetLockBtn.addEventListener('click', toggleTargetLock);
-
     // CWD mismatch banner buttons
     cwdFixBtn.addEventListener('click', cdToRepoRoot);
     cwdDismissBtn.addEventListener('click', () => {
         cwdMismatchBanner.classList.add('hidden');
     });
 
-    // Multi-project banner select button
+    // Multi-project banner select button - open unified dropdown
     const multiProjectSelectBtn = document.getElementById('multiProjectSelectBtn');
     if (multiProjectSelectBtn) {
         multiProjectSelectBtn.addEventListener('click', () => {
-            targetDropdown.classList.remove('hidden');
-            loadTargets();
+            populateRepoDropdown();
+            repoDropdown.classList.remove('hidden');
         });
     }
 
@@ -1998,7 +2006,6 @@ function setupTargetSelector() {
 
     // Default to locked if not set
     targetLocked = savedLocked !== 'false';
-    updateLockUI();
 
     if (savedTarget) {
         selectTarget(savedTarget);
@@ -2031,44 +2038,24 @@ function toggleTargetLock() {
 }
 
 /**
- * Update lock button UI
+ * Update lock button UI (legacy - lock button now hidden)
  */
 function updateLockUI() {
-    if (targetLocked) {
-        targetLockIcon.textContent = '🔒';
-        targetLockBtn.classList.remove('unlocked');
-        targetLockBtn.title = 'Target locked (click to follow active)';
-    } else {
-        targetLockIcon.textContent = '👁';
-        targetLockBtn.classList.add('unlocked');
-        targetLockBtn.title = 'Following active pane (click to lock)';
-    }
+    // No-op: lock button is now hidden in unified nav
 }
 
 /**
- * File Search Functions
+ * File Search Functions (now integrated into docs modal)
  */
 let searchDebounceTimer = null;
 
-function openSearchModal() {
-    searchModal.classList.remove('hidden');
-    searchInput.value = '';
-    searchResults.innerHTML = '<div class="search-empty">Type to search files...</div>';
-    setTimeout(() => searchInput.focus(), 100);
-}
-
-function closeSearchModal() {
-    searchModal.classList.add('hidden');
-    searchInput.blur();
-}
-
-async function performSearch(query) {
+async function performSearchInDocs(query, resultsDiv, docsModal) {
     if (!query || query.length < 1) {
-        searchResults.innerHTML = '<div class="search-empty">Type to search files...</div>';
+        resultsDiv.innerHTML = '<div class="search-empty">Type to search files...</div>';
         return;
     }
 
-    searchResults.innerHTML = '<div class="search-empty">Searching...</div>';
+    resultsDiv.innerHTML = '<div class="search-empty">Searching...</div>';
 
     try {
         const response = await fetch(`/api/files/search?q=${encodeURIComponent(query)}&token=${token}`);
@@ -2079,12 +2066,12 @@ async function performSearch(query) {
         const data = await response.json();
 
         if (!data.files || data.files.length === 0) {
-            searchResults.innerHTML = '<div class="search-empty">No files found</div>';
+            resultsDiv.innerHTML = '<div class="search-empty">No files found</div>';
             return;
         }
 
         // Render results
-        searchResults.innerHTML = '';
+        resultsDiv.innerHTML = '';
         data.files.forEach((filePath) => {
             const btn = document.createElement('button');
             btn.className = 'search-result';
@@ -2094,60 +2081,27 @@ async function performSearch(query) {
             const fileName = lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath;
             const dirPath = lastSlash >= 0 ? filePath.slice(0, lastSlash + 1) : '';
 
-            btn.innerHTML = `<span class="file-path">${dirPath}</span><span class="file-name">${fileName}</span>`;
+            btn.innerHTML = `<span class="file-path">${escapeHtml(dirPath)}</span><span class="file-name">${escapeHtml(fileName)}</span>`;
 
             btn.addEventListener('click', () => {
-                insertFilePath(filePath);
+                // Close docs modal and insert path
+                docsModal.classList.add('hidden');
+                if (isControlUnlocked && socket && socket.readyState === WebSocket.OPEN) {
+                    sendInput(filePath);
+                    terminal.focus();
+                }
             });
 
-            searchResults.appendChild(btn);
+            resultsDiv.appendChild(btn);
         });
 
     } catch (error) {
         console.error('Search error:', error);
-        searchResults.innerHTML = '<div class="search-empty">Search failed</div>';
+        resultsDiv.innerHTML = '<div class="search-empty">Search failed</div>';
     }
 }
 
-function insertFilePath(filePath) {
-    closeSearchModal();
-
-    // Insert the file path into the terminal
-    if (isControlUnlocked && socket && socket.readyState === WebSocket.OPEN) {
-        sendInput(filePath);
-        terminal.focus();
-    }
-}
-
-function setupFileSearch() {
-    // Open modal on search button click
-    searchBtn.addEventListener('click', openSearchModal);
-
-    // Close modal on close button click
-    searchClose.addEventListener('click', closeSearchModal);
-
-    // Close modal on backdrop click
-    searchModal.addEventListener('click', (e) => {
-        if (e.target === searchModal) {
-            closeSearchModal();
-        }
-    });
-
-    // Debounced search on input
-    searchInput.addEventListener('input', (e) => {
-        clearTimeout(searchDebounceTimer);
-        searchDebounceTimer = setTimeout(() => {
-            performSearch(e.target.value);
-        }, 200);
-    });
-
-    // Close on Escape key
-    searchInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            closeSearchModal();
-        }
-    });
-}
+// setupFileSearch removed - search is now handled in setupDocsButton
 
 /**
  * Setup event listeners
@@ -5040,7 +4994,38 @@ function setupDocsButton() {
             case 'sessions':
                 await loadSessionsTab();
                 break;
+            case 'search':
+                loadSearchTab();
+                break;
         }
+    }
+
+    // Search tab
+    function loadSearchTab() {
+        docsModalBody.innerHTML = `
+            <div class="docs-search-container">
+                <input type="text" id="docsSearchInput" class="docs-search-input"
+                       placeholder="Search files..." autocomplete="off" autocorrect="off"
+                       autocapitalize="off" spellcheck="false">
+                <div id="docsSearchResults" class="docs-search-results">
+                    <div class="search-empty">Type to search files...</div>
+                </div>
+            </div>
+        `;
+
+        const searchInput = document.getElementById('docsSearchInput');
+        const searchResults = document.getElementById('docsSearchResults');
+
+        // Focus input
+        setTimeout(() => searchInput.focus(), 100);
+
+        // Debounced search on input
+        searchInput.addEventListener('input', (e) => {
+            clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = setTimeout(() => {
+                performSearchInDocs(e.target.value, searchResults, docsModal);
+            }, 200);
+        });
     }
 
     // Plans tab with dropdown selector
@@ -8458,7 +8443,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupRepoDropdown();
     setupTargetSelector();
     setupNewWindowModal();
-    setupFileSearch();
+    // setupFileSearch removed - search now in docs modal
     setupJumpToBottom();
     setupCopyButton();
     setupCommandHistory();

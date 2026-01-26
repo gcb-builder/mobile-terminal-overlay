@@ -817,3 +817,61 @@ Click to expand and see individual tools (which can still have ×N badges).
 
 **Commits:**
 - (pending)
+
+---
+
+## 2026-01-26: Unified Navigation Dropdown
+
+**Goal:** Replace separate repo and target dropdowns with a single unified navigation button.
+
+### Problem
+- Two separate buttons in header: repo dropdown and target (pane) dropdown
+- Confusing UX with separate controls for session switching vs pane switching
+- Lock button added complexity without clear benefit
+
+### Solution
+Unified single button showing "repo • pane" format with sectioned dropdown:
+1. **Current Session** - List of panes (no reconnect)
+2. **Actions** - "+ New Window in Repo..."
+3. **Other Sessions** - Other repos (triggers reconnect)
+
+### CSS Changes (styles.css)
+- Repurposed `.repo-btn` as unified nav button (max-width: 220px, text ellipsis)
+- Added `.nav-section-header` - Section labels (uppercase, muted)
+- Added `.nav-section-divider` - Horizontal separator
+- Added `.nav-pane-option` - Pane items (with checkmark for active)
+- Added `.nav-session-option` - Session items (with "Switch" pill badge)
+- Added `.nav-action-option` - Action items (blue accent color)
+- Added `.reconnect-pill` - Small badge indicating reconnect
+- Hidden `.target-btn`, `.target-lock-btn`, `.target-dropdown` via `display: none !important`
+
+### JS Changes (terminal.js)
+- Added `updateNavLabel()` - Updates button to show "repo • pane" format
+- Rewrote `populateRepoDropdown()` - Now renders three sections
+- Made `updateTargetLabel()` and `renderTargetDropdown()` into no-ops (redirect to new functions)
+- Made `updateLockUI()` a no-op (lock button hidden)
+- Updated `loadTargets()` - Calls `updateNavLabel()`, removed targetBtn references
+- Updated `selectTarget()` - Closes `repoDropdown` instead of `targetDropdown`
+- Updated `switchRepo()` - Calls `updateNavLabel()`, removed targetBtn references
+- Updated `toggleRepoDropdown()` - Shows dropdown if repos OR multiple panes exist
+- Updated `setupTargetSelector()` - Removed targetBtn/targetDropdown event setup, multiProjectSelectBtn now opens unified dropdown
+
+### Files Changed
+- `mobile_terminal/static/styles.css` - Unified nav styles (~180 lines changed)
+- `mobile_terminal/static/terminal.js` - Unified dropdown logic (~150 lines changed)
+- `mobile_terminal/static/index.html` - Version bumps (v144, v202)
+
+### Key Design Decisions
+- Kept existing HTML element IDs (repoBtn, repoDropdown) to avoid breaking changes
+- CSS hides old elements instead of removing from HTML (safer)
+- Pane selection (selectTarget) does NOT trigger reconnect
+- Session switching (switchRepo) DOES trigger reconnect
+- Lock functionality removed (was confusing, rarely used)
+- Label updates instantly, dropdown renders on open only
+
+### Version Bumps
+- styles.css: v143 -> v144
+- terminal.js: v201 -> v202
+
+**Commits:**
+- (pending)

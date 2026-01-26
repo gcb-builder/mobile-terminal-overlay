@@ -66,7 +66,7 @@ html, body {
     font-size: 16px;
 }
 
-/* Repo switcher button */
+/* Unified nav button (repurposed from repo-btn) */
 .repo-btn {
     display: flex;
     align-items: center;
@@ -79,6 +79,7 @@ html, body {
     font-size: 14px;
     font-weight: 600;
     cursor: pointer;
+    max-width: 220px;
 }
 
 .repo-btn:active {
@@ -88,27 +89,175 @@ html, body {
 .repo-arrow {
     font-size: 10px;
     color: var(--text-secondary);
+    flex-shrink: 0;
 }
 
-/* Repo dropdown */
+#repoLabel {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Unified nav dropdown (repurposed from repo-dropdown) */
 .repo-dropdown {
     position: absolute;
     top: 100%;
     left: 0;
     margin-top: 4px;
-    min-width: 180px;
+    min-width: 260px;
+    max-width: 340px;
+    max-height: 70vh;
+    overflow-y: auto;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 8px;
     box-shadow: 0 4px 12px var(--shadow);
     z-index: 200;
-    overflow: hidden;
 }
 
 .repo-dropdown.hidden {
     display: none;
 }
 
+/* Section headers in nav dropdown */
+.nav-section-header {
+    padding: 8px 14px 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+}
+
+.nav-section-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 0;
+}
+
+/* Pane option in unified dropdown */
+.nav-pane-option {
+    display: block;
+    width: 100%;
+    padding: 10px 14px;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-primary);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.nav-pane-option:last-child {
+    border-bottom: none;
+}
+
+.nav-pane-option:hover,
+.nav-pane-option:active {
+    background: var(--bg-tertiary);
+}
+
+.nav-pane-option.active {
+    color: var(--accent);
+    background: rgba(88, 166, 255, 0.1);
+}
+
+.nav-pane-option .nav-check {
+    margin-right: 6px;
+    color: var(--accent);
+}
+
+.nav-pane-option .nav-project {
+    font-weight: 600;
+}
+
+.nav-pane-option .nav-pane-info {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-left: 6px;
+}
+
+.nav-pane-option .nav-path {
+    display: block;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+/* Session option (for other sessions) */
+.nav-session-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 10px 14px;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-primary);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.nav-session-option:last-child {
+    border-bottom: none;
+}
+
+.nav-session-option:hover,
+.nav-session-option:active {
+    background: var(--bg-tertiary);
+}
+
+.nav-session-option .nav-session-label {
+    font-weight: 600;
+}
+
+.nav-session-option .nav-session-path {
+    display: block;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+/* Reconnect pill badge */
+.reconnect-pill {
+    font-size: 9px;
+    padding: 2px 6px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+/* Action option (+ New Window) */
+.nav-action-option {
+    display: block;
+    width: 100%;
+    padding: 10px 14px;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+}
+
+.nav-action-option:last-child {
+    border-bottom: none;
+}
+
+.nav-action-option:hover,
+.nav-action-option:active {
+    background: var(--bg-tertiary);
+}
+
+/* Legacy repo-option styles (keep for compatibility) */
 .repo-option {
     display: block;
     width: 100%;
@@ -138,75 +287,19 @@ html, body {
     margin-top: 2px;
 }
 
-/* Target selector button (separate from repo dropdown) */
+/* Target selector button - HIDDEN (unified into repo dropdown) */
 .target-btn {
-    display: flex;
-    align-items: center;
-    padding: 4px 8px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text-secondary);
-    font-size: 12px;
-    font-family: monospace;
-    cursor: pointer;
+    display: none !important;
 }
 
-.target-btn:active {
-    background: var(--bg-secondary);
-}
-
-.target-btn.hidden {
-    display: none;
-}
-
-/* Target lock toggle button */
+/* Target lock toggle button - HIDDEN (unified into repo dropdown) */
 .target-lock-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    font-size: 14px;
-    cursor: pointer;
+    display: none !important;
 }
 
-.target-lock-btn:active {
-    background: var(--bg-secondary);
-}
-
-.target-lock-btn.hidden {
-    display: none;
-}
-
-.target-lock-btn.unlocked {
-    border-color: var(--warning);
-    background: rgba(210, 153, 34, 0.15);
-}
-
-/* Target dropdown */
+/* Target dropdown - HIDDEN (unified into repo dropdown) */
 .target-dropdown {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    margin-top: 4px;
-    min-width: 240px;
-    max-width: 320px;
-    max-height: 400px;
-    overflow-y: auto;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    box-shadow: 0 4px 12px var(--shadow);
-    z-index: 200;
-}
-
-.target-dropdown.hidden {
-    display: none;
+    display: none !important;
 }
 
 .target-option {
@@ -3057,6 +3150,40 @@ html, body {
 .docs-plan-select:focus {
     outline: none;
     border-color: var(--accent);
+}
+
+/* Docs search tab */
+.docs-search-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    gap: 12px;
+}
+
+.docs-search-input {
+    width: 100%;
+    padding: 12px 14px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 14px;
+    outline: none;
+}
+
+.docs-search-input:focus {
+    border-color: var(--accent);
+}
+
+.docs-search-input::placeholder {
+    color: var(--text-secondary);
+}
+
+.docs-search-results {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
 }
 
 /* Docs sessions list */
