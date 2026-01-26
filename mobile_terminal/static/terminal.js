@@ -4017,7 +4017,8 @@ function extractPendingPrompt(content) {
 
     // Method 3: Confirmation pattern detection
     // Look for "yes/no", "y/n", "continue?", "proceed?" patterns
-    const lastBlock = lastAssistantBlocks[lastAssistantBlocks.length - 1];
+    // Scan ALL text blocks in the last assistant turn (not just the last one,
+    // since tool calls often follow confirmation questions)
     const confirmPatterns = [
         /\b(proceed|continue|confirm|approve|accept)\s*\?/i,
         /\(y\/n\)/i,
@@ -4027,33 +4028,37 @@ function extractPendingPrompt(content) {
         /do you want (me )?to\b/i
     ];
 
-    for (const pattern of confirmPatterns) {
-        if (pattern.test(lastBlock)) {
-            const promptId = simpleHash(lastBlock);
+    // Filter to text blocks only (not tool calls starting with •)
+    const textBlocks = lastAssistantBlocks.filter(b => !b.startsWith('•'));
 
-            if (dismissedPrompts.has(promptId)) {
-                clearPendingPrompt();
+    for (const block of textBlocks) {
+        for (const pattern of confirmPatterns) {
+            if (pattern.test(block)) {
+                const promptId = simpleHash(block);
+
+                if (dismissedPrompts.has(promptId)) {
+                    continue;  // Check other blocks
+                }
+
+                if (pendingPrompt && pendingPrompt.id === promptId) {
+                    return;  // Same prompt already showing
+                }
+
+                pendingPrompt = {
+                    id: promptId,
+                    kind: 'confirmation',
+                    text: block.slice(0, 200),  // Truncate for display
+                    choices: [
+                        { num: '1', label: 'Yes', description: '' },
+                        { num: '2', label: 'No', description: '' }
+                    ],
+                    answered: false,
+                    sentChoice: null
+                };
+
+                showPromptBanner();
                 return;
             }
-
-            if (pendingPrompt && pendingPrompt.id === promptId) {
-                return;
-            }
-
-            pendingPrompt = {
-                id: promptId,
-                kind: 'confirmation',
-                text: lastBlock.slice(0, 200),  // Truncate for display
-                choices: [
-                    { num: '1', label: 'Yes', description: '' },
-                    { num: '2', label: 'No', description: '' }
-                ],
-                answered: false,
-                sentChoice: null
-            };
-
-            showPromptBanner();
-            return;
         }
     }
 
