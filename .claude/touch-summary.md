@@ -670,3 +670,150 @@ Click to expand and see individual tools (which can still have ×N badges).
 - Discard requires explicit 2-step confirmation
 - `git clean -fd` opt-in via checkbox (unchecked by default)
 - Buttons enabled when dirty (modal intercepts, not disabled state)
+
+---
+
+## 2026-01-25: New Window in Repo Feature
+
+**Goal:** Allow creating new tmux windows in configured repos directly from the mobile overlay.
+
+### Server Changes (server.py)
+
+**New Endpoints:**
+- `POST /api/window/new` - Create new tmux window in repo's session
+  - JSON body: `{repo_label, window_name?, auto_start_claude?}`
+  - Validates repo_label against config.repos
+  - Sanitizes window_name: `[a-zA-Z0-9_.-]`, max 50 chars
+  - Adds random suffix (secrets.token_hex(2)) for uniqueness
+  - Uses `tmux new-window -t {session} -n {name} -c {path} -P -F "format"`
+  - Optional auto_start_claude sends "claude" + Enter after 300ms
+  - Returns: `{success, target_id, pane_id, window_name, session, repo_label, path}`
+- `GET /api/repos` - List configured repos with path existence status
+
+**Security:**
+- Only repos from `.mobile-terminal.yaml` allowed (no arbitrary paths)
+- Server-side sanitization of window name
+- subprocess list args only (no shell=True)
+- Timeouts on all subprocess calls
+- Audit log: `window_create` action with full details
+
+### Client Changes (terminal.js)
+
+**New State:**
+- `availableRepos` - Cached list of repos from /api/repos
+- DOM refs for new window modal elements
+
+**New Functions:**
+- `loadRepos()` - Fetch available repos from server
+- `showNewWindowModal()` - Display modal, populate repo selector
+- `hideNewWindowModal()` - Close modal
+- `createNewWindow()` - Make API call, handle response, auto-select new target
+- `setupNewWindowModal()` - Wire up event handlers
+
+**Modified:**
+- `renderTargetDropdown()` - Added "+ New Window in Repo..." option when repos configured
+
+### UI Changes (index.html)
+
+**New Modal:**
+- `#newWindowModal` - Modal with repo selector, window name input, auto-start checkbox
+
+### Style Changes (styles.css)
+
+**New Classes:**
+- `.new-window-modal` - Modal container
+- `.new-window-content`, `.new-window-header`, `.new-window-body`, `.new-window-footer`
+- `.new-window-select`, `.new-window-input`, `.new-window-btn`
+- `.new-window-field.checkbox` - Checkbox field styling
+- `.target-option.new-window` - "+ New Window" option in dropdown
+
+**Files Changed:**
+- `mobile_terminal/server.py` - 2 new endpoints (~120 lines)
+- `mobile_terminal/static/terminal.js` - Modal functions (~150 lines)
+- `mobile_terminal/static/index.html` - New modal, version bumps
+- `mobile_terminal/static/styles.css` - Modal styling (~100 lines)
+
+**Commits:**
+- (pending)
+
+---
+
+## 2026-01-26: Startup Automation, Session Recovery, Layout Hints
+
+**Goal:** Add per-repo startup commands, Claude health monitoring with crash recovery, and layout name hints.
+
+### Feature 1: Per-Repo Startup Automation
+
+**config.py Changes:**
+- Added `startup_command: Optional[str] = None` to Repo dataclass
+- Added `startup_delay_ms: int = 300` to Repo dataclass (clamped 0..5000)
+- Updated `to_dict()` serialization
+- Updated `load_config()` to parse new fields
+
+**server.py Changes:**
+- `/api/repos` now returns `startup_command` and `startup_delay_ms`
+- `/api/window/new` uses `repo.startup_command or "claude"` when auto_start enabled
+- Validation: rejects newlines, max 200 chars
+- Uses `tmux send-keys -l` (literal mode) + separate Enter
+- Audit logging for startup_command_exec
+
+### Feature 2: Session Recovery (Claude Health Monitoring)
+
+**server.py New Endpoints:**
+- `GET /api/health/claude?pane_id=...`
+  - Gets pane_pid and title via `tmux display-message`
+  - Scans process tree for claude-code via pgrep
+  - Returns: `{pane_alive, shell_pid, claude_running, claude_pid, pane_title}`
+- `POST /api/claude/start?pane_id=...`
+  - Returns 409 if Claude already running
+  - Gets startup_command from body or repo config
+  - Uses `tmux send-keys -l` + Enter
+  - Audit logging for claude_start
+
+**terminal.js Changes:**
+- Added health polling state: `claudeHealthInterval`, `lastClaudeHealth`, `claudeStartedAt`
+- Added `checkClaudeHealth()` - polls `/api/health/claude` every 5s
+- Only polls when `document.visibilityState === 'visible'` and `activeTarget` set
+- Added `checkClaudeHealthAndShowBanner()` - re-check before showing banner
+- Added `updateClaudeCrashBanner()` - show if was running, now not, with 3s debounce
+- Added `respawnClaude()` - calls `/api/claude/start`
+- Added `startClaudeHealthPolling()` / `stopClaudeHealthPolling()`
+- `dismissedCrashPanes` Set for per-pane banner dismiss
+- Visibility change listener starts/stops polling
+- Target selection resets health state
+
+**index.html Changes:**
+- Added crash banner HTML after multiProjectBanner:
+  - `#claudeCrashBanner`, `#claudeRespawnBtn`, `#claudeCrashDismissBtn`
+
+**styles.css Changes:**
+- Added `.claude-crash-banner` styles (red warning, 44px touch targets)
+- Added `.claude-respawn-btn`, `.claude-crash-dismiss-btn`
+
+### Feature 3: Layout Convention Hints
+
+**server.py Changes:**
+- `/api/window/new` now defaults window name to `Path(repo_path).name` instead of repo label
+- This matches directory basename convention for better layout hints
+
+**terminal.js Changes:**
+- `renderTargetDropdown()` now checks if window_name matches directory name
+- Compares normalized names (lowercase, without random suffix, alphanumeric only)
+- Shows `<span class="target-name-hint">?</span>` badge if mismatch
+
+**styles.css Changes:**
+- Added `.target-name-hint` style (muted badge, small font)
+
+### Files Changed
+- `mobile_terminal/config.py` - Repo dataclass fields, to_dict(), load_config()
+- `mobile_terminal/server.py` - 2 new endpoints, modified /api/repos, /api/window/new
+- `mobile_terminal/static/terminal.js` - Health polling functions (~150 lines), DOM refs
+- `mobile_terminal/static/index.html` - Crash banner HTML, version bumps
+- `mobile_terminal/static/styles.css` - Crash banner and hint badge styles
+
+### Version Bumps
+- styles.css: v142 -> v143
+- terminal.js: v199 -> v200
+
+**Commits:**
+- (pending)

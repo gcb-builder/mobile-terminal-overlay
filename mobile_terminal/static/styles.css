@@ -246,6 +246,18 @@ html, body {
     margin-left: 6px;
 }
 
+.target-name-hint {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 0 4px;
+    font-size: 9px;
+    color: var(--text-muted, #666);
+    background: var(--bg-tertiary, #333);
+    border-radius: 3px;
+    vertical-align: middle;
+    opacity: 0.7;
+}
+
 .target-option .target-path {
     display: block;
     font-size: 11px;
@@ -325,6 +337,50 @@ html, body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
+}
+
+/* Claude crash warning banner */
+.claude-crash-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: rgba(239, 68, 68, 0.15);
+    border-bottom: 1px solid var(--error);
+    color: var(--error);
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.claude-crash-banner.hidden {
+    display: none;
+}
+
+.claude-crash-text {
+    flex: 1;
+}
+
+.claude-respawn-btn {
+    padding: 8px 16px;
+    min-height: 44px;
+    background: var(--error);
+    border: none;
+    border-radius: 4px;
+    color: white;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.claude-crash-dismiss-btn {
+    background: none;
+    border: none;
+    color: var(--error);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 8px;
+    min-width: 44px;
+    min-height: 44px;
 }
 
 .header-right {

@@ -42,6 +42,8 @@ class Repo:
     label: str  # Display name
     path: str  # Absolute path to repo
     session: str  # tmux session name
+    startup_command: Optional[str] = None  # Command to run when auto_start enabled (default: "claude")
+    startup_delay_ms: int = 300  # Delay before sending startup command (0..5000)
 
 
 @dataclass
@@ -100,7 +102,13 @@ class Config:
                 for cb in self.context_buttons
             ],
             "repos": [
-                {"label": r.label, "path": r.path, "session": r.session}
+                {
+                    "label": r.label,
+                    "path": r.path,
+                    "session": r.session,
+                    "startup_command": r.startup_command,
+                    "startup_delay_ms": r.startup_delay_ms,
+                }
                 for r in self.repos
             ],
             "theme": self.theme,
@@ -194,14 +202,19 @@ def load_config(path: Optional[Path] = None) -> Config:
 
     # Repos
     if "repos" in data:
-        config.repos = [
-            Repo(
+        config.repos = []
+        for r in data["repos"]:
+            # Parse startup_delay_ms with clamping (0..5000)
+            delay = int(r.get("startup_delay_ms", 300))
+            delay = max(0, min(5000, delay))
+
+            config.repos.append(Repo(
                 label=r["label"],
                 path=r["path"],
                 session=r["session"],
-            )
-            for r in data["repos"]
-        ]
+                startup_command=r.get("startup_command"),
+                startup_delay_ms=delay,
+            ))
 
     return config
 

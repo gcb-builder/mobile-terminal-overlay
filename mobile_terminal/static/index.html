@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=142">
+    <link rel="stylesheet" href="/static/styles.css?v=143">
 </head>
 <body>
     <div class="app">
@@ -67,6 +67,13 @@
         <div id="multiProjectBanner" class="multi-project-banner hidden">
             <span class="multi-project-text">Session has multiple projects. Select a target.</span>
             <button id="multiProjectSelectBtn" class="multi-project-select-btn">Select</button>
+        </div>
+
+        <!-- Claude crash banner -->
+        <div id="claudeCrashBanner" class="claude-crash-banner hidden">
+            <span class="claude-crash-text">Claude has stopped. Respawn?</span>
+            <button id="claudeRespawnBtn" class="claude-respawn-btn">Respawn</button>
+            <button id="claudeCrashDismissBtn" class="claude-crash-dismiss-btn">&times;</button>
         </div>
 
         <!-- File search modal -->
@@ -496,7 +503,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=197"></script>
+    <script src="/static/terminal.js?v=200"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

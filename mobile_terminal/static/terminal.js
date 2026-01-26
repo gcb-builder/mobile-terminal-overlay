@@ -66,6 +66,7 @@ let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let targetBtn, targetLabel, targetDropdown, targetLockBtn, targetLockIcon;
 let cwdMismatchBanner, cwdMismatchText, cwdFixBtn, cwdDismissBtn;
+let claudeCrashBanner, claudeRespawnBtn, claudeCrashDismissBtn;
 let searchBtn, searchModal, searchInput, searchClose, searchResults;
 let composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composePaste, composeInsert, composeRun;
@@ -128,6 +129,13 @@ let pendingPrompt = null;        // { id, kind, text, choices, answered, sentCho
 let dismissedPrompts = new Set(); // Prompt IDs user dismissed without answering
 let promptBanner = null;         // DOM reference for sticky banner
 
+// Claude health polling state
+let claudeHealthInterval = null;   // Interval ID for health polling
+let lastClaudeHealth = null;       // Last health check result
+let claudeStartedAt = null;        // Timestamp when Claude was detected running
+let claudeCrashDebounceTimer = null;  // Debounce timer for crash detection
+let dismissedCrashPanes = new Set();  // Panes where user dismissed crash banner
+
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
     controlBarsContainer = document.getElementById('controlBarsContainer');
@@ -150,6 +158,9 @@ function initDOMElements() {
     cwdMismatchText = document.getElementById('cwdMismatchText');
     cwdFixBtn = document.getElementById('cwdFixBtn');
     cwdDismissBtn = document.getElementById('cwdDismissBtn');
+    claudeCrashBanner = document.getElementById('claudeCrashBanner');
+    claudeRespawnBtn = document.getElementById('claudeRespawnBtn');
+    claudeCrashDismissBtn = document.getElementById('claudeCrashDismissBtn');
     searchBtn = document.getElementById('searchBtn');
     searchModal = document.getElementById('searchModal');
     searchInput = document.getElementById('searchInput');
@@ -1189,6 +1200,11 @@ function populateUI() {
 
     // Load target selector (for multi-pane sessions)
     loadTargets();
+
+    // Start Claude health polling if document is visible
+    if (document.visibilityState === 'visible') {
+        startClaudeHealthPolling();
+    }
 }
 
 /**
@@ -1487,9 +1503,19 @@ function renderTargetDropdown() {
 
             const shortPath = target.cwd.replace(/^\/home\/[^/]+/, '~');
 
+            // Check for layout name mismatch hint
+            // Extract dir name from cwd and compare with window_name (normalized)
+            const dirName = target.cwd.split('/').filter(Boolean).pop() || '';
+            const windowName = target.window_name || '';
+            // Normalize: lowercase, remove random suffix pattern (-xxxx), remove non-alphanum
+            const normDir = dirName.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const normWindow = windowName.toLowerCase().replace(/-[a-f0-9]{4,}$/, '').replace(/[^a-z0-9]/g, '');
+            const nameMatches = normDir && normWindow && (normWindow.includes(normDir) || normDir.includes(normWindow));
+            const hintBadge = (!nameMatches && windowName && dirName) ? '<span class="target-name-hint" title="Window name differs from directory">?</span>' : '';
+
             opt.innerHTML = `
                 <span class="target-project">${target.project}</span>
-                <span class="target-pane-info">${target.window_name || ''} • ${target.pane_id}</span>
+                <span class="target-pane-info">${windowName}${hintBadge} • ${target.pane_id}</span>
                 <span class="target-path">${shortPath}</span>
             `;
             opt.addEventListener('click', () => selectTarget(target.id));
@@ -1537,6 +1563,16 @@ async function selectTarget(targetId) {
         updateTargetLabel();
         renderTargetDropdown();
 
+        // Reset Claude health state for new target
+        lastClaudeHealth = null;
+        claudeStartedAt = null;
+        updateClaudeCrashBanner(false);
+
+        // Start health polling if visible
+        if (document.visibilityState === 'visible') {
+            startClaudeHealthPolling();
+        }
+
         // Reload targets to check cwd mismatch
         await loadTargets();
 
@@ -1570,6 +1606,171 @@ async function cdToRepoRoot() {
         }
     } catch (error) {
         console.error('Error sending cd command:', error);
+    }
+}
+
+/**
+ * Check Claude health for the active pane
+ */
+async function checkClaudeHealth() {
+    if (!activeTarget) return;
+
+    // Don't poll when document is hidden
+    if (document.visibilityState !== 'visible') return;
+
+    try {
+        const response = await fetch(`/api/health/claude?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
+        if (!response.ok) return;
+
+        const health = await response.json();
+        const wasRunning = lastClaudeHealth?.claude_running;
+        const isNowRunning = health.claude_running;
+
+        lastClaudeHealth = health;
+
+        // Track when Claude started running
+        if (isNowRunning && !wasRunning) {
+            claudeStartedAt = Date.now();
+            // Clear any pending crash debounce
+            if (claudeCrashDebounceTimer) {
+                clearTimeout(claudeCrashDebounceTimer);
+                claudeCrashDebounceTimer = null;
+            }
+            // Hide crash banner if shown
+            updateClaudeCrashBanner(false);
+        }
+
+        // Detect crash: was running, now not, and was running for at least 3s
+        if (wasRunning && !isNowRunning && claudeStartedAt) {
+            const runDuration = Date.now() - claudeStartedAt;
+            if (runDuration > 3000) {
+                // Debounce crash detection by 3s to avoid false positives
+                if (!claudeCrashDebounceTimer) {
+                    claudeCrashDebounceTimer = setTimeout(() => {
+                        claudeCrashDebounceTimer = null;
+                        // Re-check health before showing banner
+                        checkClaudeHealthAndShowBanner();
+                    }, 3000);
+                }
+            }
+        }
+
+    } catch (error) {
+        console.error('Error checking claude health:', error);
+    }
+}
+
+/**
+ * Re-check health and show crash banner if Claude is still not running
+ */
+async function checkClaudeHealthAndShowBanner() {
+    if (!activeTarget) return;
+
+    try {
+        const response = await fetch(`/api/health/claude?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
+        if (!response.ok) return;
+
+        const health = await response.json();
+        lastClaudeHealth = health;
+
+        if (!health.claude_running && !dismissedCrashPanes.has(activeTarget)) {
+            updateClaudeCrashBanner(true);
+        }
+    } catch (error) {
+        console.error('Error re-checking claude health:', error);
+    }
+}
+
+/**
+ * Show or hide the Claude crash banner
+ */
+function updateClaudeCrashBanner(show) {
+    if (!claudeCrashBanner) return;
+
+    if (show) {
+        claudeCrashBanner.classList.remove('hidden');
+    } else {
+        claudeCrashBanner.classList.add('hidden');
+    }
+}
+
+/**
+ * Respawn Claude in the active pane
+ */
+async function respawnClaude() {
+    if (!activeTarget) return;
+
+    updateClaudeCrashBanner(false);
+
+    try {
+        // Find repo for current target to get startup command
+        const targetInfo = targets.find(t => t.id === activeTarget);
+        let repoLabel = null;
+        if (targetInfo && config?.repos) {
+            const matchingRepo = config.repos.find(r =>
+                targetInfo.cwd && targetInfo.cwd.startsWith(r.path)
+            );
+            if (matchingRepo) {
+                repoLabel = matchingRepo.label;
+            }
+        }
+
+        const body = repoLabel ? JSON.stringify({ repo_label: repoLabel }) : '{}';
+
+        const response = await fetch(`/api/claude/start?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body,
+        });
+
+        if (response.status === 409) {
+            showToast('Claude is already running', 'info');
+            return;
+        }
+
+        if (!response.ok) {
+            const data = await response.json();
+            showToast(data.error || 'Failed to start Claude', 'error');
+            return;
+        }
+
+        showToast('Claude started', 'success');
+
+        // Reset health state
+        claudeStartedAt = Date.now();
+        lastClaudeHealth = null;
+
+    } catch (error) {
+        console.error('Error respawning Claude:', error);
+        showToast('Failed to start Claude', 'error');
+    }
+}
+
+/**
+ * Start Claude health polling
+ */
+function startClaudeHealthPolling() {
+    // Stop any existing interval
+    stopClaudeHealthPolling();
+
+    // Poll every 5 seconds
+    claudeHealthInterval = setInterval(checkClaudeHealth, 5000);
+
+    // Do an immediate check
+    checkClaudeHealth();
+}
+
+/**
+ * Stop Claude health polling
+ */
+function stopClaudeHealthPolling() {
+    if (claudeHealthInterval) {
+        clearInterval(claudeHealthInterval);
+        claudeHealthInterval = null;
+    }
+    if (claudeCrashDebounceTimer) {
+        clearTimeout(claudeCrashDebounceTimer);
+        claudeCrashDebounceTimer = null;
     }
 }
 
@@ -1768,6 +1969,20 @@ function setupTargetSelector() {
         multiProjectSelectBtn.addEventListener('click', () => {
             targetDropdown.classList.remove('hidden');
             loadTargets();
+        });
+    }
+
+    // Claude crash banner buttons
+    if (claudeRespawnBtn) {
+        claudeRespawnBtn.addEventListener('click', respawnClaude);
+    }
+    if (claudeCrashDismissBtn) {
+        claudeCrashDismissBtn.addEventListener('click', () => {
+            // Dismiss for this pane only
+            if (activeTarget) {
+                dismissedCrashPanes.add(activeTarget);
+            }
+            updateClaudeCrashBanner(false);
         });
     }
 
@@ -2097,6 +2312,9 @@ function setupViewportHandler() {
     // Reconnect immediately when returning to app (visibility change)
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
+            // Start Claude health polling when visible
+            startClaudeHealthPolling();
+
             // Render cached UI immediately (before reconnect completes)
             // This gives instant feedback while connection is being restored
             renderQueueList();  // Show cached queue items
@@ -2170,6 +2388,9 @@ function setupViewportHandler() {
                     }
                 }, RESTART_TIMEOUT);
             }
+        } else {
+            // Stop Claude health polling when hidden to save resources
+            stopClaudeHealthPolling();
         }
     });
 
@@ -4021,20 +4242,31 @@ function extractPendingPrompt(content) {
     }
 
     // Method 3: Confirmation pattern detection
-    // Look for "yes/no", "y/n", "continue?", "proceed?" patterns
-    // Scan ALL text blocks in the last assistant turn (not just the last one,
-    // since tool calls often follow confirmation questions)
+    // STRICT: Only match explicit binary yes/no confirmations, NOT open questions
+    // Triggers: plan approval, tool confirmations, explicit proceed/continue requests
+    // Does NOT trigger on: open-ended questions like "would you like me to help?"
     const confirmPatterns = [
-        /\b(proceed|continue|confirm|approve|accept)\s*\?/i,
+        // Explicit binary indicators
         /\(y\/n\)/i,
         /\(yes\/no\)/i,
-        /would you like (me )?to\b/i,
-        /should I\b/i,
-        /do you want (me )?to\b/i,
-        /ready to (commit|proceed|continue)\?/i,
-        /shall I\b/i,
-        /\bcommit (these|the|this|your)?\s*(changes?)?\s*\?/i,
-        /is (this|that) (ok|okay|correct|right)\s*\?/i
+        // Plan mode approval (very specific)
+        /ready (for|to get) (your )?(approval|feedback)\s*\?/i,
+        /approve (this|the) plan\s*\?/i,
+        /plan.*(ready|complete|finalized).*\?/i,
+        /proceed with (this|the) (plan|implementation)\s*\?/i,
+        /written.*plan.*review/i,
+        /plan.*written.*approval/i,
+        /shall I (begin|start|proceed with) (the )?implement/i,
+        // Explicit action confirmations (require "?" at sentence end)
+        /\bproceed\s*\?\s*$/im,
+        /\bcontinue\s*\?\s*$/im,
+        /\bconfirm\s*\?\s*$/im,
+        // Git/commit specific
+        /\bcommit (these|the|this|your)?\s*(changes?)?\s*\?\s*$/im,
+        /ready to (commit|push)\s*\?\s*$/im,
+        // Destructive action confirmations
+        /is (this|that) (ok|okay|correct|right)\s*\?\s*$/im,
+        /(delete|remove|discard|overwrite).*\?\s*$/im
     ];
 
     // Filter to text blocks only (not tool calls starting with •, ❓, 📋, ✅, 🤖, 📝)
@@ -4251,20 +4483,20 @@ function setupPromptBannerHandlers() {
 function sendPromptChoice(choice) {
     console.log('[sendPromptChoice] called with:', choice, 'pendingPrompt:', pendingPrompt);
 
-    if (!pendingPrompt) {
-        console.log('[sendPromptChoice] No pending prompt, returning');
-        return;
-    }
+    // Always send - don't bail if pendingPrompt was cleared by race condition
+    // The user clicked the button, so they clearly want to send this choice
 
     // Idempotency: don't re-send if already sent this choice
-    if (pendingPrompt.answered && pendingPrompt.sentChoice === choice) {
+    if (pendingPrompt && pendingPrompt.answered && pendingPrompt.sentChoice === choice) {
         console.log('[sendPromptChoice] Already sent this choice, returning');
         return;
     }
 
-    // Mark as answered before sending
-    pendingPrompt.answered = true;
-    pendingPrompt.sentChoice = choice;
+    // Mark as answered if we have a prompt
+    if (pendingPrompt) {
+        pendingPrompt.answered = true;
+        pendingPrompt.sentChoice = choice;
+    }
 
     // Update button UI to show selected state (without full re-render)
     if (promptBanner) {
@@ -4275,11 +4507,17 @@ function sendPromptChoice(choice) {
         });
     }
 
-    // Send to terminal
+    // Send to terminal - send choice then Enter separately to ensure both are processed
     console.log('[sendPromptChoice] Socket state:', socket?.readyState, 'WebSocket.OPEN:', WebSocket.OPEN);
     if (socket && socket.readyState === WebSocket.OPEN) {
-        console.log('[sendPromptChoice] Sending:', JSON.stringify(choice + '\r'));
-        sendInput(choice + '\r');
+        const choiceStr = String(choice).trim();
+        console.log('[sendPromptChoice] Sending choice:', choiceStr);
+        sendInput(choiceStr);
+        // Small delay then send Enter
+        setTimeout(() => {
+            console.log('[sendPromptChoice] Sending Enter');
+            sendInput('\r');
+        }, 50);
         setTerminalBusy(true);
         captureSnapshot('user_send');
     } else {

@@ -1209,9 +1209,14 @@ def create_app(config: Config) -> FastAPI:
         else:
             sanitized_name = ""
 
-        # If sanitized name is empty, use repo label or add suffix
+        # If sanitized name is empty, use directory basename (layout convention)
         if not sanitized_name:
-            sanitized_name = re.sub(r'[^a-zA-Z0-9_.-]', '', repo_label)[:50]
+            # Use the actual directory name for better layout hints
+            dir_basename = repo_path.name
+            sanitized_name = re.sub(r'[^a-zA-Z0-9_.-]', '', dir_basename)[:50]
+            if not sanitized_name:
+                # Fallback to repo label if dir name sanitizes to empty
+                sanitized_name = re.sub(r'[^a-zA-Z0-9_.-]', '', repo_label)[:50]
             if not sanitized_name:
                 sanitized_name = "window"
 
@@ -1267,18 +1272,43 @@ def create_app(config: Config) -> FastAPI:
 
             logger.info(f"Created window '{final_name}' in session '{session}' at {path}")
 
-            # If auto_start_claude, send "claude" command after a short delay
+            # If auto_start_claude, send startup command after configured delay
             if auto_start_claude and pane_id:
+                # Get startup command from repo config, default to "claude"
+                startup_cmd = repo.startup_command or "claude"
+
+                # Validate startup command
+                if "\n" in startup_cmd or "\r" in startup_cmd:
+                    return JSONResponse({
+                        "error": "startup_command cannot contain newlines"
+                    }, status_code=400)
+                if len(startup_cmd) > 200:
+                    return JSONResponse({
+                        "error": "startup_command exceeds 200 character limit"
+                    }, status_code=400)
+
+                startup_delay = repo.startup_delay_ms / 1000.0  # Convert to seconds
+
                 async def start_claude():
-                    await asyncio.sleep(0.3)  # Wait for shell to be ready
+                    await asyncio.sleep(startup_delay)  # Wait for shell to be ready
                     try:
+                        # Use send-keys -l (literal) to avoid shell interpretation + separate Enter
                         subprocess.run(
-                            ["tmux", "send-keys", "-t", pane_id, "claude", "Enter"],
+                            ["tmux", "send-keys", "-t", pane_id, "-l", startup_cmd],
                             capture_output=True, timeout=5
                         )
-                        logger.info(f"Started Claude in pane {pane_id}")
+                        subprocess.run(
+                            ["tmux", "send-keys", "-t", pane_id, "Enter"],
+                            capture_output=True, timeout=5
+                        )
+                        logger.info(f"Started '{startup_cmd}' in pane {pane_id}")
+                        app.state.audit_log.log("startup_command_exec", {
+                            "pane_id": pane_id,
+                            "command": startup_cmd,
+                            "repo_label": repo_label
+                        })
                     except Exception as e:
-                        logger.error(f"Failed to start Claude: {e}")
+                        logger.error(f"Failed to start command: {e}")
 
                 asyncio.create_task(start_claude())
 
@@ -1314,7 +1344,9 @@ def create_app(config: Config) -> FastAPI:
                 "label": repo.label,
                 "path": repo.path,
                 "session": repo.session,
-                "exists": repo_path.exists()
+                "exists": repo_path.exists(),
+                "startup_command": repo.startup_command,
+                "startup_delay_ms": repo.startup_delay_ms,
             })
 
         return {
@@ -3703,6 +3735,200 @@ Only the top 1–3 risks worth caring about.
             "icon": "🚀"
         },
     }
+
+    @app.get("/api/health/claude")
+    async def check_claude_health(
+        pane_id: str = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """
+        Check if Claude is running in a specific pane.
+
+        Returns:
+          - pane_alive: Whether the pane exists
+          - shell_pid: PID of the shell in the pane
+          - claude_running: Whether claude-code process is found
+          - claude_pid: PID of claude-code if running
+          - pane_title: Current pane title
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        result = {
+            "pane_alive": False,
+            "shell_pid": None,
+            "claude_running": False,
+            "claude_pid": None,
+            "pane_title": None,
+        }
+
+        try:
+            # Get pane info: PID and title
+            pane_info = subprocess.run(
+                ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_pid}|#{pane_title}"],
+                capture_output=True, text=True, timeout=5
+            )
+
+            if pane_info.returncode != 0:
+                return result  # Pane doesn't exist
+
+            output = pane_info.stdout.strip()
+            if "|" not in output:
+                return result
+
+            parts = output.split("|", 1)
+            shell_pid = parts[0]
+            pane_title = parts[1] if len(parts) > 1 else ""
+
+            result["pane_alive"] = True
+            result["shell_pid"] = int(shell_pid) if shell_pid.isdigit() else None
+            result["pane_title"] = pane_title
+
+            # Scan process tree for claude-code in cmdline
+            # Use pgrep to find processes with "claude" in command line under the shell's tree
+            if result["shell_pid"]:
+                # Get all descendant processes of shell_pid
+                try:
+                    ps_result = subprocess.run(
+                        ["ps", "-o", "pid,comm,args", "--ppid", str(result["shell_pid"]), "--no-headers"],
+                        capture_output=True, text=True, timeout=5
+                    )
+
+                    # Also check direct children and their children
+                    pgrep_result = subprocess.run(
+                        ["pgrep", "-P", str(result["shell_pid"]), "-a"],
+                        capture_output=True, text=True, timeout=5
+                    )
+
+                    # Look for claude-code in process output
+                    combined_output = ps_result.stdout + "\n" + pgrep_result.stdout
+                    for line in combined_output.split("\n"):
+                        line_lower = line.lower()
+                        if "claude" in line_lower and ("node" in line_lower or "claude" in line.split()[1:2] if len(line.split()) > 1 else False):
+                            # Found claude process
+                            parts = line.split()
+                            if parts and parts[0].isdigit():
+                                result["claude_running"] = True
+                                result["claude_pid"] = int(parts[0])
+                                break
+
+                    # Alternative: check if any child process has "claude" in its cmdline
+                    if not result["claude_running"]:
+                        proc_check = subprocess.run(
+                            ["pgrep", "-f", "claude", "-P", str(result["shell_pid"])],
+                            capture_output=True, text=True, timeout=5
+                        )
+                        if proc_check.returncode == 0 and proc_check.stdout.strip():
+                            pids = proc_check.stdout.strip().split("\n")
+                            if pids and pids[0].isdigit():
+                                result["claude_running"] = True
+                                result["claude_pid"] = int(pids[0])
+
+                except Exception as e:
+                    logger.warning(f"Error scanning for claude process: {e}")
+
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timeout checking claude health for pane {pane_id}")
+        except Exception as e:
+            logger.error(f"Error checking claude health: {e}")
+
+        return result
+
+    @app.post("/api/claude/start")
+    async def start_claude_in_pane(
+        request: Request,
+        pane_id: str = Query(...),
+        token: Optional[str] = Query(None),
+    ):
+        """
+        Start Claude in a pane if not already running.
+
+        Returns 409 if Claude is already running.
+        Uses the repo's startup_command from config if available.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Check health first
+        try:
+            pane_info = subprocess.run(
+                ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_pid}"],
+                capture_output=True, text=True, timeout=5
+            )
+            if pane_info.returncode != 0:
+                return JSONResponse({"error": "Pane not found"}, status_code=404)
+
+            shell_pid = pane_info.stdout.strip()
+
+            # Check if claude is already running
+            if shell_pid.isdigit():
+                proc_check = subprocess.run(
+                    ["pgrep", "-f", "claude", "-P", shell_pid],
+                    capture_output=True, text=True, timeout=5
+                )
+                if proc_check.returncode == 0 and proc_check.stdout.strip():
+                    return JSONResponse({
+                        "error": "Claude is already running in this pane",
+                        "claude_pid": int(proc_check.stdout.strip().split("\n")[0])
+                    }, status_code=409)
+
+        except Exception as e:
+            logger.error(f"Error checking claude status: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+        # Get startup command from request body or find matching repo
+        startup_cmd = "claude"  # Default
+        repo_label = None
+
+        try:
+            body = await request.json()
+            if body.get("startup_command"):
+                startup_cmd = body["startup_command"]
+            repo_label = body.get("repo_label")
+        except Exception:
+            pass  # No body or invalid JSON, use default
+
+        # If repo_label provided, look up its startup_command
+        if repo_label:
+            repo = next((r for r in config.repos if r.label == repo_label), None)
+            if repo and repo.startup_command:
+                startup_cmd = repo.startup_command
+
+        # Validate startup command
+        if "\n" in startup_cmd or "\r" in startup_cmd:
+            return JSONResponse({"error": "startup_command cannot contain newlines"}, status_code=400)
+        if len(startup_cmd) > 200:
+            return JSONResponse({"error": "startup_command exceeds 200 character limit"}, status_code=400)
+
+        try:
+            # Send command using literal mode + separate Enter
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, "-l", startup_cmd],
+                capture_output=True, timeout=5
+            )
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, "Enter"],
+                capture_output=True, timeout=5
+            )
+
+            logger.info(f"Started '{startup_cmd}' in pane {pane_id}")
+            app.state.audit_log.log("claude_start", {
+                "pane_id": pane_id,
+                "command": startup_cmd,
+                "repo_label": repo_label,
+            })
+
+            return {
+                "success": True,
+                "pane_id": pane_id,
+                "command": startup_cmd,
+            }
+
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Timeout starting Claude"}, status_code=504)
+        except Exception as e:
+            logger.error(f"Error starting Claude: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/api/runner/commands")
     async def list_runner_commands(

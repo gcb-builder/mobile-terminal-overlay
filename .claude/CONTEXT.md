@@ -4,7 +4,59 @@
 
 - **Branch:** master
 - **Stage:** Production-ready with PWA support + V2 features
-- **Last Updated:** 2026-01-25
+- **Last Updated:** 2026-01-26
+
+## Recent: Startup Automation, Session Recovery, Layout Hints (2026-01-26)
+
+### Per-Repo Startup Automation
+- Added `startup_command` and `startup_delay_ms` fields to Repo config
+- `/api/repos` now returns startup settings
+- `/api/window/new` uses repo's startup_command when auto_start enabled
+- Validation: no newlines, max 200 chars
+- Uses `tmux send-keys -l` (literal mode) + separate Enter for safety
+
+### Session Recovery (Claude Health Monitoring)
+- `GET /api/health/claude?pane_id=...` - Check if Claude is running
+  - Returns: `{pane_alive, shell_pid, claude_running, claude_pid, pane_title}`
+  - Scans process tree for claude-code process
+- `POST /api/claude/start?pane_id=...` - Start Claude in pane
+  - Returns 409 if already running
+  - Uses repo's startup_command if available
+- Client-side health polling every 5s (when visible)
+- Crash banner with respawn button after 3s debounce
+- Per-pane dismiss tracking
+
+### Layout Convention Hints
+- New windows default to directory basename (not repo label)
+- Target dropdown shows "?" hint badge when window name doesn't match directory
+- Helps identify mismatched layouts
+
+---
+
+## Recent: New Window in Repo Feature (2026-01-25)
+
+### Feature
+Create new tmux windows in configured repos directly from the mobile overlay, with optional auto-start Claude.
+
+### New Endpoints
+- `POST /api/window/new` - Create new tmux window in repo's session
+  - Body: `{repo_label, window_name?, auto_start_claude?}`
+  - Returns: `{success, target_id, pane_id, window_name, session}`
+- `GET /api/repos` - List configured repos with path existence status
+
+### Security
+- Only repos defined in `.mobile-terminal.yaml` are allowed
+- Server-side window name sanitization: `[a-zA-Z0-9_.-]`, max 50 chars
+- Random suffix added to prevent collisions
+- All subprocess calls use list args (no shell=True)
+- Actions audit logged
+
+### Client UI
+- "+ New Window in Repo..." option in target dropdown
+- Modal with repo selector, window name input, auto-start Claude checkbox
+- Auto-select new target after creation (with retry logic)
+
+---
 
 ## Recent: Server Auto-Restart on Resume (2026-01-25)
 
@@ -142,6 +194,7 @@ Build a mobile-optimized terminal overlay for accessing tmux sessions from phone
 - [x] V2: Connection resilience (hello handshake, watchdog, PTY death detection)
 - [x] Target Selector: Explicit pane selection for multi-project workflows
 - [x] Docs Modal: Unified viewer for Plans, Context, Touch, and Sessions
+- [x] New Window in Repo: Create tmux windows from mobile with auto-start Claude option
 
 ## Recent Changes (2026-01-23) - Git Revert Dirty Handling
 
