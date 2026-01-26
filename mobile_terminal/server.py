@@ -1156,6 +1156,172 @@ def create_app(config: Config) -> FastAPI:
 
         return {"success": True, "active": target_id}
 
+    @app.post("/api/window/new")
+    async def create_new_window(
+        request: Request,
+        token: Optional[str] = Query(None)
+    ):
+        """
+        Create a new tmux window in a repo's configured session.
+
+        JSON body:
+          - repo_label: (required) Label of repo from config
+          - window_name: (optional) Name for the new window
+          - auto_start_claude: (optional, default false) Start Claude after creating window
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Parse JSON body
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+        repo_label = body.get("repo_label")
+        window_name = body.get("window_name", "")
+        auto_start_claude = body.get("auto_start_claude", False)
+
+        if not repo_label:
+            return JSONResponse({
+                "error": "repo_label is required",
+                "available_repos": [r.label for r in config.repos]
+            }, status_code=400)
+
+        # Look up repo in config
+        repo = next((r for r in config.repos if r.label == repo_label), None)
+        if not repo:
+            return JSONResponse({
+                "error": f"Unknown repo: {repo_label}",
+                "available_repos": [r.label for r in config.repos]
+            }, status_code=404)
+
+        # Verify repo path exists
+        repo_path = Path(repo.path)
+        if not repo_path.exists():
+            return JSONResponse({
+                "error": f"Repo path does not exist: {repo.path}"
+            }, status_code=400)
+
+        # Sanitize window name: only allow [a-zA-Z0-9_.-], max 50 chars
+        if window_name:
+            sanitized_name = re.sub(r'[^a-zA-Z0-9_.-]', '', window_name)[:50]
+        else:
+            sanitized_name = ""
+
+        # If sanitized name is empty, use repo label or add suffix
+        if not sanitized_name:
+            sanitized_name = re.sub(r'[^a-zA-Z0-9_.-]', '', repo_label)[:50]
+            if not sanitized_name:
+                sanitized_name = "window"
+
+        # Add random suffix to handle name collisions
+        final_name = f"{sanitized_name}-{secrets.token_hex(2)}"
+
+        session = repo.session
+        path = str(repo_path.resolve())
+
+        try:
+            # Create tmux window: tmux new-window -t {session} -n {name} -c {path} -P -F "format"
+            result = subprocess.run(
+                [
+                    "tmux", "new-window",
+                    "-t", session,
+                    "-n", final_name,
+                    "-c", path,
+                    "-P", "-F", "#{window_index}:#{pane_index}|#{pane_id}"
+                ],
+                capture_output=True, text=True, timeout=10
+            )
+
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() or "Failed to create window"
+                # Check if session doesn't exist
+                if "can't find" in error_msg.lower() or "no such session" in error_msg.lower():
+                    return JSONResponse({
+                        "error": f"Session '{session}' not found. Create it first with: tmux new -s {session}"
+                    }, status_code=400)
+                return JSONResponse({"error": error_msg}, status_code=500)
+
+            output = result.stdout.strip()
+            if "|" not in output:
+                return JSONResponse({
+                    "error": "Unexpected tmux output",
+                    "output": output
+                }, status_code=500)
+
+            parts = output.split("|")
+            target_id = parts[0]  # "window_index:pane_index"
+            pane_id = parts[1] if len(parts) > 1 else None
+
+            # Audit log the action
+            app.state.audit_log.log("window_create", {
+                "repo_label": repo_label,
+                "session": session,
+                "window_name": final_name,
+                "target_id": target_id,
+                "pane_id": pane_id,
+                "path": path,
+                "auto_start_claude": auto_start_claude
+            })
+
+            logger.info(f"Created window '{final_name}' in session '{session}' at {path}")
+
+            # If auto_start_claude, send "claude" command after a short delay
+            if auto_start_claude and pane_id:
+                async def start_claude():
+                    await asyncio.sleep(0.3)  # Wait for shell to be ready
+                    try:
+                        subprocess.run(
+                            ["tmux", "send-keys", "-t", pane_id, "claude", "Enter"],
+                            capture_output=True, timeout=5
+                        )
+                        logger.info(f"Started Claude in pane {pane_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to start Claude: {e}")
+
+                asyncio.create_task(start_claude())
+
+            return {
+                "success": True,
+                "target_id": target_id,
+                "pane_id": pane_id,
+                "window_name": final_name,
+                "session": session,
+                "repo_label": repo_label,
+                "path": path,
+                "auto_start_claude": auto_start_claude
+            }
+
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Timeout creating window"}, status_code=504)
+        except Exception as e:
+            logger.error(f"Error creating window: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/repos")
+    async def list_repos(token: Optional[str] = Query(None)):
+        """
+        List configured repos available for new window creation.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repos_list = []
+        for repo in config.repos:
+            repo_path = Path(repo.path)
+            repos_list.append({
+                "label": repo.label,
+                "path": repo.path,
+                "session": repo.session,
+                "exists": repo_path.exists()
+            })
+
+        return {
+            "repos": repos_list,
+            "current_session": app.state.current_session
+        }
+
     @app.get("/api/files/search")
     async def search_files(q: str = Query(""), token: Optional[str] = Query(None), limit: int = Query(20)):
         """
@@ -1285,6 +1451,7 @@ def create_app(config: Config) -> FastAPI:
             session_name = app.state.current_session
 
             # Resize tmux pane if dimensions provided (fixes garbled output)
+            resized = False
             if cols and rows:
                 resize_result = subprocess.run(
                     ["tmux", "resize-pane", "-t", session_name, "-x", str(cols), "-y", str(rows)],
@@ -1296,9 +1463,22 @@ def create_app(config: Config) -> FastAPI:
                     logger.warning(f"tmux resize-pane failed: {resize_result.stderr}")
                 else:
                     logger.info(f"Resized tmux pane to {cols}x{rows}")
+                    resized = True
 
+                    # Send Ctrl+L to force screen redraw after resize
+                    subprocess.run(
+                        ["tmux", "send-keys", "-t", session_name, "C-l"],
+                        capture_output=True,
+                        timeout=1,
+                    )
+                    # Small delay for redraw to complete
+                    import time
+                    time.sleep(0.15)
+
+            # Capture visible area only (not scrollback) to avoid stale wrapped content
+            # Use -S - to start from visible area, or omit -S for default
             result = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-J", "-S", "-5000", "-t", session_name],
+                ["tmux", "capture-pane", "-p", "-t", session_name],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -1944,199 +2124,26 @@ def create_app(config: Config) -> FastAPI:
         if not jsonl_files:
             return None
 
-        # Check if we have a cached/pinned mapping for this target
+        # Check if we have a PINNED mapping for this target (user explicitly selected)
         if target_id:
             cached = app.state.target_log_mapping.get(target_id)
             if cached:
-                cached_path = Path(cached["path"]) if isinstance(cached, dict) else Path(cached)
-                if cached_path.exists():
-                    is_pinned = cached.get("pinned", False) if isinstance(cached, dict) else False
-                    logger.debug(f"Using {'pinned' if is_pinned else 'cached'} log file for target {target_id}: {cached_path.name}")
-                    return cached_path
+                is_pinned = cached.get("pinned", False) if isinstance(cached, dict) else False
+                if is_pinned:
+                    cached_path = Path(cached["path"]) if isinstance(cached, dict) else Path(cached)
+                    if cached_path.exists():
+                        logger.debug(f"Using pinned log file for target {target_id}: {cached_path.name}")
+                        return cached_path
 
-        # Determine which pane to check
-        # target_id format is "window:pane" (e.g., "0:0")
-        # tmux target format is "session:window.pane" (e.g., "claude:0.0")
-        if target_id:
-            parts = target_id.split(':')
-            if len(parts) == 2:
-                pane_target = f"{session_name}:{parts[0]}.{parts[1]}"
-            else:
-                pane_target = f"{session_name}:{target_id}"
-        else:
-            pane_target = session_name
+        # For non-pinned: ALWAYS use the most recently modified file
+        # This is simpler and more reliable than complex process detection
+        newest_file = max(jsonl_files, key=lambda f: f.stat().st_mtime)
+        logger.info(f"Using newest log file: {newest_file.name} (mtime-based)")
+        return newest_file
 
-        def fallback(reason="unknown"):
-            """Return most recently modified file."""
-            jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-            logger.debug(f"Detection fallback ({reason}): using {jsonl_files[0].name}")
-            return jsonl_files[0]
-
-        try:
-            # Get PID of the shell in the target pane
-            result = subprocess.run(
-                ["tmux", "list-panes", "-t", pane_target, "-F", "#{pane_pid}"],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode != 0:
-                logger.debug(f"Could not get pane PID for {pane_target}")
-                return fallback("no pane PID")
-
-            pane_pid = result.stdout.strip().split('\n')[0]
-            if not pane_pid:
-                return fallback("empty pane PID")
-
-            # Find Claude process (direct child named 'claude')
-            result = subprocess.run(
-                ["pgrep", "-P", pane_pid, "-x", "claude"],
-                capture_output=True, text=True, timeout=2
-            )
-            if result.returncode != 0 or not result.stdout.strip():
-                logger.debug(f"No claude process found under pane PID {pane_pid}")
-                return fallback("no claude process")
-
-            claude_pid = result.stdout.strip().split('\n')[0]
-
-            # Get Claude process start time (in seconds since boot)
-            stat_path = Path(f"/proc/{claude_pid}/stat")
-            if not stat_path.exists():
-                return fallback()
-
-            stat_content = stat_path.read_text()
-            # Field 22 is starttime (in clock ticks since boot)
-            # Format: pid (comm) state ... field22 ...
-            # Need to handle comm field which may contain spaces/parens
-            # Find the last ')' and parse from there
-            last_paren = stat_content.rfind(')')
-            if last_paren == -1:
-                return fallback()
-            fields_after_comm = stat_content[last_paren + 2:].split()
-            if len(fields_after_comm) < 20:
-                return fallback()
-            starttime_ticks = int(fields_after_comm[19])  # 22nd field, 0-indexed after comm
-
-            # Get system boot time and clock ticks per second
-            with open('/proc/stat') as f:
-                for line in f:
-                    if line.startswith('btime '):
-                        boot_time = int(line.split()[1])
-                        break
-                else:
-                    return fallback()
-
-            clock_ticks = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
-            process_start_unix = boot_time + (starttime_ticks / clock_ticks)
-
-            logger.debug(f"Detection: Claude PID {claude_pid} for target {target_id}, process_start={process_start_unix}")
-
-            # Strategy A: Check debug files to find the session UUID
-            # Debug files in ~/.claude/debug/ have the same UUID as log files
-            # The first line timestamp should match the process start time
-            debug_dir = Path.home() / ".claude" / "debug"
-            if debug_dir.exists():
-                from datetime import datetime
-                debug_files = [f for f in debug_dir.glob("*.txt") if f.name != "latest"]
-                for debug_file in debug_files:
-                    try:
-                        # Read first line to get debug session start time
-                        with open(debug_file, 'r') as f:
-                            first_line = f.readline().strip()
-                            if not first_line:
-                                continue
-                            # Format: "2026-01-24T19:35:38.660Z [DEBUG] ..."
-                            ts_str = first_line.split(' ')[0]
-                            ts_str = ts_str.replace('Z', '+00:00')
-                            dt = datetime.fromisoformat(ts_str)
-                            debug_start_unix = dt.timestamp()
-
-                            # Check if debug file start matches process start (within 5 seconds)
-                            diff = abs(debug_start_unix - process_start_unix)
-                            if diff < 5:
-                                session_uuid = debug_file.stem
-                                matching_log = claude_projects_dir / f"{session_uuid}.jsonl"
-                                if matching_log.exists():
-                                    if target_id:
-                                        app.state.target_log_mapping[target_id] = {"path": str(matching_log), "pinned": False}
-                                    logger.info(f"Matched log file via debug for target {target_id}: {matching_log.name} (diff={diff:.1f}s)")
-                                    return matching_log
-                    except Exception as e:
-                        logger.debug(f"Error checking debug file {debug_file.name}: {e}")
-                        continue
-
-            # Strategy B: Find log file whose first entry timestamp is closest to process start
-            best_match = None
-            best_diff = float('inf')
-
-            for log_file in jsonl_files:
-                try:
-                    # Read first line to get session start timestamp
-                    with open(log_file, 'r') as f:
-                        first_line = f.readline().strip()
-                        if not first_line:
-                            continue
-                        entry = json.loads(first_line)
-                        # Timestamp may be nested in snapshot object
-                        ts_str = entry.get('timestamp', '')
-                        if not ts_str and 'snapshot' in entry:
-                            ts_str = entry['snapshot'].get('timestamp', '')
-                        if not ts_str:
-                            continue
-                        # Parse ISO timestamp (format: "2026-01-24T10:54:56.123Z")
-                        from datetime import datetime
-                        ts_str = ts_str.replace('Z', '+00:00')
-                        dt = datetime.fromisoformat(ts_str)
-                        log_start_unix = dt.timestamp()
-
-                        diff = abs(log_start_unix - process_start_unix)
-                        logger.debug(f"Log {log_file.name}: start={log_start_unix}, diff={diff}s")
-
-                        if diff < best_diff:
-                            best_diff = diff
-                            best_match = log_file
-                except Exception as e:
-                    logger.debug(f"Error parsing log file {log_file.name}: {e}")
-                    continue
-
-            # Accept match if within 60 seconds of process start
-            if best_match and best_diff < 60:
-                if target_id:
-                    app.state.target_log_mapping[target_id] = {"path": str(best_match), "pinned": False}
-                logger.info(f"Matched log file for target {target_id}: {best_match.name} (diff={best_diff:.1f}s)")
-                return best_match
-
-            logger.debug(f"No close timestamp match found (best diff: {best_diff}s)")
-
-            # Fallback strategy: Find file that's been modified recently
-            # If the target's Claude process is active, its log should have recent modifications
-            import time
-            now = time.time()
-            recent_threshold = 300  # 5 minutes
-
-            # Sort by modification time
-            jsonl_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-
-            for log_file in jsonl_files:
-                mtime = log_file.stat().st_mtime
-                age = now - mtime
-                if age < recent_threshold:
-                    # This file was modified recently - likely belongs to an active session
-                    # If we haven't assigned this file to another target, use it
-                    already_assigned = any(
-                        (v.get("path") if isinstance(v, dict) else v) == str(log_file)
-                        for k, v in app.state.target_log_mapping.items()
-                        if k != target_id
-                    )
-                    if not already_assigned:
-                        if target_id:
-                            app.state.target_log_mapping[target_id] = {"path": str(log_file), "pinned": False}
-                        logger.info(f"Assigned recent log file to target {target_id}: {log_file.name} (age={age:.0f}s)")
-                        return log_file
-
-        except Exception as e:
-            logger.debug(f"Target log detection failed: {e}")
-
-        return fallback()
-
+    # NOTE: Legacy process-based detection code removed in favor of simple mtime approach.
+    # The complex detection (matching Claude process to log file via timestamps) was unreliable,
+    # especially after plan mode transitions. Simple mtime-based selection is more robust.
     @app.get("/api/log")
     async def get_log(
         token: Optional[str] = Query(None),

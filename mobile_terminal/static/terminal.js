@@ -123,6 +123,11 @@ let activeTarget = null;         // Currently selected target pane ID (e.g., "0:
 let expectedRepoPath = null;     // Expected repo path from config
 let targetLocked = true;         // Lock mode (true = locked, false = follow active pane)
 
+// Pending prompt state (for questions/confirmations)
+let pendingPrompt = null;        // { id, kind, text, choices, answered, sentChoice }
+let dismissedPrompts = new Set(); // Prompt IDs user dismissed without answering
+let promptBanner = null;         // DOM reference for sticky banner
+
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
     controlBarsContainer = document.getElementById('controlBarsContainer');
@@ -194,12 +199,27 @@ function initDOMElements() {
     queuePauseBtn = document.getElementById('queuePauseBtn');
     queueSendNext = document.getElementById('queueSendNext');
     queueFlush = document.getElementById('queueFlush');
+    // New window modal elements
+    newWindowModal = document.getElementById('newWindowModal');
+    newWindowClose = document.getElementById('newWindowClose');
+    newWindowRepo = document.getElementById('newWindowRepo');
+    newWindowName = document.getElementById('newWindowName');
+    newWindowAutoStart = document.getElementById('newWindowAutoStart');
+    newWindowCancel = document.getElementById('newWindowCancel');
+    newWindowCreate = document.getElementById('newWindowCreate');
+    // Prompt banner element
+    promptBanner = document.getElementById('promptBanner');
 }
 
 // Additional DOM elements
 let terminalBlock, activePromptContent, quickResponses;
 let queueList, queueCount, queueBadge, queueTabBadge;
 let queuePauseBtn, queueSendNext, queueFlush;
+let newWindowModal, newWindowClose, newWindowRepo, newWindowName;
+let newWindowAutoStart, newWindowCancel, newWindowCreate;
+
+// Available repos for new window creation
+let availableRepos = [];
 
 /**
  * Initialize the terminal
@@ -1264,8 +1284,8 @@ async function switchRepo(session) {
         populateRepoDropdown();
 
         // Clear terminal and log content immediately (don't show old session's output)
-        if (term) {
-            term.clear();
+        if (terminal) {
+            terminal.clear();
         }
         if (logContent) {
             logContent.innerHTML = '<div class="loading">Switching session...</div>';
@@ -1456,24 +1476,35 @@ function renderTargetDropdown() {
         empty.className = 'target-option';
         empty.textContent = 'No panes found';
         targetDropdown.appendChild(empty);
-        return;
+    } else {
+        targets.forEach((target) => {
+            const opt = document.createElement('button');
+            const isActive = target.id === activeTarget;
+            opt.className = 'target-option' + (isActive ? ' active' : '');
+
+            const shortPath = target.cwd.replace(/^\/home\/[^/]+/, '~');
+
+            opt.innerHTML = `
+                <span class="target-project">${target.project}</span>
+                <span class="target-pane-info">${target.window_name || ''} • ${target.pane_id}</span>
+                <span class="target-path">${shortPath}</span>
+            `;
+            opt.addEventListener('click', () => selectTarget(target.id));
+            targetDropdown.appendChild(opt);
+        });
     }
 
-    targets.forEach((target) => {
-        const opt = document.createElement('button');
-        const isActive = target.id === activeTarget;
-        opt.className = 'target-option' + (isActive ? ' active' : '');
-
-        const shortPath = target.cwd.replace(/^\/home\/[^/]+/, '~');
-
-        opt.innerHTML = `
-            <span class="target-project">${target.project}</span>
-            <span class="target-pane-info">${target.window_name || ''} • ${target.pane_id}</span>
-            <span class="target-path">${shortPath}</span>
-        `;
-        opt.addEventListener('click', () => selectTarget(target.id));
-        targetDropdown.appendChild(opt);
-    });
+    // Add "+ New Window" option if repos are configured
+    if (config && config.repos && config.repos.length > 0) {
+        const newWindowOpt = document.createElement('button');
+        newWindowOpt.className = 'target-option new-window';
+        newWindowOpt.innerHTML = '<span class="target-project">+ New Window in Repo...</span>';
+        newWindowOpt.addEventListener('click', () => {
+            targetDropdown.classList.add('hidden');
+            showNewWindowModal();
+        });
+        targetDropdown.appendChild(newWindowOpt);
+    }
 }
 
 /**
@@ -1537,6 +1568,165 @@ async function cdToRepoRoot() {
     } catch (error) {
         console.error('Error sending cd command:', error);
     }
+}
+
+/**
+ * Load available repos for new window creation
+ */
+async function loadRepos() {
+    try {
+        const response = await fetch(`/api/repos?token=${token}`);
+        if (!response.ok) return;
+        const data = await response.json();
+        availableRepos = data.repos || [];
+    } catch (error) {
+        console.error('Error loading repos:', error);
+    }
+}
+
+/**
+ * Show the new window modal
+ */
+async function showNewWindowModal() {
+    // Load repos if not already loaded
+    if (availableRepos.length === 0) {
+        await loadRepos();
+    }
+
+    // Populate repo selector
+    newWindowRepo.innerHTML = '';
+    if (availableRepos.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'No repos configured';
+        newWindowRepo.appendChild(opt);
+        newWindowCreate.disabled = true;
+    } else {
+        availableRepos.forEach((repo, index) => {
+            const opt = document.createElement('option');
+            opt.value = repo.label;
+            opt.textContent = repo.label + (repo.exists ? '' : ' (path missing)');
+            opt.disabled = !repo.exists;
+            newWindowRepo.appendChild(opt);
+        });
+        newWindowCreate.disabled = false;
+    }
+
+    // Clear previous values
+    newWindowName.value = '';
+    newWindowAutoStart.checked = false;
+
+    // Show modal
+    newWindowModal.classList.remove('hidden');
+}
+
+/**
+ * Hide the new window modal
+ */
+function hideNewWindowModal() {
+    newWindowModal.classList.add('hidden');
+}
+
+/**
+ * Create a new window in the selected repo
+ */
+async function createNewWindow() {
+    const repoLabel = newWindowRepo.value;
+    const windowName = newWindowName.value.trim();
+    const autoStartClaude = newWindowAutoStart.checked;
+
+    if (!repoLabel) {
+        showToast('Please select a repo', 'error');
+        return;
+    }
+
+    // Disable create button while processing
+    newWindowCreate.disabled = true;
+    newWindowCreate.textContent = 'Creating...';
+
+    try {
+        const response = await fetch(`/api/window/new?token=${token}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                repo_label: repoLabel,
+                window_name: windowName,
+                auto_start_claude: autoStartClaude
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            showToast(data.error || 'Failed to create window', 'error');
+            return;
+        }
+
+        showToast(`Created window: ${data.window_name}`, 'success');
+        hideNewWindowModal();
+
+        // Try to select the new target with retries
+        const newTargetId = data.target_id;
+        const newPaneId = data.pane_id;
+
+        // Retry logic: target may not appear immediately
+        let retries = 5;
+        const trySelectTarget = async () => {
+            await loadTargets();
+
+            // Check if the new target exists in the list
+            const found = targets.find(t => t.id === newTargetId || t.pane_id === newPaneId);
+            if (found) {
+                await selectTarget(found.id);
+                return true;
+            }
+
+            if (retries > 0) {
+                retries--;
+                setTimeout(trySelectTarget, 500);
+                return false;
+            }
+
+            showToast('Window created but could not auto-select', 'warning');
+            return false;
+        };
+
+        // Start retry loop after a short delay
+        setTimeout(trySelectTarget, 300);
+
+    } catch (error) {
+        console.error('Error creating window:', error);
+        showToast('Error creating window', 'error');
+    } finally {
+        newWindowCreate.disabled = false;
+        newWindowCreate.textContent = 'Create';
+    }
+}
+
+/**
+ * Setup new window modal event listeners
+ */
+function setupNewWindowModal() {
+    if (!newWindowModal) return;
+
+    newWindowClose.addEventListener('click', hideNewWindowModal);
+    newWindowCancel.addEventListener('click', hideNewWindowModal);
+    newWindowCreate.addEventListener('click', createNewWindow);
+
+    // Close on backdrop click
+    newWindowModal.addEventListener('click', (e) => {
+        if (e.target === newWindowModal) {
+            hideNewWindowModal();
+        }
+    });
+
+    // Submit on Enter in name field
+    newWindowName.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            createNewWindow();
+        }
+    });
 }
 
 /**
@@ -3690,6 +3880,295 @@ function renderLogEntries(content, cached = false) {
 
     // Scroll to bottom (render is only called when user is at bottom or explicitly requested)
     logContent.scrollTop = logContent.scrollHeight;
+
+    // Extract pending prompts from last assistant message
+    extractPendingPrompt(content);
+}
+
+/**
+ * Extract pending prompt from log content
+ * Detects AskUserQuestion tool calls (❓ prefix) and heuristic patterns
+ * Updates pendingPrompt state and shows/hides banner
+ */
+function extractPendingPrompt(content) {
+    // Check if last message is from assistant (not user)
+    const blocks = content.split('\n\n').filter(b => b.trim());
+    if (blocks.length === 0) {
+        clearPendingPrompt();
+        return;
+    }
+
+    // Find the last assistant turn (scan backwards until we hit a user message)
+    let lastAssistantBlocks = [];
+    for (let i = blocks.length - 1; i >= 0; i--) {
+        const trimmed = blocks[i].trim();
+        if (trimmed.startsWith('$ ')) {
+            // Hit user message, stop
+            break;
+        }
+        lastAssistantBlocks.unshift(trimmed);
+    }
+
+    if (lastAssistantBlocks.length === 0) {
+        clearPendingPrompt();
+        return;
+    }
+
+    // Join last assistant blocks and check for question markers
+    const assistantContent = lastAssistantBlocks.join('\n\n');
+
+    // Method 1: Structured detection (AskUserQuestion tool) - marked with ❓
+    const questionMatch = assistantContent.match(/❓\s*(.+?)(?=\n\n|\n  \d\.|\n$|$)/s);
+    if (questionMatch) {
+        const questionText = questionMatch[1].trim();
+
+        // Extract numbered options that follow
+        const optionsMatch = assistantContent.match(/❓[^\n]*\n((?:\s+\d+\..+\n?)+)/);
+        let choices = [];
+        if (optionsMatch) {
+            const optionLines = optionsMatch[1].trim().split('\n');
+            for (const line of optionLines) {
+                const optMatch = line.match(/^\s*(\d+)\.\s*(.+?)(?:\s+-\s+(.+))?$/);
+                if (optMatch) {
+                    choices.push({
+                        num: optMatch[1],
+                        label: optMatch[2].trim(),
+                        description: optMatch[3] ? optMatch[3].trim() : ''
+                    });
+                }
+            }
+        }
+
+        // Generate unique ID from question content
+        const promptId = simpleHash(questionText + choices.map(c => c.label).join(''));
+
+        // Check if this prompt was already dismissed
+        if (dismissedPrompts.has(promptId)) {
+            clearPendingPrompt();
+            return;
+        }
+
+        // Check if this is the same prompt we already have
+        if (pendingPrompt && pendingPrompt.id === promptId) {
+            // Same prompt, don't update (preserve answered state)
+            return;
+        }
+
+        pendingPrompt = {
+            id: promptId,
+            kind: 'question',
+            text: questionText,
+            choices: choices,
+            answered: false,
+            sentChoice: null
+        };
+
+        showPromptBanner();
+        return;
+    }
+
+    // Method 2: Heuristic detection - look for numbered lists at end of message
+    // Pattern: text followed by numbered options (1. ... 2. ... etc)
+    const numberedListMatch = assistantContent.match(/([^\n]+(?:\n[^\n]+)*)\n\n?((?:\d+\.\s+.+\n?)+)$/);
+    if (numberedListMatch) {
+        const questionText = numberedListMatch[1].trim();
+        const optionsText = numberedListMatch[2].trim();
+
+        // Parse numbered options
+        const choices = [];
+        const optionLines = optionsText.split('\n');
+        for (const line of optionLines) {
+            const optMatch = line.match(/^(\d+)\.\s+(.+)$/);
+            if (optMatch) {
+                choices.push({
+                    num: optMatch[1],
+                    label: optMatch[2].trim(),
+                    description: ''
+                });
+            }
+        }
+
+        // Only treat as prompt if we have 2-6 options (likely a real question)
+        if (choices.length >= 2 && choices.length <= 6) {
+            const promptId = simpleHash(questionText + choices.map(c => c.label).join(''));
+
+            if (dismissedPrompts.has(promptId)) {
+                clearPendingPrompt();
+                return;
+            }
+
+            if (pendingPrompt && pendingPrompt.id === promptId) {
+                return;  // Same prompt
+            }
+
+            pendingPrompt = {
+                id: promptId,
+                kind: 'heuristic',
+                text: questionText,
+                choices: choices,
+                answered: false,
+                sentChoice: null
+            };
+
+            showPromptBanner();
+            return;
+        }
+    }
+
+    // Method 3: Confirmation pattern detection
+    // Look for "yes/no", "y/n", "continue?", "proceed?" patterns
+    const lastBlock = lastAssistantBlocks[lastAssistantBlocks.length - 1];
+    const confirmPatterns = [
+        /\b(proceed|continue|confirm|approve|accept)\s*\?/i,
+        /\(y\/n\)/i,
+        /\(yes\/no\)/i,
+        /would you like (me )?to\b/i,
+        /should I\b/i,
+        /do you want (me )?to\b/i
+    ];
+
+    for (const pattern of confirmPatterns) {
+        if (pattern.test(lastBlock)) {
+            const promptId = simpleHash(lastBlock);
+
+            if (dismissedPrompts.has(promptId)) {
+                clearPendingPrompt();
+                return;
+            }
+
+            if (pendingPrompt && pendingPrompt.id === promptId) {
+                return;
+            }
+
+            pendingPrompt = {
+                id: promptId,
+                kind: 'confirmation',
+                text: lastBlock.slice(0, 200),  // Truncate for display
+                choices: [
+                    { num: '1', label: 'Yes', description: '' },
+                    { num: '2', label: 'No', description: '' }
+                ],
+                answered: false,
+                sentChoice: null
+            };
+
+            showPromptBanner();
+            return;
+        }
+    }
+
+    // No pending prompt detected
+    clearPendingPrompt();
+}
+
+/**
+ * Clear pending prompt state and hide banner
+ */
+function clearPendingPrompt() {
+    pendingPrompt = null;
+    hidePromptBanner();
+}
+
+/**
+ * Show sticky prompt banner at bottom of log view
+ */
+function showPromptBanner() {
+    if (!promptBanner || !pendingPrompt) return;
+
+    const { text, choices, kind, answered, sentChoice } = pendingPrompt;
+
+    // Build choice buttons HTML
+    let choicesHtml = '';
+    for (const choice of choices) {
+        const isSelected = answered && sentChoice === choice.num;
+        const btnClass = isSelected ? 'prompt-choice-btn selected' : 'prompt-choice-btn';
+        const title = choice.description || choice.label;
+        choicesHtml += `<button class="${btnClass}" data-choice="${choice.num}" title="${escapeHtml(title)}">${escapeHtml(choice.label)}</button>`;
+    }
+
+    // Add dismiss button
+    choicesHtml += `<button class="prompt-dismiss-btn" title="Dismiss (won't ask again)">✕</button>`;
+
+    // Truncate text for banner
+    const displayText = text.length > 100 ? text.slice(0, 100) + '...' : text;
+
+    promptBanner.innerHTML = `
+        <div class="prompt-banner-content">
+            <span class="prompt-banner-icon">${kind === 'confirmation' ? '⚠️' : '❓'}</span>
+            <span class="prompt-banner-text">${escapeHtml(displayText)}</span>
+        </div>
+        <div class="prompt-banner-choices">${choicesHtml}</div>
+    `;
+
+    promptBanner.classList.add('visible');
+
+    // Wire up event handlers
+    setupPromptBannerHandlers();
+}
+
+/**
+ * Hide prompt banner
+ */
+function hidePromptBanner() {
+    if (!promptBanner) return;
+    promptBanner.classList.remove('visible');
+}
+
+/**
+ * Setup event handlers for prompt banner buttons
+ */
+function setupPromptBannerHandlers() {
+    if (!promptBanner) return;
+
+    // Choice buttons
+    promptBanner.querySelectorAll('.prompt-choice-btn').forEach(btn => {
+        btn.onclick = () => {
+            const choice = btn.dataset.choice;
+            sendPromptChoice(choice);
+        };
+    });
+
+    // Dismiss button
+    const dismissBtn = promptBanner.querySelector('.prompt-dismiss-btn');
+    if (dismissBtn) {
+        dismissBtn.onclick = () => {
+            if (pendingPrompt) {
+                dismissedPrompts.add(pendingPrompt.id);
+            }
+            clearPendingPrompt();
+        };
+    }
+}
+
+/**
+ * Send user's choice to terminal (idempotent)
+ */
+function sendPromptChoice(choice) {
+    if (!pendingPrompt) return;
+
+    // Idempotency: don't re-send if already sent this choice
+    if (pendingPrompt.answered && pendingPrompt.sentChoice === choice) {
+        return;
+    }
+
+    // Mark as answered before sending
+    pendingPrompt.answered = true;
+    pendingPrompt.sentChoice = choice;
+
+    // Update banner UI to show selected state
+    showPromptBanner();
+
+    // Send to terminal
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        sendInput(choice + '\r');
+        setTerminalBusy(true);
+        captureSnapshot('user_send');
+    }
+
+    // Clear prompt after short delay (let the answer process)
+    setTimeout(() => {
+        clearPendingPrompt();
+    }, 1500);
 }
 
 /**
@@ -5034,9 +5513,9 @@ function setupHybridView() {
                         const data = await response.json();
                         if (data.error) {
                             showToast(`Refresh failed: ${data.error}`, 'error');
-                        } else if (data.content && term) {
-                            term.clear();
-                            term.write(data.content);
+                        } else if (data.content && terminal) {
+                            terminal.clear();
+                            terminal.write(data.content);
                             showToast('Terminal refreshed', 'success');
                         } else if (!data.content) {
                             showToast('No terminal content', 'info');
@@ -7589,6 +8068,15 @@ function showToast(message, type = 'success', duration = 3000) {
 document.addEventListener('DOMContentLoaded', async () => {
     initDOMElements();
 
+    // Configure marked.js to not convert single newlines to <br>
+    // This prevents garbled output when terminal content has hard line breaks
+    if (typeof marked !== 'undefined') {
+        marked.setOptions({
+            breaks: false,  // Don't convert \n to <br>
+            gfm: true,      // Keep GitHub Flavored Markdown for other features
+        });
+    }
+
     // Initialize terminal (but it starts hidden in terminal tab)
     initTerminal();
 
@@ -7604,6 +8092,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupClipboard();
     setupRepoDropdown();
     setupTargetSelector();
+    setupNewWindowModal();
     setupFileSearch();
     setupJumpToBottom();
     setupCopyButton();
