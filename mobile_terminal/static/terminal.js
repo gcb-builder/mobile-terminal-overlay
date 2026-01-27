@@ -5000,32 +5000,195 @@ function setupDocsButton() {
         }
     }
 
-    // Search tab
-    function loadSearchTab() {
+    // Search/Files tab - shows file tree with search
+    let fileTreeCache = null;
+    let expandedDirs = new Set();
+
+    async function loadSearchTab() {
+        docsModalBody.innerHTML = '<div class="docs-loading">Loading files...</div>';
+
+        // Fetch file tree
+        try {
+            const resp = await fetch(`/api/files/tree?token=${token}`);
+            if (!resp.ok) throw new Error('Failed to load files');
+            fileTreeCache = await resp.json();
+        } catch (e) {
+            docsModalBody.innerHTML = `<div class="docs-error">Error: ${e.message}</div>`;
+            return;
+        }
+
+        renderFileTree('');
+    }
+
+    function renderFileTree(filter) {
+        if (!fileTreeCache) return;
+
+        const { files, directories, root_name } = fileTreeCache;
+        const filterLower = filter.toLowerCase();
+
+        // Filter files if search query
+        const filteredFiles = filter
+            ? files.filter(f => f.toLowerCase().includes(filterLower))
+            : files;
+
+        // Build tree structure
+        const tree = {};
+        filteredFiles.forEach(filePath => {
+            const parts = filePath.split('/');
+            let current = tree;
+            for (let i = 0; i < parts.length - 1; i++) {
+                const dir = parts[i];
+                if (!current[dir]) current[dir] = { __files: [], __dirs: {} };
+                current = current[dir].__dirs;
+            }
+            const fileName = parts[parts.length - 1];
+            const dirPath = parts.slice(0, -1).join('/');
+            if (!current.__root) current.__root = { __files: [], __dirs: {} };
+            // Add to appropriate level
+            if (parts.length === 1) {
+                if (!tree.__files) tree.__files = [];
+                tree.__files.push(fileName);
+            } else {
+                let node = tree;
+                for (let i = 0; i < parts.length - 1; i++) {
+                    if (!node[parts[i]]) node[parts[i]] = { __files: [], __dirs: {} };
+                    if (i === parts.length - 2) {
+                        node[parts[i]].__files.push(fileName);
+                    } else {
+                        node = node[parts[i]].__dirs;
+                    }
+                }
+            }
+        });
+
+        // Render HTML
         docsModalBody.innerHTML = `
             <div class="docs-search-container">
+                <div class="search-repo-path">${root_name || 'Repository'}</div>
                 <input type="text" id="docsSearchInput" class="docs-search-input"
-                       placeholder="Search files..." autocomplete="off" autocorrect="off"
-                       autocapitalize="off" spellcheck="false">
-                <div id="docsSearchResults" class="docs-search-results">
-                    <div class="search-empty">Type to search files...</div>
+                       placeholder="Filter files..." autocomplete="off" autocorrect="off"
+                       autocapitalize="off" spellcheck="false" value="${filter}">
+                <div id="fileTreeContainer" class="file-tree-container">
+                    ${renderTreeNode(tree, '', 0, filter)}
                 </div>
+                <div class="file-count">${filteredFiles.length} files</div>
             </div>
         `;
 
+        // Wire up search
         const searchInput = document.getElementById('docsSearchInput');
-        const searchResults = document.getElementById('docsSearchResults');
-
-        // Focus input
-        setTimeout(() => searchInput.focus(), 100);
-
-        // Debounced search on input
         searchInput.addEventListener('input', (e) => {
             clearTimeout(searchDebounceTimer);
             searchDebounceTimer = setTimeout(() => {
-                performSearchInDocs(e.target.value, searchResults, docsModal);
-            }, 200);
+                renderFileTree(e.target.value);
+                // Restore focus and cursor position
+                const input = document.getElementById('docsSearchInput');
+                if (input) {
+                    input.focus();
+                    input.setSelectionRange(input.value.length, input.value.length);
+                }
+            }, 150);
         });
+
+        // Wire up folder toggles and file clicks
+        document.querySelectorAll('.tree-folder').forEach(el => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const path = el.dataset.path;
+                if (expandedDirs.has(path)) {
+                    expandedDirs.delete(path);
+                } else {
+                    expandedDirs.add(path);
+                }
+                renderFileTree(filter);
+            });
+        });
+
+        document.querySelectorAll('.tree-file').forEach(el => {
+            el.addEventListener('click', () => {
+                const filePath = el.dataset.path;
+                openFileInModal(filePath);
+            });
+        });
+    }
+
+    function renderTreeNode(node, path, depth, filter) {
+        let html = '';
+        const indent = depth * 16;
+
+        // Render directories first
+        const dirs = Object.keys(node).filter(k => !k.startsWith('__')).sort();
+        dirs.forEach(dir => {
+            const dirPath = path ? `${path}/${dir}` : dir;
+            const isExpanded = expandedDirs.has(dirPath) || filter.length > 0;
+            const icon = isExpanded ? '&#9660;' : '&#9654;';
+            const childNode = node[dir];
+
+            html += `<div class="tree-folder" data-path="${dirPath}" style="padding-left:${indent}px">
+                <span class="tree-icon">${icon}</span>
+                <span class="tree-name">${dir}/</span>
+            </div>`;
+
+            if (isExpanded) {
+                html += renderTreeNode(childNode.__dirs || {}, dirPath, depth + 1, filter);
+                // Render files in this directory
+                (childNode.__files || []).sort().forEach(file => {
+                    html += `<div class="tree-file" data-path="${dirPath}/${file}" style="padding-left:${indent + 16}px">
+                        <span class="tree-icon">&#128196;</span>
+                        <span class="tree-name">${file}</span>
+                    </div>`;
+                });
+            }
+        });
+
+        // Render root-level files
+        if (node.__files) {
+            node.__files.sort().forEach(file => {
+                const filePath = path ? `${path}/${file}` : file;
+                html += `<div class="tree-file" data-path="${filePath}" style="padding-left:${indent}px">
+                    <span class="tree-icon">&#128196;</span>
+                    <span class="tree-name">${file}</span>
+                </div>`;
+            });
+        }
+
+        return html;
+    }
+
+    async function openFileInModal(filePath) {
+        docsModalBody.innerHTML = '<div class="docs-loading">Loading file...</div>';
+        try {
+            const resp = await fetch(`/api/file?path=${encodeURIComponent(filePath)}&token=${token}`);
+            if (!resp.ok) throw new Error('Failed to load file');
+            const data = await resp.json();
+
+            const ext = filePath.split('.').pop().toLowerCase();
+            const isMarkdown = ['md', 'markdown'].includes(ext);
+
+            docsModalBody.innerHTML = `
+                <div class="file-viewer">
+                    <div class="file-viewer-header">
+                        <button class="file-back-btn" id="fileBackBtn">&larr; Back</button>
+                        <span class="file-viewer-path">${filePath}</span>
+                    </div>
+                    <div class="file-viewer-content ${isMarkdown ? 'markdown-content' : 'code-content'}">
+                        ${isMarkdown ? marked.parse(data.content || '') : `<pre>${escapeHtml(data.content || '')}</pre>`}
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('fileBackBtn').addEventListener('click', () => {
+                loadSearchTab();
+            });
+        } catch (e) {
+            docsModalBody.innerHTML = `<div class="docs-error">Error: ${e.message}</div>`;
+        }
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     // Plans tab with dropdown selector

@@ -1151,6 +1151,26 @@ def create_app(config: Config) -> FastAPI:
         app.state.active_target = target_id
         app.state.audit_log.log("target_select", {"target": target_id})
 
+        # Actually switch tmux to the selected pane so the PTY shows it
+        try:
+            # Parse target_id (format: "window:pane" like "0:1")
+            parts = target_id.split(":")
+            if len(parts) == 2:
+                window_idx, pane_idx = parts
+                # Switch to the window first
+                subprocess.run(
+                    ["tmux", "select-window", "-t", f"{session}:{window_idx}"],
+                    capture_output=True, timeout=2
+                )
+                # Then select the pane within that window
+                subprocess.run(
+                    ["tmux", "select-pane", "-t", f"{session}:{target_id}"],
+                    capture_output=True, timeout=2
+                )
+                logger.info(f"Switched tmux to pane {target_id}")
+        except Exception as e:
+            logger.warning(f"Failed to switch tmux pane: {e}")
+
         # Start background file monitor to detect which log file this target uses
         asyncio.create_task(monitor_log_file_for_target(target_id))
 
@@ -1354,6 +1374,62 @@ def create_app(config: Config) -> FastAPI:
             "current_session": app.state.current_session
         }
 
+    @app.get("/api/files/tree")
+    async def list_files_tree(token: Optional[str] = Query(None)):
+        """
+        List all files in repo as a flat list grouped by directory.
+        Uses git ls-files to respect .gitignore.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return {"files": [], "directories": [], "root": None}
+
+        try:
+            # Get list of tracked files using git ls-files
+            result = subprocess.run(
+                ["git", "ls-files"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=repo_path,
+            )
+
+            if result.returncode != 0:
+                # Fallback: list files excluding .git
+                result = subprocess.run(
+                    ["find", ".", "-type", "f", "-not", "-path", "./.git/*"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    cwd=repo_path,
+                )
+                files = sorted([f.lstrip("./") for f in result.stdout.strip().split("\n") if f])
+            else:
+                files = sorted(result.stdout.strip().split("\n"))
+
+            # Build directory structure
+            directories = set()
+            for f in files:
+                parts = f.split("/")
+                for i in range(1, len(parts)):
+                    directories.add("/".join(parts[:i]))
+
+            return {
+                "files": files,
+                "directories": sorted(directories),
+                "root": str(repo_path),
+                "root_name": repo_path.name
+            }
+
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Listing timeout"}, status_code=504)
+        except Exception as e:
+            logger.error(f"File tree error: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.get("/api/files/search")
     async def search_files(q: str = Query(""), token: Optional[str] = Query(None), limit: int = Query(20)):
         """
@@ -1398,6 +1474,40 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": "Search timeout"}, status_code=504)
         except Exception as e:
             logger.error(f"File search error: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/file")
+    async def read_file(path: str = Query(...), token: Optional[str] = Query(None)):
+        """
+        Read a file from the current repo.
+        Path is relative to repo root.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo path"}, status_code=400)
+
+        # Sanitize path - no parent traversal
+        if ".." in path or path.startswith("/"):
+            return JSONResponse({"error": "Invalid path"}, status_code=400)
+
+        file_path = repo_path / path
+        if not file_path.exists():
+            return JSONResponse({"error": "File not found"}, status_code=404)
+
+        if not file_path.is_file():
+            return JSONResponse({"error": "Not a file"}, status_code=400)
+
+        # Limit file size (1MB)
+        if file_path.stat().st_size > 1024 * 1024:
+            return JSONResponse({"error": "File too large"}, status_code=413)
+
+        try:
+            content = file_path.read_text(errors="replace")
+            return {"path": path, "content": content}
+        except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/api/transcript")
@@ -1482,11 +1592,14 @@ def create_app(config: Config) -> FastAPI:
             import subprocess
             session_name = app.state.current_session
 
+            # Use active target pane if set, otherwise fall back to session
+            target = app.state.active_target if app.state.active_target else session_name
+
             # Resize tmux pane if dimensions provided (fixes garbled output)
             resized = False
             if cols and rows:
                 resize_result = subprocess.run(
-                    ["tmux", "resize-pane", "-t", session_name, "-x", str(cols), "-y", str(rows)],
+                    ["tmux", "resize-pane", "-t", target, "-x", str(cols), "-y", str(rows)],
                     capture_output=True,
                     text=True,
                     timeout=2,
@@ -1494,12 +1607,12 @@ def create_app(config: Config) -> FastAPI:
                 if resize_result.returncode != 0:
                     logger.warning(f"tmux resize-pane failed: {resize_result.stderr}")
                 else:
-                    logger.info(f"Resized tmux pane to {cols}x{rows}")
+                    logger.info(f"Resized tmux pane {target} to {cols}x{rows}")
                     resized = True
 
                     # Send Ctrl+L to force screen redraw after resize
                     subprocess.run(
-                        ["tmux", "send-keys", "-t", session_name, "C-l"],
+                        ["tmux", "send-keys", "-t", target, "C-l"],
                         capture_output=True,
                         timeout=1,
                     )
@@ -1510,7 +1623,7 @@ def create_app(config: Config) -> FastAPI:
             # Capture visible area only (not scrollback) to avoid stale wrapped content
             # Use -S - to start from visible area, or omit -S for default
             result = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-t", session_name],
+                ["tmux", "capture-pane", "-p", "-t", target],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -1520,7 +1633,7 @@ def create_app(config: Config) -> FastAPI:
                     {"error": f"tmux capture-pane failed: {result.stderr}"},
                     status_code=500,
                 )
-            return {"content": result.stdout, "session": session_name}
+            return {"content": result.stdout, "session": session_name, "target": target}
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "Refresh timeout"}, status_code=504)
         except Exception as e:
@@ -5258,9 +5371,11 @@ Only the top 1–3 risks worth caring about.
         try:
             import subprocess
             session_name = app.state.current_session
+            # Use active target pane if set, otherwise fall back to session
+            target = app.state.active_target if app.state.active_target else session_name
             # Use -e to preserve escape sequences for proper rendering
             result = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-e", "-S", "-5000", "-t", session_name],
+                ["tmux", "capture-pane", "-p", "-e", "-S", "-5000", "-t", target],
                 capture_output=True,
                 text=True,
                 timeout=5,

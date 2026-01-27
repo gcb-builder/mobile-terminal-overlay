@@ -3160,6 +3160,18 @@ html, body {
     gap: 12px;
 }
 
+.search-repo-path {
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 6px 10px;
+    background: var(--bg-tertiary);
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .docs-search-input {
     width: 100%;
     padding: 12px 14px;
@@ -3184,6 +3196,118 @@ html, body {
     overflow-y: auto;
     display: flex;
     flex-direction: column;
+}
+
+/* File tree */
+.file-tree-container {
+    flex: 1;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+    font-size: 13px;
+}
+
+.tree-folder,
+.tree-file {
+    display: flex;
+    align-items: center;
+    padding: 8px 10px;
+    cursor: pointer;
+    border-radius: 4px;
+    min-height: 36px;
+}
+
+.tree-folder:hover,
+.tree-file:hover {
+    background: var(--bg-tertiary);
+}
+
+.tree-folder {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.tree-file {
+    color: var(--text-primary);
+}
+
+.tree-icon {
+    width: 20px;
+    flex-shrink: 0;
+    font-size: 11px;
+    opacity: 0.7;
+}
+
+.tree-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+    padding: 8px 0;
+    text-align: center;
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
+}
+
+/* File viewer */
+.file-viewer {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.file-viewer-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+}
+
+.file-back-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.file-back-btn:hover {
+    background: var(--bg-secondary);
+}
+
+.file-viewer-path {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-viewer-content {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.file-viewer-content.code-content pre {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.file-viewer-content.markdown-content {
+    font-size: 14px;
+    line-height: 1.6;
 }
 
 /* Docs sessions list */
