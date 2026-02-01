@@ -491,11 +491,11 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=205"></script>
+    <script src="/static/terminal.js?v=208"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js?v=72', { scope: '/' })
+            navigator.serviceWorker.register('/sw.js?v=80', { scope: '/' })
                 .catch(err => console.log('SW registration failed:', err));
         }
     </script>

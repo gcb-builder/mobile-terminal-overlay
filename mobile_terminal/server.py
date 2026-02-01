@@ -1824,9 +1824,9 @@ def create_app(config: Config) -> FastAPI:
         # Priority 1: Explicit target selection
         if app.state.active_target:
             try:
+                target = get_tmux_target(session_name, app.state.active_target)
                 result = subprocess.run(
-                    ["tmux", "display-message", "-p", "-t",
-                     f"{session_name}:{app.state.active_target}",
+                    ["tmux", "display-message", "-p", "-t", target,
                      "#{pane_current_path}"],
                     capture_output=True, text=True, timeout=2
                 )
@@ -2369,6 +2369,7 @@ def create_app(config: Config) -> FastAPI:
         token: Optional[str] = Query(None),
         limit: int = Query(200),
         session_id: Optional[str] = Query(None, description="Specific session UUID to view (for Docs browser)"),
+        pane_id: Optional[str] = Query(None, description="Pane ID (window:pane) to get log for, avoids race with global state"),
     ):
         """
         Get the Claude conversation log from ~/.claude/projects/.
@@ -2377,6 +2378,7 @@ def create_app(config: Config) -> FastAPI:
         Falls back to cached log if source is cleared (e.g., after /clear).
 
         If session_id is provided, loads that specific session log (read-only view).
+        If pane_id is provided, uses that pane's cwd for repo path (avoids multi-tab race condition).
         """
         import json
         import re
@@ -2384,7 +2386,31 @@ def create_app(config: Config) -> FastAPI:
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        repo_path = get_current_repo_path()
+        # Use pane_id if provided (avoids race condition with multi-tab)
+        # Otherwise fall back to global active_target
+        target_id = pane_id or app.state.active_target
+
+        # Get repo path - either from explicit pane cwd or global state
+        if pane_id:
+            # Get cwd directly from tmux for this pane
+            try:
+                parts = pane_id.split(":")
+                if len(parts) == 2:
+                    result = subprocess.run(
+                        ["tmux", "display-message", "-t", f"{app.state.current_session}:{parts[0]}.{parts[1]}", "-p", "#{pane_current_path}"],
+                        capture_output=True, text=True, timeout=2
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        repo_path = Path(result.stdout.strip())
+                    else:
+                        repo_path = get_current_repo_path()
+                else:
+                    repo_path = get_current_repo_path()
+            except Exception:
+                repo_path = get_current_repo_path()
+        else:
+            repo_path = get_current_repo_path()
+
         if not repo_path:
             return {"exists": False, "content": "", "error": "No repo path found"}
 
@@ -2422,7 +2448,7 @@ def create_app(config: Config) -> FastAPI:
                 return {"exists": False, "content": "", "error": f"Session not found: {session_id}"}
         else:
             # Detect which log file belongs to this target
-            log_file = detect_target_log_file(app.state.active_target, app.state.current_session, claude_projects_dir)
+            log_file = detect_target_log_file(target_id, app.state.current_session, claude_projects_dir)
             if not log_file:
                 return return_cached()
 
@@ -2507,22 +2533,26 @@ def create_app(config: Config) -> FastAPI:
             else:
                 truncated = False
 
-            content = '\n\n'.join(conversation)
-
             # If log was cleared (empty), fall back to cache
-            if not content.strip():
+            if not conversation:
                 return return_cached()
 
-            # Redact potential secrets
-            content = re.sub(r'(sk-[a-zA-Z0-9]{20,})', '[REDACTED_API_KEY]', content)
-            content = re.sub(r'(ghp_[a-zA-Z0-9]{36,})', '[REDACTED_GITHUB_TOKEN]', content)
+            # Redact potential secrets from each message
+            def redact_secrets(text):
+                text = re.sub(r'(sk-[a-zA-Z0-9]{20,})', '[REDACTED_API_KEY]', text)
+                text = re.sub(r'(ghp_[a-zA-Z0-9]{36,})', '[REDACTED_GITHUB_TOKEN]', text)
+                return text
+
+            messages = [redact_secrets(msg) for msg in conversation]
+            content = '\n\n'.join(messages)
 
             # Cache the content for persistence across /clear
             write_log_cache(project_id, content)
 
             return {
                 "exists": True,
-                "content": content,
+                "content": content,  # For backward compatibility
+                "messages": messages,  # New: array of messages (preserves code blocks)
                 "path": str(log_file),
                 "session": app.state.current_session,
                 "modified": log_file.stat().st_mtime,
@@ -5485,6 +5515,8 @@ Only the top 1–3 risks worth caring about.
             return
 
         # Send history snapshot using tmux capture-pane with escape sequences
+        # IMPORTANT: Always send clear screen to trigger client overlay hide, even on failure
+        history_text = ""
         try:
             import subprocess
             session_name = app.state.current_session
@@ -5497,15 +5529,18 @@ Only the top 1–3 risks worth caring about.
                 text=True,
                 timeout=5,
             )
-            if result.returncode == 0 and result.stdout:
-                history_text = result.stdout
+            if result.returncode == 0:
+                history_text = result.stdout or ""
                 logger.info(f"Sending {len(history_text)} chars of capture-pane history")
-                # Clear screen and move cursor home before sending history
-                await websocket.send_text("\x1b[2J\x1b[H" + history_text)
+            else:
+                logger.warning(f"tmux capture-pane failed (rc={result.returncode}): {result.stderr}")
         except subprocess.TimeoutExpired:
             logger.warning("tmux capture-pane timed out")
         except Exception as e:
             logger.error(f"Error getting capture-pane history: {e}")
+
+        # Always send clear screen + cursor home to trigger client overlay hide
+        await websocket.send_text("\x1b[2J\x1b[H" + history_text)
 
         # Track PTY death for proper close code
         pty_died = False

@@ -8,6 +8,10 @@ repos:
   - label: "mobile-terminal"
     path: "/home/gcbbuilder/~dev/mobile-terminal-overlay/mobile-terminal-overlay"
     session: "claude"
+  - label: "geo-cv"
+    path: "/home/gcbbuilder/~dev/geo-cv/geo-cv"
+    session: "claude"
+    startup_command: "claude"
 
 # Role prefixes (from CLAUDE.md discovery)
 role_prefixes: []

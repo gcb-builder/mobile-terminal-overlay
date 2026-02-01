@@ -1162,7 +1162,7 @@ async function loadConfig() {
             return;
         }
         config = await response.json();
-        populateUI();
+        await populateUI();  // await to ensure targets are loaded before log view
     } catch (error) {
         console.error('Error loading config:', error);
     }
@@ -1186,7 +1186,7 @@ async function loadCurrentSession() {
 /**
  * Populate UI from config
  */
-function populateUI() {
+async function populateUI() {
     if (!config) return;
 
     // Populate role buttons - send directly to terminal
@@ -1211,7 +1211,8 @@ function populateUI() {
     populateRepoDropdown();
 
     // Load target selector (for multi-pane sessions)
-    loadTargets();
+    // IMPORTANT: await to ensure activeTarget is set before log view loads
+    await loadTargets();
 
     // Start Claude health polling if document is visible
     if (document.visibilityState === 'visible') {
@@ -1624,6 +1625,7 @@ async function selectTarget(targetId) {
         if (response.status === 409) {
             // Target no longer exists
             showToast('Target pane not found', 'error');
+            statusOverlay.classList.add('hidden');
             loadTargets();
             return;
         }
@@ -1652,6 +1654,15 @@ async function selectTarget(targetId) {
             intentionalClose = false;  // Allow auto-reconnect
             socket.close();
             // Reconnect will happen automatically via onclose handler
+        } else {
+            // Socket not open - need to connect directly
+            console.log(`Target switch to ${targetId}, socket not open - connecting directly`);
+            // Cancel any pending reconnect timers
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            connect();
         }
 
         // Start health polling if visible
@@ -1671,6 +1682,9 @@ async function selectTarget(targetId) {
     } catch (error) {
         console.error('Error selecting target:', error);
         showToast('Failed to select target', 'error');
+        // Hide overlay on error
+        const statusOverlay = document.getElementById('statusOverlay');
+        if (statusOverlay) statusOverlay.classList.add('hidden');
     }
 }
 
@@ -3511,6 +3525,10 @@ function switchToLogView() {
         controlBarsContainer.classList.remove('hidden');
     }
     updateTabIndicator();
+    // Reset scroll state - user should start at bottom when switching to log view
+    userAtBottom = true;
+    pendingLogContent = null;
+    hideNewContentIndicator();
     // Reset and load log content fresh
     logLoaded = false;
     loadLogContent();
@@ -3561,7 +3579,9 @@ async function fetchTranscript() {
 
     try {
         // Use new /api/log endpoint for Claude conversation logs
-        const response = await fetch(`/api/log?token=${token}`);
+        // Include pane_id to avoid race condition with other tabs
+        const paneParam = activeTarget ? `&pane_id=${encodeURIComponent(activeTarget)}` : '';
+        const response = await fetch(`/api/log?token=${token}${paneParam}`);
         if (!response.ok) {
             throw new Error('Failed to fetch log');
         }
@@ -3963,23 +3983,37 @@ async function loadLogContent() {
     // Only load once per session (refresh button can reload)
     if (logLoaded) return;
 
-    logContent.innerHTML = '<div class="log-loading">Loading context...</div>';
+    // Only show loading indicator if content area is empty (initial load)
+    // On subsequent switches, keep existing content visible while fetching
+    const hasContent = logContent.children.length > 0 &&
+                       !logContent.querySelector('.log-loading') &&
+                       !logContent.querySelector('.log-empty') &&
+                       !logContent.querySelector('.log-error');
+    if (!hasContent) {
+        logContent.innerHTML = '<div class="log-loading">Loading context...</div>';
+    }
 
     try {
-        const response = await fetch(`/api/log?token=${token}`);
+        // Include pane_id to avoid race condition with other tabs
+        const paneParam = activeTarget ? `&pane_id=${encodeURIComponent(activeTarget)}` : '';
+        const response = await fetch(`/api/log?token=${token}${paneParam}`);
         if (!response.ok) {
             throw new Error('Failed to fetch log');
         }
         const data = await response.json();
 
-        if (!data.exists || !data.content) {
-            logContent.innerHTML = '<div class="log-empty">No recent activity</div>';
+        if (!data.exists || (!data.content && !data.messages)) {
+            // Only show empty message if we don't have existing content
+            if (!hasContent) {
+                logContent.innerHTML = '<div class="log-empty">No recent activity</div>';
+            }
             logLoaded = true;
             return;
         }
 
         // Parse and render log entries
-        renderLogEntries(data.content, data.cached);
+        // Use messages array if available (preserves code blocks), fall back to content string
+        renderLogEntries(data.messages || data.content, data.cached);
         logLoaded = true;
 
         // Update last modified time for change detection
@@ -3990,24 +4024,32 @@ async function loadLogContent() {
 
     } catch (error) {
         console.error('Log error:', error);
-        logContent.innerHTML = `<div class="log-error">Error loading log: ${error.message}</div>`;
+        // Only show error if we don't have existing content
+        if (!hasContent) {
+            logContent.innerHTML = `<div class="log-error">Error loading log: ${error.message}</div>`;
+        }
     }
 }
 
 /**
  * Render log entries in the hybrid view log section
  * Parses conversation format: $ user | • Tool: | assistant text
- * @param {string} content - The log content to render
+ * @param {string|string[]} contentOrMessages - Either content string or array of messages
  * @param {boolean} cached - Whether content is from cache (after /clear)
  */
-function renderLogEntries(content, cached = false) {
+function renderLogEntries(contentOrMessages, cached = false) {
     if (!logContent) return;
 
-    // Strip ANSI codes
-    content = stripAnsi(content);
-
-    // Split by double newline to get message blocks
-    const blocks = content.split('\n\n').filter(b => b.trim());
+    // Handle both array (new API) and string (legacy/cache) input
+    let blocks;
+    if (Array.isArray(contentOrMessages)) {
+        // New format: array of messages (preserves code blocks with empty lines)
+        blocks = contentOrMessages.map(msg => stripAnsi(msg).trim()).filter(b => b);
+    } else {
+        // Legacy format: string split by double newline
+        const content = stripAnsi(contentOrMessages);
+        blocks = content.split('\n\n').filter(b => b.trim());
+    }
 
     if (blocks.length === 0) {
         logContent.innerHTML = '<div class="log-empty">No recent activity</div>';
@@ -4114,14 +4156,21 @@ function renderLogEntries(content, cached = false) {
     // Schedule plan file preview detection
     schedulePlanPreviews();
 
-    // Extract and show suggestions from last message
-    extractAndShowSuggestions(content);
+    // Convert to string for extraction functions
+    const contentString = Array.isArray(contentOrMessages)
+        ? contentOrMessages.join('\n\n')
+        : (contentOrMessages || '');
 
-    // Scroll to bottom (render is only called when user is at bottom or explicitly requested)
-    logContent.scrollTop = logContent.scrollHeight;
+    // Extract and show suggestions from last message
+    extractAndShowSuggestions(contentString);
+
+    // Scroll to bottom after DOM updates (use requestAnimationFrame to ensure layout is complete)
+    requestAnimationFrame(() => {
+        logContent.scrollTop = logContent.scrollHeight;
+    });
 
     // Extract pending prompts from last assistant message
-    extractPendingPrompt(content);
+    extractPendingPrompt(contentString);
 }
 
 /**
@@ -5748,30 +5797,35 @@ async function refreshLogContent() {
     if (!logContent) return;
 
     try {
-        const response = await fetch(`/api/log?token=${token}`);
+        // Include pane_id to avoid race condition with other tabs
+        const paneParam = activeTarget ? `&pane_id=${encodeURIComponent(activeTarget)}` : '';
+        const response = await fetch(`/api/log?token=${token}${paneParam}`);
         if (!response.ok) return;
 
         const data = await response.json();
-        if (!data.exists || !data.content) return;
+        if (!data.exists || (!data.content && !data.messages)) return;
 
         // Only re-render if content actually changed (check both mtime and hash)
-        const contentHash = simpleHash(data.content);
+        const contentHash = simpleHash(data.content || '');
         if (data.modified === lastLogModified && contentHash === lastLogContentHash) {
             return;  // No change, skip re-render
         }
         lastLogModified = data.modified || 0;
         lastLogContentHash = contentHash;
 
+        // Use messages array if available (preserves code blocks)
+        const logData = data.messages || data.content;
+
         // If user is NOT at bottom, don't re-render (would cause scroll jump)
         // Just store the content and show indicator
         if (!userAtBottom) {
-            pendingLogContent = data.content;
+            pendingLogContent = logData;
             showNewContentIndicator();
             return;
         }
 
         // User is at bottom - safe to re-render
-        renderLogEntries(data.content);
+        renderLogEntries(logData);
         pendingLogContent = null;
 
         // Load suggestions from terminal capture (not JSONL log)
