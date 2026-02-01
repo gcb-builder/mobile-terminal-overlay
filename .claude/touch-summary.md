@@ -875,3 +875,24 @@ Unified single button showing "repo • pane" format with sectioned dropdown:
 
 **Commits:**
 - (pending)
+
+---
+
+## 2026-01-31: Target Switch Fixes and Loading Indicators
+
+**Goal:** Fix target switching issues causing wrong terminal content and unresponsive UI
+
+**Files Changed:**
+- `mobile_terminal/server.py` - Added get_tmux_target() helper, fixed select-pane format, added switch verification, PTY/WebSocket cleanup on switch
+- `mobile_terminal/static/terminal.js` - Added loading overlay states, fixed nav label to match by cwd
+- `mobile_terminal/static/index.html` - Updated SW version reference to v72
+- `mobile_terminal/static/sw.js` - Bumped cache to v72
+
+**Key Fixes:**
+- tmux target format: was `session:window:pane`, now `session:window.pane`
+- Nav label: was matching first repo by session, now matches by target cwd
+- Added loading feedback during target switch delays
+
+**Risks/Follow-ups:**
+- Target switch verification sometimes fails (non-blocking, proceeds anyway)
+- Service worker caching may require hard refresh on mobile

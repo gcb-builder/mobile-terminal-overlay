@@ -4,7 +4,33 @@
 
 - **Branch:** master
 - **Stage:** Production-ready with PWA support + V2 features
-- **Last Updated:** 2026-01-26
+- **Last Updated:** 2026-01-31
+
+## Recent: Target Switch Fixes and Loading Indicators (2026-01-31)
+
+### Root Cause Fix
+- **Bug:** tmux target format was wrong - used `session:window:pane` instead of `session:window.pane`
+- **Fix:** Added `get_tmux_target()` helper to convert `window:pane` (e.g., "2:0") to tmux format `session:window.pane` (e.g., "claude:2.0")
+- Fixed in: select-pane, capture-pane, WebSocket handler, /api/refresh, /api/terminal/capture
+
+### Target Switch Improvements
+- `/api/target/select` now blocking with verification (polls up to 500ms)
+- Closes PTY and kills child process on target switch
+- Closes WebSocket with code 4003 to force client reconnect
+- Added `target_epoch` counter for cache invalidation
+- Clears output buffer on switch
+
+### Loading Indicators
+- "Switching to target..." - shown immediately when user taps target
+- "Connected, loading..." - shown when WebSocket connects
+- "Loading terminal..." - shown after hello handshake
+- Overlay hides when terminal data arrives
+
+### Nav Label Fix
+- **Bug:** Label always showed first matching repo (by session), ignoring which pane was selected
+- **Fix:** Now matches repos by target's `cwd` path, falls back to directory name if no repo matches
+
+---
 
 ## Recent: Startup Automation, Session Recovery, Layout Hints (2026-01-26)
 
