@@ -816,6 +816,23 @@ def set_cached_capture(session: str, pane_id: str, lines: int, result: dict):
         del _capture_cache[k]
 
 
+def get_tmux_target(session_name: str, active_target: str) -> str:
+    """
+    Convert active_target to tmux target format.
+
+    active_target is stored as "window:pane" (e.g., "2:0")
+    tmux expects "session:window.pane" (e.g., "claude:2.0")
+
+    Returns session_name if active_target is None or invalid.
+    """
+    if not active_target:
+        return session_name
+    parts = active_target.split(":")
+    if len(parts) == 2:
+        return f"{session_name}:{parts[0]}.{parts[1]}"
+    return session_name
+
+
 def get_plan_links() -> dict:
     """Read plan-links.json, return empty dict if not found."""
     if PLAN_LINKS_FILE.exists():
@@ -955,6 +972,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.active_target = None  # Explicit target pane (window:pane like "0:0")
     app.state.target_log_mapping = {}  # Maps pane_id -> {"path": str, "pinned": bool}
     app.state.last_restart_time = 0.0  # Timestamp of last server restart request
+    app.state.target_epoch = 0  # Incremented on each target switch for cache invalidation
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -1152,6 +1170,7 @@ def create_app(config: Config) -> FastAPI:
         app.state.audit_log.log("target_select", {"target": target_id})
 
         # Actually switch tmux to the selected pane so the PTY shows it
+        switch_verified = False
         try:
             # Parse target_id (format: "window:pane" like "0:1")
             parts = target_id.split(":")
@@ -1162,19 +1181,71 @@ def create_app(config: Config) -> FastAPI:
                     ["tmux", "select-window", "-t", f"{session}:{window_idx}"],
                     capture_output=True, timeout=2
                 )
-                # Then select the pane within that window
+                # Then select the pane within that window (format: session:window.pane)
                 subprocess.run(
-                    ["tmux", "select-pane", "-t", f"{session}:{target_id}"],
+                    ["tmux", "select-pane", "-t", f"{session}:{window_idx}.{pane_idx}"],
                     capture_output=True, timeout=2
                 )
                 logger.info(f"Switched tmux to pane {target_id}")
+
+                # Verify switch completed (poll up to 500ms)
+                for _ in range(10):
+                    verify_result = subprocess.run(
+                        ["tmux", "display-message", "-t", session, "-p", "#{window_index}:#{pane_index}"],
+                        capture_output=True, text=True, timeout=2
+                    )
+                    if verify_result.returncode == 0 and verify_result.stdout.strip() == target_id:
+                        switch_verified = True
+                        break
+                    await asyncio.sleep(0.05)
+
+                if not switch_verified:
+                    logger.warning(f"Target switch verification failed for {target_id}")
         except Exception as e:
             logger.warning(f"Failed to switch tmux pane: {e}")
+
+        # Increment epoch and clear output buffer on verified switch
+        app.state.target_epoch += 1
+        app.state.output_buffer.clear()
+        logger.info(f"Target switch epoch={app.state.target_epoch}, buffer cleared")
+
+        # Close existing PTY so next WebSocket connection respawns with new target
+        # This ensures the PTY attaches to the newly active pane
+        if app.state.master_fd is not None:
+            try:
+                os.close(app.state.master_fd)
+                logger.info("Closed PTY for target switch")
+            except Exception as e:
+                logger.warning(f"Error closing PTY: {e}")
+            app.state.master_fd = None
+
+        # Kill child process
+        if app.state.child_pid is not None:
+            try:
+                os.kill(app.state.child_pid, signal.SIGTERM)
+            except Exception:
+                pass
+            app.state.child_pid = None
+
+        # Close active WebSocket to force client reconnect
+        if app.state.active_websocket is not None:
+            try:
+                await app.state.active_websocket.close(code=4003, reason="Target switched")
+                logger.info("Closed WebSocket for target switch")
+            except Exception:
+                pass
+            app.state.active_websocket = None
 
         # Start background file monitor to detect which log file this target uses
         asyncio.create_task(monitor_log_file_for_target(target_id))
 
-        return {"success": True, "active": target_id}
+        return {
+            "success": True,
+            "active": target_id,
+            "pane_id": target_id,
+            "epoch": app.state.target_epoch,
+            "verified": switch_verified
+        }
 
     @app.post("/api/window/new")
     async def create_new_window(
@@ -1247,11 +1318,12 @@ def create_app(config: Config) -> FastAPI:
         path = str(repo_path.resolve())
 
         try:
-            # Create tmux window: tmux new-window -t {session} -n {name} -c {path} -P -F "format"
+            # Create tmux window: -t session: (trailing colon) targets the session
+            # and lets tmux auto-assign the next available window index
             result = subprocess.run(
                 [
                     "tmux", "new-window",
-                    "-t", session,
+                    "-t", f"{session}:",
                     "-n", final_name,
                     "-c", path,
                     "-P", "-F", "#{window_index}:#{pane_index}|#{pane_id}"
@@ -1269,11 +1341,14 @@ def create_app(config: Config) -> FastAPI:
                 return JSONResponse({"error": error_msg}, status_code=500)
 
             output = result.stdout.strip()
+            stderr = result.stderr.strip()
             if "|" not in output:
-                return JSONResponse({
-                    "error": "Unexpected tmux output",
-                    "output": output
-                }, status_code=500)
+                if not output:
+                    error_msg = f"tmux new-window returned empty output (stderr: {stderr or 'none'})"
+                else:
+                    error_msg = f"tmux output missing expected format: '{output}'"
+                logger.error(f"Window creation failed: {error_msg}")
+                return JSONResponse({"error": error_msg}, status_code=500)
 
             parts = output.split("|")
             target_id = parts[0]  # "window_index:pane_index"
@@ -1593,7 +1668,7 @@ def create_app(config: Config) -> FastAPI:
             session_name = app.state.current_session
 
             # Use active target pane if set, otherwise fall back to session
-            target = app.state.active_target if app.state.active_target else session_name
+            target = get_tmux_target(session_name, app.state.active_target)
 
             # Resize tmux pane if dimensions provided (fixes garbled output)
             resized = False
@@ -2732,8 +2807,15 @@ def create_app(config: Config) -> FastAPI:
         if not target_session:
             return {"content": "", "error": "No session"}
 
-        pane_id = str(pane)
-        target = f"{target_session}:{0}.{pane}"
+        # Use active_target if no explicit pane provided, otherwise use params
+        if app.state.active_target and pane == 0 and session is None:
+            # Use active target - convert "window:pane" to "session:window.pane"
+            target = get_tmux_target(target_session, app.state.active_target)
+            pane_id = app.state.active_target
+        else:
+            # Use explicit params
+            pane_id = str(pane)
+            target = f"{target_session}:{0}.{pane}"
 
         # Check cache first
         cached = get_cached_capture(target_session, pane_id, lines)
@@ -2849,9 +2931,11 @@ def create_app(config: Config) -> FastAPI:
         if include_terminal:
             session = app.state.current_session
             if session:
+                # Use active target pane if set, otherwise fall back to session default
+                target = get_tmux_target(session, app.state.active_target)
                 try:
                     result = subprocess.run(
-                        ["tmux", "capture-pane", "-t", session, "-p", "-S", f"-{terminal_lines}"],
+                        ["tmux", "capture-pane", "-t", target, "-p", "-S", f"-{terminal_lines}"],
                         capture_output=True,
                         text=True,
                         timeout=5,
@@ -3435,8 +3519,10 @@ Only the top 1–3 risks worth caring about.
 
         # Capture terminal (last 50 lines)
         try:
+            # Use active target pane if set, otherwise fall back to session default
+            target = get_tmux_target(session, app.state.active_target)
             result = subprocess.run(
-                ["tmux", "capture-pane", "-t", session, "-p", "-S", "-50"],
+                ["tmux", "capture-pane", "-t", target, "-p", "-S", "-50"],
                 capture_output=True, text=True, timeout=5
             )
             terminal_text = result.stdout if result.returncode == 0 else ""
@@ -3860,9 +3946,11 @@ Only the top 1–3 risks worth caring about.
         Returns:
           - pane_alive: Whether the pane exists
           - shell_pid: PID of the shell in the pane
-          - claude_running: Whether claude-code process is found
+          - claude_running: Whether claude-code process is found (in pane)
           - claude_pid: PID of claude-code if running
           - pane_title: Current pane title
+          - activity_detected: Whether log file was recently modified (within 30s)
+          - message: Human-readable status message
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
@@ -3873,6 +3961,8 @@ Only the top 1–3 risks worth caring about.
             "claude_running": False,
             "claude_pid": None,
             "pane_title": None,
+            "activity_detected": False,
+            "message": "Claude not running",
         }
 
         try:
@@ -3944,6 +4034,32 @@ Only the top 1–3 risks worth caring about.
             logger.warning(f"Timeout checking claude health for pane {pane_id}")
         except Exception as e:
             logger.error(f"Error checking claude health: {e}")
+
+        # Check for recent log activity (even if Claude not in pane)
+        try:
+            repo_path = get_current_repo_path()
+            if repo_path:
+                project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-").lstrip("-")
+                claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
+                if claude_projects_dir.exists():
+                    jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
+                    if jsonl_files:
+                        # Check most recent file modification time
+                        most_recent = max(jsonl_files, key=lambda f: f.stat().st_mtime)
+                        mtime = most_recent.stat().st_mtime
+                        age_seconds = time.time() - mtime
+                        if age_seconds < 30:
+                            result["activity_detected"] = True
+        except Exception as e:
+            logger.debug(f"Error checking log activity: {e}")
+
+        # Set human-readable message
+        if result["claude_running"]:
+            result["message"] = "Claude running in pane"
+        elif result["activity_detected"]:
+            result["message"] = "Claude not in pane (activity in logs)"
+        else:
+            result["message"] = "Claude not running"
 
         return result
 
@@ -5269,7 +5385,8 @@ Only the top 1–3 risks worth caring about.
         }
 
         tmux_key = key_map.get(key.lower(), key)
-        target = f"{session}:0.0"
+        # Use active target pane if set, otherwise default to 0.0
+        target = get_tmux_target(session, app.state.active_target)
 
         try:
             result = subprocess.run(
@@ -5372,7 +5489,7 @@ Only the top 1–3 risks worth caring about.
             import subprocess
             session_name = app.state.current_session
             # Use active target pane if set, otherwise fall back to session
-            target = app.state.active_target if app.state.active_target else session_name
+            target = get_tmux_target(session_name, app.state.active_target)
             # Use -e to preserve escape sequences for proper rendering
             result = subprocess.run(
                 ["tmux", "capture-pane", "-p", "-e", "-S", "-5000", "-t", target],

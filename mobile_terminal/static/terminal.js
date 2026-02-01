@@ -853,12 +853,16 @@ function connect() {
         console.log('WebSocket connected');
         isConnecting = false;
 
-        // Cancel overlay timer and hide overlay (may not have shown yet due to grace period)
+        // Cancel overlay timer (but don't hide overlay yet - wait for terminal data)
         if (reconnectOverlayTimer) {
             clearTimeout(reconnectOverlayTimer);
             reconnectOverlayTimer = null;
         }
-        statusOverlay.classList.add('hidden');
+        // Update status to show connection established, waiting for data
+        const statusText = document.getElementById('statusText');
+        if (statusText && !statusOverlay.classList.contains('hidden')) {
+            statusText.textContent = 'Connected, loading...';
+        }
 
         // Reset reconnect state on successful connection
         reconnectDelay = INITIAL_RECONNECT_DELAY;
@@ -915,6 +919,11 @@ function connect() {
             event.data.arrayBuffer().then((buffer) => {
                 terminal.write(new Uint8Array(buffer));
                 updateLastActivity();
+                // Hide loading overlay when terminal data arrives
+                const statusOverlay = document.getElementById('statusOverlay');
+                if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
+                    statusOverlay.classList.add('hidden');
+                }
             });
         } else {
             // Check for JSON messages (pong, queue updates, server ping, hello, etc.)
@@ -929,6 +938,11 @@ function connect() {
                         if (helloTimer) {
                             clearTimeout(helloTimer);
                             helloTimer = null;
+                        }
+                        // Update status to show we're loading terminal content
+                        const statusText = document.getElementById('statusText');
+                        if (statusText) {
+                            statusText.textContent = 'Loading terminal...';
                         }
                         return;
                     }
@@ -953,6 +967,11 @@ function connect() {
             }
             terminal.write(event.data);
             updateLastActivity();
+            // Hide loading overlay when terminal data arrives
+            const statusOverlay = document.getElementById('statusOverlay');
+            if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
+                statusOverlay.classList.add('hidden');
+            }
         }
     };
 
@@ -988,18 +1007,15 @@ function connect() {
         }
 
         if (event.code === 4003) {
-            // Repo switch in progress - switch-repo handles reconnect
-            // But add fallback in case switch-repo fails
-            statusText.textContent = 'Switching repository...';
+            // Target/repo switch - reconnect immediately to get new PTY
+            console.log('Target switch: server closed connection, reconnecting...');
+            statusText.textContent = 'Switching target...';
             statusOverlay.classList.remove('hidden');
-            // Fallback reconnect after 5s if switch-repo doesn't reconnect
+            // Reconnect quickly after target switch
+            reconnectDelay = INITIAL_RECONNECT_DELAY;
             reconnectTimer = setTimeout(() => {
-                if (!socket || socket.readyState !== WebSocket.OPEN) {
-                    console.log('Repo switch fallback: reconnecting');
-                    reconnectDelay = INITIAL_RECONNECT_DELAY;
-                    connect();
-                }
-            }, 5000);
+                connect();
+            }, 300);
             return;
         }
 
@@ -1207,27 +1223,41 @@ function populateUI() {
  * Update navigation label to show "repo • pane" format
  */
 function updateNavLabel() {
-    // Get current repo label
-    let repoName = config?.session_name || 'Terminal';
-    if (config && config.repos) {
-        const currentRepo = config.repos.find(r => r.session === currentSession);
-        if (currentRepo) {
-            repoName = currentRepo.label;
-        }
-    }
-
-    // Get current pane info
+    // Get current target info
+    let currentTarget = null;
     let paneInfo = '';
+
     if (activeTarget && targets.length > 0) {
-        const target = targets.find(t => t.id === activeTarget);
-        if (target) {
-            paneInfo = target.window_name || activeTarget;
+        currentTarget = targets.find(t => t.id === activeTarget);
+        if (currentTarget) {
+            paneInfo = currentTarget.window_name || activeTarget;
         } else {
             paneInfo = activeTarget;
         }
     } else if (targets.length === 1) {
-        const target = targets[0];
-        paneInfo = target.window_name || target.id;
+        currentTarget = targets[0];
+        paneInfo = currentTarget.window_name || currentTarget.id;
+    }
+
+    // Get repo label - match based on target's cwd, not just session
+    let repoName = config?.session_name || 'Terminal';
+    if (config && config.repos && currentTarget) {
+        // Find repo whose path matches the target's cwd
+        const matchingRepo = config.repos.find(r =>
+            currentTarget.cwd && currentTarget.cwd.startsWith(r.path)
+        );
+        if (matchingRepo) {
+            repoName = matchingRepo.label;
+        } else {
+            // No matching repo - use the directory name from cwd
+            repoName = currentTarget.project || currentTarget.cwd?.split('/').pop() || repoName;
+        }
+    } else if (config && config.repos) {
+        // Fallback: use first repo matching session
+        const currentRepo = config.repos.find(r => r.session === currentSession);
+        if (currentRepo) {
+            repoName = currentRepo.label;
+        }
     }
 
     // Combine: "repo • pane" or just "repo" if single pane with matching name
@@ -1578,6 +1608,14 @@ async function selectTarget(targetId) {
 
     if (targetId === activeTarget) return;
 
+    // Show loading immediately when user taps target
+    const statusOverlay = document.getElementById('statusOverlay');
+    const statusText = document.getElementById('statusText');
+    if (statusOverlay && statusText) {
+        statusText.textContent = 'Switching to target...';
+        statusOverlay.classList.remove('hidden');
+    }
+
     try {
         const response = await fetch(`/api/target/select?target_id=${encodeURIComponent(targetId)}&token=${token}`, {
             method: 'POST',
@@ -1592,6 +1630,7 @@ async function selectTarget(targetId) {
 
         if (!response.ok) throw new Error('Failed to select target');
 
+        const data = await response.json();
         activeTarget = targetId;
         localStorage.setItem('mto_active_target', targetId);
         updateNavLabel();
@@ -1601,6 +1640,20 @@ async function selectTarget(targetId) {
         claudeStartedAt = null;
         updateClaudeCrashBanner(false);
 
+        // === Hard context switch: clear terminal and force WebSocket reconnect ===
+        if (terminal) {
+            terminal.clear();
+            terminal.reset();
+        }
+
+        // Force WebSocket reconnect to get fresh capture-pane from new target
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            console.log(`Target switch to ${targetId} (epoch=${data.epoch}), forcing reconnect`);
+            intentionalClose = false;  // Allow auto-reconnect
+            socket.close();
+            // Reconnect will happen automatically via onclose handler
+        }
+
         // Start health polling if visible
         if (document.visibilityState === 'visible') {
             startClaudeHealthPolling();
@@ -1609,9 +1662,11 @@ async function selectTarget(targetId) {
         // Reload targets to check cwd mismatch
         await loadTargets();
 
-        // Refresh context-dependent views
-        refreshLogContent();
-        loadContextFile();
+        // Refresh context-dependent views after short delay (let reconnect establish)
+        setTimeout(() => {
+            refreshLogContent();
+            loadContextFile();
+        }, 300);
 
     } catch (error) {
         console.error('Error selecting target:', error);
