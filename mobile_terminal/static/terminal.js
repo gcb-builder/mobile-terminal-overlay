@@ -2038,6 +2038,7 @@ function setupNewWindowModal() {
 /**
  * Setup target selector event listeners
  * Note: Target button/dropdown are now unified into repo dropdown
+ * Returns a promise that resolves when saved target is restored (if any)
  */
 function setupTargetSelector() {
     // CWD mismatch banner buttons
@@ -2076,9 +2077,12 @@ function setupTargetSelector() {
     // Default to locked if not set
     targetLocked = savedLocked !== 'false';
 
+    // Return promise for saved target restoration (awaited before connect)
+    // This ensures tmux pane is synchronized before WebSocket connects
     if (savedTarget) {
-        selectTarget(savedTarget);
+        return selectTarget(savedTarget);
     }
+    return Promise.resolve();
 }
 
 /**
@@ -8713,7 +8717,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupViewportHandler();
     setupClipboard();
     setupRepoDropdown();
-    setupTargetSelector();
+    const targetPromise = setupTargetSelector();  // Returns promise for saved target sync
     setupNewWindowModal();
     // setupFileSearch removed - search now in docs modal
     setupJumpToBottom();
@@ -8747,6 +8751,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Load local queue and reconcile with server
     await reconcileQueue();
+
+    // Wait for saved target to sync before connecting
+    // This ensures tmux pane is switched and PTY will attach to correct pane
+    await targetPromise;
 
     connect();
 
