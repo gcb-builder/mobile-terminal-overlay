@@ -1553,11 +1553,9 @@ function setOutputMode(mode) {
     queuedBytes = 0;
     draining = false;
 
-    // Reset terminal when switching to full mode
-    if (mode === 'full' && terminal) {
-        terminal.reset();
-        console.log('[MODE] Terminal reset for fresh full-mode start');
-    }
+    // No terminal.reset() — SIGWINCH redraw from server will overwrite
+    // the screen with fresh content. Keeping old content visible avoids
+    // a blank flash during the round-trip.
 
     if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({

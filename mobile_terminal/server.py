@@ -6215,8 +6215,16 @@ Only the top 1–3 risks worth caring about.
                                         # a full tmux redraw at the correct terminal size.
                                         if new_mode == "full" and not connection_closed:
                                             pty_batch.clear()
-                                            pty_batch_flush_time = time.time()
-                                            logger.info("[MODE] Cleared PTY batch, awaiting client resize for redraw")
+                                            pty_batch_flush_time = 0
+                                            # Force tmux full redraw via SIGWINCH
+                                            # With flush_time=0, the PTY reader sends
+                                            # the redraw data immediately on first read
+                                            if app.state.child_pid:
+                                                try:
+                                                    os.kill(app.state.child_pid, signal.SIGWINCH)
+                                                except ProcessLookupError:
+                                                    pass
+                                            logger.info("[MODE] Cleared PTY batch, sent SIGWINCH for redraw")
                                 elif msg_type == "term_subscribe":
                                     # Legacy: treat as set_mode full
                                     client_mode = "full"
