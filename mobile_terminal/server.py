@@ -32,17 +32,100 @@ from typing import Dict, List, Optional
 from mobile_terminal.challenge import run_challenge, get_available_models, DEFAULT_MODEL
 
 
+# ANSI escape sequence pattern for stripping terminal formatting
+# Covers: CSI sequences, OSC sequences, character set selection, and other escapes
+_ANSI_ESCAPE_RE = re.compile(
+    r'\x1b\[[0-9;]*[A-Za-z]'  # CSI sequences (colors, cursor, etc.)
+    r'|\x1b\][^\x07]*\x07'     # OSC sequences (title, etc.)
+    r'|\x1b[PX^_][^\x1b]*\x1b\\\\'  # DCS/SOS/PM/APC sequences
+    r'|\x1b[\(\)][A-Z0-9]'     # Character set selection (e.g., \x1b(B)
+    r'|\x1b[=>]'               # Keypad modes
+    r'|\x1b[78]'               # Save/restore cursor
+    r'|\x1b[DME]'              # Line operations
+)
+
+
+def strip_ansi(text: str) -> str:
+    """Strip ANSI escape sequences from text for plain tail output."""
+    return _ANSI_ESCAPE_RE.sub('', text)
+
+
+def find_utf8_boundary(data: bytes, max_len: int) -> int:
+    """Find the last valid UTF-8 character boundary at or before max_len.
+
+    Avoids splitting multi-byte UTF-8 characters which causes garbled output.
+    Returns the safe cut position (may be less than max_len).
+    """
+    if max_len >= len(data):
+        return len(data)
+
+    # Start at max_len and scan backwards for a valid boundary
+    pos = max_len
+
+    # UTF-8 continuation bytes have pattern 10xxxxxx (0x80-0xBF)
+    # We need to find a byte that is NOT a continuation byte
+    while pos > 0 and pos > max_len - 4:  # UTF-8 chars are at most 4 bytes
+        byte = data[pos]
+        # Check if this is a continuation byte (10xxxxxx)
+        if (byte & 0xC0) != 0x80:
+            # This is either ASCII (0xxxxxxx) or a start byte (11xxxxxx)
+            # Safe to cut here
+            return pos
+        pos -= 1
+
+    # Fallback: couldn't find boundary, use max_len (rare edge case)
+    return max_len
+
+
+async def get_bounded_snapshot(session: str, active_target: str = None, max_bytes: int = 16000) -> str:
+    """Get bounded tmux capture-pane snapshot for mode switch catchup.
+
+    Returns screen content with ANSI (-e) for accurate rendering.
+    Auto-reduces line count if output exceeds max_bytes.
+    """
+    import subprocess
+
+    target = get_tmux_target(session, active_target) if active_target else session
+
+    # Start with 50 lines, reduce if too large
+    for lines in [50, 30, 20, 10]:
+        try:
+            result = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-e", "-S", f"-{lines}", "-t", target],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode == 0:
+                content = result.stdout or ""
+                if len(content) <= max_bytes:
+                    return content
+                # Too large, try fewer lines
+                continue
+            else:
+                return ""
+        except Exception:
+            return ""
+
+    # Fallback: return whatever we got, truncated
+    return content[:max_bytes] if content else ""
+
+
 class RingBuffer:
     """Thread-safe ring buffer for storing PTY output."""
 
     def __init__(self, max_size: int = 1024 * 1024):  # 1MB default
-        self._buffer = deque(maxlen=max_size)
+        self._max_size = max_size
+        self._buffer = bytearray()
         self._lock = threading.Lock()
 
     def write(self, data: bytes) -> None:
-        """Append data to buffer."""
+        """Append data to buffer, discarding oldest bytes if over capacity."""
         with self._lock:
             self._buffer.extend(data)
+            if len(self._buffer) > self._max_size:
+                excess = len(self._buffer) - self._max_size
+                del self._buffer[:excess]
 
     def read_all(self) -> bytes:
         """Read all buffered data without clearing."""
@@ -183,9 +266,12 @@ class GitOpLock:
 
     async def acquire(self, operation: str) -> bool:
         """Try to acquire lock for an operation. Returns False if already locked."""
-        if self._lock.locked():
+        try:
+            acquired = self._lock.acquire_nowait()
+        except RuntimeError:
             return False
-        await self._lock.acquire()
+        if not acquired:
+            return False
         self._current_op = operation
         return True
 
@@ -816,6 +902,36 @@ def set_cached_capture(session: str, pane_id: str, lines: int, result: dict):
         del _capture_cache[k]
 
 
+# Log API cache - caches parsed log content to avoid re-parsing on every request
+# Key: (project_id, pane_id), Value: (timestamp, file_mtime, result)
+_log_cache: dict = {}
+LOG_CACHE_TTL = 2.0  # 2 second TTL - log content changes slowly
+
+
+def get_cached_log(project_id: str, pane_id: Optional[str], file_mtime: float) -> Optional[dict]:
+    """Get cached log result if still valid and file hasn't changed."""
+    import time
+    key = (project_id, pane_id or "")
+    if key in _log_cache:
+        ts, cached_mtime, result = _log_cache[key]
+        # Valid if within TTL AND file hasn't been modified
+        if time.time() - ts < LOG_CACHE_TTL and cached_mtime == file_mtime:
+            return result
+    return None
+
+
+def set_cached_log(project_id: str, pane_id: Optional[str], file_mtime: float, result: dict):
+    """Cache log result."""
+    import time
+    key = (project_id, pane_id or "")
+    _log_cache[key] = (time.time(), file_mtime, result)
+    # Clean old entries
+    now = time.time()
+    stale = [k for k, (ts, _, _) in _log_cache.items() if now - ts > LOG_CACHE_TTL * 10]
+    for k in stale:
+        del _log_cache[k]
+
+
 def get_tmux_target(session_name: str, active_target: str) -> str:
     """
     Convert active_target to tmux target format.
@@ -1010,17 +1126,19 @@ def create_app(config: Config) -> FastAPI:
     async def get_config(token: Optional[str] = Query(None)):
         """Return client configuration as JSON."""
         if not app.state.no_auth and token != app.state.token:
-            return {"error": "Unauthorized"}, 401
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
         return app.state.config.to_dict()
 
     @app.get("/health")
     async def health():
         """Health check endpoint."""
-        return {"status": "ok", "version": "0.1.0"}
+        return {"status": "ok", "version": "0.2.0"}
 
     @app.post("/restart")
-    async def restart_server():
+    async def restart_server(token: Optional[str] = Query(None)):
         """Restart the server by sending SIGTERM. Systemd will auto-restart it."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
         import os
         import signal
         os.kill(os.getpid(), signal.SIGTERM)
@@ -1133,6 +1251,10 @@ def create_app(config: Config) -> FastAPI:
         token: Optional[str] = Query(None)
     ):
         """Set the active target pane for repo operations."""
+        import time as _time
+        _start_total = _time.time()
+        logger.info(f"[TIMING] /api/target/select START target_id={target_id}")
+
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
@@ -1140,11 +1262,13 @@ def create_app(config: Config) -> FastAPI:
 
         # Verify target exists
         try:
+            _t1 = _time.time()
             result = subprocess.run(
                 ["tmux", "list-panes", "-s", "-t", session,
                  "-F", "#{window_index}:#{pane_index}"],
                 capture_output=True, text=True, timeout=5
             )
+            logger.info(f"[TIMING] list-panes took {_time.time()-_t1:.3f}s")
             valid_targets = result.stdout.strip().split("\n") if result.returncode == 0 else []
 
             if target_id not in valid_targets:
@@ -1177,27 +1301,39 @@ def create_app(config: Config) -> FastAPI:
             if len(parts) == 2:
                 window_idx, pane_idx = parts
                 # Switch to the window first
+                _t2 = _time.time()
                 subprocess.run(
                     ["tmux", "select-window", "-t", f"{session}:{window_idx}"],
                     capture_output=True, timeout=2
                 )
+                logger.info(f"[TIMING] select-window took {_time.time()-_t2:.3f}s")
                 # Then select the pane within that window (format: session:window.pane)
+                _t3 = _time.time()
                 subprocess.run(
                     ["tmux", "select-pane", "-t", f"{session}:{window_idx}.{pane_idx}"],
                     capture_output=True, timeout=2
                 )
+                logger.info(f"[TIMING] select-pane took {_time.time()-_t3:.3f}s")
                 logger.info(f"Switched tmux to pane {target_id}")
 
-                # Verify switch completed (poll up to 500ms)
-                for _ in range(10):
-                    verify_result = subprocess.run(
-                        ["tmux", "display-message", "-t", session, "-p", "#{window_index}:#{pane_index}"],
-                        capture_output=True, text=True, timeout=2
-                    )
-                    if verify_result.returncode == 0 and verify_result.stdout.strip() == target_id:
-                        switch_verified = True
-                        break
+                # Verify switch completed (max 1s total, not per-iteration)
+                _t4 = _time.time()
+                _verify_iterations = 0
+                _verify_deadline = _t4 + 1.0  # Hard cap at 1 second total
+                while _time.time() < _verify_deadline:
+                    _verify_iterations += 1
+                    try:
+                        verify_result = subprocess.run(
+                            ["tmux", "display-message", "-t", session, "-p", "#{window_index}:#{pane_index}"],
+                            capture_output=True, text=True, timeout=0.5  # Short timeout per call
+                        )
+                        if verify_result.returncode == 0 and verify_result.stdout.strip() == target_id:
+                            switch_verified = True
+                            break
+                    except subprocess.TimeoutExpired:
+                        pass  # Continue loop, will exit via deadline
                     await asyncio.sleep(0.05)
+                logger.info(f"[TIMING] verify loop took {_time.time()-_t4:.3f}s ({_verify_iterations} iterations)")
 
                 if not switch_verified:
                     logger.warning(f"Target switch verification failed for {target_id}")
@@ -1211,6 +1347,7 @@ def create_app(config: Config) -> FastAPI:
 
         # Close existing PTY so next WebSocket connection respawns with new target
         # This ensures the PTY attaches to the newly active pane
+        _t5 = _time.time()
         if app.state.master_fd is not None:
             try:
                 os.close(app.state.master_fd)
@@ -1226,8 +1363,10 @@ def create_app(config: Config) -> FastAPI:
             except Exception:
                 pass
             app.state.child_pid = None
+        logger.info(f"[TIMING] PTY/child cleanup took {_time.time()-_t5:.3f}s")
 
         # Close active WebSocket to force client reconnect
+        _t6 = _time.time()
         if app.state.active_websocket is not None:
             try:
                 await app.state.active_websocket.close(code=4003, reason="Target switched")
@@ -1235,10 +1374,12 @@ def create_app(config: Config) -> FastAPI:
             except Exception:
                 pass
             app.state.active_websocket = None
+        logger.info(f"[TIMING] WebSocket close took {_time.time()-_t6:.3f}s")
 
         # Start background file monitor to detect which log file this target uses
         asyncio.create_task(monitor_log_file_for_target(target_id))
 
+        logger.info(f"[TIMING] /api/target/select TOTAL took {_time.time()-_start_total:.3f}s")
         return {
             "success": True,
             "active": target_id,
@@ -1520,12 +1661,16 @@ def create_app(config: Config) -> FastAPI:
         try:
             import subprocess
 
+            repo_path = get_current_repo_path()
+            cwd = str(repo_path) if repo_path else None
+
             # Get list of tracked files using git ls-files
             result = subprocess.run(
                 ["git", "ls-files"],
                 capture_output=True,
                 text=True,
                 timeout=5,
+                cwd=cwd,
             )
 
             if result.returncode != 0:
@@ -1535,6 +1680,7 @@ def create_app(config: Config) -> FastAPI:
                     capture_output=True,
                     text=True,
                     timeout=5,
+                    cwd=cwd,
                 )
                 files = [f.lstrip("./") for f in result.stdout.strip().split("\n") if f][:limit]
             else:
@@ -1568,7 +1714,11 @@ def create_app(config: Config) -> FastAPI:
         if ".." in path or path.startswith("/"):
             return JSONResponse({"error": "Invalid path"}, status_code=400)
 
-        file_path = repo_path / path
+        file_path = (repo_path / path).resolve()
+        # Ensure resolved path is still within repo (catches symlink escapes)
+        if not str(file_path).startswith(str(repo_path.resolve())):
+            return JSONResponse({"error": "Invalid path"}, status_code=400)
+
         if not file_path.exists():
             return JSONResponse({"error": "File not found"}, status_code=404)
 
@@ -1692,8 +1842,7 @@ def create_app(config: Config) -> FastAPI:
                         timeout=1,
                     )
                     # Small delay for redraw to complete
-                    import time
-                    time.sleep(0.15)
+                    await asyncio.sleep(0.15)
 
             # Capture visible area only (not scrollback) to avoid stale wrapped content
             # Use -S - to start from visible area, or omit -S for default
@@ -1943,6 +2092,8 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
+        if not repo_path:
+            return {"exists": False, "content": "", "session": app.state.current_session}
         context_file = repo_path / ".claude" / "CONTEXT.md"
 
         if not context_file.exists():
@@ -1975,6 +2126,8 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
+        if not repo_path:
+            return {"exists": False, "content": "", "session": app.state.current_session}
         touch_file = repo_path / ".claude" / "touch-summary.md"
 
         if not touch_file.exists():
@@ -2031,7 +2184,7 @@ def create_app(config: Config) -> FastAPI:
                 # Return first 10 lines for preview
                 lines = content.split('\n')[:10]
                 content = '\n'.join(lines)
-                if len(plan_file.read_text().split('\n')) > 10:
+                if len(content.split('\n')) > 10:
                     content += '\n...'
 
             return {
@@ -2069,7 +2222,7 @@ def create_app(config: Config) -> FastAPI:
             if preview_mode:
                 lines = content.split('\n')[:15]
                 content = '\n'.join(lines)
-                if len(plan_path.read_text().split('\n')) > 15:
+                if len(content.split('\n')) > 15:
                     content += '\n...'
             return content
 
@@ -2366,6 +2519,7 @@ def create_app(config: Config) -> FastAPI:
     # especially after plan mode transitions. Simple mtime-based selection is more robust.
     @app.get("/api/log")
     async def get_log(
+        request: Request,
         token: Optional[str] = Query(None),
         limit: int = Query(200),
         session_id: Optional[str] = Query(None, description="Specific session UUID to view (for Docs browser)"),
@@ -2382,6 +2536,10 @@ def create_app(config: Config) -> FastAPI:
         """
         import json
         import re
+
+        # Log client ID for debugging duplicate requests
+        client_id = request.headers.get('X-Client-ID', 'unknown')[:8]
+        logger.debug(f"[{client_id}] GET /api/log pane_id={pane_id}")
 
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
@@ -2451,6 +2609,18 @@ def create_app(config: Config) -> FastAPI:
             log_file = detect_target_log_file(target_id, app.state.current_session, claude_projects_dir)
             if not log_file:
                 return return_cached()
+
+        # Check mtime-based cache - avoid re-parsing if file unchanged
+        try:
+            file_stat = log_file.stat()
+            file_mtime = file_stat.st_mtime
+            cached_result = get_cached_log(project_id, target_id, file_mtime)
+            if cached_result:
+                logger.debug(f"Log cache hit for {log_file.name}")
+                return cached_result
+        except Exception as e:
+            logger.debug(f"Log cache check failed: {e}")
+            file_mtime = 0
 
         try:
             raw_content = log_file.read_text(errors="replace")
@@ -2549,15 +2719,22 @@ def create_app(config: Config) -> FastAPI:
             # Cache the content for persistence across /clear
             write_log_cache(project_id, content)
 
-            return {
+            result = {
                 "exists": True,
                 "content": content,  # For backward compatibility
                 "messages": messages,  # New: array of messages (preserves code blocks)
                 "path": str(log_file),
                 "session": app.state.current_session,
-                "modified": log_file.stat().st_mtime,
+                "modified": file_mtime,  # Use cached mtime to avoid extra stat call
                 "truncated": truncated,
             }
+
+            # Cache parsed result for fast subsequent requests
+            if file_mtime > 0:
+                set_cached_log(project_id, target_id, file_mtime, result)
+                logger.debug(f"Log cache set for {log_file.name}")
+
+            return result
         except Exception as e:
             logger.error(f"Error reading log file: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
@@ -2808,6 +2985,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/terminal/capture")
     async def capture_terminal(
+        request: Request,
         token: Optional[str] = Query(None),
         lines: int = Query(50),
         session: Optional[str] = Query(None),
@@ -2828,6 +3006,10 @@ def create_app(config: Config) -> FastAPI:
         Includes 300ms cache to prevent DoS from rapid polling.
         """
         import subprocess
+
+        # Log client ID for debugging duplicate requests
+        client_id = request.headers.get('X-Client-ID', 'unknown')[:8]
+        logger.debug(f"[{client_id}] GET /api/terminal/capture lines={lines}")
 
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
@@ -2898,6 +3080,66 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": "Capture timeout"}, status_code=504)
         except Exception as e:
             logger.error(f"Failed to capture terminal: {e}")
+            return {"content": "", "error": str(e)}
+
+    @app.get("/api/terminal/snapshot")
+    async def terminal_snapshot(
+        token: Optional[str] = Query(None),
+        target: Optional[str] = Query(None),
+    ):
+        """
+        Get terminal snapshot for resync after queue overflow.
+
+        Returns tmux capture-pane with ANSI escape sequences (-e) for
+        accurate screen reproduction. Limited to 80 lines max.
+        Used by client when terminal render queue overflows.
+        """
+        import subprocess
+
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session_name = app.state.current_session
+        if not session_name:
+            return {"content": "", "error": "No session"}
+
+        # Use provided target or active target
+        if target:
+            tmux_target = get_tmux_target(session_name, target)
+        elif app.state.active_target:
+            tmux_target = get_tmux_target(session_name, app.state.active_target)
+        else:
+            tmux_target = session_name
+
+        try:
+            # Capture with ANSI escape sequences for accurate screen state
+            # Limit to 80 lines to keep payload reasonable
+            result = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-e", "-S", "-80", "-t", tmux_target],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                content = result.stdout or ""
+                # If still too large, reduce further
+                if len(content) > 50000:  # 50KB max
+                    result = subprocess.run(
+                        ["tmux", "capture-pane", "-p", "-e", "-S", "-40", "-t", tmux_target],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    content = result.stdout or "" if result.returncode == 0 else ""
+                logger.info(f"Terminal snapshot: {len(content)} chars")
+                return {"content": content, "target": tmux_target}
+            else:
+                logger.warning(f"Snapshot failed: {result.stderr}")
+                return {"content": "", "error": result.stderr}
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Snapshot timeout"}, status_code=504)
+        except Exception as e:
+            logger.error(f"Snapshot error: {e}")
             return {"content": "", "error": str(e)}
 
     @app.get("/api/challenge/models")
@@ -3003,6 +3245,13 @@ def create_app(config: Config) -> FastAPI:
                 logger.warning(f"Failed to get git diff: {e}")
 
         # 4. Plan (if specified by filename)
+        if plan_filename:
+            try:
+                if not re.match(r'^[\w\-\.]+\.md$', plan_filename):
+                    logger.warning(f"Invalid plan filename rejected: {plan_filename}")
+                    plan_filename = None
+            except Exception:
+                plan_filename = None
         if plan_filename:
             try:
                 plans_dir = Path.home() / ".claude" / "plans"
@@ -4284,16 +4533,27 @@ Only the top 1–3 risks worth caring about.
                 "received": target_check["received"]
             }, status_code=409)
 
-        # Basic safety checks
+        # Safety checks — block destructive patterns
         dangerous_patterns = [
-            r'^\s*rm\s+-rf\s+/',  # rm -rf /
-            r'^\s*:(){',          # Fork bomb
-            r'>\s*/dev/sd',       # Writing to disk devices
-            r'mkfs\.',            # Formatting disks
+            r'rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|--force\s+).*/',  # rm -rf / or rm -f /path
+            r'^\s*rm\s+-rf\s+/',     # rm -rf /
+            r'^\s*:(){',             # Fork bomb
+            r'>\s*/dev/sd',          # Writing to disk devices
+            r'mkfs\.',               # Formatting disks
+            r'dd\s+.*of=\s*/dev/',   # dd to device
+            r'chmod\s+(-R\s+)?777\s+/',  # chmod 777 /
+            r'chown\s+-R\s+.*\s+/',  # chown -R on root paths
+            r'>\s*/etc/',            # Overwriting system config
+            r'curl\s.*\|\s*sh',      # Pipe curl to shell
+            r'wget\s.*\|\s*sh',      # Pipe wget to shell
+            r'shutdown\b',           # System shutdown
+            r'reboot\b',            # System reboot
+            r'init\s+[06]',          # System halt/reboot via init
         ]
 
         for pattern in dangerous_patterns:
-            if re.search(pattern, command):
+            if re.search(pattern, command, re.IGNORECASE):
+                logger.warning(f"Blocked dangerous command: {command[:100]}")
                 return JSONResponse({
                     "error": "Command blocked for safety",
                     "reason": "Potentially destructive operation"
@@ -4839,7 +5099,8 @@ Only the top 1–3 risks worth caring about.
 
             if result.returncode != 0:
                 # Reset any partial changes
-                subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path, timeout=10)
+                subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path,
+                               capture_output=True, timeout=10)
                 return {
                     "success": False,
                     "error": "Revert would fail",
@@ -4853,7 +5114,8 @@ Only the top 1–3 risks worth caring about.
             )
 
             # Reset the staged revert
-            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path, timeout=10)
+            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path,
+                           capture_output=True, timeout=10)
 
             app.state.audit_log.log("revert_dry_run", {"commit": commit_hash})
 
@@ -4865,10 +5127,12 @@ Only the top 1–3 risks worth caring about.
             }
         except subprocess.TimeoutExpired:
             # Clean up on timeout
-            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path, timeout=10)
+            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path,
+                           capture_output=True, timeout=10)
             return JSONResponse({"error": "Git command timed out"}, status_code=500)
         except Exception as e:
-            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path, timeout=10)
+            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path,
+                           capture_output=True, timeout=10)
             return JSONResponse({"error": str(e)}, status_code=500)
         finally:
             app.state.git_op_lock.release()
@@ -5450,6 +5714,10 @@ Only the top 1–3 risks worth caring about.
     @app.websocket("/ws/terminal")
     async def terminal_websocket(websocket: WebSocket, token: Optional[str] = Query(None)):
         """WebSocket endpoint for terminal I/O."""
+        import time as _time
+        _ws_start = _time.time()
+        logger.info(f"[TIMING] WebSocket /ws/terminal START")
+
         # Validate token (skip if no_auth)
         if not app.state.no_auth and token != app.state.token:
             await websocket.close(code=4001)
@@ -5481,8 +5749,10 @@ Only the top 1–3 risks worth caring about.
                 app.state.read_task = None
 
             app.state.active_websocket = websocket
+        logger.info(f"[TIMING] WebSocket lock+accept took {_time.time()-_ws_start:.3f}s")
 
         # Spawn tmux if not already running
+        _spawn_start = _time.time()
         if app.state.master_fd is None:
             try:
                 session_name = app.state.current_session
@@ -5495,11 +5765,13 @@ Only the top 1–3 risks worth caring about.
                 await websocket.send_json({"type": "error", "message": str(e)})
                 await websocket.close()
                 return
+        logger.info(f"[TIMING] spawn_tmux took {_time.time()-_spawn_start:.3f}s")
         master_fd = app.state.master_fd
         output_buffer = app.state.output_buffer
 
         # Send hello handshake FIRST - client expects this within 2s
         # Must be sent before capture-pane which can be slow
+        _hello_start = _time.time()
         try:
             hello_msg = {
                 "type": "hello",
@@ -5513,52 +5785,56 @@ Only the top 1–3 risks worth caring about.
             logger.error(f"Failed to send hello: {e}")
             await websocket.close(code=4500)
             return
+        logger.info(f"[TIMING] hello handshake took {_time.time()-_hello_start:.3f}s")
 
-        # Send history snapshot using tmux capture-pane with escape sequences
-        # IMPORTANT: Always send clear screen to trigger client overlay hide, even on failure
-        history_text = ""
-        try:
-            import subprocess
-            session_name = app.state.current_session
-            # Use active target pane if set, otherwise fall back to session
-            target = get_tmux_target(session_name, app.state.active_target)
-            # Use -e to preserve escape sequences for proper rendering
-            result = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-e", "-S", "-5000", "-t", target],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                history_text = result.stdout or ""
-                logger.info(f"Sending {len(history_text)} chars of capture-pane history")
-            else:
-                logger.warning(f"tmux capture-pane failed (rc={result.returncode}): {result.stderr}")
-        except subprocess.TimeoutExpired:
-            logger.warning("tmux capture-pane timed out")
-        except Exception as e:
-            logger.error(f"Error getting capture-pane history: {e}")
-
-        # Always send clear screen + cursor home to trigger client overlay hide
-        await websocket.send_text("\x1b[2J\x1b[H" + history_text)
+        # Don't send capture-pane history on initial connect
+        # Default mode is "tail" which uses lightweight JSON updates
+        # History will be sent as catchup when client switches to "full" mode
+        # Just send clear screen to trigger client overlay hide
+        await websocket.send_text("\x1b[2J\x1b[H")
+        logger.info(f"[TIMING] WebSocket setup TOTAL took {_time.time()-_ws_start:.3f}s")
 
         # Track PTY death for proper close code
         pty_died = False
         # Track connection closed to prevent send-after-close errors
         connection_closed = False
 
+        # Client output mode: "tail" (default) or "full"
+        # In tail mode: don't forward raw PTY bytes, send periodic tail snapshots
+        # In full mode: forward raw PTY bytes for full terminal rendering
+        client_mode = "tail"
+        # Ring buffer for recent output (for tail extraction and mode switch catchup)
+        recent_buffer = bytearray()
+        RECENT_BUFFER_MAX = 64 * 1024  # 64KB of recent output
+        # Tail state
+        tail_seq = 0
+        TAIL_INTERVAL = 0.2  # Send tail updates every 200ms
+        # Shared PTY output batch (cleared on mode switch to prevent stale data)
+        pty_batch = bytearray()
+        pty_batch_flush_time = time.time()
+
         # Create tasks for bidirectional I/O
         async def read_from_terminal():
-            """Read from terminal and send to WebSocket with batching."""
-            nonlocal pty_died, connection_closed
+            """Read from terminal and send to WebSocket with batching.
+
+            CRITICAL: PTY is ALWAYS drained regardless of client_mode.
+            - In 'full' mode: forward raw bytes to WebSocket (coalesced)
+            - In 'tail' mode: skip WebSocket send (tail_sender handles updates)
+
+            Coalescing: accumulate PTY bytes and flush every 25ms or 16KB
+            to reduce WS message frequency and client pressure.
+            """
+            nonlocal pty_died, connection_closed, recent_buffer, pty_batch, pty_batch_flush_time
             loop = asyncio.get_event_loop()
-            batch = bytearray()
-            last_flush = time.time()
-            flush_interval = 0.03  # 30ms batching window
+            # Coalescing parameters - balance latency vs throughput
+            # Aggressive rate limiting for mobile debugging
+            FLUSH_INTERVAL = 0.200  # 200ms = 5 FPS max
+            FLUSH_MAX_BYTES = 2048   # 2KB max per message (10KB/s total)
 
             while app.state.active_websocket == websocket and not connection_closed:
                 try:
                     # Non-blocking read with select-like behavior
+                    # ALWAYS read - never pause PTY drain
                     data = await loop.run_in_executor(
                         None, lambda: os.read(master_fd, 4096)
                     )
@@ -5574,16 +5850,37 @@ Only the top 1–3 risks worth caring about.
                     # Store in ring buffer for future reconnects
                     output_buffer.write(data)
 
-                    # Add to batch
-                    batch.extend(data)
+                    # Store in recent buffer for tail extraction and mode switch catchup
+                    recent_buffer.extend(data)
+                    if len(recent_buffer) > RECENT_BUFFER_MAX:
+                        # Trim to last RECENT_BUFFER_MAX bytes
+                        recent_buffer = recent_buffer[-RECENT_BUFFER_MAX:]
 
-                    # Flush if batch is large or enough time has passed
-                    now = time.time()
-                    if len(batch) >= 8192 or (now - last_flush) >= flush_interval:
-                        if app.state.active_websocket == websocket and batch and not connection_closed:
-                            await websocket.send_bytes(bytes(batch))
-                            batch.clear()
-                            last_flush = now
+                    # Only forward to WebSocket in 'full' mode
+                    if client_mode == "full":
+                        # Add to batch (cap size to prevent memory issues)
+                        pty_batch.extend(data)
+                        if len(pty_batch) > FLUSH_MAX_BYTES * 4:
+                            # Drop old data if accumulating too fast
+                            # Keep from a UTF-8 safe boundary
+                            keep_from = len(pty_batch) - FLUSH_MAX_BYTES
+                            # Find start of a valid UTF-8 character
+                            while keep_from < len(pty_batch) and (pty_batch[keep_from] & 0xC0) == 0x80:
+                                keep_from += 1
+                            pty_batch = pty_batch[keep_from:]
+
+                        # ONLY flush on time interval (enforces rate limit for mobile)
+                        # This prevents flooding the client even if PTY is very active
+                        now = time.time()
+                        if (now - pty_batch_flush_time) >= FLUSH_INTERVAL:
+                            if app.state.active_websocket == websocket and pty_batch and not connection_closed:
+                                # Send at most FLUSH_MAX_BYTES per interval
+                                # Use UTF-8 safe boundary to avoid splitting multi-byte chars
+                                cut_pos = find_utf8_boundary(pty_batch, FLUSH_MAX_BYTES)
+                                send_data = bytes(pty_batch[:cut_pos])
+                                pty_batch = pty_batch[cut_pos:]
+                                await websocket.send_bytes(send_data)
+                                pty_batch_flush_time = now
 
                 except Exception as e:
                     # Ignore send-after-close errors (expected during disconnect)
@@ -5593,15 +5890,16 @@ Only the top 1–3 risks worth caring about.
                         logger.error(f"Error reading from terminal: {e}")
                     break
 
-            # Flush remaining data
-            if batch and app.state.active_websocket == websocket and not connection_closed:
+            # Flush remaining data (only in full mode)
+            if client_mode == "full" and pty_batch and app.state.active_websocket == websocket and not connection_closed:
                 try:
-                    await websocket.send_bytes(bytes(batch))
+                    await websocket.send_bytes(bytes(pty_batch))
                 except Exception:
                     pass
 
         async def write_to_terminal():
             """Read from WebSocket and write to terminal."""
+            nonlocal client_mode, pty_batch, pty_batch_flush_time
             while app.state.active_websocket == websocket and not connection_closed:
                 try:
                     message = await websocket.receive()
@@ -5623,7 +5921,8 @@ Only the top 1–3 risks worth caring about.
                         try:
                             data = json.loads(text)
                             if isinstance(data, dict):
-                                if data.get("type") == "resize":
+                                msg_type = data.get("type")
+                                if msg_type == "resize":
                                     cols = data.get("cols", 80)
                                     rows = data.get("rows", 24)
                                     logger.info(f"Resize request: {cols}x{rows}, fd={master_fd}, pid={app.state.child_pid}")
@@ -5634,17 +5933,43 @@ Only the top 1–3 risks worth caring about.
                                         app.state.child_pid,
                                     )
                                     logger.info(f"Terminal resized to {cols}x{rows}")
-                                elif data.get("type") == "input":
+                                elif msg_type == "input":
                                     input_data = data.get("data")
                                     if input_data:
                                         os.write(master_fd, input_data.encode())
-                                elif data.get("type") == "ping":
+                                elif msg_type == "ping":
                                     # Respond to heartbeat ping with pong
                                     if not connection_closed:
                                         await websocket.send_json({"type": "pong"})
-                                elif data.get("type") == "pong":
+                                elif msg_type == "pong":
                                     # Client responding to server_ping - connection is alive
                                     pass  # No action needed, connection confirmed alive
+                                elif msg_type == "set_mode":
+                                    # Client requests output mode change
+                                    new_mode = data.get("mode", "tail")
+                                    if new_mode in ("tail", "full"):
+                                        old_mode = client_mode
+                                        client_mode = new_mode
+                                        logger.info(f"[MODE] {old_mode} -> {client_mode}")
+                                        # When switching to full mode:
+                                        # Just clear the PTY batch and start forwarding.
+                                        # The client sends resize after fit(), which triggers
+                                        # a full tmux redraw at the correct terminal size.
+                                        if new_mode == "full" and not connection_closed:
+                                            pty_batch.clear()
+                                            pty_batch_flush_time = time.time()
+                                            logger.info("[MODE] Cleared PTY batch, awaiting client resize for redraw")
+                                elif msg_type == "term_subscribe":
+                                    # Legacy: treat as set_mode full
+                                    client_mode = "full"
+                                    logger.info("Client subscribed to terminal view (mode=full)")
+                                    if not connection_closed:
+                                        pty_batch.clear()
+                                        pty_batch_flush_time = time.time()
+                                elif msg_type == "term_unsubscribe":
+                                    # Legacy: treat as set_mode tail
+                                    client_mode = "tail"
+                                    logger.info("Client unsubscribed from terminal view (mode=tail)")
                             else:
                                 # JSON but not dict, treat as plain text
                                 os.write(master_fd, text.encode())
@@ -5677,14 +6002,44 @@ Only the top 1–3 risks worth caring about.
                 except Exception:
                     break
 
+        async def tail_sender():
+            """Send periodic tail updates when in tail mode.
+
+            Extracts last ~50 lines from recent_buffer, strips ANSI,
+            and sends as JSON for lightweight Log view rendering.
+            """
+            nonlocal tail_seq
+            while app.state.active_websocket == websocket and not connection_closed:
+                try:
+                    await asyncio.sleep(TAIL_INTERVAL)
+                    if client_mode == "tail" and recent_buffer and not connection_closed:
+                        # Extract last portion and decode
+                        try:
+                            text = bytes(recent_buffer[-8192:]).decode('utf-8', errors='replace')
+                            # Strip ANSI and get last 50 lines
+                            plain = strip_ansi(text)
+                            lines = plain.split('\n')[-50:]
+                            tail_text = '\n'.join(lines)
+                            tail_seq += 1
+                            await websocket.send_json({
+                                "type": "tail",
+                                "text": tail_text,
+                                "seq": tail_seq
+                            })
+                        except Exception as e:
+                            logger.debug(f"Tail extraction error: {e}")
+                except Exception:
+                    break
+
         # Run all tasks concurrently
         read_task = asyncio.create_task(read_from_terminal())
         app.state.read_task = read_task
         write_task = asyncio.create_task(write_to_terminal())
         keepalive_task = asyncio.create_task(server_keepalive())
+        tail_task = asyncio.create_task(tail_sender())
 
         try:
-            await asyncio.gather(read_task, write_task, keepalive_task)
+            await asyncio.gather(read_task, write_task, keepalive_task, tail_task)
         except asyncio.CancelledError:
             # Normal termination when connection is replaced or closed
             pass
