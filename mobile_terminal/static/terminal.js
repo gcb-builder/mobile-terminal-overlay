@@ -11,6 +11,8 @@ console.log('Mode epoch system active: stale writes will be cancelled');
 // Get token from URL (may be null if --no-auth)
 const urlParams = new URLSearchParams(window.location.search);
 const token = urlParams.get('token') || '';
+const paramFontSize = urlParams.get('font_size');
+const paramPhysicalKb = urlParams.get('physical_kb');
 
 // Persistent client ID for request tracking (helps debug duplicate requests)
 const clientId = sessionStorage.getItem('mto_client_id') || crypto.randomUUID();
@@ -623,7 +625,7 @@ function initTerminal() {
         cursorBlink: false,
         cursorStyle: 'bar',
         cursorInactiveStyle: 'none',
-        fontSize: 14,
+        fontSize: Number(paramFontSize) || 14,
         fontFamily: 'Menlo, Monaco, "Courier New", monospace',
         scrollback: isMobile ? 2000 : 10000,  // Smaller buffer on mobile for faster rendering
         smoothScrollDuration: 0,  // Disable smooth scroll - causes delays on mobile
@@ -1619,7 +1621,11 @@ function setupTerminalFocus() {
     terminal.textarea.setAttribute('autocorrect', 'off');
     terminal.textarea.setAttribute('autocapitalize', 'off');
     terminal.textarea.setAttribute('spellcheck', 'false');
-    terminal.textarea.setAttribute('inputmode', 'text');
+    // Only set inputmode='text' for soft keyboard devices
+    // Physical keyboard devices (Titan 2) skip this to avoid soft keyboard popup
+    if (paramPhysicalKb !== '1') {
+        terminal.textarea.setAttribute('inputmode', 'text');
+    }
 
     // Tap terminal to focus and show keyboard
     terminalContainer.addEventListener('click', () => {
@@ -1640,6 +1646,10 @@ async function loadConfig() {
             return;
         }
         config = await response.json();
+        if (!paramFontSize && config.font_size && terminal) {
+            terminal.options.fontSize = config.font_size;
+            fitAddon.fit();
+        }
         await populateUI();  // await to ensure targets are loaded before log view
     } catch (error) {
         if (error.name === 'AbortError') {
@@ -2852,7 +2862,8 @@ function setupViewportHandler() {
     });
 
     // Scroll terminal into view when keyboard opens (only if already at bottom)
-    if (window.visualViewport) {
+    // Skip on physical keyboard devices where no soft keyboard resize occurs
+    if (paramPhysicalKb !== '1' && window.visualViewport) {
         window.visualViewport.addEventListener('resize', () => {
             // Only auto-scroll if user was already at bottom (don't interrupt reading)
             const viewport = terminal.element?.querySelector('.xterm-viewport');
