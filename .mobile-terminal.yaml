@@ -6,10 +6,10 @@ session_name: claude
 # Repos for quick switching (each gets its own tmux session)
 repos:
   - label: "mobile-terminal"
-    path: "/home/gcbbuilder/~dev/mobile-terminal-overlay/mobile-terminal-overlay"
+    path: "/home/gcbbuilder/dev/mobile-terminal-overlay"
     session: "claude"
   - label: "geo-cv"
-    path: "/home/gcbbuilder/~dev/geo-cv/geo-cv"
+    path: "/home/gcbbuilder/dev/geo-cv"
     session: "claude"
     startup_command: "claude"
 

@@ -3,8 +3,58 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Production-ready with PWA support + V2 features
-- **Last Updated:** 2026-01-31
+- **Stage:** Terminal responsiveness - added ANSI boundary detection (v245)
+- **Last Updated:** 2026-02-04
+- **Server Version:** v245 (terminal.js), v108 (sw.js cache)
+- **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
+
+## Active Work: Terminal Responsiveness + Garbled Output (2026-02-04)
+
+### Problem
+1. Terminal takes ~30-90s to become responsive on mobile
+2. Terminal view shows garbled output at start (tail/log view is OK)
+
+### NEW FIX (v245): ANSI-Safe Boundary Detection
+
+**Root cause found:** Client-side `enqueueSplit()` was splitting incoming binary data
+at arbitrary 2KB boundaries, which could split ANSI escape sequences (like `\x1b[38;2;255;128;64m`)
+in the middle. This causes xterm.js to receive incomplete sequences, resulting in garbled output.
+
+**Fix implemented:**
+1. Added `findSafeBoundary()` function that scans backwards from cut position to find safe split points
+2. Detects incomplete ANSI sequences by looking for ESC (0x1B) without terminator
+3. Also avoids splitting UTF-8 continuation bytes (0x80-0xBF)
+4. Increased CHUNK_SIZE from 2KB to 8KB to reduce splitting frequency
+
+**Diagnostic logging added:**
+- `=== TERMINAL.JS v245 EPOCH SYSTEM LOADED ===` at script start
+- `[v245] WebSocket connected (mode=..., epoch=...)` on socket open
+- `[MODE] v245 Switching ... -> ... (epoch=...)` on mode changes
+- `[TERMINAL] v245 Writing ... bytes (epoch=..., first chunk)` on first terminal write
+
+### Files Modified (v245)
+- `mobile_terminal/static/terminal.js`:
+  - Added `findSafeBoundary()` function for ANSI-safe chunking
+  - Modified `enqueueSplit()` to use safe boundaries
+  - Increased CHUNK_SIZE to 8192 (8KB)
+  - Added distinctive v245 diagnostic logging
+- `mobile_terminal/static/index.html` - v245
+- `mobile_terminal/static/sw.js` - v108
+
+### Verification Steps for User
+1. Open browser dev tools (Console tab)
+2. Reload the page
+3. Should see: `=== TERMINAL.JS v245 EPOCH SYSTEM LOADED ===`
+4. Switch to Terminal view
+5. Should see: `[MODE] v245 Switching tail -> full (epoch=1)`
+6. If you DON'T see these logs, clear site data and unregister Service Worker
+
+### Previous Fixes (v244) - Still Active
+- Mode epoch cancellation system
+- Mode-gated writes (all data gated behind `outputMode === 'full'`)
+- Bytes-only pipeline (no string splitting)
+
+---
 
 ## Recent: Target Switch Fixes and Loading Indicators (2026-01-31)
 

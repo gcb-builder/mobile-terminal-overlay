@@ -4,9 +4,58 @@
  * Connects xterm.js to the WebSocket backend for tmux relay.
  */
 
+// VERSION DIAGNOSTIC - if you see this in console, browser has v245 code
+console.log('=== TERMINAL.JS v245 EPOCH SYSTEM LOADED ===');
+console.log('Mode epoch system active: stale writes will be cancelled');
+
 // Get token from URL (may be null if --no-auth)
 const urlParams = new URLSearchParams(window.location.search);
 const token = urlParams.get('token') || '';
+
+// Persistent client ID for request tracking (helps debug duplicate requests)
+const clientId = sessionStorage.getItem('mto_client_id') || crypto.randomUUID();
+sessionStorage.setItem('mto_client_id', clientId);
+console.log('Client ID:', clientId.slice(0, 8));
+
+// Helper for fetch with client ID header
+function apiFetch(url, options = {}) {
+    const headers = { 'X-Client-ID': clientId, ...(options.headers || {}) };
+    return fetch(url, { ...options, headers });
+}
+
+// Fetch with timeout using AbortController
+// Prevents indefinite hangs on slow/unresponsive endpoints
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal,
+            headers: { 'X-Client-ID': clientId, ...(options.headers || {}) }
+        });
+        return response;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+// Singleflight polling infrastructure
+// AbortController-based async loops that can be cancelled on view switch
+function abortableSleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new DOMException('Aborted', 'AbortError'));
+            return;
+        }
+        const timeout = setTimeout(resolve, ms);
+        signal?.addEventListener('abort', () => {
+            clearTimeout(timeout);
+            reject(new DOMException('Aborted', 'AbortError'));
+        }, { once: true });
+    });
+}
 
 // State
 let terminal = null;
@@ -14,6 +63,337 @@ let socket = null;
 let isControlUnlocked = true;  // Controls always enabled (no lock)
 let config = null;
 let currentSession = null;
+
+// Output mode: 'tail' (default) or 'full'
+// In tail mode: server sends rate-limited text snapshots (no xterm rendering)
+// In full mode: server sends raw PTY bytes (xterm renders everything)
+let outputMode = 'tail';
+
+// Mode epoch: incremented on every mode change to invalidate in-flight operations
+// This prevents stale data from being written after mode switches
+let modeEpoch = 0;
+
+// Buffered xterm writes with hard backlog cap and chunk splitting
+let writeQueue = [];  // Array of {data: Uint8Array, epoch: number}
+let queuedBytes = 0;
+let draining = false;
+let isResyncing = false;
+let lastResyncTime = 0;
+const RESYNC_COOLDOWN = 5000;  // Don't resync more than once per 5 seconds
+
+// Backlog limits (tuned for mobile)
+const MAX_QUEUE_BYTES = 200000;  // 200KB max backlog
+const MAX_QUEUE_ITEMS = 500;     // 500 chunks max
+const MAX_PER_FRAME_MS = 8;      // 8ms max per frame
+const CHUNK_SIZE = 8192;         // 8KB max per terminal.write() call (larger to avoid ANSI splits)
+
+// Encoder for converting strings to bytes (used once, reused)
+const _textEncoder = new TextEncoder();
+
+/**
+ * Find a safe boundary for splitting binary data.
+ * Avoids splitting in the middle of ANSI escape sequences or UTF-8 characters.
+ * Returns the safe cut position <= maxPos.
+ */
+function findSafeBoundary(data, maxPos) {
+    if (maxPos >= data.length) return data.length;
+
+    let pos = maxPos;
+
+    // Scan backwards to find a safe position (max 64 bytes back)
+    // Safe position: not inside an ANSI sequence and not inside UTF-8
+    const scanLimit = Math.max(0, pos - 64);
+
+    while (pos > scanLimit) {
+        const byte = data[pos];
+
+        // UTF-8 continuation byte (10xxxxxx) - not safe
+        if ((byte & 0xC0) === 0x80) {
+            pos--;
+            continue;
+        }
+
+        // Check if we're inside an ANSI escape sequence
+        // Scan backwards for ESC (0x1B) and see if sequence is incomplete
+        let foundEsc = false;
+        let escPos = pos - 1;
+        const escLimit = Math.max(0, pos - 32);  // ANSI sequences rarely > 32 bytes
+
+        while (escPos >= escLimit) {
+            if (data[escPos] === 0x1B) {
+                foundEsc = true;
+                break;
+            }
+            // Stop if we hit a sequence terminator (letter 0x40-0x7E)
+            const b = data[escPos];
+            if (b >= 0x40 && b <= 0x7E) break;
+            escPos--;
+        }
+
+        if (foundEsc) {
+            // Check if sequence is complete before pos
+            // Sequence ends with letter (0x40-0x7E)
+            let seqComplete = false;
+            for (let i = escPos + 1; i < pos; i++) {
+                const b = data[i];
+                // '[' starts CSI sequence, continue looking
+                if (b === 0x5B && i === escPos + 1) continue;
+                // Terminator found before pos - sequence complete
+                if (b >= 0x40 && b <= 0x7E) {
+                    seqComplete = true;
+                    break;
+                }
+            }
+
+            if (!seqComplete) {
+                // We're inside an incomplete ANSI sequence - move before it
+                pos = escPos;
+                continue;
+            }
+        }
+
+        // Position is safe
+        return pos;
+    }
+
+    // Couldn't find safe position - fall back to maxPos
+    return maxPos;
+}
+
+/**
+ * Enqueue binary data for terminal rendering.
+ * BYTES ONLY - all data must be Uint8Array.
+ * Tagged with epoch to allow cancellation on mode change.
+ */
+function enqueueSplit(data, epoch) {
+    if (isResyncing) return;
+    if (epoch !== modeEpoch) return;  // Stale data from old mode
+
+    // Only accept Uint8Array - bytes all the way
+    if (!(data instanceof Uint8Array)) {
+        console.warn('[QUEUE] Expected Uint8Array, got:', typeof data);
+        return;
+    }
+
+    // Split into chunks at safe boundaries
+    let offset = 0;
+    while (offset < data.length) {
+        if (epoch !== modeEpoch) return;  // Mode changed during split
+
+        const remaining = data.length - offset;
+        const targetEnd = Math.min(offset + CHUNK_SIZE, data.length);
+
+        // Find safe boundary (don't split ANSI sequences or UTF-8)
+        const safeEnd = findSafeBoundary(data, targetEnd);
+        const actualEnd = safeEnd > offset ? safeEnd : targetEnd;  // Fallback if no safe boundary
+
+        const slice = data.subarray(offset, actualEnd);
+        queuedWriteInternal(slice, epoch);
+        offset = actualEnd;
+    }
+}
+
+/**
+ * Internal: add chunk to queue with epoch tag
+ */
+function queuedWriteInternal(data, epoch) {
+    if (epoch !== modeEpoch) return;  // Stale
+
+    const size = data.byteLength || 0;
+    writeQueue.push({ data, epoch });
+    queuedBytes += size;
+
+    // Check for overflow - clear queue instead of resync loop
+    if (queuedBytes > MAX_QUEUE_BYTES || writeQueue.length > MAX_QUEUE_ITEMS) {
+        console.warn(`[QUEUE] Overflow (${queuedBytes} bytes, ${writeQueue.length} items) - clearing`);
+        writeQueue = [];
+        queuedBytes = 0;
+        draining = false;
+        return;
+    }
+
+    if (!draining) {
+        draining = true;
+        requestAnimationFrame(drainWriteQueue);
+    }
+}
+
+/**
+ * Public API: queue data for terminal write.
+ * Gates all writes behind outputMode === 'full'.
+ * Converts strings to bytes.
+ */
+function queuedWrite(data) {
+    // CRITICAL: Only write to terminal in full mode
+    if (outputMode !== 'full') {
+        return;
+    }
+
+    const epoch = modeEpoch;
+
+    if (data instanceof Uint8Array) {
+        enqueueSplit(data, epoch);
+    } else if (data instanceof ArrayBuffer) {
+        enqueueSplit(new Uint8Array(data), epoch);
+    } else if (typeof data === 'string') {
+        // Convert string to bytes - no string splitting
+        enqueueSplit(_textEncoder.encode(data), epoch);
+    } else {
+        console.warn('[QUEUE] Unknown data type:', typeof data);
+    }
+}
+
+/**
+ * Drain write queue to terminal.
+ * Checks epoch before each write to abort if mode changed.
+ */
+function drainWriteQueue() {
+    const drainEpoch = modeEpoch;
+
+    // Abort if resyncing or not in full mode
+    if (isResyncing || outputMode !== 'full') {
+        writeQueue = [];
+        queuedBytes = 0;
+        draining = false;
+        return;
+    }
+
+    const frameStart = performance.now();
+    let chunksThisFrame = 0;
+    const MAX_CHUNKS_PER_FRAME = 4;
+    const MAX_PER_CHUNK_MS = 4;
+
+    while (writeQueue.length && chunksThisFrame < MAX_CHUNKS_PER_FRAME) {
+        // Check frame budget
+        if (performance.now() - frameStart >= MAX_PER_FRAME_MS) {
+            break;
+        }
+
+        // Check if mode changed - abort immediately
+        if (modeEpoch !== drainEpoch || outputMode !== 'full') {
+            writeQueue = [];
+            queuedBytes = 0;
+            draining = false;
+            console.log('[QUEUE] Mode changed during drain, aborting');
+            return;
+        }
+
+        const item = writeQueue.shift();
+        const size = item.data.byteLength || 0;
+        queuedBytes -= size;
+
+        // Skip stale items (from old epoch)
+        if (item.epoch !== drainEpoch) {
+            continue;
+        }
+
+        chunksThisFrame++;
+        // Log first write at each epoch for debugging
+        if (chunksThisFrame === 1 && writeQueue.length === 0) {
+            console.log(`[TERMINAL] v245 Writing ${size} bytes (epoch=${drainEpoch}, first chunk)`);
+        }
+        terminal.write(item.data);
+    }
+
+    // Continue draining if more items and still in correct mode
+    if (writeQueue.length && outputMode === 'full' && modeEpoch === drainEpoch) {
+        requestAnimationFrame(drainWriteQueue);
+    } else {
+        draining = false;
+        queuedBytes = 0;  // Reset counter
+    }
+}
+
+function triggerTerminalResync() {
+    if (isResyncing) return;
+    if (outputMode !== 'full') return;  // Only resync in full mode
+
+    // Enforce cooldown to prevent resync loops
+    const now = Date.now();
+    if (now - lastResyncTime < RESYNC_COOLDOWN) {
+        writeQueue = [];
+        queuedBytes = 0;
+        console.warn('Resync cooldown active, dropping data');
+        return;
+    }
+
+    isResyncing = true;
+    lastResyncTime = now;
+    modeEpoch++;  // Invalidate any in-flight data
+
+    // Clear queue
+    writeQueue = [];
+    queuedBytes = 0;
+    draining = false;
+
+    showToast('Resyncing terminal...', 1000);
+
+    if (terminal) {
+        terminal.reset();
+    }
+
+    const resyncEpoch = modeEpoch;
+    fetchTerminalSnapshot().then(snapshot => {
+        // Check epoch hasn't changed during fetch
+        if (modeEpoch !== resyncEpoch || outputMode !== 'full') {
+            console.log('Resync cancelled - mode changed');
+            isResyncing = false;
+            return;
+        }
+        if (snapshot && terminal) {
+            enqueueSplitDirect(snapshot, resyncEpoch);
+        }
+        setTimeout(() => {
+            isResyncing = false;
+            console.log('Terminal resync complete');
+        }, 500);
+    }).catch(err => {
+        console.error('Resync failed:', err);
+        isResyncing = false;
+    });
+}
+
+// Direct enqueue for resync snapshot (with epoch)
+function enqueueSplitDirect(data, epoch) {
+    if (epoch !== modeEpoch) return;
+
+    // Convert to bytes if string
+    let bytes;
+    if (typeof data === 'string') {
+        bytes = _textEncoder.encode(data);
+    } else if (data instanceof Uint8Array) {
+        bytes = data;
+    } else {
+        return;
+    }
+
+    // Chunk and enqueue with epoch tag
+    for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+        if (epoch !== modeEpoch) return;  // Abort if mode changed
+        const slice = bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length));
+        writeQueue.push({ data: slice, epoch });
+        queuedBytes += slice.length;
+    }
+
+    if (!draining && writeQueue.length > 0) {
+        draining = true;
+        requestAnimationFrame(drainWriteQueue);
+    }
+}
+
+async function fetchTerminalSnapshot() {
+    try {
+        const params = new URLSearchParams({ token });
+        if (activeTarget) params.set('target', activeTarget);
+        const resp = await fetch(`/api/terminal/snapshot?${params}`);
+        if (!resp.ok) throw new Error(`Snapshot failed: ${resp.status}`);
+        const data = await resp.json();
+        return data.content || '';
+    } catch (err) {
+        console.error('fetchTerminalSnapshot error:', err);
+        return '';
+    }
+}
 
 // Reconnection with exponential backoff
 let reconnectDelay = 300;
@@ -129,10 +509,11 @@ let pendingPrompt = null;        // { id, kind, text, choices, answered, sentCho
 let dismissedPrompts = new Set(); // Prompt IDs user dismissed without answering
 let promptBanner = null;         // DOM reference for sticky banner
 
-// Claude health polling state
-let claudeHealthInterval = null;   // Interval ID for health polling
-let lastClaudeHealth = null;       // Last health check result
-let claudeStartedAt = null;        // Timestamp when Claude was detected running
+// Claude health polling state (singleflight async loop)
+let claudeHealthController = null;  // AbortController for singleflight loop
+let lastClaudeHealth = null;        // Last health check result
+let claudeStartedAt = null;         // Timestamp when Claude was detected running
+const HEALTH_POLL_INTERVAL = 5000;  // 5 seconds between health checks
 let claudeCrashDebounceTimer = null;  // Debounce timer for crash detection
 let dismissedCrashPanes = new Set();  // Panes where user dismissed crash banner
 
@@ -234,6 +615,9 @@ let availableRepos = [];
  */
 let fitAddon = null;
 
+// Detect mobile for performance tuning
+const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || window.innerWidth < 768;
+
 function initTerminal() {
     terminal = new Terminal({
         cursorBlink: false,
@@ -241,8 +625,8 @@ function initTerminal() {
         cursorInactiveStyle: 'none',
         fontSize: 14,
         fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-        scrollback: 10000,
-        smoothScrollDuration: 100,
+        scrollback: isMobile ? 2000 : 10000,  // Smaller buffer on mobile for faster rendering
+        smoothScrollDuration: 0,  // Disable smooth scroll - causes delays on mobile
         overviewRulerWidth: 0,
         theme: {
             background: '#0b0f14',
@@ -326,14 +710,17 @@ function initTerminal() {
 
 /**
  * Active Prompt - shows current screen state from tmux
- * Refreshes every 300ms to show what Claude is currently asking
+ * Uses singleflight async loop pattern - only one request in flight at a time
  */
 const ACTIVE_PROMPT_LINES = 15;  // Lines to capture from current screen
-const ACTIVE_PROMPT_INTERVAL = 300;  // Refresh every 300ms
-let activePromptTimer = null;
+const ACTIVE_PROMPT_INTERVAL = 1000;  // Wait 1s between requests
+let activePromptController = null;  // AbortController for singleflight loop
 
-async function refreshActivePrompt() {
+async function refreshActivePrompt(signal) {
     if (!activePromptContent) return;
+
+    // Skip if page not visible (save resources)
+    if (document.visibilityState !== 'visible') return;
 
     // Don't refresh if user has text selected (would lose selection)
     const selection = window.getSelection();
@@ -343,7 +730,7 @@ async function refreshActivePrompt() {
 
     try {
         // Use capture endpoint with small line count (current screen, not scrollback)
-        const response = await fetch(`/api/terminal/capture?token=${token}&lines=${ACTIVE_PROMPT_LINES}`);
+        const response = await apiFetch(`/api/terminal/capture?token=${token}&lines=${ACTIVE_PROMPT_LINES}`, { signal });
         if (!response.ok) return;
 
         const data = await response.json();
@@ -369,20 +756,34 @@ async function refreshActivePrompt() {
         extractPermissionPrompt(content);
 
     } catch (error) {
+        if (error.name === 'AbortError') throw error;  // Re-throw abort
         console.debug('Active prompt refresh failed:', error);
     }
 }
 
-function startActivePrompt() {
+async function startActivePrompt() {
     stopActivePrompt();
-    refreshActivePrompt();  // Initial fetch
-    activePromptTimer = setInterval(refreshActivePrompt, ACTIVE_PROMPT_INTERVAL);
+    activePromptController = new AbortController();
+    const signal = activePromptController.signal;
+
+    // Singleflight async loop - only one request at a time
+    while (!signal.aborted) {
+        try {
+            await refreshActivePrompt(signal);
+            await abortableSleep(ACTIVE_PROMPT_INTERVAL, signal);
+        } catch (error) {
+            if (error.name === 'AbortError') break;
+            console.debug('Active prompt loop error:', error);
+            // Wait before retry on error
+            try { await abortableSleep(2000, signal); } catch { break; }
+        }
+    }
 }
 
 function stopActivePrompt() {
-    if (activePromptTimer) {
-        clearInterval(activePromptTimer);
-        activePromptTimer = null;
+    if (activePromptController) {
+        activePromptController.abort();
+        activePromptController = null;
     }
 }
 
@@ -850,7 +1251,7 @@ function connect() {
     socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
-        console.log('WebSocket connected');
+        console.log(`[v245] WebSocket connected (mode=${outputMode}, epoch=${modeEpoch})`);
         isConnecting = false;
 
         // Cancel overlay timer (but don't hide overlay yet - wait for terminal data)
@@ -886,6 +1287,12 @@ function connect() {
         }
 
         sendResize();
+
+        // Sync output mode with server (in case setOutputMode was called before socket opened)
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: 'set_mode', mode: outputMode }));
+        }
+
         startHeartbeat();
         startIdleCheck();  // Start idle connection monitoring
         startConnectionWatchdog();  // Catch stuck states
@@ -911,22 +1318,45 @@ function connect() {
         }
     };
 
+    let _firstDataReceived = false;
     socket.onmessage = (event) => {
         // Track all incoming data for idle detection
         lastDataReceived = Date.now();
 
         if (event.data instanceof Blob) {
+            // Binary PTY data - only process in full mode
+            if (outputMode !== 'full') {
+                console.debug('Ignoring binary data in tail mode');
+                return;
+            }
+            // Capture epoch BEFORE async operation to detect mode changes
+            const captureEpoch = modeEpoch;
+            const blobSize = event.data.size;
+            console.log(`[WS] Binary: ${blobSize} bytes (epoch=${captureEpoch})`);
+
             event.data.arrayBuffer().then((buffer) => {
-                terminal.write(new Uint8Array(buffer));
+                // Check if mode changed during async blob read
+                if (modeEpoch !== captureEpoch || outputMode !== 'full') {
+                    console.debug(`[WS] Discarding stale binary (epoch ${captureEpoch} vs ${modeEpoch})`);
+                    return;
+                }
+                queuedWrite(new Uint8Array(buffer));
+                // Force terminal refresh on first data
+                if (!_firstDataReceived) {
+                    _firstDataReceived = true;
+                    setTimeout(() => {
+                        if (fitAddon) fitAddon.fit();
+                        terminal.refresh(0, terminal.rows - 1);
+                    }, 50);
+                }
                 updateLastActivity();
-                // Hide loading overlay when terminal data arrives
                 const statusOverlay = document.getElementById('statusOverlay');
                 if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
                     statusOverlay.classList.add('hidden');
                 }
             });
         } else {
-            // Check for JSON messages (pong, queue updates, server ping, hello, etc.)
+            // Check for JSON messages (pong, queue updates, server ping, hello, tail, etc.)
             if (event.data.startsWith('{')) {
                 try {
                     const msg = JSON.parse(event.data);
@@ -939,11 +1369,20 @@ function connect() {
                             clearTimeout(helloTimer);
                             helloTimer = null;
                         }
-                        // Update status to show we're loading terminal content
-                        const statusText = document.getElementById('statusText');
-                        if (statusText) {
-                            statusText.textContent = 'Loading terminal...';
+                        // Hide overlay immediately on hello - connection is established
+                        // Don't wait for terminal data (which may not arrive in tail mode)
+                        const statusOverlay = document.getElementById('statusOverlay');
+                        if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
+                            statusOverlay.classList.add('hidden');
                         }
+                        return;
+                    }
+
+                    // Tail mode updates - lightweight text for Log view
+                    // Log view uses its own API, so we just acknowledge and skip
+                    if (msg.type === 'tail') {
+                        // Could optionally update a tail strip here
+                        // For now, just ignore - Log view uses /api/log
                         return;
                     }
 
@@ -965,7 +1404,12 @@ function connect() {
                     // Not JSON, treat as terminal data
                 }
             }
-            terminal.write(event.data);
+            // Text terminal data - only process in full mode (same as binary)
+            if (outputMode !== 'full') {
+                console.debug('Ignoring text data in tail mode');
+                return;
+            }
+            queuedWrite(event.data);
             updateLastActivity();
             // Hide loading overlay when terminal data arrives
             const statusOverlay = document.getElementById('statusOverlay');
@@ -1007,15 +1451,15 @@ function connect() {
         }
 
         if (event.code === 4003) {
-            // Target/repo switch - reconnect immediately to get new PTY
+            // Target/repo switch - reconnect after rate limit window
             console.log('Target switch: server closed connection, reconnecting...');
             statusText.textContent = 'Switching target...';
             statusOverlay.classList.remove('hidden');
-            // Reconnect quickly after target switch
+            // Wait 600ms to clear server's 500ms rate limit window
             reconnectDelay = INITIAL_RECONNECT_DELAY;
             reconnectTimer = setTimeout(() => {
                 connect();
-            }, 300);
+            }, 600);
             return;
         }
 
@@ -1090,6 +1534,42 @@ function sendResize() {
 }
 
 /**
+ * Set output mode: 'tail' or 'full'
+ * In tail mode, server sends lightweight text snapshots
+ * In full mode, server sends raw PTY bytes for xterm rendering
+ */
+function setOutputMode(mode) {
+    if (mode !== 'tail' && mode !== 'full') return;
+    if (mode === outputMode) return;
+
+    const oldMode = outputMode;
+    outputMode = mode;
+    modeEpoch++;  // Invalidate ALL in-flight operations from previous mode
+
+    console.log(`[MODE] v245 Switching ${oldMode} -> ${mode} (epoch=${modeEpoch})`);
+
+    // Clear queue on ANY mode change - prevents stale data from leaking
+    writeQueue = [];
+    queuedBytes = 0;
+    draining = false;
+
+    // Reset terminal when switching to full mode
+    if (mode === 'full' && terminal) {
+        terminal.reset();
+        console.log('[MODE] Terminal reset for fresh full-mode start');
+    }
+
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+            type: 'set_mode',
+            mode: mode
+        }));
+    } else {
+        console.warn(`[MODE] Cannot send set_mode - socket not open (state: ${socket?.readyState})`);
+    }
+}
+
+/**
  * Send input to terminal (binary format, same as main terminal)
  */
 const inputEncoder = new TextEncoder();
@@ -1152,11 +1632,11 @@ function setupTerminalFocus() {
 }
 
 /**
- * Load configuration
+ * Load configuration (with 5s timeout)
  */
 async function loadConfig() {
     try {
-        const response = await fetch(`/config?token=${token}`);
+        const response = await fetchWithTimeout(`/config?token=${token}`, {}, 5000);
         if (!response.ok) {
             console.error('Failed to load config');
             return;
@@ -1164,22 +1644,30 @@ async function loadConfig() {
         config = await response.json();
         await populateUI();  // await to ensure targets are loaded before log view
     } catch (error) {
-        console.error('Error loading config:', error);
+        if (error.name === 'AbortError') {
+            console.warn('loadConfig timed out');
+        } else {
+            console.error('Error loading config:', error);
+        }
     }
 }
 
 /**
- * Load current session from server
+ * Load current session from server (with 3s timeout)
  */
 async function loadCurrentSession() {
     try {
-        const response = await fetch(`/current-session?token=${token}`);
+        const response = await fetchWithTimeout(`/current-session?token=${token}`, {}, 3000);
         if (response.ok) {
             const data = await response.json();
             currentSession = data.session;
         }
     } catch (error) {
-        console.error('Error loading current session:', error);
+        if (error.name === 'AbortError') {
+            console.warn('loadCurrentSession timed out');
+        } else {
+            console.error('Error loading current session:', error);
+        }
     }
 }
 
@@ -1440,7 +1928,6 @@ async function switchRepo(session) {
             setTimeout(async () => {
                 await loadTargets();
                 refreshLogContent();
-                loadContextFile();
                 await reconcileQueue();  // Reconcile queue for new session
             }, 500);
         }, 1000);
@@ -1498,7 +1985,7 @@ function setupRepoDropdown() {
  */
 async function loadTargets() {
     try {
-        const response = await fetch(`/api/targets?token=${token}`);
+        const response = await fetchWithTimeout(`/api/targets?token=${token}`, {}, 5000);
         if (!response.ok) return;
 
         const data = await response.json();
@@ -1525,7 +2012,11 @@ async function loadTargets() {
         // Check for multi-project session without explicit target
         checkMultiProjectWarning(data);
     } catch (error) {
-        console.error('Error loading targets:', error);
+        if (error.name === 'AbortError') {
+            console.warn('loadTargets timed out');
+        } else {
+            console.error('Error loading targets:', error);
+        }
     }
 }
 
@@ -1602,67 +2093,71 @@ function renderTargetDropdown() {
 }
 
 /**
- * Select a target pane
+ * Select a target pane (optimistic - applies locally first, syncs in background)
  */
-async function selectTarget(targetId) {
+async function selectTarget(targetId, isInitialSync = false) {
     repoDropdown.classList.add('hidden');
 
-    if (targetId === activeTarget) return;
+    if (targetId === activeTarget && !isInitialSync) return;
 
-    // Show loading immediately when user taps target
     const statusOverlay = document.getElementById('statusOverlay');
     const statusText = document.getElementById('statusText');
-    if (statusOverlay && statusText) {
+    const previousTarget = activeTarget;
+
+    // === OPTIMISTIC: Apply target locally immediately ===
+    activeTarget = targetId;
+    localStorage.setItem('mto_active_target', targetId);
+    updateNavLabel();
+
+    // Reset Claude health state for new target
+    lastClaudeHealth = null;
+    claudeStartedAt = null;
+    updateClaudeCrashBanner(false);
+
+    // Show brief loading indicator (non-blocking)
+    if (statusOverlay && statusText && !isInitialSync) {
         statusText.textContent = 'Switching to target...';
         statusOverlay.classList.remove('hidden');
     }
 
+    // === BACKGROUND: Sync with server (don't block on this) ===
     try {
-        const response = await fetch(`/api/target/select?target_id=${encodeURIComponent(targetId)}&token=${token}`, {
-            method: 'POST',
-        });
+        const response = await fetchWithTimeout(
+            `/api/target/select?target_id=${encodeURIComponent(targetId)}&token=${token}`,
+            { method: 'POST' },
+            8000  // 8s timeout for target select
+        );
 
         if (response.status === 409) {
-            // Target no longer exists
+            // Target no longer exists - revert and show error
+            console.warn(`Target ${targetId} not found on server`);
+            activeTarget = previousTarget;
+            localStorage.setItem('mto_active_target', previousTarget || '');
+            updateNavLabel();
             showToast('Target pane not found', 'error');
-            statusOverlay.classList.add('hidden');
-            loadTargets();
+            loadTargets();  // Refresh list in background
             return;
         }
 
-        if (!response.ok) throw new Error('Failed to select target');
+        if (!response.ok) {
+            throw new Error(`Server returned ${response.status}`);
+        }
 
         const data = await response.json();
-        activeTarget = targetId;
-        localStorage.setItem('mto_active_target', targetId);
-        updateNavLabel();
-
-        // Reset Claude health state for new target
-        lastClaudeHealth = null;
-        claudeStartedAt = null;
-        updateClaudeCrashBanner(false);
+        console.log(`Target sync success: ${targetId} (epoch=${data.epoch})`);
 
         // === Hard context switch: clear terminal and force WebSocket reconnect ===
-        if (terminal) {
+        if (terminal && !isInitialSync) {
             terminal.clear();
             terminal.reset();
         }
 
         // Force WebSocket reconnect to get fresh capture-pane from new target
-        if (socket && socket.readyState === WebSocket.OPEN) {
-            console.log(`Target switch to ${targetId} (epoch=${data.epoch}), forcing reconnect`);
+        if (socket && socket.readyState === WebSocket.OPEN && !isInitialSync) {
+            console.log(`Target switch to ${targetId}, forcing reconnect`);
             intentionalClose = false;  // Allow auto-reconnect
             socket.close();
             // Reconnect will happen automatically via onclose handler
-        } else {
-            // Socket not open - need to connect directly
-            console.log(`Target switch to ${targetId}, socket not open - connecting directly`);
-            // Cancel any pending reconnect timers
-            if (reconnectTimer) {
-                clearTimeout(reconnectTimer);
-                reconnectTimer = null;
-            }
-            connect();
         }
 
         // Start health polling if visible
@@ -1670,21 +2165,32 @@ async function selectTarget(targetId) {
             startClaudeHealthPolling();
         }
 
-        // Reload targets to check cwd mismatch
-        await loadTargets();
+        // Reload targets to check cwd mismatch (background, don't await)
+        loadTargets();
 
-        // Refresh context-dependent views after short delay (let reconnect establish)
-        setTimeout(() => {
-            refreshLogContent();
-            loadContextFile();
-        }, 300);
+        // Refresh context-dependent views after short delay
+        if (!isInitialSync) {
+            setTimeout(() => {
+                refreshLogContent();
+            }, 300);
+        }
 
     } catch (error) {
-        console.error('Error selecting target:', error);
-        showToast('Failed to select target', 'error');
-        // Hide overlay on error
-        const statusOverlay = document.getElementById('statusOverlay');
-        if (statusOverlay) statusOverlay.classList.add('hidden');
+        // Handle timeout or network errors gracefully
+        if (error.name === 'AbortError') {
+            console.warn(`Target select timed out for ${targetId}`);
+            showToast('Target sync timed out - using cached', 'warning');
+        } else {
+            console.error('Error selecting target:', error);
+            showToast('Target sync failed - using cached', 'warning');
+        }
+        // Keep the optimistic local state - don't revert
+        // Server will catch up on next request
+    } finally {
+        // Always hide overlay
+        if (statusOverlay) {
+            statusOverlay.classList.add('hidden');
+        }
     }
 }
 
@@ -1721,7 +2227,7 @@ async function checkClaudeHealth() {
     if (document.visibilityState !== 'visible') return;
 
     try {
-        const response = await fetch(`/api/health/claude?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
+        const response = await apiFetch(`/api/health/claude?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
         if (!response.ok) return;
 
         const health = await response.json();
@@ -1769,7 +2275,7 @@ async function checkClaudeHealthAndShowBanner() {
     if (!activeTarget) return;
 
     try {
-        const response = await fetch(`/api/health/claude?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
+        const response = await apiFetch(`/api/health/claude?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
         if (!response.ok) return;
 
         const health = await response.json();
@@ -1849,26 +2355,39 @@ async function respawnClaude() {
 }
 
 /**
- * Start Claude health polling
+ * Start Claude health polling - singleflight async loop
+ * Only one request in flight at a time, pauses when document hidden
  */
-function startClaudeHealthPolling() {
-    // Stop any existing interval
+async function startClaudeHealthPolling() {
+    // Stop any existing loop
     stopClaudeHealthPolling();
+    claudeHealthController = new AbortController();
+    const signal = claudeHealthController.signal;
 
-    // Poll every 5 seconds
-    claudeHealthInterval = setInterval(checkClaudeHealth, 5000);
-
-    // Do an immediate check
-    checkClaudeHealth();
+    // Singleflight async loop - only one request at a time
+    while (!signal.aborted) {
+        try {
+            // Only poll when document is visible
+            if (document.visibilityState === 'visible') {
+                await checkClaudeHealth();
+            }
+            await abortableSleep(HEALTH_POLL_INTERVAL, signal);
+        } catch (error) {
+            if (error.name === 'AbortError') break;
+            console.debug('Health poll loop error:', error);
+            // Wait before retry on error
+            try { await abortableSleep(2000, signal); } catch { break; }
+        }
+    }
 }
 
 /**
  * Stop Claude health polling
  */
 function stopClaudeHealthPolling() {
-    if (claudeHealthInterval) {
-        clearInterval(claudeHealthInterval);
-        claudeHealthInterval = null;
+    if (claudeHealthController) {
+        claudeHealthController.abort();
+        claudeHealthController = null;
     }
     if (claudeCrashDebounceTimer) {
         clearTimeout(claudeCrashDebounceTimer);
@@ -2077,12 +2596,18 @@ function setupTargetSelector() {
     // Default to locked if not set
     targetLocked = savedLocked !== 'false';
 
-    // Return promise for saved target restoration (awaited before connect)
-    // This ensures tmux pane is synchronized before WebSocket connects
+    // Apply saved target OPTIMISTICALLY (locally only, don't block)
+    // Server sync happens in background - connect() proceeds immediately
     if (savedTarget) {
-        return selectTarget(savedTarget);
+        activeTarget = savedTarget;
+        updateNavLabel();
+        // Fire and forget - sync with server in background
+        selectTarget(savedTarget, true).catch(err => {
+            console.warn('Initial target sync failed:', err);
+        });
     }
-    return Promise.resolve();
+
+    // Don't return a promise - nothing to await
 }
 
 /**
@@ -3375,9 +3900,9 @@ function setupCommandHistory() {
 let currentView = 'log';  // 'log', 'terminal', 'context', 'touch'
 let transcriptText = '';  // Cached transcript text
 
-// Auto-refresh timer for log view
-let logAutoRefreshTimer = null;
-const LOG_AUTO_REFRESH_INTERVAL = 2000;  // Refresh every 2 seconds for real-time feel
+// Auto-refresh for log view - singleflight async loop
+let logRefreshController = null;  // AbortController for singleflight loop
+const LOG_REFRESH_INTERVAL = 5000;  // Wait 5s between requests
 
 // Active Prompt functions are defined earlier - these are aliases for compatibility
 function startTailViewport() { startActivePrompt(); }
@@ -3529,6 +4054,8 @@ function switchToLogView() {
         controlBarsContainer.classList.remove('hidden');
     }
     updateTabIndicator();
+    // Switch to tail mode - no xterm rendering, lightweight updates
+    setOutputMode('tail');
     // Reset scroll state - user should start at bottom when switching to log view
     userAtBottom = true;
     pendingLogContent = null;
@@ -3554,11 +4081,21 @@ function switchToTerminalView() {
         controlBarsContainer.classList.remove('hidden');
     }
     updateTabIndicator();
-    // Resize terminal to fit container
-    setTimeout(() => {
+
+    // CRITICAL ORDER: fit + resize FIRST, then set_mode
+    // The resize triggers tmux to redraw at the correct terminal size.
+    // If we set_mode first, tmux redraws at the OLD size → garbled output.
+    requestAnimationFrame(() => {
         if (fitAddon) fitAddon.fit();
         sendResize();
-    }, 100);
+        // Now switch to full mode - server starts forwarding PTY data
+        // The resize we just sent will trigger a clean tmux redraw
+        setOutputMode('full');
+        // Auto-focus terminal to enable keyboard input
+        if (terminal && isControlUnlocked) {
+            terminal.focus();
+        }
+    });
 }
 
 let transcriptSource = '';  // 'log' or 'capture'
@@ -4000,7 +4537,7 @@ async function loadLogContent() {
     try {
         // Include pane_id to avoid race condition with other tabs
         const paneParam = activeTarget ? `&pane_id=${encodeURIComponent(activeTarget)}` : '';
-        const response = await fetch(`/api/log?token=${token}${paneParam}`);
+        const response = await apiFetch(`/api/log?token=${token}${paneParam}`);
         if (!response.ok) {
             throw new Error('Failed to fetch log');
         }
@@ -4037,12 +4574,24 @@ async function loadLogContent() {
 
 /**
  * Render log entries in the hybrid view log section
+ * NON-BLOCKING: Uses chunked DOM insertion with yielding to prevent UI freezes
  * Parses conversation format: $ user | • Tool: | assistant text
  * @param {string|string[]} contentOrMessages - Either content string or array of messages
  * @param {boolean} cached - Whether content is from cache (after /clear)
  */
+const LOG_MAX_ENTRIES = 200;  // Cap DOM entries to prevent unbounded growth
+const LOG_CHUNK_SIZE = 10;    // Entries per chunk before yielding
+let logRenderAbort = null;    // AbortController for cancelling in-progress renders
+
 function renderLogEntries(contentOrMessages, cached = false) {
     if (!logContent) return;
+
+    // Cancel any in-progress render
+    if (logRenderAbort) {
+        logRenderAbort.abort();
+    }
+    logRenderAbort = new AbortController();
+    const signal = logRenderAbort.signal;
 
     // Handle both array (new API) and string (legacy/cache) input
     let blocks;
@@ -4060,12 +4609,6 @@ function renderLogEntries(contentOrMessages, cached = false) {
         return;
     }
 
-    // Show cached indicator if serving from cache
-    let cachedBanner = '';
-    if (cached) {
-        cachedBanner = '<div class="log-cached-banner">Showing cached log (session was cleared)</div>';
-    }
-
     // Group consecutive messages by role
     const messages = [];
     let currentGroup = null;
@@ -4077,20 +4620,16 @@ function renderLogEntries(contentOrMessages, cached = false) {
         let role, text;
 
         if (trimmed.startsWith('$ ')) {
-            // User message
             role = 'user';
-            text = trimmed.slice(2);  // Remove "$ " prefix
+            text = trimmed.slice(2);
         } else if (trimmed.startsWith('• ')) {
-            // Tool call
             role = 'tool';
             text = trimmed;
         } else {
-            // Assistant message
             role = 'assistant';
             text = trimmed;
         }
 
-        // Group consecutive assistant/tool messages together
         if (currentGroup && (
             (currentGroup.role === 'assistant' && role === 'assistant') ||
             (currentGroup.role === 'assistant' && role === 'tool') ||
@@ -4098,83 +4637,205 @@ function renderLogEntries(contentOrMessages, cached = false) {
         )) {
             currentGroup.blocks.push({ role, text });
         } else {
-            // Start new group
             if (currentGroup) messages.push(currentGroup);
             currentGroup = {
-                role: role === 'tool' ? 'assistant' : role,  // Tools are part of assistant turn
+                role: role === 'tool' ? 'assistant' : role,
                 blocks: [{ role, text }]
             };
         }
     }
     if (currentGroup) messages.push(currentGroup);
 
-    // Render message cards
-    let html = '';
-    for (const msg of messages) {
-        const roleLabel = msg.role === 'user' ? 'You' : 'Claude';
-        const roleClass = msg.role === 'user' ? 'user' : 'assistant';
+    // Create DOM elements (non-blocking via chunked insertion)
+    renderLogEntriesChunked(messages, cached, signal, contentOrMessages);
+}
 
-        html += `<div class="log-card ${roleClass}">`;
-        html += `<div class="log-card-header"><span class="log-role-badge">${roleLabel}</span></div>`;
-        html += `<div class="log-card-body">`;
+/**
+ * Chunked DOM insertion with yielding - prevents main thread blocking
+ */
+async function renderLogEntriesChunked(messages, cached, signal, contentOrMessages) {
+    // Clear existing content once
+    logContent.innerHTML = '';
 
-        for (const block of msg.blocks) {
-            if (block.role === 'tool') {
-                // Render tool call as collapsible
-                const toolMatch = block.text.match(/^• (\w+):?\s*(.*)/s);
-                if (toolMatch) {
-                    const toolName = toolMatch[1];
-                    const toolDetail = toolMatch[2] || '';
-                    // Truncate long details for summary
-                    const summary = toolDetail.length > 60 ? toolDetail.slice(0, 60) + '...' : toolDetail;
-                    const summaryKey = (summary || toolName).slice(0, 40).replace(/[^a-zA-Z0-9]/g, '_');
-                    html += `<details class="log-tool" data-tool="${toolName}" data-tool-key="${toolName}:${summaryKey}"><summary class="log-tool-summary"><span class="log-tool-name">${toolName}</span> <span class="log-tool-detail">${escapeHtml(summary)}</span></summary>`;
-                    html += `<div class="log-tool-content">${escapeHtml(toolDetail)}</div></details>`;
-                } else {
-                    html += `<div class="log-tool-inline">${escapeHtml(block.text)}</div>`;
-                }
-            } else if (block.role === 'user') {
-                // User text - plain with highlighting
-                html += `<div class="log-text user-text">${escapeHtml(block.text)}</div>`;
-            } else {
-                // Assistant text - render with markdown
-                try {
-                    html += `<div class="log-text assistant-text">${marked.parse(block.text)}</div>`;
-                } catch (e) {
-                    html += `<div class="log-text assistant-text">${escapeHtml(block.text)}</div>`;
-                }
-            }
-        }
-
-        html += `</div></div>`;
+    // Add cached banner if needed
+    if (cached) {
+        const banner = document.createElement('div');
+        banner.className = 'log-cached-banner';
+        banner.textContent = 'Showing cached log (session was cleared)';
+        logContent.appendChild(banner);
     }
 
-    logContent.innerHTML = cachedBanner + html;
+    // Process messages in chunks with yielding
+    for (let i = 0; i < messages.length; i += LOG_CHUNK_SIZE) {
+        if (signal.aborted) return;
 
-    // Schedule tool collapsing for idle time (non-blocking)
+        const chunk = messages.slice(i, i + LOG_CHUNK_SIZE);
+        const fragment = document.createDocumentFragment();
+
+        for (const msg of chunk) {
+            const card = createLogCard(msg);
+            fragment.appendChild(card);
+        }
+
+        logContent.appendChild(fragment);
+
+        // Yield to browser after each chunk (let UI breathe)
+        if (i + LOG_CHUNK_SIZE < messages.length) {
+            await yieldToMain();
+        }
+    }
+
+    if (signal.aborted) return;
+
+    // Cap DOM entries to prevent unbounded growth
+    while (logContent.children.length > LOG_MAX_ENTRIES) {
+        logContent.removeChild(logContent.firstChild);
+    }
+
+    // Schedule post-render work for idle time
     scheduleCollapse();
-
-    // Schedule super-collapse for runs of many tools (after regular collapse)
     scheduleSuperCollapse();
-
-    // Schedule plan file preview detection
     schedulePlanPreviews();
 
-    // Convert to string for extraction functions
+    // Extract suggestions and prompts
     const contentString = Array.isArray(contentOrMessages)
         ? contentOrMessages.join('\n\n')
         : (contentOrMessages || '');
-
-    // Extract and show suggestions from last message
     extractAndShowSuggestions(contentString);
+    extractPendingPrompt(contentString);
 
-    // Scroll to bottom after DOM updates (use requestAnimationFrame to ensure layout is complete)
+    // Scroll to bottom
     requestAnimationFrame(() => {
         logContent.scrollTop = logContent.scrollHeight;
     });
+}
 
-    // Extract pending prompts from last assistant message
-    extractPendingPrompt(contentString);
+/**
+ * Create a single log card DOM element
+ * DEFERRED MARKDOWN: Uses data-markdown attribute, parses lazily
+ */
+function createLogCard(msg) {
+    const card = document.createElement('div');
+    card.className = `log-card ${msg.role === 'user' ? 'user' : 'assistant'}`;
+
+    const header = document.createElement('div');
+    header.className = 'log-card-header';
+    header.innerHTML = `<span class="log-role-badge">${msg.role === 'user' ? 'You' : 'Claude'}</span>`;
+    card.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'log-card-body';
+
+    for (const block of msg.blocks) {
+        if (block.role === 'tool') {
+            const toolMatch = block.text.match(/^• (\w+):?\s*(.*)/s);
+            if (toolMatch) {
+                const toolName = toolMatch[1];
+                const toolDetail = toolMatch[2] || '';
+                const summary = toolDetail.length > 60 ? toolDetail.slice(0, 60) + '...' : toolDetail;
+                const summaryKey = (summary || toolName).slice(0, 40).replace(/[^a-zA-Z0-9]/g, '_');
+
+                const details = document.createElement('details');
+                details.className = 'log-tool';
+                details.dataset.tool = toolName;
+                details.dataset.toolKey = `${toolName}:${summaryKey}`;
+
+                const summaryEl = document.createElement('summary');
+                summaryEl.className = 'log-tool-summary';
+                summaryEl.innerHTML = `<span class="log-tool-name">${toolName}</span> <span class="log-tool-detail">${escapeHtml(summary)}</span>`;
+                details.appendChild(summaryEl);
+
+                const content = document.createElement('div');
+                content.className = 'log-tool-content';
+                content.textContent = toolDetail;
+                details.appendChild(content);
+
+                body.appendChild(details);
+            } else {
+                const div = document.createElement('div');
+                div.className = 'log-tool-inline';
+                div.textContent = block.text;
+                body.appendChild(div);
+            }
+        } else if (block.role === 'user') {
+            const div = document.createElement('div');
+            div.className = 'log-text user-text';
+            div.textContent = block.text;
+            body.appendChild(div);
+        } else {
+            // Assistant text - DEFERRED markdown parsing
+            const div = document.createElement('div');
+            div.className = 'log-text assistant-text';
+            // Store raw text, parse lazily when visible
+            div.dataset.markdown = block.text;
+            // Show plain text initially (fast)
+            div.textContent = block.text.slice(0, 500) + (block.text.length > 500 ? '...' : '');
+            // Schedule markdown parsing for idle time
+            scheduleMarkdownParse(div);
+            body.appendChild(div);
+        }
+    }
+
+    card.appendChild(body);
+    return card;
+}
+
+/**
+ * Yield to main thread - allows browser to handle events/paint
+ */
+function yieldToMain() {
+    return new Promise(resolve => {
+        if ('requestIdleCallback' in window) {
+            requestIdleCallback(resolve, { timeout: 50 });
+        } else {
+            setTimeout(resolve, 0);
+        }
+    });
+}
+
+/**
+ * Schedule markdown parsing for idle time
+ */
+let markdownParseQueue = [];
+let markdownParseScheduled = false;
+
+function scheduleMarkdownParse(element) {
+    markdownParseQueue.push(element);
+    if (!markdownParseScheduled) {
+        markdownParseScheduled = true;
+        if ('requestIdleCallback' in window) {
+            requestIdleCallback(processMarkdownQueue, { timeout: 100 });
+        } else {
+            setTimeout(processMarkdownQueue, 16);
+        }
+    }
+}
+
+function processMarkdownQueue(deadline) {
+    const timeLimit = deadline?.timeRemaining ? deadline.timeRemaining() : 8;
+    const start = performance.now();
+
+    while (markdownParseQueue.length > 0 && (performance.now() - start) < timeLimit) {
+        const el = markdownParseQueue.shift();
+        if (el.dataset.markdown && el.isConnected) {
+            try {
+                el.innerHTML = marked.parse(el.dataset.markdown);
+                delete el.dataset.markdown;
+            } catch (e) {
+                // Keep plain text on parse error
+            }
+        }
+    }
+
+    if (markdownParseQueue.length > 0) {
+        if ('requestIdleCallback' in window) {
+            requestIdleCallback(processMarkdownQueue, { timeout: 100 });
+        } else {
+            setTimeout(processMarkdownQueue, 16);
+        }
+    } else {
+        markdownParseScheduled = false;
+    }
 }
 
 /**
@@ -5755,24 +6416,36 @@ function escapeHtml(text) {
 }
 
 /**
- * Start auto-refresh for log view
+ * Start auto-refresh for log view - singleflight async loop
  */
-function startLogAutoRefresh() {
-    stopLogAutoRefresh();  // Clear any existing timer
-    logAutoRefreshTimer = setInterval(() => {
-        if (currentView === 'log') {
-            refreshLogContent();
+async function startLogAutoRefresh() {
+    stopLogAutoRefresh();
+    logRefreshController = new AbortController();
+    const signal = logRefreshController.signal;
+
+    // Singleflight async loop - only one request at a time
+    while (!signal.aborted) {
+        try {
+            // Skip if page not visible or not in log view
+            if (document.visibilityState === 'visible' && currentView === 'log') {
+                await refreshLogContent(signal);
+            }
+            await abortableSleep(LOG_REFRESH_INTERVAL, signal);
+        } catch (error) {
+            if (error.name === 'AbortError') break;
+            console.debug('Log refresh loop error:', error);
+            try { await abortableSleep(2000, signal); } catch { break; }
         }
-    }, LOG_AUTO_REFRESH_INTERVAL);
+    }
 }
 
 /**
  * Stop auto-refresh for log view
  */
 function stopLogAutoRefresh() {
-    if (logAutoRefreshTimer) {
-        clearInterval(logAutoRefreshTimer);
-        logAutoRefreshTimer = null;
+    if (logRefreshController) {
+        logRefreshController.abort();
+        logRefreshController = null;
     }
 }
 
@@ -5792,18 +6465,18 @@ function simpleHash(str) {
 
 /**
  * Refresh log content without resetting logLoaded flag
- * (for auto-refresh to get new content)
+ * Uses singleflight pattern - caller manages concurrency via AbortController
  */
 // Store pending content when user is scrolling
 let pendingLogContent = null;
 
-async function refreshLogContent() {
+async function refreshLogContent(signal) {
     if (!logContent) return;
 
     try {
         // Include pane_id to avoid race condition with other tabs
         const paneParam = activeTarget ? `&pane_id=${encodeURIComponent(activeTarget)}` : '';
-        const response = await fetch(`/api/log?token=${token}${paneParam}`);
+        const response = await apiFetch(`/api/log?token=${token}${paneParam}`, { signal });
         if (!response.ok) return;
 
         const data = await response.json();
@@ -5835,7 +6508,7 @@ async function refreshLogContent() {
         // Load suggestions from terminal capture (not JSONL log)
         loadTerminalSuggestions();
     } catch (error) {
-        // Silently fail on auto-refresh
+        if (error.name === 'AbortError') throw error;  // Re-throw abort
         console.debug('Log auto-refresh failed:', error);
     }
 }
@@ -5919,7 +6592,13 @@ function sendLogCommand() {
     logInput.dataset.autoSuggestion = 'false';
 
     // Add to command history
-    addToHistory(command);
+    if (command && commandHistory[commandHistory.length - 1] !== command) {
+        commandHistory.push(command);
+        if (commandHistory.length > MAX_HISTORY_SIZE) {
+            commandHistory.shift();
+        }
+        localStorage.setItem('terminalHistory', JSON.stringify(commandHistory));
+    }
 
     // Force refresh log after a short delay
     setTimeout(() => {
@@ -6141,7 +6820,8 @@ function setupHybridView() {
                             showToast(`Refresh failed: ${data.error}`, 'error');
                         } else if (data.content && terminal) {
                             terminal.clear();
-                            terminal.write(data.content);
+                            // Use queued write to avoid blocking
+                            queuedWrite(data.content);
                             showToast('Terminal refreshed', 'success');
                         } else if (!data.content) {
                             showToast('No terminal content', 'info');
@@ -8531,8 +9211,11 @@ function stopDevStatusPolling() {
 }
 
 async function refreshDevStatus() {
+    // Skip if page not visible (save resources)
+    if (document.visibilityState !== 'visible') return;
+
     try {
-        const resp = await fetch(`/api/preview/status?token=${token}`);
+        const resp = await apiFetch(`/api/preview/status?token=${token}`);
         const data = await resp.json();
         devPreviewStatus = {};
         data.services?.forEach(s => {
@@ -8717,7 +9400,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupViewportHandler();
     setupClipboard();
     setupRepoDropdown();
-    const targetPromise = setupTargetSelector();  // Returns promise for saved target sync
+    setupTargetSelector();  // Non-blocking - applies saved target locally, syncs in background
     setupNewWindowModal();
     // setupFileSearch removed - search now in docs modal
     setupJumpToBottom();
@@ -8745,19 +9428,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         inputBar.scrollLeft = inputBar.scrollWidth;
     }
 
-    // Load current session first, then config
-    await loadCurrentSession();
-    await loadConfig();
-
-    // Load local queue and reconcile with server
-    await reconcileQueue();
-
-    // Wait for saved target to sync before connecting
-    // This ensures tmux pane is switched and PTY will attach to correct pane
-    await targetPromise;
-
+    // CRITICAL: Connect IMMEDIATELY - don't block on any API calls
+    // WebSocket connection is independent of config/session/queue
     connect();
 
     // Start with log view as primary
     switchToLogView();
+
+    // Background init: Load session, config, queue in parallel (non-blocking)
+    // These enhance the UI but are not required for basic terminal operation
+    Promise.all([
+        loadCurrentSession().catch(e => console.warn('loadCurrentSession failed:', e)),
+        loadConfig().catch(e => console.warn('loadConfig failed:', e)),
+    ]).then(() => {
+        // Reconcile queue after session is known (needs currentSession)
+        reconcileQueue().catch(e => console.warn('reconcileQueue failed:', e));
+    });
 });
