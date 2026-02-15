@@ -80,6 +80,9 @@ class Config:
     font_size: int = 16
     scrollback: int = 20000
 
+    # Auto-setup: create/adopt tmux session on startup
+    auto_setup: bool = True
+
     # Project context (set by discovery)
     project_root: Optional[Path] = None
 
@@ -114,6 +117,7 @@ class Config:
             "theme": self.theme,
             "font_size": self.font_size,
             "scrollback": self.scrollback,
+            "auto_setup": self.auto_setup,
         }
 
     def to_yaml(self) -> str:
@@ -174,6 +178,8 @@ def load_config(path: Optional[Path] = None) -> Config:
         config.font_size = int(data["font_size"])
     if "scrollback" in data:
         config.scrollback = int(data["scrollback"])
+    if "auto_setup" in data:
+        config.auto_setup = bool(data["auto_setup"])
 
     # Quick commands
     if "quick_commands" in data:

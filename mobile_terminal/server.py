@@ -1035,6 +1035,291 @@ def list_tmux_sessions(prefix: str = "") -> list:
         return []
 
 
+def _tmux_session_exists(session: str) -> bool:
+    """Check if a tmux session exists."""
+    try:
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", session],
+            capture_output=True, timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _list_session_windows(session: str) -> list:
+    """List windows in a tmux session with their pane info.
+
+    Returns list of dicts with window_index, window_name, pane_id, cwd.
+    Only returns the first pane per window.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "tmux", "list-panes", "-s", "-t", session,
+                "-F", "#{window_index}|#{window_name}|#{pane_id}|#{pane_current_path}"
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+
+        windows = []
+        seen_indices = set()
+        for line in result.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = line.strip().split("|", 3)
+            if len(parts) < 4:
+                continue
+            win_idx = parts[0]
+            # Only take first pane per window
+            if win_idx in seen_indices:
+                continue
+            seen_indices.add(win_idx)
+            windows.append({
+                "window_index": win_idx,
+                "window_name": parts[1],
+                "pane_id": parts[2],
+                "cwd": parts[3],
+            })
+        return windows
+    except Exception as e:
+        logger.error(f"auto_setup: error listing session windows: {e}")
+        return []
+
+
+def _match_repo_to_window(repo, windows: list) -> Optional[dict]:
+    """Match a repo to an existing tmux window using three-pass strategy.
+
+    1. Exact name match (case-insensitive)
+    2. Prefix match (handles suffixed names like 'geo-cv-a3f2')
+    3. cwd match (resolved paths)
+    """
+    repo_label_lower = repo.label.lower()
+
+    # Pass 1: exact name match
+    for w in windows:
+        if w["window_name"].lower() == repo_label_lower:
+            return w
+
+    # Pass 2: prefix match (window name starts with repo label)
+    for w in windows:
+        if w["window_name"].lower().startswith(repo_label_lower):
+            return w
+
+    # Pass 3: cwd match
+    try:
+        repo_resolved = str(Path(repo.path).resolve())
+    except Exception:
+        return None
+    for w in windows:
+        try:
+            if str(Path(w["cwd"]).resolve()) == repo_resolved:
+                return w
+        except Exception:
+            continue
+
+    return None
+
+
+def _get_pane_command(pane_id: str) -> Optional[str]:
+    """Get the foreground command running in a tmux pane."""
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_current_command}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or None
+        return None
+    except Exception:
+        return None
+
+
+def _create_tmux_window(session: str, window_name: str, path: str) -> dict:
+    """Create a new tmux window in a session.
+
+    Returns dict with target_id and pane_id.
+    Raises RuntimeError on failure.
+    """
+    result = subprocess.run(
+        [
+            "tmux", "new-window",
+            "-t", f"{session}:",
+            "-n", window_name,
+            "-c", path,
+            "-P", "-F", "#{window_index}:#{pane_index}|#{pane_id}"
+        ],
+        capture_output=True, text=True, timeout=10,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Failed to create window")
+
+    output = result.stdout.strip()
+    if "|" not in output:
+        raise RuntimeError(f"Unexpected tmux output format: '{output}'")
+
+    parts = output.split("|")
+    return {
+        "target_id": parts[0],
+        "pane_id": parts[1] if len(parts) > 1 else None,
+    }
+
+
+async def _send_startup_command(pane_id: str, command: str, delay_seconds: float = 0.3):
+    """Send a startup command to a tmux pane after a delay."""
+    await asyncio.sleep(delay_seconds)
+    try:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "-l", command],
+            capture_output=True, timeout=5,
+        )
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "Enter"],
+            capture_output=True, timeout=5,
+        )
+        logger.info(f"auto_setup: sent startup command '{command}' to pane {pane_id}")
+    except Exception as e:
+        logger.error(f"auto_setup: failed to send startup command to {pane_id}: {e}")
+
+
+async def ensure_tmux_setup(config) -> dict:
+    """Create or adopt a tmux session, ensuring all configured repos have windows.
+
+    Returns a summary dict with session status, adopted/created windows, and any errors.
+    """
+    session = config.session_name
+    result = {
+        "session": session,
+        "created_session": False,
+        "adopted_windows": [],
+        "created_windows": [],
+        "skipped_commands": [],
+        "errors": [],
+    }
+
+    # Filter repos belonging to this session
+    repos = [r for r in config.repos if r.session == session]
+    if not repos:
+        logger.info(f"auto_setup: no repos configured for session '{session}', skipping")
+        return result
+
+    handled_repos = set()
+
+    # Check if session exists, create if not
+    if not _tmux_session_exists(session):
+        first_repo = repos[0]
+        first_path = str(Path(first_repo.path).resolve())
+
+        if not Path(first_repo.path).exists():
+            msg = f"auto_setup: first repo path does not exist: {first_repo.path}"
+            logger.error(msg)
+            result["errors"].append(msg)
+            return result
+
+        try:
+            # Sanitize window name
+            win_name = re.sub(r'[^a-zA-Z0-9_.-]', '', first_repo.label)[:50] or "window"
+            proc = subprocess.run(
+                ["tmux", "new-session", "-d", "-s", session, "-n", win_name, "-c", first_path],
+                capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode != 0:
+                msg = f"auto_setup: failed to create session: {proc.stderr.strip()}"
+                logger.error(msg)
+                result["errors"].append(msg)
+                return result
+
+            result["created_session"] = True
+            handled_repos.add(first_repo.label)
+            result["created_windows"].append(first_repo.label)
+            logger.info(f"auto_setup: created session '{session}' with window '{win_name}'")
+
+            # Send startup command for the newly created first window
+            if first_repo.startup_command:
+                # Get pane ID of the first window
+                windows = _list_session_windows(session)
+                if windows:
+                    pane_id = windows[0]["pane_id"]
+                    delay = first_repo.startup_delay_ms / 1000.0
+                    asyncio.create_task(
+                        _send_startup_command(pane_id, first_repo.startup_command, delay)
+                    )
+                    logger.info(f"auto_setup: queued startup command for '{first_repo.label}'")
+
+        except Exception as e:
+            msg = f"auto_setup: exception creating session: {e}"
+            logger.error(msg)
+            result["errors"].append(msg)
+            return result
+    else:
+        logger.info(f"auto_setup: session '{session}' already exists, adopting")
+
+    # List existing windows and match remaining repos
+    windows = _list_session_windows(session)
+
+    for repo in repos:
+        if repo.label in handled_repos:
+            continue
+
+        matched = _match_repo_to_window(repo, windows)
+        if matched:
+            result["adopted_windows"].append(repo.label)
+            logger.info(
+                f"auto_setup: adopted window '{matched['window_name']}' "
+                f"(index {matched['window_index']}) for repo '{repo.label}'"
+            )
+            # Never send startup commands to adopted windows
+            if repo.startup_command:
+                result["skipped_commands"].append(repo.label)
+        else:
+            # Create a new window for this repo
+            repo_path = Path(repo.path)
+            if not repo_path.exists():
+                msg = f"auto_setup: repo path does not exist: {repo.path}"
+                logger.warning(msg)
+                result["errors"].append(msg)
+                continue
+
+            try:
+                win_name = re.sub(r'[^a-zA-Z0-9_.-]', '', repo.label)[:50] or "window"
+                win_info = _create_tmux_window(session, win_name, str(repo_path.resolve()))
+                result["created_windows"].append(repo.label)
+                logger.info(f"auto_setup: created window '{win_name}' for repo '{repo.label}'")
+
+                # Send startup command only for newly created windows with a shell
+                if repo.startup_command and win_info.get("pane_id"):
+                    pane_cmd = _get_pane_command(win_info["pane_id"])
+                    shell_names = {"bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh"}
+                    if pane_cmd and pane_cmd.lower() in shell_names:
+                        delay = repo.startup_delay_ms / 1000.0
+                        asyncio.create_task(
+                            _send_startup_command(win_info["pane_id"], repo.startup_command, delay)
+                        )
+                        logger.info(f"auto_setup: queued startup command for '{repo.label}'")
+                    else:
+                        result["skipped_commands"].append(repo.label)
+                        logger.info(
+                            f"auto_setup: skipped startup command for '{repo.label}' "
+                            f"(pane running '{pane_cmd}')"
+                        )
+            except RuntimeError as e:
+                msg = f"auto_setup: failed to create window for '{repo.label}': {e}"
+                logger.error(msg)
+                result["errors"].append(msg)
+
+    summary = (
+        f"auto_setup: session='{session}' created={result['created_session']} "
+        f"adopted={len(result['adopted_windows'])} created={len(result['created_windows'])} "
+        f"errors={len(result['errors'])}"
+    )
+    logger.info(summary)
+
+    return result
+
+
 def _sigchld_handler(signum, frame):
     """Reap zombie child processes."""
     try:
@@ -1089,6 +1374,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.target_log_mapping = {}  # Maps pane_id -> {"path": str, "pinned": bool}
     app.state.last_restart_time = 0.0  # Timestamp of last server restart request
     app.state.target_epoch = 0  # Incremented on each target switch for cache invalidation
+    app.state.setup_result = None  # Result from ensure_tmux_setup()
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -1133,6 +1419,16 @@ def create_app(config: Config) -> FastAPI:
     async def health():
         """Health check endpoint."""
         return {"status": "ok", "version": "0.2.0"}
+
+    @app.get("/api/setup-status")
+    async def setup_status(token: Optional[str] = Query(None)):
+        """Return tmux auto-setup status and result."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return {
+            "auto_setup": config.auto_setup,
+            "result": app.state.setup_result,
+        }
 
     @app.post("/restart")
     async def restart_server(token: Optional[str] = Query(None)):
@@ -1459,41 +1755,9 @@ def create_app(config: Config) -> FastAPI:
         path = str(repo_path.resolve())
 
         try:
-            # Create tmux window: -t session: (trailing colon) targets the session
-            # and lets tmux auto-assign the next available window index
-            result = subprocess.run(
-                [
-                    "tmux", "new-window",
-                    "-t", f"{session}:",
-                    "-n", final_name,
-                    "-c", path,
-                    "-P", "-F", "#{window_index}:#{pane_index}|#{pane_id}"
-                ],
-                capture_output=True, text=True, timeout=10
-            )
-
-            if result.returncode != 0:
-                error_msg = result.stderr.strip() or "Failed to create window"
-                # Check if session doesn't exist
-                if "can't find" in error_msg.lower() or "no such session" in error_msg.lower():
-                    return JSONResponse({
-                        "error": f"Session '{session}' not found. Create it first with: tmux new -s {session}"
-                    }, status_code=400)
-                return JSONResponse({"error": error_msg}, status_code=500)
-
-            output = result.stdout.strip()
-            stderr = result.stderr.strip()
-            if "|" not in output:
-                if not output:
-                    error_msg = f"tmux new-window returned empty output (stderr: {stderr or 'none'})"
-                else:
-                    error_msg = f"tmux output missing expected format: '{output}'"
-                logger.error(f"Window creation failed: {error_msg}")
-                return JSONResponse({"error": error_msg}, status_code=500)
-
-            parts = output.split("|")
-            target_id = parts[0]  # "window_index:pane_index"
-            pane_id = parts[1] if len(parts) > 1 else None
+            win_info = _create_tmux_window(session, final_name, path)
+            target_id = win_info["target_id"]
+            pane_id = win_info.get("pane_id")
 
             # Audit log the action
             app.state.audit_log.log("window_create", {
@@ -1523,30 +1787,17 @@ def create_app(config: Config) -> FastAPI:
                         "error": "startup_command exceeds 200 character limit"
                     }, status_code=400)
 
-                startup_delay = repo.startup_delay_ms / 1000.0  # Convert to seconds
+                startup_delay = repo.startup_delay_ms / 1000.0
 
-                async def start_claude():
-                    await asyncio.sleep(startup_delay)  # Wait for shell to be ready
-                    try:
-                        # Use send-keys -l (literal) to avoid shell interpretation + separate Enter
-                        subprocess.run(
-                            ["tmux", "send-keys", "-t", pane_id, "-l", startup_cmd],
-                            capture_output=True, timeout=5
-                        )
-                        subprocess.run(
-                            ["tmux", "send-keys", "-t", pane_id, "Enter"],
-                            capture_output=True, timeout=5
-                        )
-                        logger.info(f"Started '{startup_cmd}' in pane {pane_id}")
-                        app.state.audit_log.log("startup_command_exec", {
-                            "pane_id": pane_id,
-                            "command": startup_cmd,
-                            "repo_label": repo_label
-                        })
-                    except Exception as e:
-                        logger.error(f"Failed to start command: {e}")
+                async def _send_and_audit():
+                    await _send_startup_command(pane_id, startup_cmd, startup_delay)
+                    app.state.audit_log.log("startup_command_exec", {
+                        "pane_id": pane_id,
+                        "command": startup_cmd,
+                        "repo_label": repo_label
+                    })
 
-                asyncio.create_task(start_claude())
+                asyncio.create_task(_send_and_audit())
 
             return {
                 "success": True,
@@ -1559,6 +1810,13 @@ def create_app(config: Config) -> FastAPI:
                 "auto_start_claude": auto_start_claude
             }
 
+        except RuntimeError as e:
+            error_msg = str(e)
+            if "can't find" in error_msg.lower() or "no such session" in error_msg.lower():
+                return JSONResponse({
+                    "error": f"Session '{session}' not found. Create it first with: tmux new -s {session}"
+                }, status_code=400)
+            return JSONResponse({"error": error_msg}, status_code=500)
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "Timeout creating window"}, status_code=504)
         except Exception as e:
@@ -6070,9 +6328,23 @@ Only the top 1–3 risks worth caring about.
 
     @app.on_event("startup")
     async def startup():
-        """Start input queue and command queue on startup."""
+        """Start input queue and command queue on startup, run auto-setup if enabled."""
         app.state.input_queue.start()
         app.state.command_queue.start()
+
+        # Auto-setup: create/adopt tmux session with configured repo windows
+        if config.auto_setup:
+            try:
+                setup_result = await ensure_tmux_setup(config)
+                app.state.setup_result = setup_result
+                if setup_result["created_session"]:
+                    logger.info(f"auto_setup: created new session '{config.session_name}'")
+                if setup_result["errors"]:
+                    for err in setup_result["errors"]:
+                        logger.warning(f"auto_setup: {err}")
+            except Exception as e:
+                logger.error(f"auto_setup: failed: {e}")
+                app.state.setup_result = {"error": str(e)}
 
         if app.state.no_auth:
             url = f"http://localhost:{config.port}/"

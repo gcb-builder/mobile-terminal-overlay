@@ -61,6 +61,11 @@ def parse_args() -> argparse.Namespace:
         help="Disable auto-discovery of project context",
     )
     parser.add_argument(
+        "--no-auto-setup",
+        action="store_true",
+        help="Disable automatic tmux session creation/adoption on startup",
+    )
+    parser.add_argument(
         "--print-config",
         action="store_true",
         help="Print resolved config as YAML and exit",
@@ -109,6 +114,8 @@ def main() -> int:
         config.no_auth = False  # --token implies auth required
     if args.require_token:
         config.no_auth = False
+    if args.no_auto_setup:
+        config.auto_setup = False
 
     # Print config and exit if requested
     if args.print_config:
@@ -117,6 +124,12 @@ def main() -> int:
 
     # Set up logging
     log_level = "debug" if args.verbose else "info"
+    # Also configure the application logger (not just uvicorn)
+    import logging
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s:%(name)s:%(message)s"
+    )
 
     # Create and run app
     app = create_app(config)
