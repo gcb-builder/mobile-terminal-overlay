@@ -16,6 +16,12 @@ repos:
 # Role prefixes (from CLAUDE.md discovery)
 role_prefixes: []
 
+# Per-device overrides (keyed by Tailscale hostname)
+devices:
+  titan2:  # Unihertz Titan 2 - TODO: update hostname when on Tailscale
+    font_size: 12
+    physical_kb: true
+
 # UI settings
 theme: dark
 font_size: 13

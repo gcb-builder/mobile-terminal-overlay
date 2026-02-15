@@ -37,6 +37,13 @@ class ContextButton:
 
 
 @dataclass
+class DeviceConfig:
+    """Per-device overrides, keyed by Tailscale hostname."""
+    font_size: Optional[int] = None
+    physical_kb: bool = False
+
+
+@dataclass
 class Repo:
     """A repository/workspace configuration."""
     label: str  # Display name
@@ -79,6 +86,9 @@ class Config:
     theme: str = "dark"  # dark | light | auto
     font_size: int = 16
     scrollback: int = 20000
+
+    # Per-device overrides (keyed by Tailscale hostname)
+    devices: Dict[str, DeviceConfig] = field(default_factory=dict)
 
     # Auto-setup: create/adopt tmux session on startup
     auto_setup: bool = True
@@ -205,6 +215,14 @@ def load_config(path: Optional[Path] = None) -> Config:
             )
             for cb in data["context_buttons"]
         ]
+
+    # Device overrides
+    if "devices" in data:
+        for hostname, dev in data["devices"].items():
+            config.devices[hostname] = DeviceConfig(
+                font_size=int(dev["font_size"]) if dev.get("font_size") else None,
+                physical_kb=bool(dev.get("physical_kb", False)),
+            )
 
     # Repos
     if "repos" in data:

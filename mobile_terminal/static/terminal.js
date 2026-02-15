@@ -13,6 +13,8 @@ const urlParams = new URLSearchParams(window.location.search);
 const token = urlParams.get('token') || '';
 const paramFontSize = urlParams.get('font_size');
 const paramPhysicalKb = urlParams.get('physical_kb');
+// Physical keyboard flag: URL param is immediate, server config updates after load
+let isPhysicalKb = paramPhysicalKb === '1';
 
 // Persistent client ID for request tracking (helps debug duplicate requests)
 const clientId = sessionStorage.getItem('mto_client_id') || crypto.randomUUID();
@@ -1623,7 +1625,7 @@ function setupTerminalFocus() {
     terminal.textarea.setAttribute('spellcheck', 'false');
     // Only set inputmode='text' for soft keyboard devices
     // Physical keyboard devices (Titan 2) skip this to avoid soft keyboard popup
-    if (paramPhysicalKb !== '1') {
+    if (!isPhysicalKb) {
         terminal.textarea.setAttribute('inputmode', 'text');
     }
 
@@ -1649,6 +1651,13 @@ async function loadConfig() {
         if (!paramFontSize && config.font_size && terminal) {
             terminal.options.fontSize = config.font_size;
             fitAddon.fit();
+        }
+        // Apply server-detected physical keyboard (Tailscale device detection)
+        if (config.physical_kb && !isPhysicalKb) {
+            isPhysicalKb = true;
+            if (terminal?.textarea) {
+                terminal.textarea.removeAttribute('inputmode');
+            }
         }
         await populateUI();  // await to ensure targets are loaded before log view
     } catch (error) {
@@ -2863,7 +2872,7 @@ function setupViewportHandler() {
 
     // Scroll terminal into view when keyboard opens (only if already at bottom)
     // Skip on physical keyboard devices where no soft keyboard resize occurs
-    if (paramPhysicalKb !== '1' && window.visualViewport) {
+    if (!isPhysicalKb && window.visualViewport) {
         window.visualViewport.addEventListener('resize', () => {
             // Only auto-scroll if user was already at bottom (don't interrupt reading)
             const viewport = terminal.element?.querySelector('.xterm-viewport');

@@ -819,7 +819,7 @@ from fastapi import FastAPI, File, Query, Request, UploadFile, WebSocket, WebSoc
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import Config, Repo
+from .config import Config, DeviceConfig, Repo
 
 logger = logging.getLogger(__name__)
 
@@ -1336,6 +1336,28 @@ def _sigchld_handler(signum, frame):
 signal.signal(signal.SIGCHLD, _sigchld_handler)
 
 
+def _resolve_device(request: Request, devices: dict) -> Optional[DeviceConfig]:
+    """Resolve client IP to a Tailscale hostname and return matching DeviceConfig."""
+    if not devices:
+        return None
+    client_ip = request.client.host if request.client else None
+    if not client_ip:
+        return None
+    try:
+        result = subprocess.run(
+            ["tailscale", "whois", "--json", client_ip],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            info = json.loads(result.stdout)
+            hostname = info.get("Node", {}).get("ComputedName", "")
+            if hostname in devices:
+                return devices[hostname]
+    except Exception:
+        pass
+    return None
+
+
 def create_app(config: Config) -> FastAPI:
     """
     Create FastAPI application with configured routes.
@@ -1409,11 +1431,17 @@ def create_app(config: Config) -> FastAPI:
         )
 
     @app.get("/config")
-    async def get_config(token: Optional[str] = Query(None)):
-        """Return client configuration as JSON."""
+    async def get_config(request: Request, token: Optional[str] = Query(None)):
+        """Return client configuration as JSON, with per-device overrides."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        return app.state.config.to_dict()
+        result = app.state.config.to_dict()
+        device = _resolve_device(request, app.state.config.devices)
+        if device:
+            if device.font_size is not None:
+                result["font_size"] = device.font_size
+            result["physical_kb"] = device.physical_kb
+        return result
 
     @app.get("/health")
     async def health():
