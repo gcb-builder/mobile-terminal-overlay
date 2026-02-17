@@ -4,8 +4,8 @@
  * Connects xterm.js to the WebSocket backend for tmux relay.
  */
 
-// VERSION DIAGNOSTIC - if you see this in console, browser has v245 code
-console.log('=== TERMINAL.JS v245 EPOCH SYSTEM LOADED ===');
+// VERSION DIAGNOSTIC - if you see this in console, browser has v247 code
+console.log('=== TERMINAL.JS v247 PERMISSION BANNER + V2 MESSAGES ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 
 // Get token from URL (may be null if --no-auth)
@@ -1364,6 +1364,12 @@ function connect() {
             if (event.data.startsWith('{')) {
                 try {
                     const msg = JSON.parse(event.data);
+
+                    // v2 typed message envelope — route to handler and return
+                    if (msg.v === 2) {
+                        handleTypedMessage(msg);
+                        return;
+                    }
 
                     // Server hello handshake - confirms connection is fully established
                     if (msg.type === 'hello') {
@@ -4804,7 +4810,19 @@ function createLogCard(msg) {
     const body = document.createElement('div');
     body.className = 'log-card-body';
 
-    for (const block of msg.blocks) {
+    for (let bi = 0; bi < msg.blocks.length; bi++) {
+        const block = msg.blocks[bi];
+        // Inline question card for AskUserQuestion entries
+        // Collect the ❓ line + subsequent numbered-option lines into one card
+        if (block.text && block.text.startsWith('❓')) {
+            let qText = block.text;
+            while (bi + 1 < msg.blocks.length && /^\s+\d+\./.test(msg.blocks[bi + 1].text)) {
+                bi++;
+                qText += '\n' + msg.blocks[bi].text;
+            }
+            body.appendChild(createQuestionCard(qText));
+            continue;
+        }
         if (block.role === 'tool') {
             const toolMatch = block.text.match(/^• (\w+):?\s*(.*)/s);
             if (toolMatch) {
@@ -6582,6 +6600,12 @@ async function refreshLogContent(signal) {
         // User is at bottom - safe to re-render
         renderLogEntries(logData);
         pendingLogContent = null;
+
+        // Auto-hide permission banner if log content changed after a delay
+        // (new content means Claude moved past the approval point)
+        if (activePermissionId && permissionShownAt && (Date.now() - permissionShownAt > 3000)) {
+            hidePermissionBanner();
+        }
 
         // Load suggestions from terminal capture (not JSONL log)
         loadTerminalSuggestions();
@@ -9418,6 +9442,297 @@ function setupDevPreview() {
 // END DEV PREVIEW
 // ============================================================================
 
+// ============================================================================
+// V2 MESSAGE HANDLER + PERMISSION BANNER
+// ============================================================================
+
+let activePermissionId = null;
+let permissionShownAt = 0;
+
+/**
+ * Route v2 typed messages to their handlers
+ */
+function handleTypedMessage(msg) {
+    switch (msg.type) {
+        case 'permission_request':
+            handlePermissionRequest(msg.payload);
+            break;
+        case 'device_state':
+            handleDeviceState(msg.payload);
+            break;
+        case 'push_config':
+            break;
+        default:
+            console.debug('Unknown v2 type:', msg.type);
+    }
+}
+
+/**
+ * Show permission banner when Claude needs tool approval
+ */
+function handlePermissionRequest(payload) {
+    const banner = document.getElementById('permissionBanner');
+    if (!banner) return;
+
+    activePermissionId = payload.id;
+    permissionShownAt = Date.now();
+    document.getElementById('permissionTool').textContent = payload.tool || 'Tool';
+    document.getElementById('permissionTarget').textContent = payload.target || '';
+    document.getElementById('permissionPreview').textContent = payload.context || payload.target || '';
+    document.getElementById('permissionContext')?.classList.add('hidden');
+    banner.classList.remove('hidden');
+
+    // Permission banner supersedes prompt banner
+    hidePromptBanner();
+}
+
+/**
+ * Hide permission banner
+ */
+function hidePermissionBanner() {
+    const banner = document.getElementById('permissionBanner');
+    if (banner) banner.classList.add('hidden');
+    activePermissionId = null;
+    permissionShownAt = 0;
+}
+
+/**
+ * Setup permission banner button handlers (called once from DOMContentLoaded)
+ */
+function setupPermissionBanner() {
+    document.getElementById('permissionAllow')?.addEventListener('click', () => {
+        sendInput('y\n');
+        hidePermissionBanner();
+    });
+
+    document.getElementById('permissionDeny')?.addEventListener('click', () => {
+        sendInput('n\n');
+        hidePermissionBanner();
+    });
+
+    document.getElementById('permissionMore')?.addEventListener('click', () => {
+        document.getElementById('permissionContext')?.classList.toggle('hidden');
+    });
+}
+
+/**
+ * Create an inline question card for AskUserQuestion entries in the log view
+ */
+function createQuestionCard(text) {
+    const card = document.createElement('div');
+    card.className = 'log-question-card';
+
+    const lines = text.split('\n');
+    const question = lines[0].replace(/^❓\s*/, '');
+    const options = lines.slice(1).filter(l => /^\s+\d+\./.test(l));
+
+    const questionDiv = document.createElement('div');
+    questionDiv.className = 'question-text';
+    questionDiv.textContent = question;
+    card.appendChild(questionDiv);
+
+    if (options.length > 0) {
+        const btnRow = document.createElement('div');
+        btnRow.className = 'question-btn-row';
+
+        options.forEach(opt => {
+            const match = opt.match(/^\s+(\d+)\.\s+(.+)/);
+            if (!match) return;
+            const btn = document.createElement('button');
+            btn.className = 'question-choice-btn';
+            btn.textContent = match[2].split(' - ')[0];  // Label only
+            btn.title = match[2];  // Full text on long-press
+            btn.onclick = () => {
+                sendInput(match[1]);
+                setTimeout(() => sendInput('\r'), 50);
+                btnRow.querySelectorAll('button').forEach(b => b.disabled = true);
+                btn.classList.add('selected');
+            };
+            btnRow.appendChild(btn);
+        });
+
+        card.appendChild(btnRow);
+    }
+
+    return card;
+}
+
+/**
+ * Handle desktop activity state updates
+ */
+let desktopActive = false;
+
+function handleDeviceState(payload) {
+    desktopActive = payload.desktop_active;
+    const existing = document.getElementById('desktopIndicator');
+    if (desktopActive) {
+        if (!existing) {
+            const el = document.createElement('div');
+            el.id = 'desktopIndicator';
+            el.className = 'desktop-indicator';
+            el.textContent = '\u2328 Desktop active';
+            document.querySelector('.app').appendChild(el);
+        }
+        showToast('Desktop user is typing', 'info', 2000);
+    } else {
+        if (existing) existing.remove();
+    }
+}
+
+/**
+ * Voice input via SpeechRecognition API
+ */
+let recognition = null;
+let isRecording = false;
+let interimStart = -1;
+
+function setupVoiceInput() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const micBtn = document.getElementById('composeMic');
+    if (!SR || !micBtn) {
+        if (micBtn) micBtn.style.display = 'none';
+        return;
+    }
+
+    recognition = new SR();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (event) => {
+        const input = document.getElementById('composeInput');
+        if (!input) return;
+        let interim = '', final = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) {
+                final += event.results[i][0].transcript;
+            } else {
+                interim += event.results[i][0].transcript;
+            }
+        }
+        if (interimStart < 0) {
+            interimStart = input.selectionStart || input.value.length;
+        }
+        if (final) {
+            input.value = input.value.substring(0, interimStart) + final;
+            interimStart = -1;
+        } else {
+            input.value = input.value.substring(0, interimStart) + interim;
+        }
+    };
+
+    recognition.onerror = (event) => {
+        if (event.error === 'not-allowed') showToast('Microphone denied', 'error');
+        else if (event.error !== 'no-speech') showToast('Voice: ' + event.error, 'error');
+        stopRecording();
+    };
+
+    recognition.onend = () => { if (isRecording) stopRecording(); };
+
+    micBtn.addEventListener('click', () => {
+        isRecording ? stopRecording() : startRecording();
+    });
+}
+
+function startRecording() {
+    isRecording = true;
+    interimStart = -1;
+    recognition.start();
+    document.getElementById('composeMic')?.classList.add('recording');
+    showToast('Listening...', 'info', 2000);
+}
+
+function stopRecording() {
+    isRecording = false;
+    interimStart = -1;
+    try { recognition.stop(); } catch(e) {}
+    document.getElementById('composeMic')?.classList.remove('recording');
+}
+
+/**
+ * Push notification subscription
+ */
+let vapidPublicKey = null;
+
+function urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; i++) {
+        outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+}
+
+async function setupPushNotifications() {
+    if (!('PushManager' in window) || !('serviceWorker' in navigator)) return;
+    try {
+        const resp = await fetch('/api/push/vapid-key?token=' + token);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        vapidPublicKey = data.key;
+    } catch { return; }
+
+    const btn = document.getElementById('pushToggleBtn');
+    if (btn) {
+        btn.classList.remove('hidden');
+        btn.addEventListener('click', togglePushSubscription);
+        updatePushButton();
+    }
+
+    navigator.serviceWorker.addEventListener('message', (event) => {
+        if (event.data?.type === 'permission_response') {
+            sendInput(event.data.choice + '\n');
+        }
+    });
+}
+
+async function togglePushSubscription() {
+    try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+            await sub.unsubscribe();
+            await fetch('/api/push/subscribe?token=' + token, {
+                method: 'DELETE',
+                body: JSON.stringify(sub.toJSON()),
+                headers: {'Content-Type': 'application/json'}
+            });
+            showToast('Push disabled', 'info');
+        } else {
+            const newSub = await reg.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
+            });
+            await fetch('/api/push/subscribe?token=' + token, {
+                method: 'POST',
+                body: JSON.stringify(newSub.toJSON()),
+                headers: {'Content-Type': 'application/json'}
+            });
+            showToast('Push enabled', 'success');
+        }
+        updatePushButton();
+    } catch (e) {
+        showToast('Push setup failed: ' + e.message, 'error');
+    }
+}
+
+async function updatePushButton() {
+    const btn = document.getElementById('pushToggleBtn');
+    if (!btn) return;
+    try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        btn.classList.toggle('subscribed', !!sub);
+        btn.textContent = sub ? 'Bell*' : 'Bell';
+    } catch {}
+}
+
+// ============================================================================
+// END COMPANION FEATURES
+// ============================================================================
+
 /**
  * Escape HTML to prevent XSS
  */
@@ -9500,6 +9815,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupRunnerHandlers();
     setupDevPreview();
     setupDirtyChoiceModals();
+    setupPermissionBanner();
+    setupVoiceInput();
 
     // Context banner: tap header to expand, × to dismiss
     const ctxHeader = document.getElementById('contextBannerHeader');
@@ -9542,5 +9859,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         reconcileQueue().catch(e => console.warn('reconcileQueue failed:', e));
         // Fire-and-forget: context banner load must never block
         loadContextBanner().catch(() => {});
+        // Fire-and-forget: push notification setup
+        setupPushNotifications().catch(() => {});
     });
 });

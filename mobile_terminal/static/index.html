@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=148">
+    <link rel="stylesheet" href="/static/styles.css?v=149">
 </head>
 <body>
     <div class="app">
@@ -49,6 +49,7 @@
                 <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh">
                     <span>↻</span>
                 </button>
+                <button id="pushToggleBtn" class="push-toggle-btn hidden" title="Push notifications">Bell</button>
                 <span id="connectionIndicator" class="connection-indicator connected" title="Connected"></span>
             </div>
         </header>
@@ -89,6 +90,23 @@
                 <button id="contextBannerDismiss" class="context-banner-dismiss">&times;</button>
             </div>
             <div id="contextBannerBody" class="context-banner-body hidden"></div>
+        </div>
+
+        <!-- Permission banner: tool approval prompt from Claude -->
+        <div id="permissionBanner" class="permission-banner hidden">
+            <div class="permission-header">
+                <span class="permission-icon">&#x1F512;</span>
+                <span id="permissionTool" class="permission-tool"></span>
+                <span id="permissionTarget" class="permission-target"></span>
+                <button id="permissionMore" class="permission-more-btn">More...</button>
+            </div>
+            <div id="permissionContext" class="permission-context hidden">
+                <pre id="permissionPreview" class="permission-preview"></pre>
+            </div>
+            <div class="permission-actions">
+                <button id="permissionDeny" class="permission-btn deny">Deny</button>
+                <button id="permissionAllow" class="permission-btn allow">Allow</button>
+            </div>
         </div>
 
         <!-- Log view: Log + Command input (primary view) -->
@@ -180,6 +198,7 @@
                     <input type="file" id="composeFileInput" accept="*/*" hidden>
                     <button id="composeAttach" class="compose-action attach-icon" title="Attach file">&#x1F4CE;</button>
                     <button id="composePaste" class="compose-action secondary" title="Paste from clipboard">Paste</button>
+                    <button id="composeMic" class="compose-action mic-btn" title="Voice input">Mic</button>
                     <button id="composeClear" class="compose-action secondary">Clear</button>
                     <button id="composeInsert" class="compose-action secondary">Insert</button>
                 </div>
@@ -501,7 +520,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=246"></script>
+    <script src="/static/terminal.js?v=247"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

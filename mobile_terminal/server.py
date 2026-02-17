@@ -949,6 +949,109 @@ def get_tmux_target(session_name: str, active_target: str) -> str:
     return session_name
 
 
+class PermissionDetector:
+    """Detects when Claude Code is waiting for tool approval via JSONL log entries."""
+
+    def __init__(self):
+        self.last_log_size = 0
+        self.last_sent_id = None
+        self.log_file = None
+
+    def set_log_file(self, path: Path):
+        """Called when we know which JSONL file to watch."""
+        self.log_file = Path(path) if path else None
+        try:
+            self.last_log_size = self.log_file.stat().st_size if self.log_file and self.log_file.exists() else 0
+        except Exception:
+            self.last_log_size = 0
+
+    def check_sync(self, session: str, target: str) -> Optional[dict]:
+        """Check for pending permission request. Returns payload or None."""
+        if not self.log_file or not self.log_file.exists():
+            return None
+
+        # 1. Check if file grew (new entries)
+        try:
+            current_size = self.log_file.stat().st_size
+        except Exception:
+            return None
+        if current_size <= self.last_log_size:
+            return None
+
+        # 2. Read only new bytes
+        new_text = self._read_new_entries(current_size)
+        self.last_log_size = current_size
+
+        if not new_text:
+            return None
+
+        # 3. Find last tool_use in new entries
+        tool_info = self._extract_last_tool_use(new_text)
+        if not tool_info:
+            return None
+
+        # 4. Confirm Claude is actually waiting (pane_title check)
+        try:
+            tmux_target = get_tmux_target(session, target)
+            title_result = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", tmux_target, "#{pane_title}"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if "Signal Detection Pending" not in (title_result.stdout or ""):
+                return None
+        except Exception:
+            return None
+
+        # 5. Build payload (dedupe by id)
+        payload_id = f"{tool_info['name']}:{hash(str(tool_info.get('target', '')))}"
+        if payload_id == self.last_sent_id:
+            return None
+        self.last_sent_id = payload_id
+
+        return {
+            "tool": tool_info["name"],
+            "target": tool_info.get("target", ""),
+            "context": tool_info.get("context", ""),
+            "id": payload_id,
+        }
+
+    def _read_new_entries(self, current_size):
+        """Read new JSONL lines since last check."""
+        try:
+            with open(self.log_file, 'r') as f:
+                f.seek(self.last_log_size)
+                return f.read()
+        except Exception:
+            return ""
+
+    def _extract_last_tool_use(self, new_text):
+        """Parse JSONL text for the most recent tool_use block."""
+        last_tool = None
+        for line in new_text.strip().split('\n'):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+                if entry.get('type') != 'assistant':
+                    continue
+                content = entry.get('message', {}).get('content', [])
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if isinstance(block, dict) and block.get('type') == 'tool_use':
+                        name = block.get('name', '')
+                        inp = block.get('input', {})
+                        target = inp.get('command') or inp.get('file_path') or inp.get('pattern') or ''
+                        last_tool = {"name": name, "target": str(target)[:200], "context": ""}
+            except json.JSONDecodeError:
+                continue
+        return last_tool
+
+    def clear(self):
+        """Clear state (e.g., after user responds)."""
+        self.last_sent_id = None
+
+
 def get_plan_links() -> dict:
     """Read plan-links.json, return empty dict if not found."""
     if PLAN_LINKS_FILE.exists():
@@ -1397,6 +1500,24 @@ def create_app(config: Config) -> FastAPI:
     app.state.last_restart_time = 0.0  # Timestamp of last server restart request
     app.state.target_epoch = 0  # Incremented on each target switch for cache invalidation
     app.state.setup_result = None  # Result from ensure_tmux_setup()
+    app.state.last_ws_input_time = 0  # Last time mobile client sent input (for desktop activity detection)
+    app.state.permission_detector = PermissionDetector()  # JSONL-based permission prompt detector
+
+    async def send_typed(ws, msg_type: str, payload: dict, level: str = "info"):
+        """Send a v2 typed message over WebSocket."""
+        try:
+            await ws.send_json({
+                "v": 2,
+                "id": str(uuid.uuid4()),
+                "type": msg_type,
+                "level": level,
+                "session": app.state.current_session,
+                "target": app.state.active_target,
+                "ts": time.time(),
+                "payload": payload,
+            })
+        except Exception:
+            pass  # Connection may be closed
 
     # Mount static files
     if STATIC_DIR.exists():
@@ -2758,6 +2879,7 @@ def create_app(config: Config) -> FastAPI:
                     if current_mtime > initial_mtimes.get(str(f), 0):
                         # File was modified - associate with this target (not pinned)
                         app.state.target_log_mapping[target_id] = {"path": str(f), "pinned": False}
+                        app.state.permission_detector.set_log_file(f)
                         logger.info(f"Monitor detected log file for target {target_id}: {f.name}")
                         return
                 except Exception:
@@ -2895,6 +3017,9 @@ def create_app(config: Config) -> FastAPI:
             log_file = detect_target_log_file(target_id, app.state.current_session, claude_projects_dir)
             if not log_file:
                 return return_cached()
+            # Update permission detector with discovered log file
+            if not app.state.permission_detector.log_file:
+                app.state.permission_detector.set_log_file(log_file)
 
         # Check mtime-based cache - avoid re-parsing if file unchanged
         try:
@@ -3168,6 +3293,7 @@ def create_app(config: Config) -> FastAPI:
 
         # Pin the log file to this target
         app.state.target_log_mapping[target_id] = {"path": str(log_file), "pinned": True}
+        app.state.permission_detector.set_log_file(log_file)
         logger.info(f"Pinned log file for target {target_id}: {session_id}")
 
         return {
@@ -6200,6 +6326,7 @@ Only the top 1–3 risks worth caring about.
 
                     if "bytes" in message:
                         os.write(master_fd, message["bytes"])
+                        app.state.last_ws_input_time = time.time()
                     elif "text" in message:
                         text = message["text"]
                         logger.info(f"Received text message: {text[:100]}")
@@ -6223,6 +6350,7 @@ Only the top 1–3 risks worth caring about.
                                     input_data = data.get("data")
                                     if input_data:
                                         os.write(master_fd, input_data.encode())
+                                        app.state.last_ws_input_time = time.time()
                                 elif msg_type == "ping":
                                     # Respond to heartbeat ping with pong
                                     if not connection_closed:
@@ -6301,8 +6429,10 @@ Only the top 1–3 risks worth caring about.
 
             Extracts last ~50 lines from recent_buffer, strips ANSI,
             and sends as JSON for lightweight Log view rendering.
+            Also checks for pending permission requests (v2 messages).
             """
             nonlocal tail_seq
+            perm_check_counter = 0
             while app.state.active_websocket == websocket and not connection_closed:
                 try:
                     await asyncio.sleep(TAIL_INTERVAL)
@@ -6322,8 +6452,67 @@ Only the top 1–3 risks worth caring about.
                             })
                         except Exception as e:
                             logger.debug(f"Tail extraction error: {e}")
+
+                    # Check for permission requests every ~1s (5 ticks at 200ms)
+                    perm_check_counter += 1
+                    if perm_check_counter >= 5 and not connection_closed:
+                        perm_check_counter = 0
+                        try:
+                            detector = app.state.permission_detector
+                            session = app.state.current_session
+                            target = app.state.active_target
+                            if session and detector.log_file:
+                                perm = await asyncio.get_event_loop().run_in_executor(
+                                    None, detector.check_sync, session, target
+                                )
+                                if perm:
+                                    await send_typed(websocket, "permission_request", perm, level="urgent")
+                        except Exception as e:
+                            logger.debug(f"Permission check error: {e}")
                 except Exception:
                     break
+
+        async def desktop_activity_monitor():
+            """Detect desktop keyboard activity in tmux session (1.5s polling)."""
+            last_hash = 0
+            desktop_active = False
+            desktop_since = 0
+            while app.state.active_websocket == websocket and not connection_closed:
+                await asyncio.sleep(1.5)
+                try:
+                    session = app.state.current_session
+                    target = app.state.active_target
+                    if not session:
+                        continue
+                    tmux_target = get_tmux_target(session, target)
+                    def _capture_desktop():
+                        r = subprocess.run(
+                            ["tmux", "capture-pane", "-t", tmux_target, "-p", "-S", "-5"],
+                            capture_output=True, text=True, timeout=1
+                        )
+                        return r.stdout
+                    stdout = await asyncio.get_event_loop().run_in_executor(
+                        None, _capture_desktop
+                    )
+                    current_hash = hash(stdout)
+                    if current_hash != last_hash:
+                        last_hash = current_hash
+                        time_since_ws = time.time() - app.state.last_ws_input_time
+                        if time_since_ws > 1.5 and not desktop_active:
+                            desktop_active = True
+                            desktop_since = time.time()
+                            await send_typed(websocket, "device_state",
+                                             {"desktop_active": True}, level="info")
+                        elif time_since_ws <= 1.5 and desktop_active:
+                            desktop_active = False
+                            await send_typed(websocket, "device_state",
+                                             {"desktop_active": False}, level="info")
+                    if desktop_active and (time.time() - desktop_since) > 10:
+                        desktop_active = False
+                        await send_typed(websocket, "device_state",
+                                         {"desktop_active": False}, level="info")
+                except Exception:
+                    pass
 
         # Run all tasks concurrently
         read_task = asyncio.create_task(read_from_terminal())
@@ -6331,9 +6520,10 @@ Only the top 1–3 risks worth caring about.
         write_task = asyncio.create_task(write_to_terminal())
         keepalive_task = asyncio.create_task(server_keepalive())
         tail_task = asyncio.create_task(tail_sender())
+        desktop_task = asyncio.create_task(desktop_activity_monitor())
 
         try:
-            await asyncio.gather(read_task, write_task, keepalive_task, tail_task)
+            await asyncio.gather(read_task, write_task, keepalive_task, tail_task, desktop_task)
         except asyncio.CancelledError:
             # Normal termination when connection is replaced or closed
             pass
@@ -6345,6 +6535,8 @@ Only the top 1–3 risks worth caring about.
             read_task.cancel()
             write_task.cancel()
             keepalive_task.cancel()
+            tail_task.cancel()
+            desktop_task.cancel()
             if app.state.active_websocket == websocket:
                 app.state.active_websocket = None
                 app.state.read_task = None
@@ -6362,11 +6554,129 @@ Only the top 1–3 risks worth caring about.
 
             logger.info("WebSocket connection closed")
 
+    # ===== Push Notifications =====
+    PUSH_DIR = Path.home() / ".mobile-terminal"
+    PUSH_SUBS_FILE = PUSH_DIR / "push_subs.json"
+
+    def load_push_subscriptions() -> list:
+        if PUSH_SUBS_FILE.exists():
+            try:
+                return json.loads(PUSH_SUBS_FILE.read_text())
+            except Exception:
+                return []
+        return []
+
+    def save_push_subscriptions(subs: list):
+        PUSH_DIR.mkdir(parents=True, exist_ok=True)
+        PUSH_SUBS_FILE.write_text(json.dumps(subs, indent=2))
+
+    _push_cooldowns: dict = {}
+
+    async def maybe_send_push(title: str, body: str, push_type: str = "info"):
+        """Send push only if no active client and cooldown expired."""
+        if not config.push_enabled:
+            return
+        if app.state.active_websocket is not None:
+            return
+        cooldowns = {"permission": 30, "completed": 300, "crashed": 60}
+        min_interval = cooldowns.get(push_type, 30)
+        now = time.time()
+        if now - _push_cooldowns.get(push_type, 0) < min_interval:
+            return
+        subs = load_push_subscriptions()
+        if not subs:
+            return
+        vapid_key_path = getattr(app.state, 'vapid_key_path', None)
+        if not vapid_key_path:
+            return
+        try:
+            from pywebpush import webpush, WebPushException
+        except ImportError:
+            return
+        stale = []
+        for sub in subs:
+            try:
+                webpush(sub, json.dumps({"title": title, "body": body, "type": push_type}),
+                        vapid_private_key=str(vapid_key_path),
+                        vapid_claims={"sub": "mailto:noreply@localhost"})
+            except WebPushException as e:
+                if "410" in str(e) or "404" in str(e):
+                    stale.append(sub.get('endpoint', ''))
+            except Exception:
+                pass
+        if stale:
+            subs = [s for s in subs if s.get('endpoint', '') not in stale]
+            save_push_subscriptions(subs)
+        _push_cooldowns[push_type] = now
+
+    @app.get("/api/push/vapid-key")
+    async def get_vapid_key(token: str = Query(None)):
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        pub_key = getattr(app.state, 'vapid_public_key', None)
+        if not pub_key:
+            return JSONResponse({"error": "Push not configured"}, status_code=503)
+        return {"key": pub_key}
+
+    @app.post("/api/push/subscribe")
+    async def push_subscribe(request: Request, token: str = Query(None)):
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        sub = await request.json()
+        subs = load_push_subscriptions()
+        subs = [s for s in subs if s.get('endpoint') != sub.get('endpoint')]
+        subs.append(sub)
+        save_push_subscriptions(subs)
+        return {"ok": True}
+
+    @app.delete("/api/push/subscribe")
+    async def push_unsubscribe(request: Request, token: str = Query(None)):
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        sub = await request.json()
+        subs = load_push_subscriptions()
+        subs = [s for s in subs if s.get('endpoint') != sub.get('endpoint')]
+        save_push_subscriptions(subs)
+        return {"ok": True}
+
     @app.on_event("startup")
     async def startup():
         """Start input queue and command queue on startup, run auto-setup if enabled."""
         app.state.input_queue.start()
         app.state.command_queue.start()
+
+        # Generate VAPID keys for push notifications
+        if config.push_enabled:
+            try:
+                key_dir = Path.home() / ".mobile-terminal"
+                key_dir.mkdir(parents=True, exist_ok=True)
+                key_path = key_dir / "vapid_private.pem"
+                if not key_path.exists():
+                    from py_vapid import Vapid
+                    vapid = Vapid()
+                    vapid.generate_keys()
+                    vapid.save_key(str(key_path))
+                    vapid.save_public_key(str(key_dir / "vapid_public.pem"))
+                    logger.info("Generated new VAPID keys for push notifications")
+                from py_vapid import Vapid
+                vapid = Vapid.from_file(str(key_path))
+                app.state.vapid_key_path = key_path
+                import base64 as _b64
+                from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+                raw_pub = vapid.public_key.public_bytes(
+                    encoding=Encoding.X962,
+                    format=PublicFormat.UncompressedPoint
+                )
+                app.state.vapid_public_key = _b64.urlsafe_b64encode(raw_pub).rstrip(b'=').decode('ascii')
+                logger.info("VAPID keys loaded for push notifications")
+            except ImportError:
+                logger.info("pywebpush/py_vapid not installed, push notifications disabled")
+                app.state.vapid_key_path = None
+                app.state.vapid_public_key = None
+            except Exception as e:
+                logger.warning(f"VAPID key setup failed: {e}")
+                app.state.vapid_key_path = None
+                app.state.vapid_public_key = None
 
         # Auto-setup: create/adopt tmux session with configured repo windows
         if config.auto_setup:
@@ -6401,11 +6711,47 @@ Only the top 1–3 risks worth caring about.
             print(f"URL:     {url}")
             print(f"{'=' * 60}\n")
 
+        # Start background push monitor
+        if config.push_enabled and getattr(app.state, 'vapid_key_path', None):
+            async def push_monitor():
+                """Check for permission prompts when no WebSocket active, send push."""
+                _perm_pending_since = 0
+                while True:
+                    await asyncio.sleep(5)
+                    try:
+                        if app.state.active_websocket is not None:
+                            _perm_pending_since = 0
+                            continue
+                        detector = app.state.permission_detector
+                        session = app.state.current_session
+                        target = app.state.active_target
+                        if not session or not detector.log_file:
+                            continue
+                        perm = detector.check_sync(session, target)
+                        if perm:
+                            if _perm_pending_since == 0:
+                                _perm_pending_since = time.time()
+                            elif time.time() - _perm_pending_since > 10:
+                                await maybe_send_push(
+                                    "Claude needs approval",
+                                    f"Allow {perm['tool']}: {perm['target'][:80]}?",
+                                    "permission"
+                                )
+                        else:
+                            _perm_pending_since = 0
+                    except Exception:
+                        pass
+            app.state.push_monitor_task = asyncio.create_task(push_monitor())
+
     @app.on_event("shutdown")
     async def shutdown():
         """Cleanup on shutdown."""
         app.state.input_queue.stop()
         app.state.command_queue.stop()
+
+        push_task = getattr(app.state, 'push_monitor_task', None)
+        if push_task and not push_task.done():
+            push_task.cancel()
 
         if app.state.master_fd is not None:
             try:

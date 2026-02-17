@@ -1,5 +1,5 @@
 // Service Worker for Mobile Terminal PWA
-const CACHE_NAME = 'terminal-v113';
+const CACHE_NAME = 'terminal-v114';
 
 // Install event - cache essential assets
 self.addEventListener('install', (event) => {
@@ -43,4 +43,45 @@ self.addEventListener('fetch', (event) => {
       return caches.match(event.request);
     })
   );
+});
+
+// Push notification handler
+self.addEventListener('push', (event) => {
+  const data = event.data ? event.data.json() : {};
+  const options = {
+    body: data.body || 'Claude needs your attention',
+    icon: '/static/apple-touch-icon.png',
+    badge: '/static/apple-touch-icon.png',
+    vibrate: [200, 100, 200],
+    data: { type: data.type, url: '/' },
+    actions: data.type === 'permission' ? [
+      { action: 'allow', title: 'Allow' },
+      { action: 'deny', title: 'Deny' },
+    ] : [],
+  };
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'Terminal', options)
+  );
+});
+
+// Notification click handler
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  if (event.action === 'allow' || event.action === 'deny') {
+    event.waitUntil(
+      clients.matchAll({ type: 'window' }).then(cls => {
+        if (cls.length > 0) {
+          cls[0].postMessage({
+            type: 'permission_response',
+            choice: event.action === 'allow' ? 'y' : 'n'
+          });
+          cls[0].focus();
+        } else {
+          clients.openWindow('/');
+        }
+      })
+    );
+  } else {
+    event.waitUntil(clients.openWindow('/'));
+  }
 });

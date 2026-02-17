@@ -93,6 +93,9 @@ class Config:
     # Auto-setup: create/adopt tmux session on startup
     auto_setup: bool = True
 
+    # Push notifications
+    push_enabled: bool = True
+
     # Project context (set by discovery)
     project_root: Optional[Path] = None
 
@@ -128,6 +131,7 @@ class Config:
             "font_size": self.font_size,
             "scrollback": self.scrollback,
             "auto_setup": self.auto_setup,
+            "push_enabled": self.push_enabled,
         }
 
     def to_yaml(self) -> str:
@@ -150,6 +154,7 @@ class Config:
             "theme": self.theme,
             "font_size": self.font_size,
             "scrollback": self.scrollback,
+            "push_enabled": self.push_enabled,
         }
         return yaml.dump(data, default_flow_style=False, sort_keys=False)
 
@@ -190,6 +195,8 @@ def load_config(path: Optional[Path] = None) -> Config:
         config.scrollback = int(data["scrollback"])
     if "auto_setup" in data:
         config.auto_setup = bool(data["auto_setup"])
+    if "push_enabled" in data:
+        config.push_enabled = bool(data["push_enabled"])
 
     # Quick commands
     if "quick_commands" in data:
@@ -257,6 +264,8 @@ def merge_configs(base: Config, override: Config) -> Config:
         theme=override.theme if override.theme != "dark" else base.theme,
         font_size=override.font_size if override.font_size != 16 else base.font_size,
         scrollback=override.scrollback if override.scrollback != 20000 else base.scrollback,
+        auto_setup=override.auto_setup if not override.auto_setup else base.auto_setup,
+        push_enabled=override.push_enabled if not override.push_enabled else base.push_enabled,
         project_root=override.project_root or base.project_root,
     )
     return result

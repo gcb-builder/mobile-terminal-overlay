@@ -16,6 +16,7 @@ dependencies = [
     "python-multipart>=0.0.6",  # Required for file uploads
     "httpx>=0.25",  # Required for Together.ai API calls
     "python-dotenv>=1.0",  # Auto-load .env files
+    "pywebpush>=2.0",  # Web push notifications
 ]
 
 [project.optional-dependencies]
