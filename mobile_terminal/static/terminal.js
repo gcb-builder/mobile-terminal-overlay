@@ -612,6 +612,7 @@ let newWindowAutoStart, newWindowCancel, newWindowCreate;
 
 // Available repos for new window creation
 let availableRepos = [];
+let availableWorkspaceDirs = [];
 
 /**
  * Initialize the terminal
@@ -1842,7 +1843,7 @@ function updateNavLabel() {
  * Sections: Current Session panes, Actions, Other Sessions
  */
 function populateRepoDropdown() {
-    const hasRepos = config && config.repos && config.repos.length > 0;
+    const hasRepos = config && ((config.repos && config.repos.length > 0) || (config.workspace_dirs && config.workspace_dirs.length > 0));
     const hasMultiplePanes = targets.length > 1;
     const hasContent = hasRepos || hasMultiplePanes;
 
@@ -2029,7 +2030,7 @@ async function switchRepo(session) {
  * Toggle unified nav dropdown visibility
  */
 function toggleRepoDropdown() {
-    const hasRepos = config && config.repos && config.repos.length > 0;
+    const hasRepos = config && ((config.repos && config.repos.length > 0) || (config.workspace_dirs && config.workspace_dirs.length > 0));
     const hasMultiplePanes = targets.length > 1;
 
     // Only show dropdown if there's content
@@ -2483,10 +2484,18 @@ function stopClaudeHealthPolling() {
  */
 async function loadRepos() {
     try {
-        const response = await fetch(`/api/repos?token=${token}`);
-        if (!response.ok) return;
-        const data = await response.json();
-        availableRepos = data.repos || [];
+        const [reposResp, wsDirsResp] = await Promise.all([
+            fetch(`/api/repos?token=${token}`),
+            fetch(`/api/workspace/dirs?token=${token}`)
+        ]);
+        if (reposResp.ok) {
+            const data = await reposResp.json();
+            availableRepos = data.repos || [];
+        }
+        if (wsDirsResp.ok) {
+            const data = await wsDirsResp.json();
+            availableWorkspaceDirs = data.dirs || [];
+        }
     } catch (error) {
         console.error('Error loading repos:', error);
     }
@@ -2496,27 +2505,56 @@ async function loadRepos() {
  * Show the new window modal
  */
 async function showNewWindowModal() {
-    // Load repos if not already loaded
-    if (availableRepos.length === 0) {
-        await loadRepos();
-    }
+    // Always reload to pick up new directories
+    await loadRepos();
 
-    // Populate repo selector
+    // Populate repo selector with optgroups
     newWindowRepo.innerHTML = '';
-    if (availableRepos.length === 0) {
+
+    const hasRepos = availableRepos.length > 0;
+    const hasWorkspaceDirs = availableWorkspaceDirs.length > 0;
+
+    if (!hasRepos && !hasWorkspaceDirs) {
         const opt = document.createElement('option');
         opt.value = '';
-        opt.textContent = 'No repos configured';
+        opt.textContent = 'No repos or workspace dirs configured';
         newWindowRepo.appendChild(opt);
         newWindowCreate.disabled = true;
     } else {
-        availableRepos.forEach((repo, index) => {
-            const opt = document.createElement('option');
-            opt.value = repo.label;
-            opt.textContent = repo.label + (repo.exists ? '' : ' (path missing)');
-            opt.disabled = !repo.exists;
-            newWindowRepo.appendChild(opt);
-        });
+        // Configured repos optgroup
+        if (hasRepos) {
+            const repoGroup = document.createElement('optgroup');
+            repoGroup.label = 'Configured Repos';
+            availableRepos.forEach(repo => {
+                const opt = document.createElement('option');
+                opt.value = 'repo:' + repo.label;
+                opt.textContent = repo.label + (repo.exists ? '' : ' (path missing)');
+                opt.disabled = !repo.exists;
+                repoGroup.appendChild(opt);
+            });
+            newWindowRepo.appendChild(repoGroup);
+        }
+
+        // Workspace dirs optgroups (grouped by parent)
+        if (hasWorkspaceDirs) {
+            const byParent = {};
+            availableWorkspaceDirs.forEach(d => {
+                if (!byParent[d.parent]) byParent[d.parent] = [];
+                byParent[d.parent].push(d);
+            });
+            Object.keys(byParent).forEach(parent => {
+                const wsGroup = document.createElement('optgroup');
+                wsGroup.label = parent;
+                byParent[parent].forEach(d => {
+                    const opt = document.createElement('option');
+                    opt.value = 'dir:' + d.path;
+                    opt.textContent = d.name;
+                    wsGroup.appendChild(opt);
+                });
+                newWindowRepo.appendChild(wsGroup);
+            });
+        }
+
         newWindowCreate.disabled = false;
     }
 
@@ -2539,13 +2577,27 @@ function hideNewWindowModal() {
  * Create a new window in the selected repo
  */
 async function createNewWindow() {
-    const repoLabel = newWindowRepo.value;
+    const selectValue = newWindowRepo.value;
     const windowName = newWindowName.value.trim();
     const autoStartClaude = newWindowAutoStart.checked;
 
-    if (!repoLabel) {
-        showToast('Please select a repo', 'error');
+    if (!selectValue) {
+        showToast('Please select a repo or directory', 'error');
         return;
+    }
+
+    // Build request body based on value prefix
+    const bodyObj = {
+        window_name: windowName,
+        auto_start_claude: autoStartClaude
+    };
+    if (selectValue.startsWith('dir:')) {
+        bodyObj.path = selectValue.slice(4);
+    } else if (selectValue.startsWith('repo:')) {
+        bodyObj.repo_label = selectValue.slice(5);
+    } else {
+        // Legacy fallback (shouldn't happen)
+        bodyObj.repo_label = selectValue;
     }
 
     // Disable create button while processing
@@ -2556,11 +2608,7 @@ async function createNewWindow() {
         const response = await fetch(`/api/window/new?token=${token}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                repo_label: repoLabel,
-                window_name: windowName,
-                auto_start_claude: autoStartClaude
-            })
+            body: JSON.stringify(bodyObj)
         });
 
         const data = await response.json();

@@ -3,12 +3,33 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Terminal responsiveness - added ANSI boundary detection (v245)
-- **Last Updated:** 2026-02-04
+- **Stage:** Workspace directory picker in new window modal
+- **Last Updated:** 2026-02-17
 - **Server Version:** v245 (terminal.js), v108 (sw.js cache)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
 
-## Active Work: Terminal Responsiveness + Garbled Output (2026-02-04)
+## Active Work: Workspace Directory Picker (2026-02-17)
+
+### Feature
+The "New Window in Repo" modal now also shows directories under configurable `workspace_dirs` (e.g. `~/dev/`), so you can open a tmux window in any project without pre-configuring each one in YAML.
+
+### Changes
+- `config.py`: Added `workspace_dirs: List[str]` field, parsing, serialization, merge
+- `server.py`: Added `GET /api/workspace/dirs` endpoint (scans workspace dirs, excludes hidden + already-configured repos, limit 200)
+- `server.py`: Modified `POST /api/window/new` to accept `path` as alternative to `repo_label` (validates path is under a workspace_dir)
+- `terminal.js`: Updated `showNewWindowModal()` to fetch workspace dirs and render `<optgroup>` sections
+- `terminal.js`: Updated `createNewWindow()` to parse `repo:` vs `dir:` value prefixes
+- `terminal.js`: Updated `hasRepos` checks to also consider `workspace_dirs`
+
+### Config
+```yaml
+workspace_dirs:
+  - "~/dev"
+```
+
+---
+
+## Previous: Terminal Responsiveness + Garbled Output (2026-02-04)
 
 ### Problem
 1. Terminal takes ~30-90s to become responsive on mobile

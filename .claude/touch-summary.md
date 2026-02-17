@@ -896,3 +896,18 @@ Unified single button showing "repo • pane" format with sectioned dropdown:
 **Risks/Follow-ups:**
 - Target switch verification sometimes fails (non-blocking, proceeds anyway)
 - Service worker caching may require hard refresh on mobile
+
+---
+
+## 2026-02-17: Workspace Directory Picker
+
+**Files changed:**
+- `mobile_terminal/config.py` — Added `workspace_dirs` field, parsing, serialization, merge
+- `mobile_terminal/server.py` — Added `GET /api/workspace/dirs`, modified `POST /api/window/new` for path-based creation
+- `mobile_terminal/static/terminal.js` — Updated modal to show workspace dirs in optgroups, path-based creation flow
+
+**New files:** None
+
+**Risks/Follow-ups:**
+- Workspace dirs are scanned on each modal open (no caching); should be fine for typical dir counts
+- Path validation uses `relative_to()` to prevent traversal; symlinks resolve to real paths

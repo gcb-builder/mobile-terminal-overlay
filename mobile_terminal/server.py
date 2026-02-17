@@ -1842,7 +1842,8 @@ def create_app(config: Config) -> FastAPI:
         Create a new tmux window in a repo's configured session.
 
         JSON body:
-          - repo_label: (required) Label of repo from config
+          - repo_label: Label of repo from config (use this OR path)
+          - path: Absolute path to directory under a workspace_dir (use this OR repo_label)
           - window_name: (optional) Name for the new window
           - auto_start_claude: (optional, default false) Start Claude after creating window
         """
@@ -1856,28 +1857,60 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
         repo_label = body.get("repo_label")
+        dir_path = body.get("path")
         window_name = body.get("window_name", "")
         auto_start_claude = body.get("auto_start_claude", False)
 
-        if not repo_label:
-            return JSONResponse({
-                "error": "repo_label is required",
-                "available_repos": [r.label for r in config.repos]
-            }, status_code=400)
+        repo = None  # Set when using repo_label flow
 
-        # Look up repo in config
-        repo = next((r for r in config.repos if r.label == repo_label), None)
-        if not repo:
-            return JSONResponse({
-                "error": f"Unknown repo: {repo_label}",
-                "available_repos": [r.label for r in config.repos]
-            }, status_code=404)
+        if repo_label:
+            # --- Existing repo-based flow ---
+            repo = next((r for r in config.repos if r.label == repo_label), None)
+            if not repo:
+                return JSONResponse({
+                    "error": f"Unknown repo: {repo_label}",
+                    "available_repos": [r.label for r in config.repos]
+                }, status_code=404)
 
-        # Verify repo path exists
-        repo_path = Path(repo.path)
-        if not repo_path.exists():
+            repo_path = Path(repo.path)
+            if not repo_path.exists():
+                return JSONResponse({
+                    "error": f"Repo path does not exist: {repo.path}"
+                }, status_code=400)
+
+            session = repo.session
+            resolved_path = str(repo_path.resolve())
+
+        elif dir_path:
+            # --- Workspace directory flow ---
+            # Validate path is under one of the configured workspace_dirs
+            target = Path(dir_path).resolve()
+            allowed = False
+            for ws_dir in config.workspace_dirs:
+                ws_resolved = Path(ws_dir).expanduser().resolve()
+                try:
+                    target.relative_to(ws_resolved)
+                    allowed = True
+                    break
+                except ValueError:
+                    continue
+
+            if not allowed:
+                return JSONResponse({
+                    "error": "Path is not under any configured workspace_dir"
+                }, status_code=403)
+
+            if not target.is_dir():
+                return JSONResponse({
+                    "error": f"Path does not exist or is not a directory: {dir_path}"
+                }, status_code=400)
+
+            session = app.state.current_session
+            resolved_path = str(target)
+
+        else:
             return JSONResponse({
-                "error": f"Repo path does not exist: {repo.path}"
+                "error": "Either repo_label or path is required"
             }, status_code=400)
 
         # Sanitize window name: only allow [a-zA-Z0-9_.-], max 50 chars
@@ -1886,13 +1919,11 @@ def create_app(config: Config) -> FastAPI:
         else:
             sanitized_name = ""
 
-        # If sanitized name is empty, use directory basename (layout convention)
+        # If sanitized name is empty, use directory basename
         if not sanitized_name:
-            # Use the actual directory name for better layout hints
-            dir_basename = repo_path.name
+            dir_basename = Path(resolved_path).name
             sanitized_name = re.sub(r'[^a-zA-Z0-9_.-]', '', dir_basename)[:50]
-            if not sanitized_name:
-                # Fallback to repo label if dir name sanitizes to empty
+            if not sanitized_name and repo_label:
                 sanitized_name = re.sub(r'[^a-zA-Z0-9_.-]', '', repo_label)[:50]
             if not sanitized_name:
                 sanitized_name = "window"
@@ -1900,31 +1931,28 @@ def create_app(config: Config) -> FastAPI:
         # Add random suffix to handle name collisions
         final_name = f"{sanitized_name}-{secrets.token_hex(2)}"
 
-        session = repo.session
-        path = str(repo_path.resolve())
-
         try:
-            win_info = _create_tmux_window(session, final_name, path)
+            win_info = _create_tmux_window(session, final_name, resolved_path)
             target_id = win_info["target_id"]
             pane_id = win_info.get("pane_id")
 
             # Audit log the action
             app.state.audit_log.log("window_create", {
-                "repo_label": repo_label,
+                "repo_label": repo_label or Path(resolved_path).name,
                 "session": session,
                 "window_name": final_name,
                 "target_id": target_id,
                 "pane_id": pane_id,
-                "path": path,
+                "path": resolved_path,
                 "auto_start_claude": auto_start_claude
             })
 
-            logger.info(f"Created window '{final_name}' in session '{session}' at {path}")
+            logger.info(f"Created window '{final_name}' in session '{session}' at {resolved_path}")
 
             # If auto_start_claude, send startup command after configured delay
             if auto_start_claude and pane_id:
-                # Get startup command from repo config, default to "claude"
-                startup_cmd = repo.startup_command or "claude"
+                # Get startup command from repo config (if repo flow), default to "claude"
+                startup_cmd = (repo.startup_command if repo else None) or "claude"
 
                 # Validate startup command
                 if "\n" in startup_cmd or "\r" in startup_cmd:
@@ -1936,14 +1964,15 @@ def create_app(config: Config) -> FastAPI:
                         "error": "startup_command exceeds 200 character limit"
                     }, status_code=400)
 
-                startup_delay = repo.startup_delay_ms / 1000.0
+                startup_delay = (repo.startup_delay_ms if repo else 300) / 1000.0
+                audit_label = repo_label or Path(resolved_path).name
 
                 async def _send_and_audit():
                     await _send_startup_command(pane_id, startup_cmd, startup_delay)
                     app.state.audit_log.log("startup_command_exec", {
                         "pane_id": pane_id,
                         "command": startup_cmd,
-                        "repo_label": repo_label
+                        "repo_label": audit_label
                     })
 
                 asyncio.create_task(_send_and_audit())
@@ -1955,7 +1984,7 @@ def create_app(config: Config) -> FastAPI:
                 "window_name": final_name,
                 "session": session,
                 "repo_label": repo_label,
-                "path": path,
+                "path": resolved_path,
                 "auto_start_claude": auto_start_claude
             }
 
@@ -1971,6 +2000,53 @@ def create_app(config: Config) -> FastAPI:
         except Exception as e:
             logger.error(f"Error creating window: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/workspace/dirs")
+    async def list_workspace_dirs(token: Optional[str] = Query(None)):
+        """
+        List directories under configured workspace_dirs for new window creation.
+        Excludes hidden dirs and dirs already in config.repos.
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Build set of resolved repo paths for exclusion
+        repo_paths = set()
+        for repo in config.repos:
+            try:
+                repo_paths.add(str(Path(repo.path).expanduser().resolve()))
+            except Exception:
+                pass
+
+        dirs = []
+        for ws_dir in config.workspace_dirs:
+            ws_path = Path(ws_dir).expanduser()
+            if not ws_path.is_dir():
+                continue
+            parent_display = ws_dir  # Keep original form (e.g. "~/dev")
+            try:
+                entries = sorted(os.scandir(ws_path), key=lambda e: e.name.lower())
+            except OSError:
+                continue
+            for entry in entries:
+                if not entry.is_dir(follow_symlinks=True):
+                    continue
+                if entry.name.startswith('.'):
+                    continue
+                resolved = str(Path(entry.path).resolve())
+                if resolved in repo_paths:
+                    continue
+                dirs.append({
+                    "name": entry.name,
+                    "path": resolved,
+                    "parent": parent_display,
+                })
+                if len(dirs) >= 200:
+                    break
+            if len(dirs) >= 200:
+                break
+
+        return {"dirs": dirs}
 
     @app.get("/api/repos")
     async def list_repos(token: Optional[str] = Query(None)):
@@ -6366,21 +6442,40 @@ Only the top 1–3 risks worth caring about.
                                         client_mode = new_mode
                                         logger.info(f"[MODE] {old_mode} -> {client_mode}")
                                         # When switching to full mode:
-                                        # Just clear the PTY batch and start forwarding.
-                                        # The client sends resize after fit(), which triggers
-                                        # a full tmux redraw at the correct terminal size.
+                                        # Send capture-pane snapshot as immediate catchup,
+                                        # then SIGWINCH for live forwarding.
+                                        # The snapshot fixes the race where resize SIGWINCH
+                                        # fires while still in tail mode (data lost).
                                         if new_mode == "full" and not connection_closed:
                                             pty_batch.clear()
                                             pty_batch_flush_time = 0
-                                            # Force tmux full redraw via SIGWINCH
-                                            # With flush_time=0, the PTY reader sends
-                                            # the redraw data immediately on first read
+                                            # Send capture-pane snapshot so client has
+                                            # current screen content immediately
+                                            try:
+                                                session = app.state.current_session
+                                                target = app.state.active_target
+                                                snapshot = await asyncio.get_event_loop().run_in_executor(
+                                                    None,
+                                                    lambda: subprocess.run(
+                                                        ["tmux", "capture-pane", "-p", "-e", "-t",
+                                                         get_tmux_target(session, target)],
+                                                        capture_output=True, text=True, timeout=2,
+                                                    ).stdout or ""
+                                                )
+                                                if snapshot and not connection_closed:
+                                                    # Clear screen + send snapshot for clean render
+                                                    await websocket.send_text("\x1b[2J\x1b[H" + snapshot)
+                                                    logger.info(f"[MODE] Sent capture-pane snapshot ({len(snapshot)} bytes)")
+                                            except Exception as e:
+                                                logger.warning(f"[MODE] capture-pane catchup failed: {e}")
+                                            # Also send SIGWINCH so live PTY forwarding
+                                            # picks up from the correct state
                                             if app.state.child_pid:
                                                 try:
                                                     os.kill(app.state.child_pid, signal.SIGWINCH)
                                                 except ProcessLookupError:
                                                     pass
-                                            logger.info("[MODE] Cleared PTY batch, sent SIGWINCH for redraw")
+                                            logger.info("[MODE] Full mode activated with snapshot catchup")
                                 elif msg_type == "term_subscribe":
                                     # Legacy: treat as set_mode full
                                     client_mode = "full"

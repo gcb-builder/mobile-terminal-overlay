@@ -82,6 +82,9 @@ class Config:
     # Repositories/workspaces for switching
     repos: List[Repo] = field(default_factory=list)
 
+    # Workspace directories to scan for project subdirectories
+    workspace_dirs: List[str] = field(default_factory=list)  # e.g. ["~/dev"]
+
     # UI settings
     theme: str = "dark"  # dark | light | auto
     font_size: int = 16
@@ -127,6 +130,7 @@ class Config:
                 }
                 for r in self.repos
             ],
+            "workspace_dirs": self.workspace_dirs,
             "theme": self.theme,
             "font_size": self.font_size,
             "scrollback": self.scrollback,
@@ -247,6 +251,10 @@ def load_config(path: Optional[Path] = None) -> Config:
                 startup_delay_ms=delay,
             ))
 
+    # Workspace directories
+    if "workspace_dirs" in data:
+        config.workspace_dirs = [str(d) for d in data["workspace_dirs"]]
+
     return config
 
 
@@ -261,6 +269,7 @@ def merge_configs(base: Config, override: Config) -> Config:
         role_prefixes=override.role_prefixes if override.role_prefixes else base.role_prefixes,
         context_buttons=override.context_buttons if override.context_buttons else base.context_buttons,
         repos=override.repos if override.repos else base.repos,
+        workspace_dirs=override.workspace_dirs if override.workspace_dirs else base.workspace_dirs,
         theme=override.theme if override.theme != "dark" else base.theme,
         font_size=override.font_size if override.font_size != 16 else base.font_size,
         scrollback=override.scrollback if override.scrollback != 20000 else base.scrollback,
