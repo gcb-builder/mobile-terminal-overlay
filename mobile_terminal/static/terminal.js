@@ -1689,6 +1689,63 @@ async function loadCurrentSession() {
 }
 
 /**
+ * Load and display .claude/CONTEXT.md in the context banner.
+ * Fire-and-forget — must never block startup or WebSocket.
+ */
+let contextBannerRequestId = 0;
+
+async function loadContextBanner() {
+    const requestId = ++contextBannerRequestId;
+    const banner = document.getElementById('contextBanner');
+    const preview = document.getElementById('contextBannerPreview');
+    const body = document.getElementById('contextBannerBody');
+    if (!banner || !preview || !body) return;
+
+    // Check per-repo dismiss flag
+    const dismissKey = `mto_context_dismissed_${currentSession || ''}`;
+    if (sessionStorage.getItem(dismissKey)) {
+        banner.classList.add('hidden');
+        return;
+    }
+
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        const response = await fetch(`/api/docs/context?token=${token}`, {
+            signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        // Stale response — a newer request is in flight
+        if (requestId !== contextBannerRequestId) return;
+
+        if (!response.ok) { banner.classList.add('hidden'); return; }
+        const data = await response.json();
+        if (!data.exists || !data.content?.trim()) {
+            banner.classList.add('hidden');
+            return;
+        }
+
+        // Extract preview: first non-empty, non-heading line
+        const lines = data.content.split('\n');
+        const previewLine = lines.find(l => l.trim() && !l.startsWith('#')) || lines[0] || '';
+        preview.textContent = previewLine.trim();
+
+        // Body: cap at 4000 chars
+        let bodyText = data.content.slice(0, 4000);
+        if (data.content.length > 4000) bodyText += '\n... [truncated]';
+        body.textContent = bodyText;
+        body.classList.add('hidden');  // Start collapsed
+
+        banner.classList.remove('hidden');
+    } catch (e) {
+        if (requestId === contextBannerRequestId) {
+            banner.classList.add('hidden');
+        }
+    }
+}
+
+/**
  * Populate UI from config
  */
 async function populateUI() {
@@ -1946,6 +2003,9 @@ async function switchRepo(session) {
                 await loadTargets();
                 refreshLogContent();
                 await reconcileQueue();  // Reconcile queue for new session
+                // Refresh context banner for new repo
+                sessionStorage.removeItem(`mto_context_dismissed_${session}`);
+                loadContextBanner().catch(() => {});
             }, 500);
         }, 1000);
 
@@ -9441,6 +9501,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupDevPreview();
     setupDirtyChoiceModals();
 
+    // Context banner: tap header to expand, × to dismiss
+    const ctxHeader = document.getElementById('contextBannerHeader');
+    const ctxDismiss = document.getElementById('contextBannerDismiss');
+    if (ctxHeader) {
+        ctxHeader.addEventListener('click', () => {
+            const body = document.getElementById('contextBannerBody');
+            if (body) body.classList.toggle('hidden');
+        });
+    }
+    if (ctxDismiss) {
+        ctxDismiss.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const banner = document.getElementById('contextBanner');
+            if (banner) banner.classList.add('hidden');
+            const dismissKey = `mto_context_dismissed_${currentSession || ''}`;
+            sessionStorage.setItem(dismissKey, '1');
+        });
+    }
+
     // Scroll input bar to the right so Enter button is visible
     if (inputBar) {
         inputBar.scrollLeft = inputBar.scrollWidth;
@@ -9461,5 +9540,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     ]).then(() => {
         // Reconcile queue after session is known (needs currentSession)
         reconcileQueue().catch(e => console.warn('reconcileQueue failed:', e));
+        // Fire-and-forget: context banner load must never block
+        loadContextBanner().catch(() => {});
     });
 });

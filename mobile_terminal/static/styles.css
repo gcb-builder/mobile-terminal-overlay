@@ -476,6 +476,53 @@ html, body {
     min-height: 44px;
 }
 
+/* Project context banner */
+.context-banner {
+    padding: 6px 12px;
+    background: rgba(88, 166, 255, 0.1);
+    border-bottom: 1px solid var(--accent);
+    font-size: 12px;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+.context-banner.hidden { display: none; }
+.context-banner-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.context-banner-label {
+    color: var(--accent);
+    font-weight: 600;
+    white-space: nowrap;
+}
+.context-banner-preview {
+    flex: 1;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.context-banner-dismiss {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 4px;
+}
+.context-banner-body {
+    margin-top: 6px;
+    color: var(--text-primary);
+    font-size: 11px;
+    line-height: 1.4;
+    max-height: 120px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    font-family: monospace;
+}
+.context-banner-body.hidden { display: none; }
+
 .header-right {
     display: flex;
     align-items: center;
@@ -1761,12 +1808,14 @@ html, body {
 .status-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.8);
+    background: rgba(0, 0, 0, 0.3);
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     justify-content: center;
+    padding-bottom: 80px;
     z-index: 1000;
     transition: opacity 0.3s;
+    pointer-events: none;
 }
 
 .status-overlay.hidden {
@@ -1776,16 +1825,20 @@ html, body {
 
 .status-content {
     text-align: center;
+    background: rgba(0, 0, 0, 0.85);
+    padding: 12px 24px;
+    border-radius: 12px;
+    pointer-events: auto;
 }
 
 .spinner {
-    width: 40px;
-    height: 40px;
+    width: 24px;
+    height: 24px;
     border: 3px solid var(--border);
     border-top-color: var(--accent);
     border-radius: 50%;
     animation: spin 1s linear infinite;
-    margin: 0 auto 16px;
+    margin: 0 auto 8px;
 }
 
 @keyframes spin {

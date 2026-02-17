@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=147">
+    <link rel="stylesheet" href="/static/styles.css?v=148">
 </head>
 <body>
     <div class="app">
@@ -79,6 +79,16 @@
             <span class="preview-label">Preview Mode</span>
             <span id="previewTimestamp" class="preview-timestamp"></span>
             <button id="previewBackToLive" class="preview-back-btn">Back to Live</button>
+        </div>
+
+        <!-- Project context banner (from .claude/CONTEXT.md) -->
+        <div id="contextBanner" class="context-banner hidden">
+            <div id="contextBannerHeader" class="context-banner-header">
+                <span class="context-banner-label">Context</span>
+                <span id="contextBannerPreview" class="context-banner-preview"></span>
+                <button id="contextBannerDismiss" class="context-banner-dismiss">&times;</button>
+            </div>
+            <div id="contextBannerBody" class="context-banner-body hidden"></div>
         </div>
 
         <!-- Log view: Log + Command input (primary view) -->
@@ -491,7 +501,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=245"></script>
+    <script src="/static/terminal.js?v=246"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
