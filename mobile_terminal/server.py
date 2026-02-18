@@ -198,14 +198,21 @@ class SnapshotBuffer:
             return snapshot
 
     def list_snapshots(self, session: str, limit: int = 50) -> list:
-        """Return snapshot summaries (id, timestamp, label, pinned)."""
+        """Return snapshot summaries including new fields."""
         with self._lock:
             if session not in self._snapshots:
                 return []
             items = list(self._snapshots[session].values())[-limit:]
-            return [{"id": s["id"], "timestamp": s["timestamp"], "label": s["label"],
-                     "pinned": s.get("pinned", False)}
-                    for s in reversed(items)]
+            return [{
+                "id": s["id"],
+                "timestamp": s["timestamp"],
+                "label": s["label"],
+                "pinned": s.get("pinned", False),
+                "pane_id": s.get("pane_id", ""),
+                "note": s.get("note", ""),
+                "image_path": s.get("image_path"),
+                "git_head": s.get("git_head", ""),
+            } for s in reversed(items)]
 
     def get_snapshot(self, session: str, snap_id: str) -> Optional[dict]:
         """Get full snapshot by ID."""
@@ -4315,32 +4322,122 @@ Only the top 1–3 risks worth caring about.
     @app.get("/api/rollback/previews")
     async def list_previews(
         limit: int = Query(50),
+        pane_id: Optional[str] = Query(None),
         token: Optional[str] = Query(None),
     ):
-        """List available snapshots."""
+        """List available snapshots, optionally filtered by pane_id."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session = app.state.current_session
-        snapshots = app.state.snapshot_buffer.list_snapshots(session, limit)
-        logger.info(f"List snapshots: session={session}, count={len(snapshots)}")
-        return {"session": session, "snapshots": snapshots}
+        target = pane_id or app.state.active_target
+        buf = app.state.snapshot_buffer
+
+        # Try target-scoped key first, then fall back to session-only
+        snap_key = f"{session}:{target}" if target else session
+        snapshots = buf.list_snapshots(snap_key, limit)
+        if not snapshots and target:
+            # Fall back to session-only snapshots (legacy)
+            snapshots = buf.list_snapshots(session, limit)
+
+        logger.info(f"List snapshots: key={snap_key}, count={len(snapshots)}")
+        return {"session": session, "pane_id": target, "snapshots": snapshots}
 
     @app.get("/api/rollback/preview/{snap_id}")
     async def get_preview(
         snap_id: str,
         token: Optional[str] = Query(None),
     ):
-        """Get full snapshot data."""
+        """Get full snapshot data. Populates heavy fields on demand."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session = app.state.current_session
-        snapshot = app.state.snapshot_buffer.get_snapshot(session, snap_id)
+        target = app.state.active_target
+        buf = app.state.snapshot_buffer
+
+        # Search in target-scoped key first, then session
+        snap_key = f"{session}:{target}" if target else session
+        snapshot = buf.get_snapshot(snap_key, snap_id)
+        if not snapshot and target:
+            snapshot = buf.get_snapshot(session, snap_id)
 
         if not snapshot:
             return JSONResponse({"error": "Snapshot not found"}, status_code=404)
+
+        # Populate heavy fields on demand if they're empty (lazy loading)
+        if not snapshot.get("terminal_text") and snapshot.get("pane_id"):
+            try:
+                tmux_t = get_tmux_target(session, snapshot["pane_id"])
+                cap = subprocess.run(
+                    ["tmux", "capture-pane", "-p", "-S", "-100", "-t", tmux_t],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if cap.returncode == 0:
+                    snapshot["terminal_text"] = cap.stdout or ""
+            except Exception:
+                pass
+
+        if not snapshot.get("log_entries") and snapshot.get("log_path") and snapshot.get("log_offset"):
+            try:
+                lp = Path(snapshot["log_path"])
+                if lp.exists():
+                    # Read last 4KB before the offset for context
+                    offset = snapshot["log_offset"]
+                    read_start = max(0, offset - 4096)
+                    with open(lp, 'rb') as f:
+                        f.seek(read_start)
+                        data = f.read(offset - read_start)
+                    snapshot["log_entries"] = data.decode('utf-8', errors='replace')
+            except Exception:
+                pass
+
         return snapshot
+
+    @app.post("/api/rollback/preview/{snap_id}/annotate")
+    async def annotate_snapshot(
+        snap_id: str,
+        request: Request,
+        token: Optional[str] = Query(None),
+    ):
+        """Add a note or image_path to a snapshot."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        body = await request.json()
+        note = body.get("note", "")
+        image_path = body.get("image_path")
+
+        # Cap note at 500 chars
+        if note and len(note) > 500:
+            note = note[:500]
+
+        session = app.state.current_session
+        target = app.state.active_target
+        buf = app.state.snapshot_buffer
+
+        # Search in target-scoped key first, then session
+        snap_key = f"{session}:{target}" if target else session
+        snapshot = None
+        with buf._lock:
+            snaps = buf._snapshots.get(snap_key, {})
+            if snap_id in snaps:
+                snapshot = snaps[snap_id]
+            elif target:
+                snaps = buf._snapshots.get(session, {})
+                if snap_id in snaps:
+                    snapshot = snaps[snap_id]
+
+        if not snapshot:
+            return JSONResponse({"error": "Snapshot not found"}, status_code=404)
+
+        if note is not None:
+            snapshot["note"] = note
+        if image_path is not None:
+            snapshot["image_path"] = image_path
+
+        app.state.audit_log.log("snapshot_annotate", {"snap_id": snap_id, "note": note[:50] if note else ""})
+        return {"success": True, "snap_id": snap_id}
 
     @app.post("/api/rollback/preview/select")
     async def select_preview(
@@ -4828,6 +4925,321 @@ Only the top 1–3 risks worth caring about.
         else:
             result["message"] = "Claude not running"
 
+        return result
+
+    # ===== Phase Detection (Status Strip) =====
+    _phase_cache: dict = {"log_path": "", "mtime": 0.0, "size": 0, "result": None}
+    _phase_last_activity: dict = {"time": 0.0, "was_active": False}
+    _git_head_cache: dict = {"value": "", "ts": 0.0}
+
+    def _get_git_head() -> str:
+        """Get short git HEAD hash, cached for 10s."""
+        now = time.time()
+        if now - _git_head_cache["ts"] < 10 and _git_head_cache["value"]:
+            return _git_head_cache["value"]
+        try:
+            repo_path = get_current_repo_path()
+            if not repo_path:
+                return ""
+            result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=2,
+                cwd=str(repo_path),
+            )
+            if result.returncode == 0:
+                val = result.stdout.strip()
+                _git_head_cache.update({"value": val, "ts": now})
+                return val
+        except Exception:
+            pass
+        return ""
+
+    def _try_auto_snapshot(session: str, target: str, phase_result: dict):
+        """Auto-capture a minimal snapshot from push_monitor (rate-limited by caller)."""
+        tool = phase_result.get("tool", "")
+        phase = phase_result.get("phase", "")
+
+        # Determine label from tool
+        label_map = {
+            "Edit": "edit", "Write": "edit", "NotebookEdit": "edit",
+            "Bash": "bash",
+            "EnterPlanMode": "plan_transition", "ExitPlanMode": "plan_transition",
+            "Task": "task",
+            "AskUserQuestion": "tool_call",
+        }
+        label = label_map.get(tool, "tool_call")
+
+        # Find current log file info
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return
+        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+        cpd = Path.home() / ".claude" / "projects" / project_id
+        if not cpd.exists():
+            return
+        jf = list(cpd.glob("*.jsonl"))
+        if not jf:
+            return
+        lf = max(jf, key=lambda f: f.stat().st_mtime)
+
+        ts = int(time.time() * 1000)
+        snap_id = f"snap_{ts}"
+        snapshot = {
+            "id": snap_id,
+            "timestamp": ts,
+            "session": session,
+            "pane_id": target or "",
+            "label": label,
+            "log_offset": lf.stat().st_size,
+            "log_path": str(lf),
+            "git_head": _get_git_head(),
+            "terminal_text": "",  # Empty by default, load on demand
+            "log_entries": "",    # Empty by default, load on demand
+            "note": "",
+            "image_path": None,
+            "pinned": False,
+        }
+
+        # Use existing SnapshotBuffer (keyed by session:pane_id)
+        snap_key = f"{session}:{target}" if target else session
+        buf = app.state.snapshot_buffer
+        with buf._lock:
+            if snap_key not in buf._snapshots:
+                buf._snapshots[snap_key] = OrderedDict()
+            buf._snapshots[snap_key][snap_id] = snapshot
+            while len(buf._snapshots[snap_key]) > buf.MAX_SNAPSHOTS:
+                evicted = False
+                for key in list(buf._snapshots[snap_key].keys()):
+                    if not buf._snapshots[snap_key][key].get("pinned"):
+                        del buf._snapshots[snap_key][key]
+                        evicted = True
+                        break
+                if not evicted:
+                    break
+
+    def _detect_phase(session_name: str, target: str, claude_running: bool) -> dict:
+        """
+        Detect Claude's current phase by parsing the tail of the JSONL log.
+        Uses (log_path, mtime, size) cache key for <5ms cached returns.
+        """
+        result = {
+            "phase": "idle",
+            "detail": "",
+            "tool": "",
+            "session": session_name,
+            "pane_id": target or "",
+        }
+
+        if not claude_running:
+            return result
+
+        # Find the log file
+        repo_path = get_current_repo_path()
+        if not repo_path:
+            return result
+        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+        claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
+        if not claude_projects_dir.exists():
+            return result
+        jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
+        if not jsonl_files:
+            return result
+        log_file = max(jsonl_files, key=lambda f: f.stat().st_mtime)
+
+        # Check cache
+        try:
+            st = log_file.stat()
+            if (_phase_cache["log_path"] == str(log_file)
+                    and _phase_cache["mtime"] == st.st_mtime
+                    and _phase_cache["size"] == st.st_size
+                    and _phase_cache["result"] is not None):
+                return _phase_cache["result"]
+        except Exception:
+            return result
+
+        # Cache miss - parse last 8KB of JSONL
+        try:
+            file_size = st.st_size
+            read_size = min(file_size, 8192)
+            with open(log_file, 'rb') as f:
+                if file_size > read_size:
+                    f.seek(file_size - read_size)
+                tail_bytes = f.read(read_size)
+            tail_text = tail_bytes.decode('utf-8', errors='replace')
+
+            # Find complete JSON lines (skip partial first line if we seeked)
+            lines = tail_text.split('\n')
+            if file_size > read_size:
+                lines = lines[1:]  # Skip partial first line
+
+            # Parse entries from tail
+            entries = []
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+                if len(entries) >= 30:  # Only need recent entries
+                    break
+
+            # Check pane_title for signal detection
+            if target:
+                try:
+                    tmux_target = get_tmux_target(session_name, target)
+                    title_result = subprocess.run(
+                        ["tmux", "display-message", "-t", tmux_target, "-p", "#{pane_title}"],
+                        capture_output=True, text=True, timeout=2
+                    )
+                    if title_result.returncode == 0:
+                        pane_title = title_result.stdout.strip()
+                        if "Signal Detection Pending" in pane_title:
+                            result["phase"] = "waiting"
+                            result["detail"] = "Signal Detection Pending"
+                            _phase_cache.update({"log_path": str(log_file), "mtime": st.st_mtime,
+                                                  "size": st.st_size, "result": result})
+                            return result
+                except Exception:
+                    pass
+
+            # Scan entries (already in reverse chronological order)
+            plan_mode = False
+            last_tool = None
+            last_tool_detail = ""
+            active_form = ""
+
+            for entry in entries:
+                msg = entry.get("message", {})
+                msg_type = entry.get("type", "")
+
+                if msg_type != "assistant":
+                    continue
+
+                content = msg.get("content", [])
+                if isinstance(content, str):
+                    continue
+                if not isinstance(content, list):
+                    continue
+
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") != "tool_use":
+                        continue
+
+                    tool_name = block.get("name", "")
+                    tool_input = block.get("input", {})
+
+                    if tool_name == "AskUserQuestion":
+                        result["phase"] = "waiting"
+                        questions = tool_input.get("questions", [])
+                        if questions:
+                            result["detail"] = questions[0].get("question", "Needs input")[:80]
+                        else:
+                            result["detail"] = "Needs input"
+                        result["tool"] = tool_name
+                        _phase_cache.update({"log_path": str(log_file), "mtime": st.st_mtime,
+                                              "size": st.st_size, "result": result})
+                        return result
+
+                    if tool_name == "EnterPlanMode" and not last_tool:
+                        plan_mode = True
+
+                    if tool_name == "ExitPlanMode":
+                        plan_mode = False
+
+                    if tool_name == "TodoWrite":
+                        todos = tool_input.get("todos", [])
+                        in_progress = [t for t in todos if t.get("status") == "in_progress"]
+                        if in_progress:
+                            active_form = in_progress[0].get("activeForm", "")
+
+                    if not last_tool and tool_name:
+                        last_tool = tool_name
+                        # Extract detail from tool input
+                        if tool_name == "Bash":
+                            cmd = tool_input.get("command", "")
+                            last_tool_detail = cmd[:60]
+                        elif tool_name in ("Read", "Edit", "Write", "Glob", "Grep"):
+                            path = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("pattern", "")
+                            last_tool_detail = path.split("/")[-1][:60] if "/" in str(path) else str(path)[:60]
+                        elif tool_name == "Task":
+                            last_tool_detail = tool_input.get("description", "")[:60]
+                        elif tool_name == "EnterPlanMode":
+                            last_tool_detail = "Planning..."
+                        elif tool_name == "ExitPlanMode":
+                            last_tool_detail = "Plan ready"
+
+            # Determine phase from collected data
+            if plan_mode:
+                result["phase"] = "planning"
+                result["detail"] = active_form or "Planning..."
+                result["tool"] = "EnterPlanMode"
+            elif last_tool == "Task":
+                result["phase"] = "running_task"
+                result["detail"] = active_form or last_tool_detail or "Running agent..."
+                result["tool"] = last_tool
+            elif last_tool in ("Edit", "Write", "Bash", "Read", "Glob", "Grep", "TodoWrite",
+                               "NotebookEdit", "TaskCreate", "TaskUpdate"):
+                result["phase"] = "working"
+                result["detail"] = active_form or f"{last_tool}: {last_tool_detail}" if last_tool_detail else active_form or "Working..."
+                result["tool"] = last_tool
+            elif last_tool:
+                result["phase"] = "working"
+                result["detail"] = active_form or last_tool_detail or f"Using {last_tool}"
+                result["tool"] = last_tool
+            else:
+                result["phase"] = "idle"
+                result["detail"] = ""
+
+        except Exception as e:
+            logger.debug(f"Phase detection error: {e}")
+
+        # Update cache
+        try:
+            _phase_cache.update({"log_path": str(log_file), "mtime": st.st_mtime,
+                                  "size": st.st_size, "result": result})
+        except Exception:
+            pass
+
+        return result
+
+    @app.get("/api/status/phase")
+    async def get_status_phase(
+        pane_id: str = Query(None),
+        token: Optional[str] = Query(None),
+    ):
+        """Get Claude's current phase for the status strip."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        session = app.state.current_session
+        target = pane_id or app.state.active_target
+
+        # Check if Claude is running (reuse health check logic)
+        claude_running = False
+        if target:
+            try:
+                tmux_target = get_tmux_target(session, target)
+                pane_info = subprocess.run(
+                    ["tmux", "display-message", "-t", tmux_target, "-p", "#{pane_pid}"],
+                    capture_output=True, text=True, timeout=2
+                )
+                if pane_info.returncode == 0:
+                    shell_pid = pane_info.stdout.strip()
+                    if shell_pid.isdigit():
+                        proc_check = subprocess.run(
+                            ["pgrep", "-f", "claude", "-P", shell_pid],
+                            capture_output=True, text=True, timeout=2
+                        )
+                        claude_running = proc_check.returncode == 0 and proc_check.stdout.strip() != ""
+            except Exception:
+                pass
+
+        result = _detect_phase(session, target, claude_running)
+        result["claude_running"] = claude_running
         return result
 
     @app.post("/api/claude/start")
@@ -5472,8 +5884,12 @@ Only the top 1–3 risks worth caring about.
             except Exception as e:
                 logger.warning(f"Failed to get commits for history: {e}")
 
-        # Get snapshots
-        snapshots = app.state.snapshot_buffer.list_snapshots(session, limit)
+        # Get snapshots (try target-scoped first, then session)
+        target = app.state.active_target
+        snap_key = f"{session}:{target}" if target else session
+        snapshots = app.state.snapshot_buffer.list_snapshots(snap_key, limit)
+        if not snapshots and target:
+            snapshots = app.state.snapshot_buffer.list_snapshots(session, limit)
         for snap in snapshots:
             items.append({
                 "type": "snapshot",
@@ -5481,6 +5897,10 @@ Only the top 1–3 risks worth caring about.
                 "label": snap["label"],
                 "timestamp": snap["timestamp"],
                 "pinned": snap.get("pinned", False),
+                "pane_id": snap.get("pane_id", ""),
+                "note": snap.get("note", ""),
+                "image_path": snap.get("image_path"),
+                "git_head": snap.get("git_head", ""),
             })
 
         # Sort by timestamp descending (newest first)
@@ -6667,7 +7087,7 @@ Only the top 1–3 risks worth caring about.
 
     _push_cooldowns: dict = {}
 
-    async def maybe_send_push(title: str, body: str, push_type: str = "info"):
+    async def maybe_send_push(title: str, body: str, push_type: str = "info", extra_data: dict = None):
         """Send push only if no active client and cooldown expired."""
         if not config.push_enabled:
             return
@@ -6688,10 +7108,13 @@ Only the top 1–3 risks worth caring about.
             from pywebpush import webpush, WebPushException
         except ImportError:
             return
+        payload = {"title": title, "body": body, "type": push_type}
+        if extra_data:
+            payload.update(extra_data)
         stale = []
         for sub in subs:
             try:
-                webpush(sub, json.dumps({"title": title, "body": body, "type": push_type}),
+                webpush(sub, json.dumps(payload),
                         vapid_private_key=str(vapid_key_path),
                         vapid_claims={"sub": "mailto:noreply@localhost"})
             except WebPushException as e:
@@ -6809,33 +7232,131 @@ Only the top 1–3 risks worth caring about.
         # Start background push monitor
         if config.push_enabled and getattr(app.state, 'vapid_key_path', None):
             async def push_monitor():
-                """Check for permission prompts when no WebSocket active, send push."""
+                """Check for permission prompts, idle transitions, and crashes."""
                 _perm_pending_since = 0
+                _last_activity_time = time.time()
+                _was_active_phase = False
+                _was_claude_running = False
+                _crash_candidate_since = 0
+                _last_log_mtime = 0.0
+                _last_log_size = 0
+                _last_snap_time = 0.0  # Rate-limit auto snapshots
+
                 while True:
                     await asyncio.sleep(5)
                     try:
-                        if app.state.active_websocket is not None:
-                            _perm_pending_since = 0
-                            continue
-                        detector = app.state.permission_detector
                         session = app.state.current_session
                         target = app.state.active_target
-                        if not session or not detector.log_file:
+                        if not session:
                             continue
-                        perm = detector.check_sync(session, target)
-                        if perm:
-                            if _perm_pending_since == 0:
-                                _perm_pending_since = time.time()
-                            elif time.time() - _perm_pending_since > 10:
-                                await maybe_send_push(
-                                    "Claude needs approval",
-                                    f"Allow {perm['tool']}: {perm['target'][:80]}?",
-                                    "permission"
+
+                        pane_target = f"{session}:{target}" if target else session
+                        extra = {"session": session, "pane_id": target or ""}
+
+                        # Track log activity
+                        try:
+                            repo_path = get_current_repo_path()
+                            if repo_path:
+                                pid = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+                                cpd = Path.home() / ".claude" / "projects" / pid
+                                if cpd.exists():
+                                    jf = list(cpd.glob("*.jsonl"))
+                                    if jf:
+                                        lf = max(jf, key=lambda f: f.stat().st_mtime)
+                                        st = lf.stat()
+                                        if st.st_mtime != _last_log_mtime or st.st_size != _last_log_size:
+                                            _last_activity_time = time.time()
+                                            _last_log_mtime = st.st_mtime
+                                            _last_log_size = st.st_size
+                        except Exception:
+                            pass
+
+                        # Check if Claude is running
+                        claude_running = False
+                        if target:
+                            try:
+                                tmux_t = get_tmux_target(session, target)
+                                pi = subprocess.run(
+                                    ["tmux", "display-message", "-t", tmux_t, "-p", "#{pane_pid}"],
+                                    capture_output=True, text=True, timeout=2
                                 )
+                                if pi.returncode == 0:
+                                    spid = pi.stdout.strip()
+                                    if spid.isdigit():
+                                        pc = subprocess.run(
+                                            ["pgrep", "-f", "claude", "-P", spid],
+                                            capture_output=True, text=True, timeout=2
+                                        )
+                                        claude_running = pc.returncode == 0 and pc.stdout.strip() != ""
+                            except Exception:
+                                pass
+
+                        # Get current phase (reuse cached result)
+                        phase_result = _detect_phase(session, target, claude_running)
+                        current_phase = phase_result.get("phase", "idle")
+                        is_active = current_phase not in ("idle",)
+
+                        # === Permission push (existing) ===
+                        if app.state.active_websocket is None:
+                            detector = app.state.permission_detector
+                            if detector.log_file:
+                                perm = detector.check_sync(session, target)
+                                if perm:
+                                    if _perm_pending_since == 0:
+                                        _perm_pending_since = time.time()
+                                    elif time.time() - _perm_pending_since > 10:
+                                        await maybe_send_push(
+                                            "Claude needs approval",
+                                            f"Allow {perm['tool']}: {perm['target'][:80]}?",
+                                            "permission",
+                                            extra_data=extra,
+                                        )
+                                else:
+                                    _perm_pending_since = 0
+
+                        # === Completed push (idle transition) ===
+                        if _was_active_phase and not is_active:
+                            idle_duration = time.time() - _last_activity_time
+                            if idle_duration > 20:
+                                await maybe_send_push(
+                                    "Claude finished",
+                                    f"Turn complete in {pane_target}. Tap to review.",
+                                    "completed",
+                                    extra_data=extra,
+                                )
+
+                        # === Crashed push (process-tree check with debounce) ===
+                        if _was_claude_running and not claude_running:
+                            if _crash_candidate_since == 0:
+                                _crash_candidate_since = time.time()
+                            elif time.time() - _crash_candidate_since > 10:
+                                # Confirm no output for 10s
+                                if time.time() - _last_activity_time > 10:
+                                    await maybe_send_push(
+                                        "Claude crashed",
+                                        f"Claude stopped in {pane_target}. Tap to respawn.",
+                                        "crashed",
+                                        extra_data=extra,
+                                    )
+                                    _crash_candidate_since = 0
                         else:
-                            _perm_pending_since = 0
-                    except Exception:
-                        pass
+                            _crash_candidate_since = 0
+
+                        # === Auto-capture snapshots (event-driven, rate-limited) ===
+                        now = time.time()
+                        if (is_active and _last_log_mtime > 0
+                                and now - _last_snap_time > 30):
+                            try:
+                                _try_auto_snapshot(session, target, phase_result)
+                                _last_snap_time = now
+                            except Exception:
+                                pass
+
+                        _was_active_phase = is_active
+                        _was_claude_running = claude_running
+
+                    except Exception as e:
+                        logger.debug(f"push_monitor error: {e}")
             app.state.push_monitor_task = asyncio.create_task(push_monitor())
 
     @app.on_event("shutdown")

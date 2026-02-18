@@ -3,12 +3,50 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Workspace directory picker in new window modal
-- **Last Updated:** 2026-02-17
-- **Server Version:** v245 (terminal.js), v108 (sw.js cache)
+- **Stage:** Agent-native features: Status Strip, Push Completed/Crashed, Artifacts & Replay
+- **Last Updated:** 2026-02-18
+- **Server Version:** v248 (terminal.js), v115 (sw.js cache), v150 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
 
-## Active Work: Workspace Directory Picker (2026-02-17)
+## Active Work: Agent-Native Features (2026-02-18)
+
+### Feature 1: Status Strip
+Thin bar below header showing Claude's current phase (waiting/planning/working/running_task/idle) with colored pulsing dot, detail text, and contextual action button.
+
+- **Server:** `GET /api/status/phase` with `(log_path, mtime, size)` cache key for <5ms cached returns
+- **Parse logic:** Reads last 8KB of JSONL, checks pane_title, scans tool_use blocks
+- **Client:** `updateClaudePhase()` called via `Promise.all` in existing health poll loop
+- **Action buttons:** "Approve" (waiting), "History" (idle transition for 30s)
+
+### Feature 2: Push Completed/Crashed
+Extended `push_monitor()` with idle transition detection and crash detection.
+
+- **Completed:** Idle transition after 20s of no activity when previously active
+- **Crashed:** Process-tree check with 10s debounce when Claude stops unexpectedly
+- **`maybe_send_push()`:** Now accepts `extra_data` dict (includes `session`, `pane_id`)
+- **SW:** Per-type notification actions (Open for completed, Respawn+Open for crashed)
+- **Client:** SW message handler for `respawn_claude`, URL param `?action=respawn` on page load
+
+### Feature 3: Artifacts & Replay
+Auto-captured snapshots with minimal payload, lazy heavy fields, annotation, and timeline UI.
+
+- **Auto-capture:** Event-driven in `push_monitor()`, rate-limited to 1 per 30s
+- **Minimal payload:** `log_offset` + `log_path` instead of full JSONL content; `terminal_text` empty by default
+- **Heavy fields on demand:** Populated when snapshot is viewed via `GET /api/rollback/preview/{id}`
+- **Annotation:** `POST /api/rollback/preview/{snap_id}/annotate` with note (500 chars) + image_path
+- **Per-target scoping:** Snapshots keyed by `session:pane_id`
+- **Timeline UI:** Vertical connector, colored label badges, note previews, git HEAD display
+
+### Files Changed
+- `mobile_terminal/server.py` - Phase endpoint, extended push_monitor, auto-capture, annotate endpoint, lazy snapshot loading
+- `mobile_terminal/static/index.html` - Status strip div, version bumps
+- `mobile_terminal/static/styles.css` - Status strip styles, timeline styles
+- `mobile_terminal/static/terminal.js` - updateClaudePhase(), enhanced renderHistoryList(), SW respawn handler
+- `mobile_terminal/static/sw.js` - Per-type push actions, respawn click handler
+
+---
+
+## Previous: Workspace Directory Picker (2026-02-17)
 
 ### Feature
 The "New Window in Repo" modal now also shows directories under configurable `workspace_dirs` (e.g. `~/dev/`), so you can open a tmux window in any project without pre-configuring each one in YAML.

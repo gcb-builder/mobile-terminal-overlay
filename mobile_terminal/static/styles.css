@@ -476,6 +476,83 @@ html, body {
     min-height: 44px;
 }
 
+/* Claude status strip */
+.claude-status-strip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    height: 24px;
+    background: var(--bg-secondary, #161b22);
+    border-bottom: 1px solid var(--border, #30363d);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.claude-status-strip.hidden {
+    display: none;
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.status-dot.waiting { background: #ef4444; animation: status-pulse-fast 0.8s ease-in-out infinite; }
+.status-dot.planning { background: #f59e0b; animation: status-pulse 2s ease-in-out infinite; }
+.status-dot.working { background: #3b82f6; animation: status-pulse 2s ease-in-out infinite; }
+.status-dot.running_task { background: #a855f7; animation: status-pulse 2s ease-in-out infinite; }
+.status-dot.idle { background: #6b7280; }
+
+@keyframes status-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+@keyframes status-pulse-fast {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+.status-phase {
+    color: var(--text-secondary, #8b949e);
+    font-weight: 500;
+    text-transform: capitalize;
+    white-space: nowrap;
+}
+
+.status-detail {
+    color: var(--text-muted, #6e7681);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.status-action-btn {
+    padding: 2px 10px;
+    min-height: 22px;
+    min-width: 44px;
+    background: var(--accent, #58a6ff);
+    border: none;
+    border-radius: 3px;
+    color: white;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.status-action-btn.hidden {
+    display: none;
+}
+
+.status-action-btn:active {
+    opacity: 0.8;
+}
+
 /* Project context banner */
 .context-banner {
     padding: 6px 12px;
@@ -4979,16 +5056,134 @@ html, body {
 
 .history-action-btn {
     padding: 4px 8px;
+    min-width: 28px;
+    min-height: 28px;
     background: transparent;
     border: 1px solid var(--border);
     border-radius: 4px;
-    font-size: 14px;
+    font-size: 12px;
+    color: var(--text-secondary);
     cursor: pointer;
     flex-shrink: 0;
 }
 
 .history-action-btn:active {
     background: var(--bg-secondary);
+}
+
+/* Timeline visual */
+.history-timeline {
+    position: relative;
+}
+
+.tl-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 8px 8px 0;
+    margin-bottom: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+}
+
+.tl-item:active {
+    background: var(--bg-tertiary);
+}
+
+.tl-gutter {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 20px;
+    flex-shrink: 0;
+    padding-top: 2px;
+}
+
+.tl-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #6b7280;
+    flex-shrink: 0;
+    z-index: 1;
+}
+
+.tl-dot-commit {
+    background: var(--accent, #58a6ff);
+    width: 10px;
+    height: 10px;
+}
+
+.tl-line {
+    width: 2px;
+    flex: 1;
+    min-height: 16px;
+    background: var(--border, #30363d);
+}
+
+.tl-line-last {
+    background: transparent;
+}
+
+.tl-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.tl-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.tl-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 500;
+    color: white;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.tl-git {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted, #6e7681);
+}
+
+.tl-indicator {
+    font-size: 9px;
+    padding: 0 4px;
+    border-radius: 2px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.tl-pin {
+    color: #f59e0b;
+}
+
+.tl-note {
+    font-size: 11px;
+    color: var(--text-muted, #6e7681);
+    font-style: italic;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tl-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
 }
 
 .history-commit-detail {

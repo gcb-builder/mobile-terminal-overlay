@@ -521,6 +521,10 @@ const HEALTH_POLL_INTERVAL = 5000;  // 5 seconds between health checks
 let claudeCrashDebounceTimer = null;  // Debounce timer for crash detection
 let dismissedCrashPanes = new Set();  // Panes where user dismissed crash banner
 
+// Status strip state
+let lastPhase = null;               // Last phase result from /api/status/phase
+let phaseIdleShowHistoryTimer = null; // Timer for showing "Open History" after idle transition
+
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
     controlBarsContainer = document.getElementById('controlBarsContainer');
@@ -2453,7 +2457,7 @@ async function startClaudeHealthPolling() {
         try {
             // Only poll when document is visible
             if (document.visibilityState === 'visible') {
-                await checkClaudeHealth();
+                await Promise.all([checkClaudeHealth(), updateClaudePhase()]);
             }
             await abortableSleep(HEALTH_POLL_INTERVAL, signal);
         } catch (error) {
@@ -2476,6 +2480,103 @@ function stopClaudeHealthPolling() {
     if (claudeCrashDebounceTimer) {
         clearTimeout(claudeCrashDebounceTimer);
         claudeCrashDebounceTimer = null;
+    }
+}
+
+/**
+ * Fetch Claude phase and update status strip
+ */
+async function updateClaudePhase() {
+    const strip = document.getElementById('claudeStatusStrip');
+    const dot = document.getElementById('claudeStatusDot');
+    const phaseEl = document.getElementById('claudeStatusPhase');
+    const detailEl = document.getElementById('claudeStatusDetail');
+    const actionBtn = document.getElementById('claudeStatusAction');
+    if (!strip) return;
+
+    try {
+        const paneParam = activeTarget ? `&pane_id=${encodeURIComponent(activeTarget)}` : '';
+        const response = await apiFetch(`/api/status/phase?token=${token}${paneParam}`);
+        if (!response.ok) return;
+
+        const data = await response.json();
+        const prevPhase = lastPhase?.phase;
+        lastPhase = data;
+
+        const phase = data.phase;
+        const claudeRunning = data.claude_running;
+
+        // Hide strip when idle and Claude not running
+        if (phase === 'idle' && !claudeRunning) {
+            strip.classList.add('hidden');
+            return;
+        }
+
+        // Show strip
+        strip.classList.remove('hidden');
+
+        // Update dot
+        dot.className = 'status-dot ' + phase;
+
+        // Phase labels
+        const phaseLabels = {
+            waiting: 'Needs Input',
+            planning: 'Planning',
+            working: 'Working',
+            running_task: 'Agent',
+            idle: 'Idle',
+        };
+        phaseEl.textContent = phaseLabels[phase] || phase;
+
+        // Detail text
+        detailEl.textContent = data.detail || '';
+
+        // Action button logic
+        actionBtn.classList.add('hidden');
+        if (phase === 'waiting') {
+            actionBtn.textContent = 'Approve';
+            actionBtn.classList.remove('hidden');
+            actionBtn.onclick = () => {
+                // Focus terminal for input
+                if (term) term.focus();
+                // Switch to terminal view if on log view
+                const termView = document.getElementById('terminalView');
+                const logViewEl = document.getElementById('logView');
+                if (termView && logViewEl && termView.classList.contains('hidden')) {
+                    logViewEl.classList.add('hidden');
+                    termView.classList.remove('hidden');
+                    outputMode = 'full';
+                }
+            };
+        } else if (phase === 'idle' && prevPhase && prevPhase !== 'idle') {
+            // Briefly show "Open History" after transition to idle
+            actionBtn.textContent = 'History';
+            actionBtn.classList.remove('hidden');
+            actionBtn.onclick = () => {
+                // Open drawer to history tab
+                const drawer = document.getElementById('previewDrawer');
+                if (drawer) {
+                    drawer.classList.remove('hidden');
+                    drawerOpen = true;
+                    // Activate history tab
+                    document.querySelectorAll('.rollback-tab').forEach(t => t.classList.remove('active'));
+                    document.querySelectorAll('.rollback-tab-content').forEach(c => c.classList.add('hidden'));
+                    const histTab = document.querySelector('.rollback-tab[data-tab="history"]');
+                    const histContent = document.getElementById('historyTabContent');
+                    if (histTab) histTab.classList.add('active');
+                    if (histContent) histContent.classList.remove('hidden');
+                }
+            };
+            // Auto-hide after 30s
+            if (phaseIdleShowHistoryTimer) clearTimeout(phaseIdleShowHistoryTimer);
+            phaseIdleShowHistoryTimer = setTimeout(() => {
+                actionBtn.classList.add('hidden');
+                phaseIdleShowHistoryTimer = null;
+            }, 30000);
+        }
+
+    } catch (error) {
+        console.debug('Phase update error:', error);
     }
 }
 
@@ -7982,7 +8083,7 @@ async function loadHistory() {
 }
 
 /**
- * Render history list with current filter
+ * Render history list with timeline visual and enhanced snapshot UI
  */
 function renderHistoryList() {
     const list = document.getElementById('historyList');
@@ -8001,32 +8102,89 @@ function renderHistoryList() {
         return;
     }
 
-    list.innerHTML = items.map(item => {
+    // Label badge colors
+    const labelColors = {
+        bash: '#22c55e', edit: '#f59e0b', tool_call: '#3b82f6',
+        plan_transition: '#a855f7', task: '#ec4899',
+        user_send: '#3b82f6', cmd: '#3b82f6',
+        claude_done: '#6b7280', error: '#ef4444',
+    };
+
+    list.innerHTML = '<div class="history-timeline">' + items.map((item, idx) => {
         const timeAgo = formatTimeAgo(item.timestamp);
+        const isLast = idx === items.length - 1;
+        const lineClass = isLast ? 'tl-line tl-line-last' : 'tl-line';
+
         if (item.type === 'commit') {
             return `
-                <div class="history-item history-commit" data-hash="${item.hash}">
-                    <span class="history-icon">🔀</span>
-                    <div class="history-info">
-                        <span class="history-id">${item.id}</span>
-                        <span class="history-subject">${escapeHtml(item.subject)}</span>
+                <div class="history-item history-commit tl-item" data-hash="${item.hash}">
+                    <div class="tl-gutter">
+                        <span class="tl-dot tl-dot-commit"></span>
+                        <span class="${lineClass}"></span>
                     </div>
-                    <span class="history-time">${timeAgo}</span>
-                    <button class="history-action-btn" data-action="revert" data-hash="${item.hash}" title="Revert">↩️</button>
+                    <div class="tl-content">
+                        <div class="tl-row">
+                            <span class="history-id">${item.id}</span>
+                            <span class="history-subject">${escapeHtml(item.subject)}</span>
+                        </div>
+                        <span class="history-time">${timeAgo}</span>
+                    </div>
+                    <button class="history-action-btn" data-action="revert" data-hash="${item.hash}" title="Revert">↩</button>
                 </div>`;
         } else {
-            const labelDisplay = item.label === 'user_send' ? 'cmd' : item.label;
+            const rawLabel = item.label || 'snapshot';
+            const labelDisplay = rawLabel === 'user_send' ? 'cmd' : rawLabel;
+            const badgeColor = labelColors[rawLabel] || labelColors[labelDisplay] || '#6b7280';
+            const notePreview = item.note ? `<span class="tl-note">${escapeHtml(item.note.substring(0, 50))}</span>` : '';
+            const imgIndicator = item.image_path ? '<span class="tl-indicator">IMG</span>' : '';
+            const pinIndicator = item.pinned ? '<span class="tl-indicator tl-pin">PIN</span>' : '';
+            const gitHead = item.git_head ? `<span class="tl-git">${item.git_head}</span>` : '';
+
             return `
-                <div class="history-item history-snapshot" data-id="${item.id}">
-                    <span class="history-icon">${item.pinned ? '📌' : '📸'}</span>
-                    <div class="history-info">
-                        <span class="history-label">${labelDisplay}</span>
+                <div class="history-item history-snapshot tl-item" data-id="${item.id}">
+                    <div class="tl-gutter">
+                        <span class="tl-dot" style="background:${badgeColor}"></span>
+                        <span class="${lineClass}"></span>
+                    </div>
+                    <div class="tl-content">
+                        <div class="tl-row">
+                            <span class="tl-badge" style="background:${badgeColor}">${labelDisplay}</span>
+                            ${gitHead}${pinIndicator}${imgIndicator}
+                        </div>
+                        ${notePreview}
                     </div>
                     <span class="history-time">${timeAgo}</span>
-                    <button class="history-action-btn" data-action="preview" data-id="${item.id}" title="Preview">👁️</button>
+                    <div class="tl-actions">
+                        <button class="history-action-btn" data-action="note" data-id="${item.id}" title="Note">N</button>
+                        <button class="history-action-btn" data-action="preview" data-id="${item.id}" title="View">V</button>
+                    </div>
                 </div>`;
         }
-    }).join('');
+    }).join('') + '</div>';
+
+    // Attach note button handlers
+    list.querySelectorAll('[data-action="note"]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const snapId = btn.dataset.id;
+            const existing = historyItems.find(i => i.id === snapId)?.note || '';
+            const note = prompt('Add note (max 500 chars):', existing);
+            if (note !== null) {
+                fetch(`/api/rollback/preview/${snapId}/annotate?token=${token}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ note: note.substring(0, 500) }),
+                }).then(r => {
+                    if (r.ok) {
+                        const item = historyItems.find(i => i.id === snapId);
+                        if (item) item.note = note.substring(0, 500);
+                        renderHistoryList();
+                        showToast('Note saved', 'success');
+                    }
+                }).catch(() => showToast('Failed to save note', 'error'));
+            }
+        });
+    });
 }
 
 /**
@@ -9732,6 +9890,9 @@ async function setupPushNotifications() {
     navigator.serviceWorker.addEventListener('message', (event) => {
         if (event.data?.type === 'permission_response') {
             sendInput(event.data.choice + '\n');
+        } else if (event.data?.type === 'respawn_claude') {
+            // Respawn Claude from push notification action
+            respawnClaude();
         }
     });
 }
@@ -9909,5 +10070,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadContextBanner().catch(() => {});
         // Fire-and-forget: push notification setup
         setupPushNotifications().catch(() => {});
+
+        // Handle URL action params (from push notification deep links)
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('action') === 'respawn') {
+            // Delay respawn until connection is established
+            setTimeout(() => {
+                respawnClaude();
+                // Clean URL params
+                const cleanUrl = window.location.pathname + (token ? `?token=${token}` : '');
+                window.history.replaceState({}, '', cleanUrl);
+            }, 2000);
+        }
     });
 });

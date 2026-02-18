@@ -911,3 +911,24 @@ Unified single button showing "repo • pane" format with sectioned dropdown:
 **Risks/Follow-ups:**
 - Workspace dirs are scanned on each modal open (no caching); should be fine for typical dir counts
 - Path validation uses `relative_to()` to prevent traversal; symlinks resolve to real paths
+
+---
+
+## 2026-02-18: Agent-Native Features (Status Strip, Push, Artifacts)
+
+**Goal:** Add three agent-native features: status strip for real-time phase display, push notifications for completed/crashed events, and enhanced artifacts/replay with timeline UI.
+
+**Files changed:**
+- `mobile_terminal/server.py` — Added `GET /api/status/phase` with mtime/size cache, `_detect_phase()` parser (last 8KB JSONL), `_get_git_head()` cached helper, `_try_auto_snapshot()` for event-driven snapshots, extended `push_monitor()` with idle transition (20s) and crash detection (10s debounce), updated `maybe_send_push()` for `extra_data`, added `POST /api/rollback/preview/{snap_id}/annotate`, updated `list_previews`/`get_preview`/history API for per-target scoping and lazy heavy fields
+- `mobile_terminal/static/index.html` — Added status strip div after crash banner, bumped versions (terminal.js v248, styles.css v150, sw.js v115)
+- `mobile_terminal/static/styles.css` — Status strip styles (24px bar, colored dots, pulse animations, action button), timeline styles (vertical connector, colored label badges, note previews, indicators)
+- `mobile_terminal/static/terminal.js` — Added `updateClaudePhase()` in health poll `Promise.all`, status strip state vars, enhanced `renderHistoryList()` with timeline visual and annotation UI, SW `respawn_claude` message handler, URL `?action=respawn` param handling
+- `mobile_terminal/static/sw.js` — Per-type push actions (Open for completed, Respawn+Open for crashed), respawn click handler with client postMessage and deep-link fallback
+
+**New files:** None
+
+**Risks/Follow-ups:**
+- Phase detection reads last 8KB of JSONL + 1 tmux display-message call; cached path returns in <5ms
+- Auto-snapshots are rate-limited to 1 per 30s in push_monitor; no new polling loops added
+- Lazy heavy field loading means first "View" click on a snapshot triggers tmux capture-pane + JSONL read
+- Annotation notes capped at 500 chars; no server-side image upload (relies on existing `/api/upload`)

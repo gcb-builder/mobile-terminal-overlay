@@ -1,5 +1,5 @@
 // Service Worker for Mobile Terminal PWA
-const CACHE_NAME = 'terminal-v114';
+const CACHE_NAME = 'terminal-v115';
 
 // Install event - cache essential assets
 self.addEventListener('install', (event) => {
@@ -45,29 +45,50 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// Push notification handler
+// Push notification handler - per-type actions
 self.addEventListener('push', (event) => {
   const data = event.data ? event.data.json() : {};
+  let actions = [];
+  if (data.type === 'permission') {
+    actions = [
+      { action: 'allow', title: 'Allow' },
+      { action: 'deny', title: 'Deny' },
+    ];
+  } else if (data.type === 'completed') {
+    actions = [
+      { action: 'open', title: 'Open' },
+    ];
+  } else if (data.type === 'crashed') {
+    actions = [
+      { action: 'respawn', title: 'Respawn' },
+      { action: 'open', title: 'Open' },
+    ];
+  }
   const options = {
     body: data.body || 'Claude needs your attention',
     icon: '/static/apple-touch-icon.png',
     badge: '/static/apple-touch-icon.png',
     vibrate: [200, 100, 200],
-    data: { type: data.type, url: '/' },
-    actions: data.type === 'permission' ? [
-      { action: 'allow', title: 'Allow' },
-      { action: 'deny', title: 'Deny' },
-    ] : [],
+    data: {
+      type: data.type,
+      url: '/',
+      session: data.session || '',
+      pane_id: data.pane_id || '',
+    },
+    actions: actions,
   };
   event.waitUntil(
     self.registration.showNotification(data.title || 'Terminal', options)
   );
 });
 
-// Notification click handler
+// Notification click handler - per-type routing
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const notifData = event.notification.data || {};
+
   if (event.action === 'allow' || event.action === 'deny') {
+    // Permission response
     event.waitUntil(
       clients.matchAll({ type: 'window' }).then(cls => {
         if (cls.length > 0) {
@@ -81,7 +102,30 @@ self.addEventListener('notificationclick', (event) => {
         }
       })
     );
+  } else if (event.action === 'respawn') {
+    // Respawn Claude in the target pane
+    event.waitUntil(
+      clients.matchAll({ type: 'window' }).then(cls => {
+        if (cls.length > 0) {
+          cls[0].postMessage({
+            type: 'respawn_claude',
+            session: notifData.session,
+            pane_id: notifData.pane_id,
+          });
+          cls[0].focus();
+        } else {
+          // No client window open - open with respawn action params
+          const params = new URLSearchParams({
+            action: 'respawn',
+            pane_id: notifData.pane_id || '',
+            session: notifData.session || '',
+          });
+          clients.openWindow('/?' + params.toString());
+        }
+      })
+    );
   } else {
+    // Default tap or 'open' action
     event.waitUntil(clients.openWindow('/'));
   }
 });
