@@ -4377,6 +4377,8 @@ function switchToLogView() {
         controlBarsContainer.classList.remove('hidden');
     }
     updateTabIndicator();
+    // Restore active prompt pre (hidden in terminal view)
+    if (activePromptContent) activePromptContent.style.display = '';
     // Switch to tail mode - no xterm rendering, lightweight updates
     setOutputMode('tail');
     // Reset scroll state - user should start at bottom when switching to log view
@@ -4404,9 +4406,8 @@ function switchToTerminalView() {
         controlBarsContainer.classList.remove('hidden');
     }
     updateTabIndicator();
-    // Restart suggestion detection — input bar is global, needs prompt
-    // extraction running even in terminal view
-    startTailViewport();
+    // Hide active prompt pre — live xterm already shows terminal content
+    if (activePromptContent) activePromptContent.style.display = 'none';
 
     // CRITICAL ORDER: fit + resize FIRST, then set_mode
     // The resize triggers tmux to redraw at the correct terminal size.

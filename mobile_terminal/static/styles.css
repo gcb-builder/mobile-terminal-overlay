@@ -1791,9 +1791,6 @@ html, body {
     background: var(--border);
     transition: all 0.2s ease;
     cursor: pointer;
-    /* Expand touch target without changing visual size */
-    padding: 10px;
-    background-clip: content-box;
 }
 
 .tab-dot.active {
