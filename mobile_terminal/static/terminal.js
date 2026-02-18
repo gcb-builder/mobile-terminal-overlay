@@ -65,6 +65,8 @@ function abortableSleep(ms, signal) {
 let terminal = null;
 let socket = null;
 let isControlUnlocked = true;  // Controls always enabled (no lock)
+let interactiveMode = false;   // Terminal keyboard passthrough (off by default)
+let interactiveIdleTimer = null;  // Auto-disable after inactivity
 let config = null;
 let currentSession = null;
 
@@ -708,6 +710,8 @@ function initTerminal() {
                 return;
             }
             socket.send(encoder.encode(data));
+            // Reset interactive idle timer on each keystroke (if active)
+            if (interactiveMode) resetInteractiveIdleTimer();
         }
     });
 
@@ -1595,6 +1599,20 @@ function sendInput(data) {
 }
 
 /**
+ * Send text atomically via tmux send-keys (not PTY byte write).
+ * Use this for all composed text input (input bar, prompt buttons, quick responses).
+ * This avoids interleaving with PTY output stream.
+ * @param {string} text - Text to send (empty string OK if just sending Enter)
+ * @param {boolean} enter - Whether to send Enter after text (default true)
+ */
+function sendTextAtomic(text, enter = true) {
+    if (isPreviewMode()) return;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'text', text: text, enter: enter }));
+    }
+}
+
+/**
  * Toggle control lock
  */
 // Lock functionality removed - controls always enabled
@@ -1623,6 +1641,63 @@ function toggleControlBarsCollapse() {
     }
 
     // Don't resize - keeps terminal stable, prevents tmux reflow/corruption
+}
+
+/**
+ * Toggle interactive mode (terminal keyboard passthrough)
+ */
+function toggleInteractiveMode() {
+    interactiveMode = !interactiveMode;
+    updateInteractiveBadge();
+
+    if (interactiveMode) {
+        // Focus terminal for keyboard input
+        if (terminal) terminal.focus();
+        resetInteractiveIdleTimer();
+        showToast('Interactive mode ON — raw keyboard enabled', 'info', 2000);
+    } else {
+        clearInteractiveIdleTimer();
+        showToast('Interactive mode OFF', 'info', 1500);
+    }
+}
+
+/**
+ * Update interactive mode badge visibility
+ */
+function updateInteractiveBadge() {
+    const badge = document.getElementById('interactiveBadge');
+    const toggleBtn = document.getElementById('interactiveToggle');
+    if (badge) {
+        badge.classList.toggle('hidden', !interactiveMode);
+    }
+    if (toggleBtn) {
+        toggleBtn.classList.toggle('active', interactiveMode);
+        toggleBtn.textContent = interactiveMode ? 'Interactive ON' : 'Interactive';
+    }
+}
+
+/**
+ * Reset interactive idle timer (auto-disable after 5 min)
+ */
+function resetInteractiveIdleTimer() {
+    clearInteractiveIdleTimer();
+    interactiveIdleTimer = setTimeout(() => {
+        if (interactiveMode) {
+            interactiveMode = false;
+            updateInteractiveBadge();
+            showToast('Interactive mode auto-disabled (idle)', 'info', 2000);
+        }
+    }, 5 * 60 * 1000);  // 5 minutes
+}
+
+/**
+ * Clear interactive idle timer
+ */
+function clearInteractiveIdleTimer() {
+    if (interactiveIdleTimer) {
+        clearTimeout(interactiveIdleTimer);
+        interactiveIdleTimer = null;
+    }
 }
 
 /**
@@ -3056,8 +3131,9 @@ function setupEventListeners() {
 
     // Prevent zoom on double-tap (but not on scrollable areas or buttons)
     document.addEventListener('touchend', (e) => {
-        // Don't interfere with button taps or scrollable areas
+        // Don't interfere with button taps, nav controls, or scrollable areas
         if (e.target.closest('button')) return;
+        if (e.target.closest('.tab-indicator')) return;
         if (e.target.closest('.terminal-container')) return;
         if (e.target.closest('.transcript-content')) return;
         if (e.target.closest('.search-results')) return;
@@ -3331,14 +3407,8 @@ function setupComposeMode() {
         }
 
         if (text && socket && socket.readyState === WebSocket.OPEN) {
-            // Ensure terminal is focused/active before sending input
-            if (terminal) terminal.focus();
-            // Send text first
-            sendInput(text);
-            // Then send Enter separately (as terminal expects discrete keypress)
-            if (withEnter) {
-                sendInput('\r');
-            }
+            // Atomic send via tmux send-keys
+            sendTextAtomic(text, withEnter);
             closeComposeModal();
         }
     }
@@ -4149,6 +4219,12 @@ function setupViewToggle() {
 
     // Log input handling
     setupLogInput();
+
+    // Interactive mode toggle
+    const interactiveToggle = document.getElementById('interactiveToggle');
+    if (interactiveToggle) {
+        interactiveToggle.addEventListener('click', toggleInteractiveMode);
+    }
 }
 
 // Tab order for swipe navigation (context/touch moved to Docs modal)
@@ -4257,14 +4333,22 @@ function setupSwipeNavigation() {
         }
     });
 
-    // Click handlers for dots
+    // Touch + click handlers for dots (touchstart for mobile reliability)
     document.querySelectorAll('.tab-dot').forEach(dot => {
-        dot.addEventListener('click', () => {
+        let dotHandled = false;
+        const handleDotTap = (e) => {
+            if (dotHandled) return;
+            dotHandled = true;
+            e.preventDefault();
+            e.stopPropagation();
             const viewName = dot.dataset.view;
             if (viewName && viewName !== currentView) {
                 switchToView(viewName);
             }
-        });
+            setTimeout(() => { dotHandled = false; }, 300);
+        };
+        dot.addEventListener('touchstart', handleDotTap, { passive: false });
+        dot.addEventListener('click', handleDotTap);
     });
 }
 
@@ -4279,6 +4363,12 @@ function hideAllContainers() {
 
 function switchToLogView() {
     currentView = 'log';
+    // Auto-disable interactive mode when leaving terminal view
+    if (interactiveMode) {
+        interactiveMode = false;
+        clearInteractiveIdleTimer();
+        updateInteractiveBadge();
+    }
     hideAllContainers();
     if (logView) logView.classList.remove('hidden');
     viewBar.classList.remove('hidden');  // Show action bar (Select, Stop, Challenge, Compose)
@@ -4314,6 +4404,9 @@ function switchToTerminalView() {
         controlBarsContainer.classList.remove('hidden');
     }
     updateTabIndicator();
+    // Restart suggestion detection — input bar is global, needs prompt
+    // extraction running even in terminal view
+    startTailViewport();
 
     // CRITICAL ORDER: fit + resize FIRST, then set_mode
     // The resize triggers tmux to redraw at the correct terminal size.
@@ -5481,17 +5574,12 @@ function sendPromptChoice(choice) {
         });
     }
 
-    // Send to terminal - send choice then Enter separately to ensure both are processed
+    // Send to terminal atomically via tmux send-keys
     console.log('[sendPromptChoice] Socket state:', socket?.readyState, 'WebSocket.OPEN:', WebSocket.OPEN);
     if (socket && socket.readyState === WebSocket.OPEN) {
         const choiceStr = String(choice).trim();
         console.log('[sendPromptChoice] Sending choice:', choiceStr);
-        sendInput(choiceStr);
-        // Small delay then send Enter
-        setTimeout(() => {
-            console.log('[sendPromptChoice] Sending Enter');
-            sendInput('\r');
-        }, 50);
+        sendTextAtomic(choiceStr, true);
         setTerminalBusy(true);
         captureSnapshot('user_send');
     } else {
@@ -6805,8 +6893,8 @@ function setupQuickResponses() {
     quickResponses.querySelectorAll('.quick-response-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const value = btn.dataset.value;
-            if (value && socket && socket.readyState === WebSocket.OPEN) {
-                sendInput(value + '\r');
+            if (value) {
+                sendTextAtomic(value, true);
             }
         });
     });
@@ -6822,21 +6910,20 @@ function sendLogCommand() {
 
     const command = logInput ? logInput.value.trim() : '';
 
-    // If empty, just send Enter (like control bar) for confirming prompts
+    // If empty, just send Enter for confirming prompts
     if (!command) {
-        sendInput('\r');
-        // Mark busy after sending non-trivial commands
+        sendTextAtomic('', true);
         setTerminalBusy(true);
-        captureSnapshot('user_send');  // Capture state before command
+        captureSnapshot('user_send');
         return;
     }
 
-    // Atomic send: command + carriage return
-    sendInput(command + '\r');
+    // Atomic send via tmux send-keys (no PTY interleaving)
+    sendTextAtomic(command, true);
 
     // Mark terminal as busy after sending
     setTerminalBusy(true);
-    captureSnapshot('user_send');  // Capture state before command
+    captureSnapshot('user_send');
 
     // Clear input
     logInput.value = '';
@@ -9749,8 +9836,7 @@ function createQuestionCard(text) {
             btn.textContent = match[2].split(' - ')[0];  // Label only
             btn.title = match[2];  // Full text on long-press
             btn.onclick = () => {
-                sendInput(match[1]);
-                setTimeout(() => sendInput('\r'), 50);
+                sendTextAtomic(match[1], true);
                 btnRow.querySelectorAll('button').forEach(b => b.disabled = true);
                 btn.classList.add('selected');
             };
@@ -9889,7 +9975,7 @@ async function setupPushNotifications() {
 
     navigator.serviceWorker.addEventListener('message', (event) => {
         if (event.data?.type === 'permission_response') {
-            sendInput(event.data.choice + '\n');
+            sendTextAtomic(event.data.choice, true);
         } else if (event.data?.type === 'respawn_claude') {
             // Respawn Claude from push notification action
             respawnClaude();

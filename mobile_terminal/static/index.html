@@ -123,22 +123,25 @@
             <div id="logContent" class="log-view-content"></div>
             <!-- Prompt banner: sticky action bar for questions/confirmations -->
             <div id="promptBanner" class="prompt-banner"></div>
-            <!-- Terminal block: active prompt + input as one unit -->
-            <div id="terminalBlock" class="terminal-block">
-                <pre id="activePromptContent" class="terminal-block-output"></pre>
-                <div class="terminal-block-input">
-                    <span class="terminal-prompt">❯</span>
-                    <input type="text" id="logInput" class="terminal-input"
-                           placeholder="command or prompt..."
-                           autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-                    <button id="logSend" class="terminal-send-btn">⏎</button>
-                </div>
-            </div>
         </div>
 
         <!-- Terminal view (secondary, swipe to access) -->
         <div id="terminalView" class="terminal-view hidden">
+            <div id="interactiveBadge" class="interactive-badge hidden">INTERACTIVE</div>
             <div id="terminal-container" class="terminal-container"></div>
+            <button id="interactiveToggle" class="interactive-toggle" title="Enable raw keyboard input for vim/top/fzf">Interactive</button>
+        </div>
+
+        <!-- Global input bar: visible in both Log and Terminal views -->
+        <div id="terminalBlock" class="terminal-block">
+            <pre id="activePromptContent" class="terminal-block-output"></pre>
+            <div class="terminal-block-input">
+                <span class="terminal-prompt">❯</span>
+                <input type="text" id="logInput" class="terminal-input"
+                       placeholder="command or prompt..."
+                       autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                <button id="logSend" class="terminal-send-btn">⏎</button>
+            </div>
         </div>
 
         <!-- Tab position indicator (dots) + collapse toggle -->
@@ -528,7 +531,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=248"></script>
+    <script src="/static/terminal.js?v=249"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

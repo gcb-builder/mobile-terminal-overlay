@@ -6854,6 +6854,38 @@ Only the top 1–3 risks worth caring about.
                                 elif msg_type == "pong":
                                     # Client responding to server_ping - connection is alive
                                     pass  # No action needed, connection confirmed alive
+                                elif msg_type == "text":
+                                    # Atomic text send via tmux send-keys (not PTY write)
+                                    # This avoids interleaving with PTY output stream
+                                    text_data = data.get("text", "")
+                                    send_enter = data.get("enter", False)
+                                    loop = asyncio.get_event_loop()
+                                    session = app.state.current_session
+                                    target = app.state.active_target
+                                    tmux_t = get_tmux_target(session, target)
+                                    if text_data:
+                                        try:
+                                            await loop.run_in_executor(
+                                                None,
+                                                lambda: subprocess.run(
+                                                    ["tmux", "send-keys", "-t", tmux_t, "-l", text_data],
+                                                    timeout=3, check=True,
+                                                ),
+                                            )
+                                        except Exception as e:
+                                            logger.warning(f"tmux send-keys failed: {e}")
+                                    if send_enter:
+                                        try:
+                                            await loop.run_in_executor(
+                                                None,
+                                                lambda: subprocess.run(
+                                                    ["tmux", "send-keys", "-t", tmux_t, "Enter"],
+                                                    timeout=3, check=True,
+                                                ),
+                                            )
+                                        except Exception as e:
+                                            logger.warning(f"tmux send-keys Enter failed: {e}")
+                                    app.state.last_ws_input_time = time.time()
                                 elif msg_type == "set_mode":
                                     # Client requests output mode change
                                     new_mode = data.get("mode", "tail")

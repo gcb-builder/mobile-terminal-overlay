@@ -929,6 +929,7 @@ html, body {
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
+    position: relative;
 }
 
 .terminal-view.hidden {
@@ -937,6 +938,53 @@ html, body {
 
 .terminal-view .terminal-container {
     flex: 1;
+}
+
+/* Interactive mode badge + toggle */
+.interactive-badge {
+    position: absolute;
+    top: 4px;
+    right: 8px;
+    z-index: 10;
+    padding: 2px 8px;
+    background: rgba(239, 68, 68, 0.85);
+    color: white;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    border-radius: 3px;
+    pointer-events: none;
+}
+
+.interactive-badge.hidden {
+    display: none;
+}
+
+.interactive-toggle {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    z-index: 10;
+    padding: 6px 12px;
+    min-height: 36px;
+    background: var(--bg-tertiary, #21262d);
+    color: var(--text-secondary, #8b949e);
+    border: 1px solid var(--border, #30363d);
+    border-radius: 6px;
+    font-size: 11px;
+    cursor: pointer;
+    opacity: 0.7;
+}
+
+.interactive-toggle.active {
+    background: rgba(239, 68, 68, 0.2);
+    color: #ef4444;
+    border-color: rgba(239, 68, 68, 0.5);
+    opacity: 1;
+}
+
+.interactive-toggle:active {
+    opacity: 1;
 }
 
 .log-entry {
@@ -1743,6 +1791,9 @@ html, body {
     background: var(--border);
     transition: all 0.2s ease;
     cursor: pointer;
+    /* Expand touch target without changing visual size */
+    padding: 10px;
+    background-clip: content-box;
 }
 
 .tab-dot.active {
@@ -1900,6 +1951,7 @@ html, body {
 .status-overlay.hidden {
     opacity: 0;
     pointer-events: none;
+    display: none;
 }
 
 .status-content {
