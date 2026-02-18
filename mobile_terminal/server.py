@@ -2008,6 +2008,71 @@ def create_app(config: Config) -> FastAPI:
             logger.error(f"Error creating window: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.post("/api/pane/kill")
+    async def kill_pane(
+        request: Request,
+        token: Optional[str] = Query(None)
+    ):
+        """
+        Kill a tmux pane. Cannot kill the currently active pane.
+
+        JSON body:
+          - target_id: Pane target in "window:pane" format (e.g. "2:0")
+        """
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+        target_id = body.get("target_id")
+        if not target_id or not isinstance(target_id, str):
+            return JSONResponse({"error": "target_id is required"}, status_code=400)
+
+        # Validate format: "window:pane"
+        parts = target_id.split(":")
+        if len(parts) != 2 or not all(p.strip() for p in parts):
+            return JSONResponse({"error": "Invalid target_id format, expected 'window:pane'"}, status_code=400)
+
+        # Cannot kill the active pane
+        if target_id == app.state.active_target:
+            return JSONResponse({"error": "Cannot kill the active pane"}, status_code=400)
+
+        session = app.state.current_session
+        tmux_target = get_tmux_target(session, target_id)
+
+        # Verify the pane exists
+        try:
+            check = subprocess.run(
+                ["tmux", "list-panes", "-t", tmux_target],
+                capture_output=True, text=True, timeout=5
+            )
+            if check.returncode != 0:
+                return JSONResponse({"error": f"Pane {target_id} not found"}, status_code=404)
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Timeout checking pane"}, status_code=504)
+
+        # Kill the pane
+        try:
+            result = subprocess.run(
+                ["tmux", "kill-pane", "-t", tmux_target],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode != 0:
+                return JSONResponse({"error": f"Failed to kill pane: {result.stderr.strip()}"}, status_code=500)
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Timeout killing pane"}, status_code=504)
+
+        app.state.audit_log.log("pane_kill", {
+            "target_id": target_id,
+            "session": session,
+        })
+
+        logger.info(f"Killed pane {target_id} in session '{session}'")
+        return {"success": True, "killed": target_id}
+
     @app.get("/api/workspace/dirs")
     async def list_workspace_dirs(token: Optional[str] = Query(None)):
         """

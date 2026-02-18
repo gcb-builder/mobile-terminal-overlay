@@ -138,7 +138,8 @@ html, body {
 
 /* Pane option in unified dropdown */
 .nav-pane-option {
-    display: block;
+    display: flex;
+    align-items: center;
     width: 100%;
     padding: 10px 14px;
     background: none;
@@ -148,6 +149,10 @@ html, body {
     font-size: 13px;
     text-align: left;
     cursor: pointer;
+}
+.nav-pane-content {
+    flex: 1;
+    min-width: 0;
 }
 
 .nav-pane-option:last-child {
@@ -231,6 +236,25 @@ html, body {
     border-radius: 10px;
     color: var(--text-secondary);
     flex-shrink: 0;
+}
+
+/* Kill pane button */
+.nav-kill-btn {
+    font-size: 9px;
+    padding: 2px 6px;
+    background: transparent;
+    border: 1px solid rgba(248, 81, 73, 0.4);
+    border-radius: 10px;
+    color: #f85149;
+    flex-shrink: 0;
+    margin-left: 8px;
+    cursor: pointer;
+    line-height: 1;
+}
+.nav-kill-btn:hover,
+.nav-kill-btn:active {
+    background: rgba(248, 81, 73, 0.15);
+    border-color: #f85149;
 }
 
 /* Action option (+ New Window) */

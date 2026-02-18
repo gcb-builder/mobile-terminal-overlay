@@ -1918,6 +1918,30 @@ function updateNavLabel() {
 }
 
 /**
+ * Kill a non-active pane via the server API.
+ */
+async function killPane(targetId) {
+    try {
+        const resp = await apiFetch(`/api/pane/kill?token=${token}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_id: targetId })
+        });
+        const data = await resp.json();
+        if (resp.ok && data.success) {
+            showToast(`Pane ${targetId} killed`, 'info', 2000);
+            await loadTargets();
+            populateRepoDropdown();
+        } else {
+            showToast(data.error || 'Failed to kill pane', 'error', 3000);
+        }
+    } catch (err) {
+        showToast('Error killing pane', 'error', 3000);
+        console.error('killPane error:', err);
+    }
+}
+
+/**
  * Populate unified navigation dropdown
  * Sections: Current Session panes, Actions, Other Sessions
  */
@@ -1961,13 +1985,27 @@ function populateRepoDropdown() {
             const hintBadge = (!nameMatches && windowName && dirName) ? '<span class="target-name-hint" title="Window name differs from directory">?</span>' : '';
 
             const checkMark = isActive ? '<span class="nav-check">✓</span>' : '';
+            const killBtn = isActive ? '' : '<span class="nav-kill-btn">×</span>';
 
             opt.innerHTML = `
-                ${checkMark}<span class="nav-project">${target.project}</span>
-                <span class="nav-pane-info">${windowName}${hintBadge} • ${target.pane_id}</span>
-                <span class="nav-path">${shortPath}</span>
+                <div class="nav-pane-content">
+                    ${checkMark}<span class="nav-project">${target.project}</span>
+                    <span class="nav-pane-info">${windowName}${hintBadge} • ${target.pane_id}</span>
+                    <span class="nav-path">${shortPath}</span>
+                </div>
+                ${killBtn}
             `;
             opt.addEventListener('click', () => selectTarget(target.id));
+
+            // Attach kill handler to the × button (non-active panes only)
+            const killEl = opt.querySelector('.nav-kill-btn');
+            if (killEl) {
+                killEl.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    killPane(target.id);
+                });
+            }
+
             repoDropdown.appendChild(opt);
         });
     }
@@ -2331,8 +2369,13 @@ async function selectTarget(targetId, isInitialSync = false) {
         // Reload targets to check cwd mismatch (background, don't await)
         loadTargets();
 
-        // Refresh context-dependent views after short delay
+        // Reset log state so the new pane gets a fresh load
         if (!isInitialSync) {
+            logLoaded = false;
+            lastLogModified = 0;
+            lastLogContentHash = '';
+
+            // Refresh context-dependent views after short delay
             setTimeout(() => {
                 refreshLogContent();
             }, 300);
@@ -6814,7 +6857,13 @@ async function refreshLogContent(signal) {
         if (!response.ok) return;
 
         const data = await response.json();
-        if (!data.exists || (!data.content && !data.messages)) return;
+        if (!data.exists || (!data.content && !data.messages)) {
+            // Clear stale content from a previous pane
+            if (lastLogContentHash === '' && logContent.children.length > 0) {
+                logContent.innerHTML = '<div class="log-empty">No recent activity</div>';
+            }
+            return;
+        }
 
         // Only re-render if content actually changed (check both mtime and hash)
         const contentHash = simpleHash(data.content || '');

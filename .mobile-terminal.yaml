@@ -13,6 +13,10 @@ repos:
     session: "claude"
     startup_command: "claude"
 
+# Workspace directories for "New Window" directory picker
+workspace_dirs:
+  - "~/dev"
+
 # Role prefixes (from CLAUDE.md discovery)
 role_prefixes: []
 
