@@ -47,3 +47,9 @@ htmlcov/
 # Mobile terminal uploads (user-uploaded images)
 .claude/uploads/
 .env
+
+# Debug artifacts
+*.har
+*.jpeg
+*.jpg
+*.png
