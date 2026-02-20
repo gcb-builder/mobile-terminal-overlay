@@ -921,9 +921,30 @@ async function syncPromptToInput() {
 /**
  * Set terminal busy state and update send button accordingly
  */
+let queueDrainTimer = null;
 function setTerminalBusy(busy) {
     terminalBusy = busy;
     updateSendButton();
+
+    // Auto-drain queue when terminal becomes idle
+    if (!busy) {
+        if (queueDrainTimer) clearTimeout(queueDrainTimer);
+        queueDrainTimer = setTimeout(tryDrainQueue, 1200);
+    } else {
+        if (queueDrainTimer) { clearTimeout(queueDrainTimer); queueDrainTimer = null; }
+    }
+}
+
+/**
+ * Auto-send next queued command if conditions are met
+ */
+function tryDrainQueue() {
+    queueDrainTimer = null;
+    if (terminalBusy || queuePaused) return;
+    const pending = queueItems.filter(i => i.status === 'queued');
+    if (pending.length === 0) return;
+    showToast(`Sending queued command (${pending.length} left)`, 'info', 1500);
+    sendNextUnsafe();
 }
 
 /**
