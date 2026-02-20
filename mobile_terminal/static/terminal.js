@@ -451,7 +451,6 @@ let terminalContainer, controlBarsContainer;
 let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let targetBtn, targetLabel, targetDropdown, targetLockBtn, targetLockIcon;
-let cwdMismatchBanner, cwdMismatchText, cwdFixBtn, cwdDismissBtn;
 let claudeCrashBanner, claudeRespawnBtn, claudeCrashDismissBtn;
 // searchBtn removed - search is now in docs modal
 let composeBtn, composeModal;
@@ -545,10 +544,6 @@ function initDOMElements() {
     targetDropdown = document.getElementById('targetDropdown');
     targetLockBtn = document.getElementById('targetLockBtn');
     targetLockIcon = document.getElementById('targetLockIcon');
-    cwdMismatchBanner = document.getElementById('cwdMismatchBanner');
-    cwdMismatchText = document.getElementById('cwdMismatchText');
-    cwdFixBtn = document.getElementById('cwdFixBtn');
-    cwdDismissBtn = document.getElementById('cwdDismissBtn');
     claudeCrashBanner = document.getElementById('claudeCrashBanner');
     claudeRespawnBtn = document.getElementById('claudeRespawnBtn');
     claudeCrashDismissBtn = document.getElementById('claudeCrashDismissBtn');
@@ -2102,7 +2097,6 @@ async function switchRepo(session) {
         // Clear target selection (pane IDs are session-specific)
         activeTarget = null;
         localStorage.removeItem('mto_active_target');
-        cwdMismatchBanner.classList.add('hidden');
 
         // Update unified nav label
         updateNavLabel();
@@ -2207,11 +2201,6 @@ async function loadTargets() {
             showTargetMissingWarning();
         }
 
-        // Check for cwd mismatch
-        checkCwdMismatch(data.resolution);
-
-        // Check for multi-project session without explicit target
-        checkMultiProjectWarning(data);
     } catch (error) {
         if (error.name === 'AbortError') {
             console.warn('loadTargets timed out');
@@ -2222,61 +2211,12 @@ async function loadTargets() {
 }
 
 /**
- * Show warning when locked target pane no longer exists
+ * Show warning when locked target pane no longer exists (clears invalid target)
  */
 function showTargetMissingWarning() {
-    cwdMismatchText.textContent = 'Target pane no longer exists. Please select a new target.';
-    cwdMismatchBanner.classList.remove('hidden');
-    cwdFixBtn.style.display = 'none';  // Hide cd button, not relevant here
-
-    // Clear the invalid target
     activeTarget = null;
     localStorage.removeItem('mto_active_target');
-}
-
-/**
- * Check if pane cwd matches expected repo and show warning if not
- */
-function checkCwdMismatch(resolution) {
-    if (!resolution || !expectedRepoPath) {
-        cwdMismatchBanner.classList.add('hidden');
-        return;
-    }
-
-    // Restore cd button visibility (may have been hidden by showTargetMissingWarning)
-    cwdFixBtn.style.display = '';
-
-    const currentCwd = resolution.path;
-    // Check if cwd is inside expected repo path
-    if (currentCwd && !currentCwd.startsWith(expectedRepoPath)) {
-        const shortExpected = expectedRepoPath.replace(/^\/home\/[^/]+/, '~');
-        cwdMismatchText.textContent = `Target pane is not inside ${shortExpected}. Open that repo or cd into it.`;
-        cwdMismatchBanner.classList.remove('hidden');
-    } else {
-        cwdMismatchBanner.classList.add('hidden');
-    }
-}
-
-/**
- * Check for multi-project session without explicit target selection
- * Shows warning if session contains multiple projects but no target is pinned
- */
-function checkMultiProjectWarning(data) {
-    const multiProjectBanner = document.getElementById('multiProjectBanner');
-    if (!multiProjectBanner) return;
-
-    // Show warning if: multi-project session AND (no explicit target OR using fallback)
-    const needsWarning = data.multi_project &&
-        (!data.active || data.resolution?.is_fallback);
-
-    if (needsWarning) {
-        const count = data.unique_projects || 'multiple';
-        multiProjectBanner.querySelector('.multi-project-text').textContent =
-            `Session has ${count} projects. Select a target to avoid mistakes.`;
-        multiProjectBanner.classList.remove('hidden');
-    } else {
-        multiProjectBanner.classList.add('hidden');
-    }
+    showToast('Target pane no longer exists. Select a new target.', 'warning');
 }
 
 /**
@@ -2403,26 +2343,6 @@ async function selectTarget(targetId, isInitialSync = false) {
 /**
  * CD to expected repo root in the target pane
  */
-async function cdToRepoRoot() {
-    if (!expectedRepoPath) return;
-
-    // Confirm before sending cd command
-    if (!confirm(`Send "cd ${expectedRepoPath}" to terminal?`)) return;
-
-    try {
-        // Send cd command via WebSocket
-        const cdCommand = `cd ${expectedRepoPath}\r`;
-        if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(cdCommand);
-            showToast('Sent cd command', 'success');
-            // Reload targets after a delay to check new cwd
-            setTimeout(loadTargets, 1000);
-        }
-    } catch (error) {
-        console.error('Error sending cd command:', error);
-    }
-}
-
 /**
  * Check Claude health for the active pane
  */
@@ -2910,21 +2830,6 @@ function setupNewWindowModal() {
  * Returns a promise that resolves when saved target is restored (if any)
  */
 function setupTargetSelector() {
-    // CWD mismatch banner buttons
-    cwdFixBtn.addEventListener('click', cdToRepoRoot);
-    cwdDismissBtn.addEventListener('click', () => {
-        cwdMismatchBanner.classList.add('hidden');
-    });
-
-    // Multi-project banner select button - open unified dropdown
-    const multiProjectSelectBtn = document.getElementById('multiProjectSelectBtn');
-    if (multiProjectSelectBtn) {
-        multiProjectSelectBtn.addEventListener('click', () => {
-            populateRepoDropdown();
-            repoDropdown.classList.remove('hidden');
-        });
-    }
-
     // Claude crash banner buttons
     if (claudeRespawnBtn) {
         claudeRespawnBtn.addEventListener('click', respawnClaude);
@@ -9801,7 +9706,6 @@ function handleTypedMessage(msg) {
             handlePermissionRequest(msg.payload);
             break;
         case 'device_state':
-            handleDeviceState(msg.payload);
             break;
         case 'push_config':
             break;
@@ -9899,27 +9803,6 @@ function createQuestionCard(text) {
     return card;
 }
 
-/**
- * Handle desktop activity state updates
- */
-let desktopActive = false;
-
-function handleDeviceState(payload) {
-    desktopActive = payload.desktop_active;
-    const existing = document.getElementById('desktopIndicator');
-    if (desktopActive) {
-        if (!existing) {
-            const el = document.createElement('div');
-            el.id = 'desktopIndicator';
-            el.className = 'desktop-indicator';
-            el.textContent = '\u2328 Desktop active';
-            document.querySelector('.app').appendChild(el);
-        }
-        showToast('Desktop user is typing', 'info', 2000);
-    } else {
-        if (existing) existing.remove();
-    }
-}
 
 /**
  * Voice input via SpeechRecognition API
