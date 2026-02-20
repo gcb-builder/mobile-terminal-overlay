@@ -8354,6 +8354,12 @@ async function historyDryRunRevert() {
         const resp = await fetch(`/api/rollback/git/revert/dry-run?commit_hash=${selectedHistoryCommit}&token=${token}`, {
             method: 'POST'
         });
+        if (!resp.ok) {
+            let errMsg = `Server error (${resp.status})`;
+            try { const d = await resp.json(); errMsg = d.error || errMsg; } catch {}
+            dryRunResult.innerHTML = `<div class="dry-run-error">✗ ${escapeHtml(errMsg)}</div>`;
+            return;
+        }
         const data = await resp.json();
 
         if (data.success) {
@@ -8404,6 +8410,12 @@ async function historyExecuteRevert() {
         const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedHistoryCommit}&token=${token}&${getTargetParams()}`, {
             method: 'POST'
         });
+        if (!resp.ok) {
+            let errMsg = `Server error (${resp.status})`;
+            try { const d = await resp.json(); errMsg = d.error || errMsg; } catch {}
+            showToast(errMsg, 'error');
+            return;
+        }
         const data = await resp.json();
 
         if (data.success) {
@@ -8689,6 +8701,12 @@ async function historyExecuteRevertWithStash() {
         const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedHistoryCommit}&token=${token}&${getTargetParams()}`, {
             method: 'POST'
         });
+        if (!resp.ok) {
+            let errMsg = `Server error (${resp.status})`;
+            try { const d = await resp.json(); errMsg = d.error || errMsg; } catch {}
+            showToast(errMsg, 'error');
+            return;
+        }
         const data = await resp.json();
 
         if (data.success) {
@@ -9014,6 +9032,14 @@ async function dryRunRevert() {
         const resp = await fetch(`/api/rollback/git/revert/dry-run?commit_hash=${selectedCommitHash}&token=${token}`, {
             method: 'POST'
         });
+        if (!resp.ok) {
+            let errMsg = `Server error (${resp.status})`;
+            try { const d = await resp.json(); errMsg = d.error || errMsg; } catch {}
+            dryRunResult.classList.add('error');
+            dryRunResult.innerHTML = `<pre>${escapeHtml(errMsg)}</pre>`;
+            dryRunValidatedHash = null;
+            return;
+        }
         const data = await resp.json();
 
         if (data.success) {
@@ -9062,6 +9088,13 @@ async function executeRevert() {
         const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedCommitHash}&token=${token}&${getTargetParams()}`, {
             method: 'POST'
         });
+        if (!resp.ok) {
+            let errMsg = `Server error (${resp.status})`;
+            try { const d = await resp.json(); errMsg = d.error || errMsg; } catch {}
+            dryRunResult.classList.add('error');
+            dryRunResult.innerHTML = `<pre>${escapeHtml(errMsg)}</pre>`;
+            return;
+        }
         const data = await resp.json();
 
         if (data.success) {
@@ -9110,6 +9143,13 @@ async function undoRevert() {
         const resp = await fetch(`/api/rollback/git/revert/undo?revert_commit=${lastRevertCommit}&token=${token}`, {
             method: 'POST'
         });
+        if (!resp.ok) {
+            let errMsg = `Server error (${resp.status})`;
+            try { const d = await resp.json(); errMsg = d.error || errMsg; } catch {}
+            dryRunResult.classList.add('error');
+            dryRunResult.innerHTML = `<pre>${escapeHtml(errMsg)}</pre>`;
+            return;
+        }
         const data = await resp.json();
 
         if (data.success) {
