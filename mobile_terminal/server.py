@@ -273,12 +273,9 @@ class GitOpLock:
 
     async def acquire(self, operation: str) -> bool:
         """Try to acquire lock for an operation. Returns False if already locked."""
-        try:
-            acquired = self._lock.acquire_nowait()
-        except RuntimeError:
+        if self._lock.locked():
             return False
-        if not acquired:
-            return False
+        await self._lock.acquire()
         self._current_op = operation
         return True
 
