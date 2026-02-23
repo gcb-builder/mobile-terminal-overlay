@@ -1649,15 +1649,28 @@ def create_app(config: Config) -> FastAPI:
                             else:
                                 seen_cwds[cwd_str] = [target_id]
 
+                            # Detect team role from window name
+                            window_name = parts[2]
+                            team_role = None
+                            agent_name = None
+                            if window_name == "leader":
+                                team_role = "leader"
+                                agent_name = "leader"
+                            elif window_name.startswith("a-"):
+                                team_role = "agent"
+                                agent_name = window_name
+
                             targets.append({
                                 "id": target_id,
                                 "pane_id": parts[3],  # "%0"
                                 "cwd": cwd_str,
-                                "window_name": parts[2],
+                                "window_name": window_name,
                                 "window_index": parts[0].split(":")[0],
                                 "pane_title": pane_title,
                                 "project": cwd.name,  # Last component of path
-                                "is_active": target_id == app.state.active_target
+                                "is_active": target_id == app.state.active_target,
+                                "team_role": team_role,
+                                "agent_name": agent_name,
                             })
 
                 # Mark targets with duplicate cwds
@@ -1679,6 +1692,8 @@ def create_app(config: Config) -> FastAPI:
         unique_cwds = set(t["cwd"] for t in targets)
         multi_project = len(unique_cwds) > 1
 
+        has_team = any(t.get("team_role") for t in targets)
+
         return {
             "targets": targets,
             "active": app.state.active_target,
@@ -1686,6 +1701,7 @@ def create_app(config: Config) -> FastAPI:
             "session": session,
             "multi_project": multi_project,
             "unique_projects": len(unique_cwds),
+            "has_team": has_team,
             "resolution": {
                 "path": str(path_info["path"]) if path_info["path"] else None,
                 "source": path_info["source"],
@@ -5267,6 +5283,363 @@ Only the top 1–3 risks worth caring about.
             pass
 
         return result
+
+    # ===== Team Phase Detection (per-pane, no pgrep) =====
+    _team_phase_cache: dict = {}  # key: "session:target:cwd:log_path" -> {mtime, size, result}
+    _git_info_cache: dict = {}    # key: cwd_str -> {result, ts}
+
+    def _detect_phase_for_cwd(session_name: str, target: str, cwd_path: Path) -> dict:
+        """Phase detection using an explicit cwd instead of the global active target.
+
+        Uses log file recency as activity indicator (NOT a gate).
+        Always parses JSONL + checks pane_title regardless of activity.
+        """
+        result = {
+            "phase": "idle",
+            "detail": "",
+            "tool": "",
+            "waiting_reason": None,
+            "permission_tool": None,
+            "permission_target": None,
+            "active": False,
+        }
+
+        # Find log file using cwd_path directly
+        project_id = str(cwd_path.resolve()).replace("~", "-").replace("/", "-")
+        claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
+        if not claude_projects_dir.exists():
+            return result
+        jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
+        if not jsonl_files:
+            return result
+        log_file = max(jsonl_files, key=lambda f: f.stat().st_mtime)
+
+        # Check log recency (informational, NOT a gate)
+        try:
+            st = log_file.stat()
+            log_age = time.time() - st.st_mtime
+            result["active"] = log_age < 30
+        except Exception:
+            return result
+
+        # Check cache
+        cache_key = f"{session_name}:{target}:{cwd_path}:{log_file}"
+        cached = _team_phase_cache.get(cache_key)
+        if (cached
+                and cached["mtime"] == st.st_mtime
+                and cached["size"] == st.st_size
+                and cached["result"] is not None):
+            return cached["result"]
+
+        # Cache miss - ALWAYS parse (even if inactive)
+        try:
+            file_size = st.st_size
+            read_size = min(file_size, 8192)
+            with open(log_file, 'rb') as f:
+                if file_size > read_size:
+                    f.seek(file_size - read_size)
+                tail_bytes = f.read(read_size)
+            tail_text = tail_bytes.decode('utf-8', errors='replace')
+
+            lines = tail_text.split('\n')
+            if file_size > read_size:
+                lines = lines[1:]  # Skip partial first line
+
+            entries = []
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+                if len(entries) >= 30:
+                    break
+
+            # Check pane_title for signal detection
+            pane_title = ""
+            if target:
+                try:
+                    tmux_target = get_tmux_target(session_name, target)
+                    title_result = subprocess.run(
+                        ["tmux", "display-message", "-t", tmux_target, "-p", "#{pane_title}"],
+                        capture_output=True, text=True, timeout=2
+                    )
+                    if title_result.returncode == 0:
+                        pane_title = title_result.stdout.strip()
+                        if "Signal Detection Pending" in pane_title:
+                            result["phase"] = "waiting"
+                            result["detail"] = "Signal Detection Pending"
+                            result["waiting_reason"] = "permission"
+                            # Extract permission info from last tool_use
+                            for entry in entries:
+                                msg = entry.get("message", {})
+                                if entry.get("type") != "assistant":
+                                    continue
+                                content = msg.get("content", [])
+                                if not isinstance(content, list):
+                                    continue
+                                for block in content:
+                                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                                        tool_name = block.get("name", "")
+                                        tool_input = block.get("input", {})
+                                        if tool_name == "Bash":
+                                            result["permission_tool"] = "Bash"
+                                            result["permission_target"] = tool_input.get("command", "")[:80]
+                                        elif tool_name in ("Edit", "Write", "Read"):
+                                            result["permission_tool"] = tool_name
+                                            result["permission_target"] = tool_input.get("file_path", "")[:80]
+                                        else:
+                                            result["permission_tool"] = tool_name
+                                            result["permission_target"] = ""
+                                        break
+                                if result["permission_tool"]:
+                                    break
+                            _team_phase_cache[cache_key] = {
+                                "mtime": st.st_mtime, "size": st.st_size, "result": result
+                            }
+                            if len(_team_phase_cache) > 50:
+                                oldest_key = next(iter(_team_phase_cache))
+                                del _team_phase_cache[oldest_key]
+                            return result
+                except Exception:
+                    pass
+
+            # Scan entries (reverse chronological)
+            plan_mode = False
+            last_tool = None
+            last_tool_detail = ""
+            active_form = ""
+
+            for entry in entries:
+                msg = entry.get("message", {})
+                msg_type = entry.get("type", "")
+
+                if msg_type != "assistant":
+                    continue
+
+                content = msg.get("content", [])
+                if isinstance(content, str):
+                    continue
+                if not isinstance(content, list):
+                    continue
+
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") != "tool_use":
+                        continue
+
+                    tool_name = block.get("name", "")
+                    tool_input = block.get("input", {})
+
+                    if tool_name == "AskUserQuestion":
+                        result["phase"] = "waiting"
+                        result["waiting_reason"] = "question"
+                        questions = tool_input.get("questions", [])
+                        if questions:
+                            result["detail"] = questions[0].get("question", "Needs input")[:80]
+                        else:
+                            result["detail"] = "Needs input"
+                        result["tool"] = tool_name
+                        _team_phase_cache[cache_key] = {
+                            "mtime": st.st_mtime, "size": st.st_size, "result": result
+                        }
+                        if len(_team_phase_cache) > 50:
+                            oldest_key = next(iter(_team_phase_cache))
+                            del _team_phase_cache[oldest_key]
+                        return result
+
+                    if tool_name == "EnterPlanMode" and not last_tool:
+                        plan_mode = True
+
+                    if tool_name == "ExitPlanMode":
+                        plan_mode = False
+
+                    if tool_name == "TodoWrite":
+                        todos = tool_input.get("todos", [])
+                        in_progress = [t for t in todos if t.get("status") == "in_progress"]
+                        if in_progress:
+                            active_form = in_progress[0].get("activeForm", "")
+
+                    if not last_tool and tool_name:
+                        last_tool = tool_name
+                        if tool_name == "Bash":
+                            cmd = tool_input.get("command", "")
+                            last_tool_detail = cmd[:60]
+                        elif tool_name in ("Read", "Edit", "Write", "Glob", "Grep"):
+                            path = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("pattern", "")
+                            last_tool_detail = path.split("/")[-1][:60] if "/" in str(path) else str(path)[:60]
+                        elif tool_name == "Task":
+                            last_tool_detail = tool_input.get("description", "")[:60]
+                        elif tool_name == "EnterPlanMode":
+                            last_tool_detail = "Planning..."
+                        elif tool_name == "ExitPlanMode":
+                            last_tool_detail = "Plan ready"
+
+            # Determine phase from collected data
+            if plan_mode:
+                result["phase"] = "planning"
+                result["detail"] = active_form or "Planning..."
+                result["tool"] = "EnterPlanMode"
+            elif last_tool == "Task":
+                result["phase"] = "running_task"
+                result["detail"] = active_form or last_tool_detail or "Running agent..."
+                result["tool"] = last_tool
+            elif last_tool in ("Edit", "Write", "Bash", "Read", "Glob", "Grep", "TodoWrite",
+                               "NotebookEdit", "TaskCreate", "TaskUpdate"):
+                result["phase"] = "working"
+                result["detail"] = active_form or (f"{last_tool}: {last_tool_detail}" if last_tool_detail else "Working...")
+                result["tool"] = last_tool
+            elif last_tool:
+                result["phase"] = "working"
+                result["detail"] = active_form or last_tool_detail or f"Using {last_tool}"
+                result["tool"] = last_tool
+            else:
+                result["phase"] = "idle"
+                result["detail"] = ""
+
+        except Exception as e:
+            logger.debug(f"Team phase detection error: {e}")
+
+        # Update cache + evict if over cap
+        _team_phase_cache[cache_key] = {
+            "mtime": st.st_mtime, "size": st.st_size, "result": result
+        }
+        if len(_team_phase_cache) > 50:
+            oldest_key = next(iter(_team_phase_cache))
+            del _team_phase_cache[oldest_key]
+
+        return result
+
+    def _get_git_info(cwd: Path) -> dict:
+        """Get branch name and worktree status for a pane's cwd."""
+        git_info = {"branch": None, "is_worktree": False, "is_main": False}
+        try:
+            toplevel_result = subprocess.run(
+                ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=2
+            )
+            if toplevel_result.returncode != 0:
+                return git_info
+            repo_root = Path(toplevel_result.stdout.strip())
+
+            branch_result = subprocess.run(
+                ["git", "-C", str(cwd), "branch", "--show-current"],
+                capture_output=True, text=True, timeout=2
+            )
+            if branch_result.returncode == 0:
+                branch = branch_result.stdout.strip()
+                if branch:
+                    git_info["branch"] = branch
+                else:
+                    # Detached HEAD fallback: show short commit hash
+                    head_result = subprocess.run(
+                        ["git", "-C", str(cwd), "rev-parse", "--short", "HEAD"],
+                        capture_output=True, text=True, timeout=2
+                    )
+                    if head_result.returncode == 0:
+                        git_info["branch"] = f"({head_result.stdout.strip()})"
+                git_info["is_main"] = git_info["branch"] in ("main", "master")
+
+            # Detect worktree: .git at repo root is a file (not dir) for worktrees
+            dot_git = repo_root / ".git"
+            git_info["is_worktree"] = dot_git.is_file()
+        except Exception:
+            pass
+        return git_info
+
+    def _get_git_info_cached(cwd: Path) -> dict:
+        """Get git info with 10s cache per cwd."""
+        cwd_str = str(cwd)
+        cached = _git_info_cache.get(cwd_str)
+        if cached and time.time() - cached["ts"] < 10:
+            return cached["result"]
+        result = _get_git_info(cwd)
+        _git_info_cache[cwd_str] = {"result": result, "ts": time.time()}
+        if len(_git_info_cache) > 30:
+            now = time.time()
+            stale = [k for k, v in _git_info_cache.items() if now - v["ts"] > 60]
+            for k in stale:
+                del _git_info_cache[k]
+        return result
+
+    @app.get("/api/team/state")
+    async def get_team_state(
+        session: Optional[str] = Query(None),
+        token: Optional[str] = Query(None),
+    ):
+        """Batch endpoint: phase + permission + git info for all team panes."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        sess = session or app.state.current_session
+
+        # Get all panes
+        result = subprocess.run(
+            ["tmux", "list-panes", "-s", "-t", sess,
+             "-F", "#{window_index}:#{pane_index}|#{pane_current_path}|#{window_name}"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return {"has_team": False, "session": sess, "team": None}
+
+        leader = None
+        agents = []
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split("|")
+            if len(parts) < 3:
+                continue
+            target_id = parts[0]
+            cwd = parts[1]
+            window_name = parts[2]
+
+            if window_name == "leader":
+                role = "leader"
+                name = "leader"
+            elif window_name.startswith("a-"):
+                role = "agent"
+                name = window_name
+            else:
+                continue  # Skip non-team panes
+
+            cwd_path = Path(cwd)
+
+            phase_result = _detect_phase_for_cwd(sess, target_id, cwd_path)
+            git_info = _get_git_info_cached(cwd_path)
+
+            entry = {
+                "target_id": target_id,
+                "agent_name": name,
+                "team_role": role,
+                "phase": phase_result["phase"],
+                "detail": phase_result["detail"],
+                "tool": phase_result.get("tool", ""),
+                "active": phase_result["active"],
+                "waiting_reason": phase_result.get("waiting_reason"),
+                "permission": {
+                    "tool": phase_result.get("permission_tool", ""),
+                    "target": phase_result.get("permission_target", ""),
+                } if phase_result.get("waiting_reason") == "permission" else None,
+                "git": git_info,
+            }
+
+            if role == "leader":
+                leader = entry
+            else:
+                agents.append(entry)
+
+        has_team = leader is not None or len(agents) > 0
+
+        return {
+            "has_team": has_team,
+            "session": sess,
+            "team": {
+                "leader": leader,
+                "agents": sorted(agents, key=lambda a: a["agent_name"]),
+            } if has_team else None,
+        }
 
     @app.get("/api/status/phase")
     async def get_status_phase(

@@ -932,3 +932,22 @@ Unified single button showing "repo • pane" format with sectioned dropdown:
 - Auto-snapshots are rate-limited to 1 per 30s in push_monitor; no new polling loops added
 - Lazy heavy field loading means first "View" click on a snapshot triggers tmux capture-pane + JSONL read
 - Annotation notes capped at 500 chars; no server-side image upload (relies on existing `/api/upload`)
+
+---
+
+## 2026-02-23: Agent Teams - Steps 1-3 (Discovery, Batch State, UI Grouping)
+
+**Files Changed:**
+- `mobile_terminal/server.py` - Added `team_role`/`agent_name` fields to `/api/targets`, added `_detect_phase_for_cwd()` with per-pane composite cache, added `_get_git_info_cached()` for branch/worktree/is_main, added `GET /api/team/state` batch endpoint
+- `mobile_terminal/static/terminal.js` - Added `teamState` variable, `updateTeamState()` in health poll `Promise.all`, Team section in `populateRepoDropdown()` with DOM-built status dots/branch labels/permission badges
+- `mobile_terminal/static/styles.css` - Added `.team-dot` (per-phase colors + pulse), `.team-phase`, `.team-branch`/`.team-branch-main` (red warning), `.team-perm-badge`, `.team-agent` layout
+- `mobile_terminal/static/index.html` - Version bumps: styles.css?v=153, terminal.js?v=253
+
+**New Files:** None
+
+**Risks/Follow-ups:**
+- `_detect_phase_for_cwd()` always parses JSONL regardless of `active` flag -- ensures permission/question detection even for stale logs
+- No pgrep for team endpoint -- uses log file mtime recency (< 30s) as activity indicator instead
+- Team phase cache capped at 50 entries with oldest-eviction; git info cache capped at 30 with 60s stale eviction
+- Git info calls subprocess (3 git commands per uncached pane); cached 10s per cwd
+- Team section skips non-team panes (window name != "leader" and not "a-*" prefix); they appear in normal "Current Session" section

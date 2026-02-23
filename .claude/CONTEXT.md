@@ -3,9 +3,9 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Agent-native features: Status Strip, Push Completed/Crashed, Artifacts & Replay
-- **Last Updated:** 2026-02-18
-- **Server Version:** v248 (terminal.js), v115 (sw.js cache), v150 (styles.css)
+- **Stage:** Agent Teams: Team Discovery, Batch State, UI Grouping
+- **Last Updated:** 2026-02-23
+- **Server Version:** v253 (terminal.js), v115 (sw.js cache), v153 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
 
 ## Active Work: Agent-Native Features (2026-02-18)

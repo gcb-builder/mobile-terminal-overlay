@@ -526,6 +526,9 @@ let dismissedCrashPanes = new Set();  // Panes where user dismissed crash banner
 let lastPhase = null;               // Last phase result from /api/status/phase
 let phaseIdleShowHistoryTimer = null; // Timer for showing "Open History" after idle transition
 
+// Team state
+let teamState = null;  // {has_team, session, team: {leader, agents[]}}
+
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
     controlBarsContainer = document.getElementById('controlBarsContainer');
@@ -1964,7 +1967,8 @@ async function killPane(targetId) {
 function populateRepoDropdown() {
     const hasRepos = config && ((config.repos && config.repos.length > 0) || (config.workspace_dirs && config.workspace_dirs.length > 0));
     const hasMultiplePanes = targets.length > 1;
-    const hasContent = hasRepos || hasMultiplePanes;
+    const hasTeam = teamState && teamState.has_team && teamState.team;
+    const hasContent = hasRepos || hasMultiplePanes || hasTeam;
 
     // Update nav label
     updateNavLabel();
@@ -1978,52 +1982,139 @@ function populateRepoDropdown() {
     repoBtn.querySelector('.repo-arrow').style.display = '';
     repoDropdown.innerHTML = '';
 
-    // Section 1: Current Session panes (only if multiple panes)
-    if (targets.length > 0) {
+    // Build set of team target IDs so we can skip them in "Current Session"
+    let teamTargetIds = new Set();
+
+    // Section 0: Team (only when team exists)
+    if (hasTeam) {
         const header = document.createElement('div');
         header.className = 'nav-section-header';
-        header.textContent = 'Current Session';
+        header.textContent = 'Team';
         repoDropdown.appendChild(header);
 
-        targets.forEach((target) => {
+        const teamList = [];
+        if (teamState.team.leader) teamList.push(teamState.team.leader);
+        teamList.push(...teamState.team.agents);
+
+        teamTargetIds = new Set(teamList.map(a => a.target_id));
+
+        for (const agent of teamList) {
             const opt = document.createElement('button');
-            const isActive = target.id === activeTarget;
-            opt.className = 'nav-pane-option' + (isActive ? ' active' : '');
+            const isActive = agent.target_id === activeTarget;
+            opt.className = 'nav-pane-option team-agent' + (isActive ? ' active' : '');
 
-            const shortPath = target.cwd.replace(/^\/home\/[^/]+/, '~');
-            const windowName = target.window_name || '';
+            const content = document.createElement('div');
+            content.className = 'nav-pane-content';
 
-            // Check for layout name mismatch hint
-            const dirName = target.cwd.split('/').filter(Boolean).pop() || '';
-            const normDir = dirName.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const normWindow = windowName.toLowerCase().replace(/-[a-f0-9]{4,}$/, '').replace(/[^a-z0-9]/g, '');
-            const nameMatches = normDir && normWindow && (normWindow.includes(normDir) || normDir.includes(normWindow));
-            const hintBadge = (!nameMatches && windowName && dirName) ? '<span class="target-name-hint" title="Window name differs from directory">?</span>' : '';
+            // Phase dot
+            const dot = document.createElement('span');
+            dot.className = 'team-dot ' + agent.phase;
+            content.appendChild(dot);
 
-            const checkMark = isActive ? '<span class="nav-check">✓</span>' : '';
-            const killBtn = isActive ? '' : '<span class="nav-kill-btn">×</span>';
+            // Agent name
+            const nameEl = document.createElement('span');
+            nameEl.className = 'nav-project';
+            nameEl.textContent = agent.team_role === 'leader'
+                ? 'Leader'
+                : agent.agent_name.replace(/^a-/, '');
+            content.appendChild(nameEl);
 
-            opt.innerHTML = `
-                <div class="nav-pane-content">
-                    ${checkMark}<span class="nav-project">${target.project}</span>
-                    <span class="nav-pane-info">${windowName}${hintBadge} • ${target.pane_id}</span>
-                    <span class="nav-path">${shortPath}</span>
-                </div>
-                ${killBtn}
-            `;
-            opt.addEventListener('click', () => selectTarget(target.id));
-
-            // Attach kill handler to the × button (non-active panes only)
-            const killEl = opt.querySelector('.nav-kill-btn');
-            if (killEl) {
-                killEl.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    killPane(target.id);
-                });
+            // Branch label (if available)
+            if (agent.git && agent.git.branch) {
+                const branchEl = document.createElement('span');
+                branchEl.className = 'team-branch' + (agent.git.is_main ? ' team-branch-main' : '');
+                const branchText = agent.git.branch.length > 20
+                    ? agent.git.branch.slice(0, 18) + '...'
+                    : agent.git.branch;
+                branchEl.textContent = branchText;
+                if (agent.git.is_worktree) {
+                    branchEl.title = `Worktree: ${agent.git.branch}`;
+                }
+                content.appendChild(branchEl);
             }
 
+            // Phase label
+            const phaseEl = document.createElement('span');
+            phaseEl.className = 'team-phase';
+            const phaseLabels = {
+                waiting: 'Waiting', planning: 'Planning',
+                working: 'Working', running_task: 'Agent', idle: 'Idle'
+            };
+            phaseEl.textContent = agent.active
+                ? (phaseLabels[agent.phase] || agent.phase)
+                : 'Off';
+            content.appendChild(phaseEl);
+
+            // Permission badge (only for permission waits, not questions)
+            if (agent.waiting_reason === 'permission' && agent.permission) {
+                const badge = document.createElement('span');
+                badge.className = 'team-perm-badge';
+                badge.title = `${agent.permission.tool}: ${agent.permission.target}`;
+                badge.textContent = '!';
+                content.appendChild(badge);
+            }
+
+            opt.appendChild(content);
+            opt.addEventListener('click', () => selectTarget(agent.target_id));
             repoDropdown.appendChild(opt);
-        });
+        }
+
+        // Divider after team section
+        const divider = document.createElement('div');
+        divider.className = 'nav-section-divider';
+        repoDropdown.appendChild(divider);
+    }
+
+    // Section 1: Current Session panes (skip team panes)
+    if (targets.length > 0) {
+        const nonTeamTargets = targets.filter(t => !teamTargetIds.has(t.id));
+
+        if (nonTeamTargets.length > 0) {
+            const header = document.createElement('div');
+            header.className = 'nav-section-header';
+            header.textContent = 'Current Session';
+            repoDropdown.appendChild(header);
+
+            nonTeamTargets.forEach((target) => {
+                const opt = document.createElement('button');
+                const isActive = target.id === activeTarget;
+                opt.className = 'nav-pane-option' + (isActive ? ' active' : '');
+
+                const shortPath = target.cwd.replace(/^\/home\/[^/]+/, '~');
+                const windowName = target.window_name || '';
+
+                // Check for layout name mismatch hint
+                const dirName = target.cwd.split('/').filter(Boolean).pop() || '';
+                const normDir = dirName.toLowerCase().replace(/[^a-z0-9]/g, '');
+                const normWindow = windowName.toLowerCase().replace(/-[a-f0-9]{4,}$/, '').replace(/[^a-z0-9]/g, '');
+                const nameMatches = normDir && normWindow && (normWindow.includes(normDir) || normDir.includes(normWindow));
+                const hintBadge = (!nameMatches && windowName && dirName) ? '<span class="target-name-hint" title="Window name differs from directory">?</span>' : '';
+
+                const checkMark = isActive ? '<span class="nav-check">✓</span>' : '';
+                const killBtn = isActive ? '' : '<span class="nav-kill-btn">×</span>';
+
+                opt.innerHTML = `
+                    <div class="nav-pane-content">
+                        ${checkMark}<span class="nav-project">${target.project}</span>
+                        <span class="nav-pane-info">${windowName}${hintBadge} • ${target.pane_id}</span>
+                        <span class="nav-path">${shortPath}</span>
+                    </div>
+                    ${killBtn}
+                `;
+                opt.addEventListener('click', () => selectTarget(target.id));
+
+                // Attach kill handler to the x button (non-active panes only)
+                const killEl = opt.querySelector('.nav-kill-btn');
+                if (killEl) {
+                    killEl.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        killPane(target.id);
+                    });
+                }
+
+                repoDropdown.appendChild(opt);
+            });
+        }
     }
 
     // Section 2: Actions (+ New Window)
@@ -2502,6 +2593,26 @@ async function respawnClaude() {
 }
 
 /**
+ * Fetch team state (phase + git info for all team panes)
+ */
+async function updateTeamState() {
+    try {
+        const sessParam = currentSession ? `&session=${encodeURIComponent(currentSession)}` : '';
+        const resp = await fetchWithTimeout(
+            `/api/team/state?token=${token}${sessParam}`, {}, 5000
+        );
+        if (!resp.ok) { teamState = null; return; }
+        teamState = await resp.json();
+        // Re-render dropdown if it's visible
+        if (!repoDropdown.classList.contains('hidden')) {
+            populateRepoDropdown();
+        }
+    } catch {
+        teamState = null;
+    }
+}
+
+/**
  * Start Claude health polling - singleflight async loop
  * Only one request in flight at a time, pauses when document hidden
  */
@@ -2516,7 +2627,7 @@ async function startClaudeHealthPolling() {
         try {
             // Only poll when document is visible
             if (document.visibilityState === 'visible') {
-                await Promise.all([checkClaudeHealth(), updateClaudePhase()]);
+                await Promise.all([checkClaudeHealth(), updateClaudePhase(), updateTeamState()]);
             }
             await abortableSleep(HEALTH_POLL_INTERVAL, signal);
         } catch (error) {
