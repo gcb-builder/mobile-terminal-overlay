@@ -7341,7 +7341,10 @@ function setupQuickResponses() {
  */
 function sendLogCommand() {
     if (isPreviewMode()) return;  // No input in preview mode
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+        showToast('Not connected yet', 'error');
+        return;
+    }
 
     const command = logInput ? logInput.value.trim() : '';
 
