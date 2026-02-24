@@ -6456,3 +6456,63 @@ html, body {
     background: rgba(248, 81, 73, 0.15);
 }
 
+/* Dispatch bar */
+.team-dispatch-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.team-dispatch-bar.hidden {
+    display: none;
+}
+
+.dispatch-row {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    align-items: center;
+}
+
+.dispatch-plan-select {
+    flex: 1;
+    min-height: 44px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 14px;
+    padding: 0 8px;
+}
+
+.leader-message-input {
+    flex: 1;
+    min-height: 44px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 14px;
+    padding: 0 12px;
+}
+
+.leader-message-input::placeholder {
+    color: var(--text-secondary);
+}
+
+.team-card-btn.dispatch {
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+    min-width: 90px;
+}
+
+.team-card-btn.dispatch:active {
+    background: rgba(88, 166, 255, 0.15);
+}
+

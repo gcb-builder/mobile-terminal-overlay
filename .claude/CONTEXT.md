@@ -3,38 +3,34 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Agent Teams: Team View with Card-Based Overview
+- **Stage:** Leader Dispatch: Plan Routing + Message Leader
 - **Last Updated:** 2026-02-24
-- **Server Version:** v254 (terminal.js), v115 (sw.js cache), v154 (styles.css)
+- **Server Version:** v255 (terminal.js), v115 (sw.js cache), v155 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
 
-## Active Work: Team View - Consolidated Agent Cards (2026-02-24)
+## Active Work: Leader Dispatch (2026-02-24)
 
-### Feature: Team View with Card-Based Agent Overview
-Swipeable tab (between Log and Terminal) showing card-based overview of all team agents with status, branch, tail text, and action buttons.
+### Feature: Plan Routing + Message Leader
+Select a plan file, assemble dispatch.md with context + roster + orchestration instructions, write to leader CWD, and send tmux instruction.
 
-#### Server Endpoints
-- **`GET /api/team/capture`** - Batch capture last N lines from each team pane; reuses team pane discovery + capture cache (300ms TTL)
-- **`POST /api/team/send`** - Send input to a specific team pane without switching activeTarget; validates target is a team pane
+#### Server Endpoint
+- **`POST /api/team/dispatch`** - Assembles dispatch.md from plan + roster + context, writes to `{leader_cwd}/.claude/dispatch.md` + archive, sends instruction via `tmux send-keys`
+  - Params: `plan_filename`, `include_context` (bool), `preferences` (optional), `dispatch_id` (optional)
+  - Discovers team panes, gets git info + phase for roster table
+  - Template: What to do now, Response contract, Roster, Plan, Background, Constraints
+  - Returns: `dispatch_id`, `agents_count`, `warning_main_agents`
 
-#### Dynamic Tab System
-- `getTabOrder()` returns `['log', 'team', 'terminal']` when team present, `['log', 'terminal']` otherwise
-- `updateTabIndicator()` dynamically creates/destroys dots before `#collapseToggle`
-- Static dot HTML removed from index.html; dots created at runtime
-- Team presence transitions: dot appears/disappears on team state change; auto-switch to log if team disappears
-
-#### Team Card UI
-- `.team-cards-grid` - 1-column mobile, 2-column at 600px+
-- `.team-card` - header (status dot + name + phase + branch pill), body (pre with last 5 lines, tap to switch), footer (Switch + Allow/Deny buttons)
-- Allow/Deny sends y/n to correct pane via `/api/team/send` without switching activeTarget
-- Auto-refresh every 5s when team view visible
-- Team view hides viewBar + controlBars (no Select/Compose needed)
+#### Dispatch Bar UI
+- `#teamDispatchBar` - Above team cards (not destroyed by renderTeamCards innerHTML)
+- Plan select dropdown (populated from `/api/plans`, persisted in localStorage)
+- Dispatch button (enabled when plan selected + leader exists + not in-flight)
+- Message leader input + Send button (sends to leader via existing `sendTeamInput`)
 
 ### Files Changed
-- `mobile_terminal/server.py` - GET /api/team/capture, POST /api/team/send
-- `mobile_terminal/static/index.html` - #teamView div, removed static tab dots, version bumps (v154/v254)
-- `mobile_terminal/static/styles.css` - .team-view, .team-cards-grid, .team-card-*, responsive 2-column grid
-- `mobile_terminal/static/terminal.js` - getTabOrder(), dynamic updateTabIndicator(), switchToTeamView(), card rendering, auto-refresh, team presence transitions
+- `mobile_terminal/server.py` - POST /api/team/dispatch
+- `mobile_terminal/static/index.html` - #teamDispatchBar, version bumps (v155/v255)
+- `mobile_terminal/static/styles.css` - .team-dispatch-bar, .dispatch-row, .dispatch-plan-select, .leader-message-input, .team-card-btn.dispatch
+- `mobile_terminal/static/terminal.js` - populateDispatchPlans(), dispatchToLeader(), sendLeaderMessage(), updateDispatchButtonState(), wiring
 
 ---
 

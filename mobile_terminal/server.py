@@ -5749,6 +5749,236 @@ Only the top 1–3 risks worth caring about.
 
         return {"success": True, "target_id": target_id}
 
+    @app.post("/api/team/dispatch")
+    async def team_dispatch(
+        plan_filename: str = Query(...),
+        include_context: bool = Query(True),
+        preferences: Optional[str] = Query(None),
+        dispatch_id: Optional[str] = Query(None),
+        session: Optional[str] = Query(None),
+        token: Optional[str] = Query(None),
+    ):
+        """Assemble dispatch.md from plan + context + roster, write to leader CWD, send instruction."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        sess = session or app.state.current_session
+
+        # Sanitize plan_filename
+        if not re.match(r'^[\w\-\.]+\.md$', plan_filename):
+            return JSONResponse({"error": "Invalid plan filename"}, status_code=400)
+
+        # Sanitize preferences
+        if preferences:
+            preferences = re.sub(r'[\x00-\x1f\x7f]', '', preferences)[:500]
+
+        # Read plan file
+        plan_path = Path.home() / ".claude" / "plans" / plan_filename
+        if not plan_path.is_file():
+            return JSONResponse({"error": f"Plan not found: {plan_filename}"}, status_code=404)
+        try:
+            plan_content = plan_path.read_text(encoding="utf-8")
+        except Exception as e:
+            return JSONResponse({"error": f"Cannot read plan: {e}"}, status_code=500)
+
+        # Discover team panes
+        result = subprocess.run(
+            ["tmux", "list-panes", "-s", "-t", sess,
+             "-F", "#{window_index}:#{pane_index}|#{pane_current_path}|#{window_name}"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return JSONResponse({"error": "Cannot list panes"}, status_code=500)
+
+        leader = None
+        agents = []
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split("|")
+            if len(parts) < 3:
+                continue
+            target_id = parts[0]
+            cwd = parts[1]
+            window_name = parts[2]
+
+            if window_name == "leader":
+                role = "leader"
+                name = "leader"
+            elif window_name.startswith("a-"):
+                role = "agent"
+                name = window_name
+            else:
+                continue
+
+            cwd_path = Path(cwd)
+            git_info = _get_git_info_cached(cwd_path)
+            phase_result = _detect_phase_for_cwd(sess, target_id, cwd_path)
+
+            entry = {
+                "target_id": target_id,
+                "agent_name": name,
+                "team_role": role,
+                "cwd": cwd,
+                "phase": phase_result["phase"],
+                "git": git_info,
+            }
+
+            if role == "leader":
+                leader = entry
+            else:
+                agents.append(entry)
+
+        if leader is None:
+            return JSONResponse({"error": "No leader pane found"}, status_code=404)
+
+        leader_cwd = Path(leader["cwd"])
+
+        # Generate dispatch_id if not provided
+        from datetime import datetime
+        if not dispatch_id:
+            dispatch_id = f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
+
+        # Get git root (best-effort)
+        git_root = ""
+        try:
+            gr = subprocess.run(
+                ["git", "-C", str(leader_cwd), "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=2
+            )
+            if gr.returncode == 0:
+                git_root = gr.stdout.strip()
+        except Exception:
+            pass
+
+        # Optionally read CONTEXT.md
+        context_content = ""
+        if include_context:
+            context_path = leader_cwd / ".claude" / "CONTEXT.md"
+            try:
+                if context_path.is_file():
+                    context_content = context_path.read_text(encoding="utf-8")[:3000]
+            except Exception:
+                pass
+
+        # Build roster table
+        roster_lines = ["| Agent | Branch | CWD | Phase |", "|-------|--------|-----|-------|"]
+        all_agents = sorted(agents, key=lambda a: a["agent_name"])
+        warning_main_agents = []
+        for a in all_agents:
+            branch = a["git"].get("branch") or "unknown"
+            if a["git"].get("is_main"):
+                warning_main_agents.append(a["agent_name"])
+            roster_lines.append(f"| {a['agent_name']} | {branch} | {a['cwd']} | {a['phase']} |")
+
+        roster_table = "\n".join(roster_lines)
+
+        # Assemble dispatch markdown
+        now_iso = datetime.now().isoformat()
+        dispatch_md = f"""# Team Dispatch
+
+**ID:** {dispatch_id}
+**Plan:** {plan_filename}
+**Dispatched:** {now_iso}
+**Progress file:** `.claude/team-memory.md`
+
+## What to do now
+
+1. Read and understand the plan below
+2. Propose a task split (agent -> task) in your response
+3. Flag any shared-file conflict risks
+4. Assign tasks to agents and begin execution
+5. Track progress in `.claude/team-memory.md`
+6. Ask me (human) only when blocked
+
+## Response contract
+
+Reply with:
+- Task split (agent -> task)
+- Any shared files / conflict risks
+- First actions you are taking now
+- Questions only if blocked
+
+## Team Roster
+
+{roster_table}
+
+**Leader CWD:** {leader_cwd}
+**Git root:** {git_root}
+
+## Plan
+
+{plan_content}
+"""
+
+        if include_context and context_content:
+            dispatch_md += f"""
+## Background
+
+{context_content}
+"""
+
+        dispatch_md += """
+## Constraints
+
+- Each agent works in its own git worktree on its own branch
+- Nobody commits to main/master
+- You (leader) are the single coordination point
+- When agents finish, review their branches before merging
+"""
+
+        if preferences:
+            dispatch_md += f"""
+## Additional Instructions
+
+{preferences}
+"""
+
+        # Write dispatch files
+        dispatch_dir = leader_cwd / ".claude"
+        dispatch_archive_dir = dispatch_dir / "dispatch"
+        dispatch_dir.mkdir(parents=True, exist_ok=True)
+        dispatch_archive_dir.mkdir(parents=True, exist_ok=True)
+
+        dispatch_file = dispatch_dir / "dispatch.md"
+        archive_file = dispatch_archive_dir / f"dispatch-{dispatch_id}.md"
+
+        try:
+            dispatch_file.write_text(dispatch_md, encoding="utf-8")
+            archive_file.write_text(dispatch_md, encoding="utf-8")
+        except Exception as e:
+            return JSONResponse({"error": f"Failed to write dispatch file: {e}"}, status_code=500)
+
+        # Send instruction to leader pane
+        tmux_target = get_tmux_target(sess, leader["target_id"])
+        instruction = f"Read .claude/dispatch.md and execute the plan. Dispatch ID: {dispatch_id}"
+        try:
+            subprocess.run(
+                ["tmux", "send-keys", "-t", tmux_target, "-l", instruction],
+                capture_output=True, text=True, timeout=5
+            )
+            subprocess.run(
+                ["tmux", "send-keys", "-t", tmux_target, "Enter"],
+                capture_output=True, text=True, timeout=5
+            )
+        except Exception as e:
+            return JSONResponse({"error": f"Failed to send to leader: {e}"}, status_code=500)
+
+        app.state.audit_log.log("team_dispatch", {
+            "dispatch_id": dispatch_id,
+            "plan": plan_filename,
+            "leader_target": leader["target_id"],
+            "agents": [a["agent_name"] for a in all_agents],
+        })
+
+        return {
+            "success": True,
+            "dispatch_id": dispatch_id,
+            "dispatch_path": str(dispatch_file),
+            "leader_target": leader["target_id"],
+            "agents_count": len(all_agents),
+            "agents": [a["agent_name"] for a in all_agents],
+            "warning_main_agents": warning_main_agents,
+        }
+
     @app.get("/api/status/phase")
     async def get_status_phase(
         pane_id: str = Query(None),

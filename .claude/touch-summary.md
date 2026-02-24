@@ -969,3 +969,22 @@ Unified single button showing "repo • pane" format with sectioned dropdown:
 - Team phase cache capped at 50 entries with oldest-eviction; git info cache capped at 30 with 60s stale eviction
 - Git info calls subprocess (3 git commands per uncached pane); cached 10s per cwd
 - Team section skips non-team panes (window name != "leader" and not "a-*" prefix); they appear in normal "Current Session" section
+
+---
+
+## 2026-02-24: Leader Dispatch - Plan Routing + Message Leader
+
+**Goal:** Select a plan file, assemble it with context + roster + orchestration instructions, write dispatch.md to leader CWD, and send a tmux instruction to the leader pane.
+
+**Files Changed:**
+- `mobile_terminal/server.py` - Added `POST /api/team/dispatch` endpoint: reads plan from `~/.claude/plans/`, discovers team panes, builds roster with git/phase info, assembles dispatch.md template (What to do now, Response contract, Roster, Plan, Background, Constraints), writes to `{leader_cwd}/.claude/dispatch.md` + archive copy, sends instruction via `tmux send-keys`
+- `mobile_terminal/static/index.html` - Added `#teamDispatchBar` with plan select dropdown + Dispatch button + message input + Send button before `#teamView`, version bumps (styles.css v155, terminal.js v255)
+- `mobile_terminal/static/styles.css` - Added `.team-dispatch-bar`, `.dispatch-row`, `.dispatch-plan-select`, `.leader-message-input`, `.team-card-btn.dispatch` styles (44px touch targets, accent-colored dispatch button)
+- `mobile_terminal/static/terminal.js` - Added `populateDispatchPlans()` (fetches /api/plans, populates select, restores from localStorage), `dispatchToLeader()` (POST /api/team/dispatch, toast with warnings, double-tap prevention), `sendLeaderMessage()` (sends to leader via existing sendTeamInput), `updateDispatchButtonState()` (enables/disables based on plan selection + leader presence), wired into `switchToTeamView()`, `hideAllContainers()`, init section
+
+**New Files:** None
+
+**Risks/Follow-ups:**
+- Dispatch writes files to leader CWD filesystem; relies on leader Claude reading `.claude/dispatch.md` when instructed
+- `warning_main_agents` in response flags agents on main/master branch but does not block dispatch
+- Plan list cached in `dispatchPlansCache` per team view visit; not auto-refreshed between visits

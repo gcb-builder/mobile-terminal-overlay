@@ -529,6 +529,10 @@ let phaseIdleShowHistoryTimer = null; // Timer for showing "Open History" after 
 // Team state
 let teamState = null;  // {has_team, session, team: {leader, agents[]}}
 
+// Dispatch state
+let dispatchPlansCache = null;
+let dispatchInFlight = false;
+
 function initDOMElements() {
     terminalContainer = document.getElementById('terminal-container');
     controlBarsContainer = document.getElementById('controlBarsContainer');
@@ -4462,6 +4466,8 @@ function hideAllContainers() {
     if (logView) logView.classList.add('hidden');
     const teamViewEl = document.getElementById('teamView');
     if (teamViewEl) teamViewEl.classList.add('hidden');
+    const dispatchBar = document.getElementById('teamDispatchBar');
+    if (dispatchBar) dispatchBar.classList.add('hidden');
     if (terminalView) terminalView.classList.add('hidden');
     if (transcriptContainer) transcriptContainer.classList.add('hidden');
     // Stop auto-refresh when leaving log view
@@ -4545,13 +4551,17 @@ function switchToTeamView() {
     hideAllContainers();
     const teamViewEl = document.getElementById('teamView');
     if (teamViewEl) teamViewEl.classList.remove('hidden');
+    // Show dispatch bar
+    const dispatchBar = document.getElementById('teamDispatchBar');
+    if (dispatchBar) dispatchBar.classList.remove('hidden');
     // Hide viewBar and controlBars -- no Select/Compose needed in team view
     viewBar.classList.add('hidden');
     controlBarsContainer.classList.add('hidden');
     updateTabIndicator();
     // Lightweight mode -- no xterm rendering
     setOutputMode('tail');
-    // Load and auto-refresh team cards
+    // Load plans and auto-refresh team cards
+    populateDispatchPlans();
     refreshTeamCards();
     startTeamCardRefresh();
 }
@@ -4619,6 +4629,102 @@ function renderTeamCards(state, captures) {
 
     teamViewEl.innerHTML = '';
     teamViewEl.appendChild(grid);
+    updateDispatchButtonState();
+}
+
+// ===== Dispatch bar logic =====
+
+async function populateDispatchPlans() {
+    const select = document.getElementById('dispatchPlanSelect');
+    if (!select) return;
+
+    try {
+        const resp = await fetch(`/api/plans?token=${token}`);
+        if (!resp.ok) throw new Error('Failed to load plans');
+        const data = await resp.json();
+        dispatchPlansCache = data.plans || [];
+    } catch (e) {
+        dispatchPlansCache = [];
+    }
+
+    const saved = localStorage.getItem('mto_dispatch_plan') || '';
+    select.innerHTML = '<option value="">Select plan...</option>';
+    dispatchPlansCache.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.filename;
+        opt.textContent = p.filename;
+        if (p.filename === saved) opt.selected = true;
+        select.appendChild(opt);
+    });
+    updateDispatchButtonState();
+}
+
+function updateDispatchButtonState() {
+    const select = document.getElementById('dispatchPlanSelect');
+    const dispatchBtn = document.getElementById('dispatchBtn');
+    const msgInput = document.getElementById('leaderMessageInput');
+    const msgBtn = document.getElementById('leaderMessageBtn');
+    const hasLeader = teamState && teamState.team && teamState.team.leader;
+
+    if (dispatchBtn) {
+        dispatchBtn.disabled = !select || !select.value || !hasLeader || dispatchInFlight;
+    }
+    if (msgBtn) {
+        msgBtn.disabled = !msgInput || !msgInput.value.trim() || !hasLeader;
+    }
+}
+
+async function dispatchToLeader() {
+    const select = document.getElementById('dispatchPlanSelect');
+    const btn = document.getElementById('dispatchBtn');
+    if (!select || !select.value || !btn) return;
+
+    dispatchInFlight = true;
+    const origText = btn.textContent;
+    btn.textContent = 'Sending...';
+    btn.disabled = true;
+
+    const plan = select.value;
+    const sessParam = currentSession ? `&session=${encodeURIComponent(currentSession)}` : '';
+
+    try {
+        const resp = await fetchWithTimeout(
+            `/api/team/dispatch?plan_filename=${encodeURIComponent(plan)}&include_context=true&token=${token}${sessParam}`,
+            { method: 'POST' },
+            15000
+        );
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.success) {
+            let msg = `Dispatched to leader (${data.agents_count} agents)`;
+            if (data.warning_main_agents && data.warning_main_agents.length > 0) {
+                msg += ` -- WARNING: ${data.warning_main_agents.join(', ')} on main branch`;
+            }
+            showToast(msg, 'success');
+            localStorage.setItem('mto_dispatch_plan', plan);
+        } else {
+            showToast(data.error || 'Dispatch failed', 'error');
+        }
+    } catch (e) {
+        showToast('Dispatch failed: ' + e.message, 'error');
+    }
+
+    dispatchInFlight = false;
+    btn.textContent = origText;
+    updateDispatchButtonState();
+    setTimeout(() => refreshTeamCards(), 2000);
+}
+
+async function sendLeaderMessage() {
+    const input = document.getElementById('leaderMessageInput');
+    if (!input || !input.value.trim()) return;
+    if (!teamState || !teamState.team || !teamState.team.leader) return;
+
+    const text = input.value.trim();
+    const targetId = teamState.team.leader.target_id;
+
+    await sendTeamInput(targetId, text);
+    input.value = '';
+    updateDispatchButtonState();
 }
 
 function createTeamCard(agent, capture) {
@@ -10441,6 +10547,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupDirtyChoiceModals();
     setupPermissionBanner();
     setupVoiceInput();
+
+    // Dispatch bar handlers
+    const dispatchBtn = document.getElementById('dispatchBtn');
+    const dispatchSelect = document.getElementById('dispatchPlanSelect');
+    const leaderMsgInput = document.getElementById('leaderMessageInput');
+    const leaderMsgBtn = document.getElementById('leaderMessageBtn');
+    if (dispatchBtn) dispatchBtn.addEventListener('click', dispatchToLeader);
+    if (dispatchSelect) dispatchSelect.addEventListener('change', () => {
+        localStorage.setItem('mto_dispatch_plan', dispatchSelect.value);
+        updateDispatchButtonState();
+    });
+    if (leaderMsgInput) {
+        leaderMsgInput.addEventListener('keyup', (e) => {
+            updateDispatchButtonState();
+            if (e.key === 'Enter') sendLeaderMessage();
+        });
+    }
+    if (leaderMsgBtn) leaderMsgBtn.addEventListener('click', sendLeaderMessage);
 
     // Context banner: tap header to expand, × to dismiss
     const ctxHeader = document.getElementById('contextBannerHeader');
