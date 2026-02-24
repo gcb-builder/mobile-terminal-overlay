@@ -4652,7 +4652,7 @@ async function populateDispatchPlans() {
     dispatchPlansCache.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p.filename;
-        opt.textContent = p.filename;
+        opt.textContent = p.title || p.filename;
         if (p.filename === saved) opt.selected = true;
         select.appendChild(opt);
     });
@@ -6752,27 +6752,46 @@ function setupDocsButton() {
         }
     }
 
+    let lastPlanRawContent = '';
+
     async function loadPlanContent(filename) {
         const contentDiv = document.getElementById('docsPlanContent');
         if (!contentDiv) return;
         contentDiv.innerHTML = '<div class="docs-loading">Loading plan...</div>';
+        lastPlanRawContent = '';
 
         try {
             const response = await fetch(`/api/plan?token=${token}&filename=${encodeURIComponent(filename)}&preview=false`);
             const data = await response.json();
 
             if (data.exists && data.content) {
+                lastPlanRawContent = data.content;
+                const copyBtn = '<div class="docs-plan-actions"><button class="docs-copy-btn" id="docsPlanCopyBtn">Copy</button></div>';
+                let rendered;
                 try {
-                    contentDiv.innerHTML = marked.parse(data.content);
+                    rendered = marked.parse(data.content);
                 } catch (e) {
-                    contentDiv.innerHTML = `<pre>${escapeHtml(data.content)}</pre>`;
+                    rendered = `<pre>${escapeHtml(data.content)}</pre>`;
                 }
+                contentDiv.innerHTML = copyBtn + rendered;
+                document.getElementById('docsPlanCopyBtn').addEventListener('click', copyPlanContent);
             } else {
                 contentDiv.innerHTML = '<div class="docs-empty">Plan file not found</div>';
             }
         } catch (e) {
             console.error('Failed to load plan content:', e);
             contentDiv.innerHTML = '<div class="docs-empty" style="color: var(--danger);">Error loading plan</div>';
+        }
+    }
+
+    async function copyPlanContent() {
+        if (!lastPlanRawContent) return;
+        const btn = document.getElementById('docsPlanCopyBtn');
+        try {
+            await navigator.clipboard.writeText(lastPlanRawContent);
+            if (btn) { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+        } catch (e) {
+            showToast('Copy failed', 'error');
         }
     }
 

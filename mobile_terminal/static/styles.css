@@ -3279,6 +3279,28 @@ html, body {
     margin-bottom: 16px;
 }
 
+.docs-plan-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 8px;
+}
+
+.docs-copy-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    padding: 6px 16px;
+    min-height: 36px;
+    cursor: pointer;
+}
+
+.docs-copy-btn:active {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
 .docs-plan-select {
     width: 100%;
     padding: 10px 12px;
