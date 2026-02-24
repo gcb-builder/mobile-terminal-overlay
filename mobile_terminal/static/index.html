@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=153">
+    <link rel="stylesheet" href="/static/styles.css?v=154">
 </head>
 <body>
     <div class="app">
@@ -112,6 +112,9 @@
             <div id="promptBanner" class="prompt-banner"></div>
         </div>
 
+        <!-- Team view (dynamic, appears when team detected) -->
+        <div id="teamView" class="team-view hidden"></div>
+
         <!-- Terminal view (secondary, swipe to access) -->
         <div id="terminalView" class="terminal-view hidden">
             <div id="interactiveBadge" class="interactive-badge hidden">INTERACTIVE</div>
@@ -133,8 +136,6 @@
 
         <!-- Tab position indicator (dots) + collapse toggle -->
         <div id="tabIndicator" class="tab-indicator">
-            <span class="tab-dot active" data-view="log"></span>
-            <span class="tab-dot" data-view="terminal"></span>
             <button id="collapseToggle" class="collapse-toggle-btn" aria-label="Toggle control bars">
                 <span class="collapse-icon">&#x25B2;</span>
             </button>
@@ -518,7 +519,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=253"></script>
+    <script src="/static/terminal.js?v=254"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

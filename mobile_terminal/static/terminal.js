@@ -2596,6 +2596,7 @@ async function respawnClaude() {
  * Fetch team state (phase + git info for all team panes)
  */
 async function updateTeamState() {
+    const hadTeam = teamState && teamState.has_team;
     try {
         const sessParam = currentSession ? `&session=${encodeURIComponent(currentSession)}` : '';
         const resp = await fetchWithTimeout(
@@ -2609,6 +2610,15 @@ async function updateTeamState() {
         }
     } catch {
         teamState = null;
+    }
+    const hasTeam = teamState && teamState.has_team;
+    // Detect team presence transitions
+    if (hadTeam !== hasTeam) {
+        updateTabIndicator();
+        // If team disappeared while viewing team, switch to log
+        if (!hasTeam && currentView === 'team') {
+            switchToView('log');
+        }
     }
 }
 
@@ -4307,8 +4317,11 @@ function setupViewToggle() {
     }
 }
 
-// Tab order for swipe navigation (context/touch moved to Docs modal)
-const tabOrder = ['log', 'terminal'];
+// Dynamic tab order based on team presence
+function getTabOrder() {
+    if (teamState && teamState.has_team) return ['log', 'team', 'terminal'];
+    return ['log', 'terminal'];
+}
 
 function clearAllTabActive() {
     // Tab buttons removed from header - dots handle indication now
@@ -4316,15 +4329,38 @@ function clearAllTabActive() {
 }
 
 /**
- * Update the dot indicator to reflect current view
+ * Update the dot indicator to reflect current view.
+ * Dynamically creates dots from getTabOrder() before the collapseToggle.
  */
 function updateTabIndicator() {
-    const dots = document.querySelectorAll('.tab-dot');
-    dots.forEach(dot => {
-        dot.classList.remove('active');
-        if (dot.dataset.view === currentView) {
-            dot.classList.add('active');
-        }
+    const tabIndicator = document.getElementById('tabIndicator');
+    const collapseToggle = document.getElementById('collapseToggle');
+    if (!tabIndicator || !collapseToggle) return;
+
+    // Remove existing dots
+    tabIndicator.querySelectorAll('.tab-dot').forEach(d => d.remove());
+
+    // Create dots for current tab order
+    const order = getTabOrder();
+    order.forEach(viewName => {
+        const dot = document.createElement('span');
+        dot.className = 'tab-dot' + (viewName === currentView ? ' active' : '');
+        dot.dataset.view = viewName;
+        // Tap handler
+        let dotHandled = false;
+        const handleDotTap = (e) => {
+            if (dotHandled) return;
+            dotHandled = true;
+            e.preventDefault();
+            e.stopPropagation();
+            if (viewName !== currentView) {
+                switchToView(viewName);
+            }
+            setTimeout(() => { dotHandled = false; }, 300);
+        };
+        dot.addEventListener('touchstart', handleDotTap, { passive: false });
+        dot.addEventListener('click', handleDotTap);
+        tabIndicator.insertBefore(dot, collapseToggle);
     });
 }
 
@@ -4332,9 +4368,10 @@ function updateTabIndicator() {
  * Switch to next tab (swipe left)
  */
 function switchToNextTab() {
-    const currentIndex = tabOrder.indexOf(currentView);
-    if (currentIndex < tabOrder.length - 1) {
-        const nextView = tabOrder[currentIndex + 1];
+    const order = getTabOrder();
+    const currentIndex = order.indexOf(currentView);
+    if (currentIndex < order.length - 1) {
+        const nextView = order[currentIndex + 1];
         switchToView(nextView);
     }
 }
@@ -4343,9 +4380,10 @@ function switchToNextTab() {
  * Switch to previous tab (swipe right)
  */
 function switchToPrevTab() {
-    const currentIndex = tabOrder.indexOf(currentView);
+    const order = getTabOrder();
+    const currentIndex = order.indexOf(currentView);
     if (currentIndex > 0) {
-        const prevView = tabOrder[currentIndex - 1];
+        const prevView = order[currentIndex - 1];
         switchToView(prevView);
     }
 }
@@ -4357,6 +4395,9 @@ function switchToView(viewName) {
     switch (viewName) {
         case 'log':
             switchToLogView();
+            break;
+        case 'team':
+            switchToTeamView();
             break;
         case 'terminal':
             switchToTerminalView();
@@ -4370,6 +4411,7 @@ function switchToView(viewName) {
 function setupSwipeNavigation() {
     const containers = [
         document.getElementById('logView'),
+        document.getElementById('teamView'),
         document.getElementById('terminalView'),
     ];
 
@@ -4413,32 +4455,19 @@ function setupSwipeNavigation() {
         }
     });
 
-    // Touch + click handlers for dots (touchstart for mobile reliability)
-    document.querySelectorAll('.tab-dot').forEach(dot => {
-        let dotHandled = false;
-        const handleDotTap = (e) => {
-            if (dotHandled) return;
-            dotHandled = true;
-            e.preventDefault();
-            e.stopPropagation();
-            const viewName = dot.dataset.view;
-            if (viewName && viewName !== currentView) {
-                switchToView(viewName);
-            }
-            setTimeout(() => { dotHandled = false; }, 300);
-        };
-        dot.addEventListener('touchstart', handleDotTap, { passive: false });
-        dot.addEventListener('click', handleDotTap);
-    });
+    // Dot event handlers are now created dynamically in updateTabIndicator()
 }
 
 function hideAllContainers() {
     if (logView) logView.classList.add('hidden');
+    const teamViewEl = document.getElementById('teamView');
+    if (teamViewEl) teamViewEl.classList.add('hidden');
     if (terminalView) terminalView.classList.add('hidden');
     if (transcriptContainer) transcriptContainer.classList.add('hidden');
     // Stop auto-refresh when leaving log view
     stopLogAutoRefresh();
     stopTailViewport();
+    stopTeamCardRefresh();
 }
 
 function switchToLogView() {
@@ -4503,6 +4532,200 @@ function switchToTerminalView() {
             terminal.focus();
         }
     });
+}
+
+function switchToTeamView() {
+    currentView = 'team';
+    // Auto-disable interactive mode
+    if (interactiveMode) {
+        interactiveMode = false;
+        clearInteractiveIdleTimer();
+        updateInteractiveBadge();
+    }
+    hideAllContainers();
+    const teamViewEl = document.getElementById('teamView');
+    if (teamViewEl) teamViewEl.classList.remove('hidden');
+    // Hide viewBar and controlBars -- no Select/Compose needed in team view
+    viewBar.classList.add('hidden');
+    controlBarsContainer.classList.add('hidden');
+    updateTabIndicator();
+    // Lightweight mode -- no xterm rendering
+    setOutputMode('tail');
+    // Load and auto-refresh team cards
+    refreshTeamCards();
+    startTeamCardRefresh();
+}
+
+// ===== Team card rendering =====
+let teamCardRefreshTimer = null;
+
+function startTeamCardRefresh() {
+    stopTeamCardRefresh();
+    teamCardRefreshTimer = setInterval(() => {
+        if (currentView === 'team' && document.visibilityState === 'visible') {
+            refreshTeamCards();
+        }
+    }, 5000);
+}
+
+function stopTeamCardRefresh() {
+    if (teamCardRefreshTimer) {
+        clearInterval(teamCardRefreshTimer);
+        teamCardRefreshTimer = null;
+    }
+}
+
+async function refreshTeamCards() {
+    if (currentView !== 'team' || !teamState || !teamState.has_team) return;
+
+    const sessParam = currentSession ? `&session=${encodeURIComponent(currentSession)}` : '';
+    try {
+        const resp = await fetchWithTimeout(
+            `/api/team/capture?lines=8&token=${token}${sessParam}`, {}, 5000
+        );
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        // Also refresh team state for latest phase/permission info
+        const stateResp = await fetchWithTimeout(
+            `/api/team/state?token=${token}${sessParam}`, {}, 5000
+        );
+        if (stateResp.ok) {
+            teamState = await stateResp.json();
+        }
+
+        renderTeamCards(teamState, data.captures || {});
+    } catch (e) {
+        console.warn('Team card refresh failed:', e);
+    }
+}
+
+function renderTeamCards(state, captures) {
+    const teamViewEl = document.getElementById('teamView');
+    if (!teamViewEl || !state || !state.team) return;
+
+    const grid = document.createElement('div');
+    grid.className = 'team-cards-grid';
+
+    // Leader first, then agents
+    const agents = [];
+    if (state.team.leader) agents.push(state.team.leader);
+    if (state.team.agents) agents.push(...state.team.agents);
+
+    agents.forEach(agent => {
+        const capture = captures[agent.target_id] || {};
+        grid.appendChild(createTeamCard(agent, capture));
+    });
+
+    teamViewEl.innerHTML = '';
+    teamViewEl.appendChild(grid);
+}
+
+function createTeamCard(agent, capture) {
+    const card = document.createElement('div');
+    card.className = 'team-card';
+
+    // Header: status dot + name + phase + branch pill
+    const header = document.createElement('div');
+    header.className = 'team-card-header';
+
+    const dot = document.createElement('span');
+    dot.className = 'team-dot ' + (agent.phase || 'idle');
+    header.appendChild(dot);
+
+    const name = document.createElement('span');
+    name.className = 'team-card-name';
+    name.textContent = agent.agent_name || 'unknown';
+    header.appendChild(name);
+
+    const phase = document.createElement('span');
+    phase.className = 'team-card-phase';
+    phase.textContent = agent.detail || agent.phase || '';
+    header.appendChild(phase);
+
+    if (agent.git && agent.git.branch) {
+        const branch = document.createElement('span');
+        branch.className = 'team-card-branch';
+        const isMain = agent.git.branch === 'main' || agent.git.branch === 'master';
+        if (isMain) branch.classList.add('danger');
+        branch.textContent = agent.git.branch;
+        if (agent.git.worktree) branch.title = 'worktree: ' + agent.git.worktree;
+        header.appendChild(branch);
+    }
+
+    card.appendChild(header);
+
+    // Body: tail text (tap to switch to terminal)
+    const body = document.createElement('div');
+    body.className = 'team-card-body';
+    const pre = document.createElement('pre');
+    const content = (capture.content || '').trim();
+    // Show last 5 non-empty lines
+    const lines = content.split('\n').filter(l => l.trim());
+    pre.textContent = lines.slice(-5).join('\n') || '(no output)';
+    body.appendChild(pre);
+    body.addEventListener('click', () => {
+        selectTarget(agent.target_id);
+        switchToView('terminal');
+    });
+    card.appendChild(body);
+
+    // Footer: Switch button + Allow/Deny when permission waiting
+    const footer = document.createElement('div');
+    footer.className = 'team-card-footer';
+
+    const switchBtn = document.createElement('button');
+    switchBtn.className = 'team-card-btn';
+    switchBtn.textContent = 'Switch';
+    switchBtn.addEventListener('click', () => {
+        selectTarget(agent.target_id);
+        switchToView('terminal');
+    });
+    footer.appendChild(switchBtn);
+
+    if (agent.waiting_reason === 'permission') {
+        const allowBtn = document.createElement('button');
+        allowBtn.className = 'team-card-btn allow';
+        allowBtn.textContent = 'Allow';
+        allowBtn.addEventListener('click', () => {
+            allowBtn.disabled = true;
+            sendTeamInput(agent.target_id, 'y');
+        });
+        footer.appendChild(allowBtn);
+
+        const denyBtn = document.createElement('button');
+        denyBtn.className = 'team-card-btn deny';
+        denyBtn.textContent = 'Deny';
+        denyBtn.addEventListener('click', () => {
+            denyBtn.disabled = true;
+            sendTeamInput(agent.target_id, 'n');
+        });
+        footer.appendChild(denyBtn);
+    }
+
+    card.appendChild(footer);
+    return card;
+}
+
+async function sendTeamInput(targetId, text) {
+    const sessParam = currentSession ? `&session=${encodeURIComponent(currentSession)}` : '';
+    try {
+        const resp = await fetchWithTimeout(
+            `/api/team/send?target_id=${encodeURIComponent(targetId)}&text=${encodeURIComponent(text)}&token=${token}${sessParam}`,
+            { method: 'POST' },
+            5000
+        );
+        if (resp.ok) {
+            showToast(`Sent "${text}" to ${targetId}`, 'success');
+        } else {
+            const err = await resp.json().catch(() => ({}));
+            showToast(err.error || 'Send failed', 'error');
+        }
+    } catch (e) {
+        showToast('Send failed: ' + e.message, 'error');
+    }
+    // Refresh cards after a short delay to show updated state
+    setTimeout(() => refreshTeamCards(), 1500);
 }
 
 let transcriptSource = '';  // 'log' or 'capture'
@@ -10203,6 +10426,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupChallenge();
     setupViewToggle();
     setupSwipeNavigation();
+    updateTabIndicator();  // Create initial dots dynamically
     setupTranscriptSearch();
     startActivityUpdates();
     setupQueue();

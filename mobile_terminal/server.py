@@ -5641,6 +5641,114 @@ Only the top 1–3 risks worth caring about.
             } if has_team else None,
         }
 
+    @app.get("/api/team/capture")
+    async def get_team_capture(
+        session: Optional[str] = Query(None),
+        lines: int = Query(8),
+        token: Optional[str] = Query(None),
+    ):
+        """Batch capture last N lines from each team pane."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        sess = session or app.state.current_session
+        lines = max(1, min(lines, 50))  # Clamp 1-50
+
+        # Discover team panes (same filter as get_team_state)
+        result = subprocess.run(
+            ["tmux", "list-panes", "-s", "-t", sess,
+             "-F", "#{window_index}:#{pane_index}|#{window_name}|#{pane_title}"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return {"captures": {}}
+
+        captures = {}
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split("|")
+            if len(parts) < 3:
+                continue
+            target_id = parts[0]
+            window_name = parts[1]
+            pane_title = parts[2]
+
+            if window_name != "leader" and not window_name.startswith("a-"):
+                continue
+
+            # Check cache first
+            cached = get_cached_capture(sess, target_id, lines)
+            if cached is not None:
+                captures[target_id] = cached
+                continue
+
+            # Capture pane content
+            tmux_target = get_tmux_target(sess, target_id)
+            try:
+                cap = subprocess.run(
+                    ["tmux", "capture-pane", "-t", tmux_target, "-p", f"-S", f"-{lines}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                content = cap.stdout if cap.returncode == 0 else ""
+            except Exception:
+                content = ""
+
+            entry = {"content": content, "pane_title": pane_title}
+            set_cached_capture(sess, target_id, lines, entry)
+            captures[target_id] = entry
+
+        return {"captures": captures}
+
+    @app.post("/api/team/send")
+    async def team_send(
+        target_id: str = Query(...),
+        text: str = Query(...),
+        session: Optional[str] = Query(None),
+        token: Optional[str] = Query(None),
+    ):
+        """Send input to a specific team pane without switching activeTarget."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        sess = session or app.state.current_session
+
+        # Validate target_id is a team pane
+        result = subprocess.run(
+            ["tmux", "list-panes", "-s", "-t", sess,
+             "-F", "#{window_index}:#{pane_index}|#{window_name}"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return JSONResponse({"error": "Cannot list panes"}, status_code=500)
+
+        is_team_pane = False
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split("|")
+            if len(parts) >= 2 and parts[0] == target_id:
+                wname = parts[1]
+                if wname == "leader" or wname.startswith("a-"):
+                    is_team_pane = True
+                break
+
+        if not is_team_pane:
+            return JSONResponse({"error": "Not a team pane", "target_id": target_id}, status_code=400)
+
+        tmux_target = get_tmux_target(sess, target_id)
+
+        try:
+            # Send text literally, then Enter
+            subprocess.run(
+                ["tmux", "send-keys", "-t", tmux_target, "-l", text],
+                capture_output=True, text=True, timeout=5
+            )
+            subprocess.run(
+                ["tmux", "send-keys", "-t", tmux_target, "Enter"],
+                capture_output=True, text=True, timeout=5
+            )
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+        return {"success": True, "target_id": target_id}
+
     @app.get("/api/status/phase")
     async def get_status_phase(
         pane_id: str = Query(None),

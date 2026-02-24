@@ -3,46 +3,97 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Agent Teams: Team Discovery, Batch State, UI Grouping
-- **Last Updated:** 2026-02-23
-- **Server Version:** v253 (terminal.js), v115 (sw.js cache), v153 (styles.css)
+- **Stage:** Agent Teams: Team View with Card-Based Overview
+- **Last Updated:** 2026-02-24
+- **Server Version:** v254 (terminal.js), v115 (sw.js cache), v154 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
 
-## Active Work: Agent-Native Features (2026-02-18)
+## Active Work: Team View - Consolidated Agent Cards (2026-02-24)
 
-### Feature 1: Status Strip
-Thin bar below header showing Claude's current phase (waiting/planning/working/running_task/idle) with colored pulsing dot, detail text, and contextual action button.
+### Feature: Team View with Card-Based Agent Overview
+Swipeable tab (between Log and Terminal) showing card-based overview of all team agents with status, branch, tail text, and action buttons.
 
-- **Server:** `GET /api/status/phase` with `(log_path, mtime, size)` cache key for <5ms cached returns
-- **Parse logic:** Reads last 8KB of JSONL, checks pane_title, scans tool_use blocks
-- **Client:** `updateClaudePhase()` called via `Promise.all` in existing health poll loop
-- **Action buttons:** "Approve" (waiting), "History" (idle transition for 30s)
+#### Server Endpoints
+- **`GET /api/team/capture`** - Batch capture last N lines from each team pane; reuses team pane discovery + capture cache (300ms TTL)
+- **`POST /api/team/send`** - Send input to a specific team pane without switching activeTarget; validates target is a team pane
 
-### Feature 2: Push Completed/Crashed
-Extended `push_monitor()` with idle transition detection and crash detection.
+#### Dynamic Tab System
+- `getTabOrder()` returns `['log', 'team', 'terminal']` when team present, `['log', 'terminal']` otherwise
+- `updateTabIndicator()` dynamically creates/destroys dots before `#collapseToggle`
+- Static dot HTML removed from index.html; dots created at runtime
+- Team presence transitions: dot appears/disappears on team state change; auto-switch to log if team disappears
 
-- **Completed:** Idle transition after 20s of no activity when previously active
-- **Crashed:** Process-tree check with 10s debounce when Claude stops unexpectedly
-- **`maybe_send_push()`:** Now accepts `extra_data` dict (includes `session`, `pane_id`)
-- **SW:** Per-type notification actions (Open for completed, Respawn+Open for crashed)
-- **Client:** SW message handler for `respawn_claude`, URL param `?action=respawn` on page load
-
-### Feature 3: Artifacts & Replay
-Auto-captured snapshots with minimal payload, lazy heavy fields, annotation, and timeline UI.
-
-- **Auto-capture:** Event-driven in `push_monitor()`, rate-limited to 1 per 30s
-- **Minimal payload:** `log_offset` + `log_path` instead of full JSONL content; `terminal_text` empty by default
-- **Heavy fields on demand:** Populated when snapshot is viewed via `GET /api/rollback/preview/{id}`
-- **Annotation:** `POST /api/rollback/preview/{snap_id}/annotate` with note (500 chars) + image_path
-- **Per-target scoping:** Snapshots keyed by `session:pane_id`
-- **Timeline UI:** Vertical connector, colored label badges, note previews, git HEAD display
+#### Team Card UI
+- `.team-cards-grid` - 1-column mobile, 2-column at 600px+
+- `.team-card` - header (status dot + name + phase + branch pill), body (pre with last 5 lines, tap to switch), footer (Switch + Allow/Deny buttons)
+- Allow/Deny sends y/n to correct pane via `/api/team/send` without switching activeTarget
+- Auto-refresh every 5s when team view visible
+- Team view hides viewBar + controlBars (no Select/Compose needed)
 
 ### Files Changed
-- `mobile_terminal/server.py` - Phase endpoint, extended push_monitor, auto-capture, annotate endpoint, lazy snapshot loading
-- `mobile_terminal/static/index.html` - Status strip div, version bumps
-- `mobile_terminal/static/styles.css` - Status strip styles, timeline styles
-- `mobile_terminal/static/terminal.js` - updateClaudePhase(), enhanced renderHistoryList(), SW respawn handler
-- `mobile_terminal/static/sw.js` - Per-type push actions, respawn click handler
+- `mobile_terminal/server.py` - GET /api/team/capture, POST /api/team/send
+- `mobile_terminal/static/index.html` - #teamView div, removed static tab dots, version bumps (v154/v254)
+- `mobile_terminal/static/styles.css` - .team-view, .team-cards-grid, .team-card-*, responsive 2-column grid
+- `mobile_terminal/static/terminal.js` - getTabOrder(), dynamic updateTabIndicator(), switchToTeamView(), card rendering, auto-refresh, team presence transitions
+
+---
+
+## Previous: Agent Teams - Discovery, Batch State, UI Grouping (2026-02-23)
+
+### Feature: Team Discovery + Batch State + UI Grouping
+Team-aware views for Claude agent teams using tmux window naming conventions: `leader` = team leader, `a-*` = agents.
+
+#### Step 1: Team Discovery in /api/targets
+- `team_role` ("leader" | "agent" | null) and `agent_name` fields on each target
+- `has_team` boolean on response
+
+#### Step 2: GET /api/team/state Batch Endpoint
+- **`_detect_phase_for_cwd()`** - Per-pane phase detection using explicit cwd, no pgrep
+- **Activity:** Log file mtime recency (< 30s) as informational `active` flag, NOT a gate
+- **Always parses:** JSONL + pane_title checked regardless of activity (catches long waits)
+- **`waiting_reason`:** "permission" (Signal Detection Pending) | "question" (AskUserQuestion) | null
+- **`permission_tool`/`permission_target`:** Extracted from last tool_use when waiting for permission
+- **`_get_git_info_cached()`:** Branch, worktree detection (.git is file), is_main warning; 10s cache per cwd
+- **Cache:** Composite key `session:target:cwd:log_path`, mtime+size invalidation, 50 entry cap
+
+#### Step 3: UI Grouping in Nav Dropdown
+- **Team section** before "Current Session" with status dots, branch labels, permission badges
+- **Status dots:** Color per phase (green=working, blue=planning, orange=waiting, purple=agent, grey=idle)
+- **Branch labels:** Truncated at 20 chars, red for main/master, worktree tooltip
+- **Permission badge:** Orange `!` circle only for permission waits (not questions)
+- **Non-team panes** filtered out of Team section, shown in normal "Current Session"
+- **Polling:** `updateTeamState()` in health poll `Promise.all`, re-renders dropdown if visible
+
+#### spawn-team.sh
+Shell script for safe team creation with guardrails:
+- Session validation, main-branch protection (auto-creates feature branch)
+- Per-agent branches (`<base>-leader`, `<base>-a-eval`, etc.)
+- Duplicate window detection, `--kill` cleanup mode
+- Starts `claude --worktree` in each window
+
+### Files Changed
+- `mobile_terminal/server.py` - team_role/agent_name in /api/targets, _detect_phase_for_cwd(), _get_git_info_cached(), GET /api/team/state
+- `mobile_terminal/static/terminal.js` - teamState variable, updateTeamState(), Team section in populateRepoDropdown()
+- `mobile_terminal/static/styles.css` - .team-dot, .team-phase, .team-branch, .team-perm-badge, .team-agent layout
+- `mobile_terminal/static/index.html` - Version bumps: styles.css?v=153, terminal.js?v=253
+- `spawn-team.sh` - Team creation script
+
+---
+
+## Previous: Agent-Native Features (2026-02-18)
+
+### Status Strip
+- `GET /api/status/phase` with `(log_path, mtime, size)` cache key
+- Phase detection: last 8KB JSONL + pane_title + tool_use scan
+- Action buttons: "Approve" (waiting), "History" (idle transition)
+
+### Push Completed/Crashed
+- Idle transition detection (20s), crash detection (10s debounce)
+- Per-type push notification actions
+
+### Artifacts & Replay
+- Event-driven auto-capture (1 per 30s), minimal payload, lazy heavy fields
+- Annotation, per-target scoping, timeline UI
 
 ---
 

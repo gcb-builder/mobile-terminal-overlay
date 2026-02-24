@@ -4,6 +4,24 @@ Append-only log of implementation batches.
 
 ---
 
+## 2026-02-24: Team View - Consolidated Agent Cards
+
+**Goal:** Add a card-based Team View as a swipeable tab between Log and Terminal, showing agent status, branch, tail text, and Allow/Deny action buttons.
+
+**Files Changed:**
+- `mobile_terminal/server.py` - Added `GET /api/team/capture` (batch pane capture with cache), `POST /api/team/send` (targeted input to team pane)
+- `mobile_terminal/static/index.html` - Added `#teamView` div, removed static tab dots (now dynamic), version bumps (styles.css v154, terminal.js v254)
+- `mobile_terminal/static/styles.css` - Added `.team-view`, `.team-cards-grid` (responsive 2-column), `.team-card` header/body/footer/button styles
+- `mobile_terminal/static/terminal.js` - Replaced `tabOrder` const with `getTabOrder()`, rewrote `updateTabIndicator()` for dynamic dots, added `switchToTeamView()`, card rendering (`refreshTeamCards`, `createTeamCard`, `sendTeamInput`), auto-refresh (5s interval), team presence transitions in `updateTeamState()`
+
+**New Files:** None
+
+**Risks / Follow-ups:**
+- Phase 2 (deferred): Tabbed per-agent JSONL event timeline from cards view
+- Capture endpoint runs sequentially (~20ms for 3-4 panes); could parallelize if team sizes grow
+
+---
+
 ## 2026-01-10: Initial Scaffold
 
 **Goal:** Create initial project structure for mobile-terminal-overlay
