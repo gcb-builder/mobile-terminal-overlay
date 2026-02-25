@@ -12,6 +12,7 @@ from typing import Optional
 from .base import AgentDriver, BaseAgentDriver, Observation, ObserveContext
 from .claude import ClaudeDriver, ClaudePermissionDetector
 from .codex import CodexDriver
+from .gemini import GeminiDriver
 from .generic import GenericDriver
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "ClaudeDriver",
     "ClaudePermissionDetector",
     "CodexDriver",
+    "GeminiDriver",
     "GenericDriver",
     "get_driver",
     "register_driver",
@@ -31,6 +33,7 @@ __all__ = [
 _REGISTRY: dict[str, type[BaseAgentDriver]] = {
     "claude": ClaudeDriver,
     "codex": CodexDriver,
+    "gemini": GeminiDriver,
     "generic": GenericDriver,
 }
 
