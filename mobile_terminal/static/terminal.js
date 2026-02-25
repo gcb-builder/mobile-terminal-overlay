@@ -10476,7 +10476,7 @@ async function updatePushButton() {
         const reg = await navigator.serviceWorker.ready;
         const sub = await reg.pushManager.getSubscription();
         btn.classList.toggle('subscribed', !!sub);
-        btn.textContent = sub ? 'Bell*' : 'Bell';
+        btn.textContent = sub ? '\u{1F514}' : '\u{1F515}';
     } catch {}
 }
 

@@ -6258,11 +6258,15 @@ html, body {
 .push-toggle-btn {
     background: none;
     border: none;
-    color: var(--text-secondary);
-    font-size: 14px;
+    font-size: 18px;
     cursor: pointer;
     padding: 4px 6px;
     border-radius: 4px;
+    min-width: 32px;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 .push-toggle-btn.hidden { display: none; }
 .push-toggle-btn.subscribed {
