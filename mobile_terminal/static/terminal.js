@@ -451,7 +451,7 @@ let terminalContainer, controlBarsContainer;
 let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
 let targetBtn, targetLabel, targetDropdown, targetLockBtn, targetLockIcon;
-let claudeCrashBanner, claudeRespawnBtn, claudeCrashDismissBtn;
+let agentCrashBanner, agentRespawnBtn, agentCrashDismissBtn;
 // searchBtn removed - search is now in docs modal
 let composeBtn, composeModal;
 let composeInput, composeClose, composeClear, composePaste, composeInsert, composeRun;
@@ -501,7 +501,7 @@ let expandedSuperGroups = new Set();  // Stores group keys for expanded super-gr
 let previewMode = null;          // null = live, string = snapshot_id
 let previewSnapshot = null;      // Full snapshot data when in preview
 let previewSnapshots = [];       // Cached list of snapshots
-let previewFilter = 'all';       // Current filter: all, user_send, tool_call, claude_done, error
+let previewFilter = 'all';       // Current filter: all, user_send, tool_call, agent_done, error
 
 // Target selector state (for multi-pane sessions)
 let targets = [];                // List of panes in current session
@@ -514,13 +514,14 @@ let pendingPrompt = null;        // { id, kind, text, choices, answered, sentCho
 let dismissedPrompts = new Set(); // Prompt IDs user dismissed without answering
 let promptBanner = null;         // DOM reference for sticky banner
 
-// Claude health polling state (singleflight async loop)
-let claudeHealthController = null;  // AbortController for singleflight loop
-let lastClaudeHealth = null;        // Last health check result
-let claudeStartedAt = null;         // Timestamp when Claude was detected running
+// Agent health polling state (singleflight async loop)
+let agentHealthController = null;  // AbortController for singleflight loop
+let lastAgentHealth = null;        // Last health check result
+let agentStartedAt = null;         // Timestamp when agent was detected running
 const HEALTH_POLL_INTERVAL = 5000;  // 5 seconds between health checks
-let claudeCrashDebounceTimer = null;  // Debounce timer for crash detection
+let agentCrashDebounceTimer = null;  // Debounce timer for crash detection
 let dismissedCrashPanes = new Set();  // Panes where user dismissed crash banner
+let agentName = 'Agent';             // Display name from /config (e.g. "Claude", "Codex CLI")
 
 // Status strip state
 let lastPhase = null;               // Last phase result from /api/status/phase
@@ -551,9 +552,9 @@ function initDOMElements() {
     targetDropdown = document.getElementById('targetDropdown');
     targetLockBtn = document.getElementById('targetLockBtn');
     targetLockIcon = document.getElementById('targetLockIcon');
-    claudeCrashBanner = document.getElementById('claudeCrashBanner');
-    claudeRespawnBtn = document.getElementById('claudeRespawnBtn');
-    claudeCrashDismissBtn = document.getElementById('claudeCrashDismissBtn');
+    agentCrashBanner = document.getElementById('agentCrashBanner');
+    agentRespawnBtn = document.getElementById('agentRespawnBtn');
+    agentCrashDismissBtn = document.getElementById('agentCrashDismissBtn');
     // searchBtn/searchModal removed - search is now in docs modal
     composeBtn = document.getElementById('composeBtn');
     composeModal = document.getElementById('composeModal');
@@ -1757,6 +1758,10 @@ async function loadConfig() {
             return;
         }
         config = await response.json();
+        // Set agent display name from server config
+        if (config.agent_name) {
+            agentName = config.agent_name;
+        }
         if (!paramFontSize && config.font_size && terminal) {
             terminal.options.fontSize = config.font_size;
             fitAddon.fit();
@@ -1887,7 +1892,7 @@ async function populateUI() {
 
     // Start Claude health polling if document is visible
     if (document.visibilityState === 'visible') {
-        startClaudeHealthPolling();
+        startAgentHealthPolling();
     }
 }
 
@@ -2367,9 +2372,9 @@ async function selectTarget(targetId, isInitialSync = false) {
     updateNavLabel();
 
     // Reset Claude health state for new target
-    lastClaudeHealth = null;
-    claudeStartedAt = null;
-    updateClaudeCrashBanner(false);
+    lastAgentHealth = null;
+    agentStartedAt = null;
+    updateAgentCrashBanner(false);
 
     // Show brief loading indicator (non-blocking)
     if (statusOverlay && statusText && !isInitialSync) {
@@ -2419,7 +2424,7 @@ async function selectTarget(targetId, isInitialSync = false) {
 
         // Start health polling if visible
         if (document.visibilityState === 'visible') {
-            startClaudeHealthPolling();
+            startAgentHealthPolling();
         }
 
         // Reload targets to check cwd mismatch (background, don't await)
@@ -2462,44 +2467,44 @@ async function selectTarget(targetId, isInitialSync = false) {
 /**
  * Check Claude health for the active pane
  */
-async function checkClaudeHealth() {
+async function checkAgentHealth() {
     if (!activeTarget) return;
 
     // Don't poll when document is hidden
     if (document.visibilityState !== 'visible') return;
 
     try {
-        const response = await apiFetch(`/api/health/claude?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
+        const response = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
         if (!response.ok) return;
 
         const health = await response.json();
-        const wasRunning = lastClaudeHealth?.claude_running;
-        const isNowRunning = health.claude_running;
+        const wasRunning = lastAgentHealth?.running;
+        const isNowRunning = health.running;
 
-        lastClaudeHealth = health;
+        lastAgentHealth = health;
 
-        // Track when Claude started running
+        // Track when agent started running
         if (isNowRunning && !wasRunning) {
-            claudeStartedAt = Date.now();
+            agentStartedAt = Date.now();
             // Clear any pending crash debounce
-            if (claudeCrashDebounceTimer) {
-                clearTimeout(claudeCrashDebounceTimer);
-                claudeCrashDebounceTimer = null;
+            if (agentCrashDebounceTimer) {
+                clearTimeout(agentCrashDebounceTimer);
+                agentCrashDebounceTimer = null;
             }
             // Hide crash banner if shown
-            updateClaudeCrashBanner(false);
+            updateAgentCrashBanner(false);
         }
 
         // Detect crash: was running, now not, and was running for at least 3s
-        if (wasRunning && !isNowRunning && claudeStartedAt) {
-            const runDuration = Date.now() - claudeStartedAt;
+        if (wasRunning && !isNowRunning && agentStartedAt) {
+            const runDuration = Date.now() - agentStartedAt;
             if (runDuration > 3000) {
                 // Debounce crash detection by 3s to avoid false positives
-                if (!claudeCrashDebounceTimer) {
-                    claudeCrashDebounceTimer = setTimeout(() => {
-                        claudeCrashDebounceTimer = null;
+                if (!agentCrashDebounceTimer) {
+                    agentCrashDebounceTimer = setTimeout(() => {
+                        agentCrashDebounceTimer = null;
                         // Re-check health before showing banner
-                        checkClaudeHealthAndShowBanner();
+                        checkAgentHealthAndShowBanner();
                     }, 3000);
                 }
             }
@@ -2513,44 +2518,46 @@ async function checkClaudeHealth() {
 /**
  * Re-check health and show crash banner if Claude is still not running
  */
-async function checkClaudeHealthAndShowBanner() {
+async function checkAgentHealthAndShowBanner() {
     if (!activeTarget) return;
 
     try {
-        const response = await apiFetch(`/api/health/claude?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
+        const response = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
         if (!response.ok) return;
 
         const health = await response.json();
-        lastClaudeHealth = health;
+        lastAgentHealth = health;
 
-        if (!health.claude_running && !dismissedCrashPanes.has(activeTarget)) {
-            updateClaudeCrashBanner(true);
+        if (!health.running && !dismissedCrashPanes.has(activeTarget)) {
+            updateAgentCrashBanner(true);
         }
     } catch (error) {
-        console.error('Error re-checking claude health:', error);
+        console.error('Error re-checking agent health:', error);
     }
 }
 
 /**
- * Show or hide the Claude crash banner
+ * Show or hide the agent crash banner
  */
-function updateClaudeCrashBanner(show) {
-    if (!claudeCrashBanner) return;
+function updateAgentCrashBanner(show) {
+    if (!agentCrashBanner) return;
 
     if (show) {
-        claudeCrashBanner.classList.remove('hidden');
+        const msgEl = document.getElementById('agentCrashMsg');
+        if (msgEl) msgEl.textContent = `${agentName} has stopped. Respawn?`;
+        agentCrashBanner.classList.remove('hidden');
     } else {
-        claudeCrashBanner.classList.add('hidden');
+        agentCrashBanner.classList.add('hidden');
     }
 }
 
 /**
- * Respawn Claude in the active pane
+ * Respawn agent in the active pane
  */
-async function respawnClaude() {
+async function respawnAgent() {
     if (!activeTarget) return;
 
-    updateClaudeCrashBanner(false);
+    updateAgentCrashBanner(false);
 
     try {
         // Find repo for current target to get startup command
@@ -2567,32 +2574,32 @@ async function respawnClaude() {
 
         const body = repoLabel ? JSON.stringify({ repo_label: repoLabel }) : '{}';
 
-        const response = await fetch(`/api/claude/start?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`, {
+        const response = await fetch(`/api/agent/start?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: body,
         });
 
         if (response.status === 409) {
-            showToast('Claude is already running', 'info');
+            showToast(`${agentName} is already running`, 'info');
             return;
         }
 
         if (!response.ok) {
             const data = await response.json();
-            showToast(data.error || 'Failed to start Claude', 'error');
+            showToast(data.error || `Failed to start ${agentName}`, 'error');
             return;
         }
 
-        showToast('Claude started', 'success');
+        showToast(`${agentName} started`, 'success');
 
         // Reset health state
-        claudeStartedAt = Date.now();
-        lastClaudeHealth = null;
+        agentStartedAt = Date.now();
+        lastAgentHealth = null;
 
     } catch (error) {
-        console.error('Error respawning Claude:', error);
-        showToast('Failed to start Claude', 'error');
+        console.error('Error respawning agent:', error);
+        showToast(`Failed to start ${agentName}`, 'error');
     }
 }
 
@@ -2630,18 +2637,18 @@ async function updateTeamState() {
  * Start Claude health polling - singleflight async loop
  * Only one request in flight at a time, pauses when document hidden
  */
-async function startClaudeHealthPolling() {
+async function startAgentHealthPolling() {
     // Stop any existing loop
-    stopClaudeHealthPolling();
-    claudeHealthController = new AbortController();
-    const signal = claudeHealthController.signal;
+    stopAgentHealthPolling();
+    agentHealthController = new AbortController();
+    const signal = agentHealthController.signal;
 
     // Singleflight async loop - only one request at a time
     while (!signal.aborted) {
         try {
             // Only poll when document is visible
             if (document.visibilityState === 'visible') {
-                await Promise.all([checkClaudeHealth(), updateClaudePhase(), updateTeamState()]);
+                await Promise.all([checkAgentHealth(), updateAgentPhase(), updateTeamState()]);
             }
             await abortableSleep(HEALTH_POLL_INTERVAL, signal);
         } catch (error) {
@@ -2656,26 +2663,26 @@ async function startClaudeHealthPolling() {
 /**
  * Stop Claude health polling
  */
-function stopClaudeHealthPolling() {
-    if (claudeHealthController) {
-        claudeHealthController.abort();
-        claudeHealthController = null;
+function stopAgentHealthPolling() {
+    if (agentHealthController) {
+        agentHealthController.abort();
+        agentHealthController = null;
     }
-    if (claudeCrashDebounceTimer) {
-        clearTimeout(claudeCrashDebounceTimer);
-        claudeCrashDebounceTimer = null;
+    if (agentCrashDebounceTimer) {
+        clearTimeout(agentCrashDebounceTimer);
+        agentCrashDebounceTimer = null;
     }
 }
 
 /**
  * Fetch Claude phase and update status strip
  */
-async function updateClaudePhase() {
-    const strip = document.getElementById('claudeStatusStrip');
-    const dot = document.getElementById('claudeStatusDot');
-    const phaseEl = document.getElementById('claudeStatusPhase');
-    const detailEl = document.getElementById('claudeStatusDetail');
-    const actionBtn = document.getElementById('claudeStatusAction');
+async function updateAgentPhase() {
+    const strip = document.getElementById('agentStatusStrip');
+    const dot = document.getElementById('agentStatusDot');
+    const phaseEl = document.getElementById('agentStatusPhase');
+    const detailEl = document.getElementById('agentStatusDetail');
+    const actionBtn = document.getElementById('agentStatusAction');
     if (!strip) return;
 
     try {
@@ -2688,10 +2695,10 @@ async function updateClaudePhase() {
         lastPhase = data;
 
         const phase = data.phase;
-        const claudeRunning = data.claude_running;
+        const agentRunning = data.claude_running;
 
-        // Hide strip when idle and Claude not running
-        if (phase === 'idle' && !claudeRunning) {
+        // Hide strip when idle and agent not running
+        if (phase === 'idle' && !agentRunning) {
             strip.classList.add('hidden');
             return;
         }
@@ -2864,7 +2871,7 @@ function hideNewWindowModal() {
 async function createNewWindow() {
     const selectValue = newWindowRepo.value;
     const windowName = newWindowName.value.trim();
-    const autoStartClaude = newWindowAutoStart.checked;
+    const autoStartAgent = newWindowAutoStart.checked;
 
     if (!selectValue) {
         showToast('Please select a repo or directory', 'error');
@@ -2874,7 +2881,7 @@ async function createNewWindow() {
     // Build request body based on value prefix
     const bodyObj = {
         window_name: windowName,
-        auto_start_claude: autoStartClaude
+        auto_start_agent: autoStartAgent
     };
     if (selectValue.startsWith('dir:')) {
         bodyObj.path = selectValue.slice(4);
@@ -2977,16 +2984,16 @@ function setupNewWindowModal() {
  */
 function setupTargetSelector() {
     // Claude crash banner buttons
-    if (claudeRespawnBtn) {
-        claudeRespawnBtn.addEventListener('click', respawnClaude);
+    if (agentRespawnBtn) {
+        agentRespawnBtn.addEventListener('click', respawnAgent);
     }
-    if (claudeCrashDismissBtn) {
-        claudeCrashDismissBtn.addEventListener('click', () => {
+    if (agentCrashDismissBtn) {
+        agentCrashDismissBtn.addEventListener('click', () => {
             // Dismiss for this pane only
             if (activeTarget) {
                 dismissedCrashPanes.add(activeTarget);
             }
-            updateClaudeCrashBanner(false);
+            updateAgentCrashBanner(false);
         });
     }
 
@@ -3274,7 +3281,7 @@ function setupViewportHandler() {
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
             // Start Claude health polling when visible
-            startClaudeHealthPolling();
+            startAgentHealthPolling();
 
             // Render cached UI immediately (before reconnect completes)
             // This gives instant feedback while connection is being restored
@@ -3351,7 +3358,7 @@ function setupViewportHandler() {
             }
         } else {
             // Stop Claude health polling when hidden to save resources
-            stopClaudeHealthPolling();
+            stopAgentHealthPolling();
         }
     });
 
@@ -4850,7 +4857,7 @@ async function fetchTranscript() {
             // Invalid cache, ignore
         }
     } else {
-        transcriptContent.textContent = 'Loading Claude log...';
+        transcriptContent.textContent = `Loading ${agentName} log...`;
     }
     transcriptSearchCount.textContent = '';
 
@@ -4865,7 +4872,7 @@ async function fetchTranscript() {
         const data = await response.json();
 
         if (!data.exists) {
-            transcriptContent.innerHTML = '<p class="no-content">No Claude log found for this project.</p>';
+            transcriptContent.innerHTML = `<p class="no-content">No ${agentName} log found for this project.</p>`;
             localStorage.removeItem(cacheKey);
             return;
         }
@@ -5456,7 +5463,7 @@ function createLogCard(msg) {
 
     const header = document.createElement('div');
     header.className = 'log-card-header';
-    header.innerHTML = `<span class="log-role-badge">${msg.role === 'user' ? 'You' : 'Claude'}</span>`;
+    header.innerHTML = `<span class="log-role-badge">${msg.role === 'user' ? 'You' : agentName}</span>`;
     card.appendChild(header);
 
     const body = document.createElement('div');
@@ -6972,7 +6979,7 @@ function setupDocsButton() {
  * Extract last complete Claude message from terminal output
  * Detects message boundaries via prompt (❯) reappearance
  */
-function extractLastClaudeMessage(content) {
+function extractLastAgentMessage(content) {
     // Split by prompt markers to find message boundaries
     // Claude's prompt is ❯, user input follows
     const lines = content.split('\n');
@@ -7018,7 +7025,7 @@ function extractSuggestionsHeuristic(content) {
     };
 
     // Get last Claude message block
-    const lastMessage = extractLastClaudeMessage(content);
+    const lastMessage = extractLastAgentMessage(content);
     if (!lastMessage || lastMessage.length < 10) return suggestions;
 
     const lowerMessage = lastMessage.toLowerCase();
@@ -8394,7 +8401,7 @@ function getLabelDisplay(label) {
     const displays = {
         'user_send': 'User',
         'tool_call': 'Tool',
-        'claude_done': 'Done',
+        'agent_done': 'Done',
         'error': 'Error',
         'periodic': 'Auto',
         'manual': 'Manual'
@@ -8632,7 +8639,7 @@ function renderHistoryList() {
         bash: '#22c55e', edit: '#f59e0b', tool_call: '#3b82f6',
         plan_transition: '#a855f7', task: '#ec4899',
         user_send: '#3b82f6', cmd: '#3b82f6',
-        claude_done: '#6b7280', error: '#ef4444',
+        agent_done: '#6b7280', error: '#ef4444',
     };
 
     list.innerHTML = '<div class="history-timeline">' + items.map((item, idx) => {
@@ -10432,9 +10439,9 @@ async function setupPushNotifications() {
     navigator.serviceWorker.addEventListener('message', (event) => {
         if (event.data?.type === 'permission_response') {
             sendTextAtomic(event.data.choice, true);
-        } else if (event.data?.type === 'respawn_claude') {
+        } else if (event.data?.type === 'respawn_agent') {
             // Respawn Claude from push notification action
-            respawnClaude();
+            respawnAgent();
         }
     });
 }
@@ -10637,7 +10644,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (urlParams.get('action') === 'respawn') {
             // Delay respawn until connection is established
             setTimeout(() => {
-                respawnClaude();
+                respawnAgent();
                 // Clean URL params
                 const cleanUrl = window.location.pathname + (token ? `?token=${token}` : '');
                 window.history.replaceState({}, '', cleanUrl);

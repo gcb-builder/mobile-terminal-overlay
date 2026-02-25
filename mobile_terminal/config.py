@@ -99,6 +99,10 @@ class Config:
     # Push notifications
     push_enabled: bool = True
 
+    # Agent driver selection
+    agent_type: str = "claude"  # Driver to use: claude, codex, generic
+    agent_display_name: Optional[str] = None  # Override display name (e.g. "Claude (Opus)")
+
     # Project context (set by discovery)
     project_root: Optional[Path] = None
 
@@ -136,6 +140,8 @@ class Config:
             "scrollback": self.scrollback,
             "auto_setup": self.auto_setup,
             "push_enabled": self.push_enabled,
+            "agent_type": self.agent_type,
+            "agent_display_name": self.agent_display_name,
         }
 
     def to_yaml(self) -> str:
@@ -159,6 +165,8 @@ class Config:
             "font_size": self.font_size,
             "scrollback": self.scrollback,
             "push_enabled": self.push_enabled,
+            "agent_type": self.agent_type,
+            "agent_display_name": self.agent_display_name,
         }
         return yaml.dump(data, default_flow_style=False, sort_keys=False)
 
@@ -201,6 +209,10 @@ def load_config(path: Optional[Path] = None) -> Config:
         config.auto_setup = bool(data["auto_setup"])
     if "push_enabled" in data:
         config.push_enabled = bool(data["push_enabled"])
+    if "agent_type" in data:
+        config.agent_type = str(data["agent_type"])
+    if "agent_display_name" in data:
+        config.agent_display_name = str(data["agent_display_name"]) if data["agent_display_name"] else None
 
     # Quick commands
     if "quick_commands" in data:
@@ -275,6 +287,8 @@ def merge_configs(base: Config, override: Config) -> Config:
         scrollback=override.scrollback if override.scrollback != 20000 else base.scrollback,
         auto_setup=override.auto_setup if not override.auto_setup else base.auto_setup,
         push_enabled=override.push_enabled if not override.push_enabled else base.push_enabled,
+        agent_type=override.agent_type if override.agent_type != "claude" else base.agent_type,
+        agent_display_name=override.agent_display_name or base.agent_display_name,
         project_root=override.project_root or base.project_root,
     )
     return result

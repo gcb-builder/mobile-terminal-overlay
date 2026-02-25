@@ -54,20 +54,20 @@
             </div>
         </header>
 
-        <!-- Claude crash banner -->
-        <div id="claudeCrashBanner" class="claude-crash-banner hidden">
-            <span class="claude-crash-text">Claude has stopped. Respawn?</span>
-            <button id="claudeRespawnBtn" class="claude-respawn-btn">Respawn</button>
-            <button id="claudeCrashDismissBtn" class="claude-crash-dismiss-btn">&times;</button>
+        <!-- Agent crash banner -->
+        <div id="agentCrashBanner" class="agent-crash-banner hidden">
+            <span class="agent-crash-text"><span id="agentCrashMsg">Agent has stopped. Respawn?</span></span>
+            <button id="agentRespawnBtn" class="agent-respawn-btn">Respawn</button>
+            <button id="agentCrashDismissBtn" class="agent-crash-dismiss-btn">&times;</button>
         </div>
 
 
-        <!-- Claude status strip -->
-        <div id="claudeStatusStrip" class="claude-status-strip hidden">
-            <span id="claudeStatusDot" class="status-dot"></span>
-            <span id="claudeStatusPhase" class="status-phase"></span>
-            <span id="claudeStatusDetail" class="status-detail"></span>
-            <button id="claudeStatusAction" class="status-action-btn hidden"></button>
+        <!-- Agent status strip -->
+        <div id="agentStatusStrip" class="agent-status-strip hidden">
+            <span id="agentStatusDot" class="status-dot"></span>
+            <span id="agentStatusPhase" class="status-phase"></span>
+            <span id="agentStatusDetail" class="status-detail"></span>
+            <button id="agentStatusAction" class="status-action-btn hidden"></button>
         </div>
 
         <!-- Preview mode banner -->
@@ -87,7 +87,7 @@
             <div id="contextBannerBody" class="context-banner-body hidden"></div>
         </div>
 
-        <!-- Permission banner: tool approval prompt from Claude -->
+        <!-- Permission banner: tool approval prompt from agent -->
         <div id="permissionBanner" class="permission-banner hidden">
             <div class="permission-header">
                 <span class="permission-icon">&#x1F512;</span>
@@ -338,7 +338,7 @@
                     <div class="new-window-field checkbox">
                         <label>
                             <input type="checkbox" id="newWindowAutoStart">
-                            <span>Start Claude automatically</span>
+                            <span>Start agent automatically</span>
                         </label>
                     </div>
                 </div>

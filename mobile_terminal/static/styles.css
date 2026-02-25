@@ -393,8 +393,8 @@ html, body {
 }
 
 /* CWD mismatch warning banner */
-/* Claude crash warning banner */
-.claude-crash-banner {
+/* Agent crash warning banner */
+.agent-crash-banner {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -406,15 +406,15 @@ html, body {
     flex-shrink: 0;
 }
 
-.claude-crash-banner.hidden {
+.agent-crash-banner.hidden {
     display: none;
 }
 
-.claude-crash-text {
+.agent-crash-text {
     flex: 1;
 }
 
-.claude-respawn-btn {
+.agent-respawn-btn {
     padding: 8px 16px;
     min-height: 44px;
     background: var(--error);
@@ -426,7 +426,7 @@ html, body {
     cursor: pointer;
 }
 
-.claude-crash-dismiss-btn {
+.agent-crash-dismiss-btn {
     background: none;
     border: none;
     color: var(--error);
@@ -437,8 +437,8 @@ html, body {
     min-height: 44px;
 }
 
-/* Claude status strip */
-.claude-status-strip {
+/* Agent status strip */
+.agent-status-strip {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -450,7 +450,7 @@ html, body {
     flex-shrink: 0;
 }
 
-.claude-status-strip.hidden {
+.agent-status-strip.hidden {
     display: none;
 }
 
@@ -4665,7 +4665,7 @@ html, body {
     border-color: var(--accent);
 }
 
-.preview-filter-btn[data-filter="claude_done"].active {
+.preview-filter-btn[data-filter="agent_done"].active {
     background: var(--info);
     border-color: var(--info);
 }
@@ -4681,7 +4681,7 @@ html, body {
     color: var(--accent);
 }
 
-.preview-label-badge.claude_done {
+.preview-label-badge.agent_done {
     background: rgba(188, 140, 255, 0.2);
     color: var(--info);
 }

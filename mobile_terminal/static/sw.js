@@ -65,7 +65,7 @@ self.addEventListener('push', (event) => {
     ];
   }
   const options = {
-    body: data.body || 'Claude needs your attention',
+    body: data.body || 'Agent needs your attention',
     icon: '/static/apple-touch-icon.png',
     badge: '/static/apple-touch-icon.png',
     vibrate: [200, 100, 200],
@@ -103,12 +103,12 @@ self.addEventListener('notificationclick', (event) => {
       })
     );
   } else if (event.action === 'respawn') {
-    // Respawn Claude in the target pane
+    // Respawn agent in the target pane
     event.waitUntil(
       clients.matchAll({ type: 'window' }).then(cls => {
         if (cls.length > 0) {
           cls[0].postMessage({
-            type: 'respawn_claude',
+            type: 'respawn_agent',
             session: notifData.session,
             pane_id: notifData.pane_id,
           });

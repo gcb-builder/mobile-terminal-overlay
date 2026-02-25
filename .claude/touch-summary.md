@@ -4,6 +4,30 @@ Append-only log of implementation batches.
 
 ---
 
+## 2026-02-25: Agent Driver Layer — Make MTO Agent-Agnostic
+
+**Goal:** Introduce pluggable AgentDriver layer separating terminal orchestration from agent semantics. Support Claude, Codex, Gemini CLI, or any agent with graceful degradation.
+
+**Files changed:**
+- `mobile_terminal/config.py` — Added `agent_type`, `agent_display_name` fields + serialization
+- `mobile_terminal/cli.py` — Added `--agent-type` CLI argument
+- `mobile_terminal/drivers/__init__.py` — NEW: Driver registry with `get_driver()`, `register_driver()`
+- `mobile_terminal/drivers/base.py` — NEW: AgentDriver protocol, Observation, ObserveContext, BaseAgentDriver, JSONL utils
+- `mobile_terminal/drivers/claude.py` — NEW: ClaudeDriver (extracted from server.py) + ClaudePermissionDetector
+- `mobile_terminal/drivers/codex.py` — NEW: CodexDriver (proof of pattern)
+- `mobile_terminal/drivers/generic.py` — NEW: GenericDriver (stdout-regex heuristics)
+- `mobile_terminal/server.py` — Deleted PermissionDetector, _detect_phase, _detect_phase_for_cwd (~600 LOC). Added driver init, _build_observe_context, /api/health/agent + /api/agent/start endpoints (aliases kept). Updated push_monitor + WS permission check + team state endpoints.
+- `mobile_terminal/static/index.html` — Renamed claude→agent IDs, dynamic crash banner text
+- `mobile_terminal/static/terminal.js` — ~30 variable/function/API-URL renames, dynamic agentName from /config
+- `mobile_terminal/static/styles.css` — Renamed claude→agent CSS classes
+- `mobile_terminal/static/sw.js` — Updated push notification event type
+- `tests/test_drivers.py` — NEW: 37 tests for JSONL parsing, phase classification, permission detection, registry, PID detection
+
+**New files:** 6 (drivers/*, tests/*)
+**Risks:** Response shape change on /api/health/claude (now returns Observation JSON, not old claude_running/claude_pid shape). Frontend updated simultaneously.
+
+---
+
 ## 2026-02-24: Team View - Consolidated Agent Cards
 
 **Goal:** Add a card-based Team View as a swipeable tab between Log and Terminal, showing agent status, branch, tail text, and Allow/Deny action buttons.

@@ -66,6 +66,10 @@ def parse_args() -> argparse.Namespace:
         help="Disable automatic tmux session creation/adoption on startup",
     )
     parser.add_argument(
+        "--agent-type",
+        help="Agent driver to use: claude, codex, generic (default: claude)",
+    )
+    parser.add_argument(
         "--print-config",
         action="store_true",
         help="Print resolved config as YAML and exit",
@@ -116,6 +120,8 @@ def main() -> int:
         config.no_auth = False
     if args.no_auto_setup:
         config.auto_setup = False
+    if args.agent_type:
+        config.agent_type = args.agent_type
 
     # Print config and exit if requested
     if args.print_config:

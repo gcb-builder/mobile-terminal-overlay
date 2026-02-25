@@ -30,6 +30,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from mobile_terminal.challenge import run_challenge, get_available_models, DEFAULT_MODEL
+from mobile_terminal.drivers import get_driver, ClaudePermissionDetector, ObserveContext, Observation
+from mobile_terminal.drivers.base import find_claude_log_file
 
 
 # ANSI escape sequence pattern for stripping terminal formatting
@@ -953,107 +955,7 @@ def get_tmux_target(session_name: str, active_target: str) -> str:
     return session_name
 
 
-class PermissionDetector:
-    """Detects when Claude Code is waiting for tool approval via JSONL log entries."""
-
-    def __init__(self):
-        self.last_log_size = 0
-        self.last_sent_id = None
-        self.log_file = None
-
-    def set_log_file(self, path: Path):
-        """Called when we know which JSONL file to watch."""
-        self.log_file = Path(path) if path else None
-        try:
-            self.last_log_size = self.log_file.stat().st_size if self.log_file and self.log_file.exists() else 0
-        except Exception:
-            self.last_log_size = 0
-
-    def check_sync(self, session: str, target: str) -> Optional[dict]:
-        """Check for pending permission request. Returns payload or None."""
-        if not self.log_file or not self.log_file.exists():
-            return None
-
-        # 1. Check if file grew (new entries)
-        try:
-            current_size = self.log_file.stat().st_size
-        except Exception:
-            return None
-        if current_size <= self.last_log_size:
-            return None
-
-        # 2. Read only new bytes
-        new_text = self._read_new_entries(current_size)
-        self.last_log_size = current_size
-
-        if not new_text:
-            return None
-
-        # 3. Find last tool_use in new entries
-        tool_info = self._extract_last_tool_use(new_text)
-        if not tool_info:
-            return None
-
-        # 4. Confirm Claude is actually waiting (pane_title check)
-        try:
-            tmux_target = get_tmux_target(session, target)
-            title_result = subprocess.run(
-                ["tmux", "display-message", "-p", "-t", tmux_target, "#{pane_title}"],
-                capture_output=True, text=True, timeout=2,
-            )
-            if "Signal Detection Pending" not in (title_result.stdout or ""):
-                return None
-        except Exception:
-            return None
-
-        # 5. Build payload (dedupe by id)
-        payload_id = f"{tool_info['name']}:{hash(str(tool_info.get('target', '')))}"
-        if payload_id == self.last_sent_id:
-            return None
-        self.last_sent_id = payload_id
-
-        return {
-            "tool": tool_info["name"],
-            "target": tool_info.get("target", ""),
-            "context": tool_info.get("context", ""),
-            "id": payload_id,
-        }
-
-    def _read_new_entries(self, current_size):
-        """Read new JSONL lines since last check."""
-        try:
-            with open(self.log_file, 'r') as f:
-                f.seek(self.last_log_size)
-                return f.read()
-        except Exception:
-            return ""
-
-    def _extract_last_tool_use(self, new_text):
-        """Parse JSONL text for the most recent tool_use block."""
-        last_tool = None
-        for line in new_text.strip().split('\n'):
-            if not line.strip():
-                continue
-            try:
-                entry = json.loads(line)
-                if entry.get('type') != 'assistant':
-                    continue
-                content = entry.get('message', {}).get('content', [])
-                if not isinstance(content, list):
-                    continue
-                for block in content:
-                    if isinstance(block, dict) and block.get('type') == 'tool_use':
-                        name = block.get('name', '')
-                        inp = block.get('input', {})
-                        target = inp.get('command') or inp.get('file_path') or inp.get('pattern') or ''
-                        last_tool = {"name": name, "target": str(target)[:200], "context": ""}
-            except json.JSONDecodeError:
-                continue
-        return last_tool
-
-    def clear(self):
-        """Clear state (e.g., after user responds)."""
-        self.last_sent_id = None
+    # PermissionDetector moved to mobile_terminal.drivers.claude.ClaudePermissionDetector
 
 
 def get_plan_links() -> dict:
@@ -1505,7 +1407,8 @@ def create_app(config: Config) -> FastAPI:
     app.state.target_epoch = 0  # Incremented on each target switch for cache invalidation
     app.state.setup_result = None  # Result from ensure_tmux_setup()
     app.state.last_ws_input_time = 0  # Last time mobile client sent input (for desktop activity detection)
-    app.state.permission_detector = PermissionDetector()  # JSONL-based permission prompt detector
+    app.state.permission_detector = ClaudePermissionDetector()  # JSONL-based permission prompt detector
+    app.state.driver = get_driver(config.agent_type, config.agent_display_name)
 
     async def send_typed(ws, msg_type: str, payload: dict, level: str = "info"):
         """Send a v2 typed message over WebSocket."""
@@ -1566,6 +1469,9 @@ def create_app(config: Config) -> FastAPI:
             if device.font_size is not None:
                 result["font_size"] = device.font_size
             result["physical_kb"] = device.physical_kb
+        # Add driver identity for frontend
+        result["agent_type"] = app.state.driver.id()
+        result["agent_name"] = app.state.driver.display_name()
         return result
 
     @app.get("/health")
@@ -1865,7 +1771,7 @@ def create_app(config: Config) -> FastAPI:
           - repo_label: Label of repo from config (use this OR path)
           - path: Absolute path to directory under a workspace_dir (use this OR repo_label)
           - window_name: (optional) Name for the new window
-          - auto_start_claude: (optional, default false) Start Claude after creating window
+          - auto_start_agent: (optional, default false) Start agent after creating window
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
@@ -1879,7 +1785,7 @@ def create_app(config: Config) -> FastAPI:
         repo_label = body.get("repo_label")
         dir_path = body.get("path")
         window_name = body.get("window_name", "")
-        auto_start_claude = body.get("auto_start_claude", False)
+        auto_start_agent = body.get("auto_start_agent", False)
 
         repo = None  # Set when using repo_label flow
 
@@ -1964,15 +1870,15 @@ def create_app(config: Config) -> FastAPI:
                 "target_id": target_id,
                 "pane_id": pane_id,
                 "path": resolved_path,
-                "auto_start_claude": auto_start_claude
+                "auto_start_agent": auto_start_agent
             })
 
             logger.info(f"Created window '{final_name}' in session '{session}' at {resolved_path}")
 
-            # If auto_start_claude, send startup command after configured delay
-            if auto_start_claude and pane_id:
+            # If auto_start_agent, send startup command after configured delay
+            if auto_start_agent and pane_id:
                 # Get startup command from repo config (if repo flow), default to "claude"
-                startup_cmd = (repo.startup_command if repo else None) or "claude"
+                startup_cmd = (repo.startup_command if repo else None) or app.state.driver.start_command()[0]
 
                 # Validate startup command
                 if "\n" in startup_cmd or "\r" in startup_cmd:
@@ -2005,7 +1911,7 @@ def create_app(config: Config) -> FastAPI:
                 "session": session,
                 "repo_label": repo_label,
                 "path": resolved_path,
-                "auto_start_claude": auto_start_claude
+                "auto_start_agent": auto_start_agent
             }
 
         except RuntimeError as e:
@@ -4877,137 +4783,62 @@ Only the top 1–3 risks worth caring about.
         },
     }
 
-    @app.get("/api/health/claude")
-    async def check_claude_health(
+    def _build_observe_context(pane_id: str) -> Optional[ObserveContext]:
+        """Build ObserveContext from a pane_id with one tmux call."""
+        session = app.state.current_session
+        try:
+            tmux_target = get_tmux_target(session, pane_id)
+            result = subprocess.run(
+                ["tmux", "display-message", "-t", tmux_target, "-p",
+                 "#{pane_pid}|#{pane_title}|#{pane_current_path}"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode != 0:
+                return None
+            output = result.stdout.strip()
+            parts = output.split("|", 2)
+            shell_pid = int(parts[0]) if parts[0].isdigit() else None
+            pane_title = parts[1] if len(parts) > 1 else ""
+            cwd = parts[2] if len(parts) > 2 else ""
+            repo_path = Path(cwd) if cwd and Path(cwd).exists() else get_current_repo_path()
+            return ObserveContext(
+                session_name=session,
+                target=pane_id or "",
+                tmux_target=tmux_target,
+                shell_pid=shell_pid,
+                pane_title=pane_title,
+                repo_path=repo_path,
+            )
+        except Exception as e:
+            logger.debug(f"Error building observe context: {e}")
+            return None
+
+    @app.get("/api/health/agent")
+    @app.get("/api/health/claude")  # permanent alias
+    async def check_agent_health(
         pane_id: str = Query(...),
         token: Optional[str] = Query(None),
     ):
         """
-        Check if Claude is running in a specific pane.
+        Check agent status for a specific pane.
 
-        Returns:
-          - pane_alive: Whether the pane exists
-          - shell_pid: PID of the shell in the pane
-          - claude_running: Whether claude-code process is found (in pane)
-          - claude_pid: PID of claude-code if running
-          - pane_title: Current pane title
-          - activity_detected: Whether log file was recently modified (within 30s)
-          - message: Human-readable status message
+        Returns flat Observation JSON: agent_type, agent_name, running, pid,
+        phase, detail, tool, active, waiting_reason, permission_tool, permission_target.
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        result = {
-            "pane_alive": False,
-            "shell_pid": None,
-            "claude_running": False,
-            "claude_pid": None,
-            "pane_title": None,
-            "activity_detected": False,
-            "message": "Claude not running",
-        }
+        ctx = _build_observe_context(pane_id)
+        if ctx is None:
+            return Observation(
+                agent_type=app.state.driver.id(),
+                agent_name=app.state.driver.display_name(),
+            ).to_dict()
 
-        try:
-            # Get pane info: PID and title
-            pane_info = subprocess.run(
-                ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_pid}|#{pane_title}"],
-                capture_output=True, text=True, timeout=5
-            )
+        obs = app.state.driver.observe(ctx)
+        return obs.to_dict()
 
-            if pane_info.returncode != 0:
-                return result  # Pane doesn't exist
-
-            output = pane_info.stdout.strip()
-            if "|" not in output:
-                return result
-
-            parts = output.split("|", 1)
-            shell_pid = parts[0]
-            pane_title = parts[1] if len(parts) > 1 else ""
-
-            result["pane_alive"] = True
-            result["shell_pid"] = int(shell_pid) if shell_pid.isdigit() else None
-            result["pane_title"] = pane_title
-
-            # Scan process tree for claude-code in cmdline
-            # Use pgrep to find processes with "claude" in command line under the shell's tree
-            if result["shell_pid"]:
-                # Get all descendant processes of shell_pid
-                try:
-                    ps_result = subprocess.run(
-                        ["ps", "-o", "pid,comm,args", "--ppid", str(result["shell_pid"]), "--no-headers"],
-                        capture_output=True, text=True, timeout=5
-                    )
-
-                    # Also check direct children and their children
-                    pgrep_result = subprocess.run(
-                        ["pgrep", "-P", str(result["shell_pid"]), "-a"],
-                        capture_output=True, text=True, timeout=5
-                    )
-
-                    # Look for claude-code in process output
-                    combined_output = ps_result.stdout + "\n" + pgrep_result.stdout
-                    for line in combined_output.split("\n"):
-                        line_lower = line.lower()
-                        if "claude" in line_lower and ("node" in line_lower or "claude" in line.split()[1:2] if len(line.split()) > 1 else False):
-                            # Found claude process
-                            parts = line.split()
-                            if parts and parts[0].isdigit():
-                                result["claude_running"] = True
-                                result["claude_pid"] = int(parts[0])
-                                break
-
-                    # Alternative: check if any child process has "claude" in its cmdline
-                    if not result["claude_running"]:
-                        proc_check = subprocess.run(
-                            ["pgrep", "-f", "claude", "-P", str(result["shell_pid"])],
-                            capture_output=True, text=True, timeout=5
-                        )
-                        if proc_check.returncode == 0 and proc_check.stdout.strip():
-                            pids = proc_check.stdout.strip().split("\n")
-                            if pids and pids[0].isdigit():
-                                result["claude_running"] = True
-                                result["claude_pid"] = int(pids[0])
-
-                except Exception as e:
-                    logger.warning(f"Error scanning for claude process: {e}")
-
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Timeout checking claude health for pane {pane_id}")
-        except Exception as e:
-            logger.error(f"Error checking claude health: {e}")
-
-        # Check for recent log activity (even if Claude not in pane)
-        try:
-            repo_path = get_current_repo_path()
-            if repo_path:
-                project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-").lstrip("-")
-                claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
-                if claude_projects_dir.exists():
-                    jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
-                    if jsonl_files:
-                        # Check most recent file modification time
-                        most_recent = max(jsonl_files, key=lambda f: f.stat().st_mtime)
-                        mtime = most_recent.stat().st_mtime
-                        age_seconds = time.time() - mtime
-                        if age_seconds < 30:
-                            result["activity_detected"] = True
-        except Exception as e:
-            logger.debug(f"Error checking log activity: {e}")
-
-        # Set human-readable message
-        if result["claude_running"]:
-            result["message"] = "Claude running in pane"
-        elif result["activity_detected"]:
-            result["message"] = "Claude not in pane (activity in logs)"
-        else:
-            result["message"] = "Claude not running"
-
-        return result
-
-    # ===== Phase Detection (Status Strip) =====
-    _phase_cache: dict = {"log_path": "", "mtime": 0.0, "size": 0, "result": None}
-    _phase_last_activity: dict = {"time": 0.0, "was_active": False}
+    # ===== Phase Detection — delegated to app.state.driver.observe() =====
     _git_head_cache: dict = {"value": "", "ts": 0.0}
 
     def _get_git_head() -> str:
@@ -5095,423 +4926,8 @@ Only the top 1–3 risks worth caring about.
                 if not evicted:
                     break
 
-    def _detect_phase(session_name: str, target: str, claude_running: bool) -> dict:
-        """
-        Detect Claude's current phase by parsing the tail of the JSONL log.
-        Uses (log_path, mtime, size) cache key for <5ms cached returns.
-        """
-        result = {
-            "phase": "idle",
-            "detail": "",
-            "tool": "",
-            "session": session_name,
-            "pane_id": target or "",
-        }
-
-        if not claude_running:
-            return result
-
-        # Find the log file
-        repo_path = get_current_repo_path()
-        if not repo_path:
-            return result
-        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
-        claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
-        if not claude_projects_dir.exists():
-            return result
-        jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
-        if not jsonl_files:
-            return result
-        log_file = max(jsonl_files, key=lambda f: f.stat().st_mtime)
-
-        # Check cache
-        try:
-            st = log_file.stat()
-            if (_phase_cache["log_path"] == str(log_file)
-                    and _phase_cache["mtime"] == st.st_mtime
-                    and _phase_cache["size"] == st.st_size
-                    and _phase_cache["result"] is not None):
-                return _phase_cache["result"]
-        except Exception:
-            return result
-
-        # Cache miss - parse last 8KB of JSONL
-        try:
-            file_size = st.st_size
-            read_size = min(file_size, 8192)
-            with open(log_file, 'rb') as f:
-                if file_size > read_size:
-                    f.seek(file_size - read_size)
-                tail_bytes = f.read(read_size)
-            tail_text = tail_bytes.decode('utf-8', errors='replace')
-
-            # Find complete JSON lines (skip partial first line if we seeked)
-            lines = tail_text.split('\n')
-            if file_size > read_size:
-                lines = lines[1:]  # Skip partial first line
-
-            # Parse entries from tail
-            entries = []
-            for line in reversed(lines):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-                if len(entries) >= 30:  # Only need recent entries
-                    break
-
-            # Check pane_title for signal detection
-            if target:
-                try:
-                    tmux_target = get_tmux_target(session_name, target)
-                    title_result = subprocess.run(
-                        ["tmux", "display-message", "-t", tmux_target, "-p", "#{pane_title}"],
-                        capture_output=True, text=True, timeout=2
-                    )
-                    if title_result.returncode == 0:
-                        pane_title = title_result.stdout.strip()
-                        if "Signal Detection Pending" in pane_title:
-                            result["phase"] = "waiting"
-                            result["detail"] = "Signal Detection Pending"
-                            _phase_cache.update({"log_path": str(log_file), "mtime": st.st_mtime,
-                                                  "size": st.st_size, "result": result})
-                            return result
-                except Exception:
-                    pass
-
-            # Scan entries (already in reverse chronological order)
-            plan_mode = False
-            last_tool = None
-            last_tool_detail = ""
-            active_form = ""
-
-            for entry in entries:
-                msg = entry.get("message", {})
-                msg_type = entry.get("type", "")
-
-                if msg_type != "assistant":
-                    continue
-
-                content = msg.get("content", [])
-                if isinstance(content, str):
-                    continue
-                if not isinstance(content, list):
-                    continue
-
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") != "tool_use":
-                        continue
-
-                    tool_name = block.get("name", "")
-                    tool_input = block.get("input", {})
-
-                    if tool_name == "AskUserQuestion":
-                        result["phase"] = "waiting"
-                        questions = tool_input.get("questions", [])
-                        if questions:
-                            result["detail"] = questions[0].get("question", "Needs input")[:80]
-                        else:
-                            result["detail"] = "Needs input"
-                        result["tool"] = tool_name
-                        _phase_cache.update({"log_path": str(log_file), "mtime": st.st_mtime,
-                                              "size": st.st_size, "result": result})
-                        return result
-
-                    if tool_name == "EnterPlanMode" and not last_tool:
-                        plan_mode = True
-
-                    if tool_name == "ExitPlanMode":
-                        plan_mode = False
-
-                    if tool_name == "TodoWrite":
-                        todos = tool_input.get("todos", [])
-                        in_progress = [t for t in todos if t.get("status") == "in_progress"]
-                        if in_progress:
-                            active_form = in_progress[0].get("activeForm", "")
-
-                    if not last_tool and tool_name:
-                        last_tool = tool_name
-                        # Extract detail from tool input
-                        if tool_name == "Bash":
-                            cmd = tool_input.get("command", "")
-                            last_tool_detail = cmd[:60]
-                        elif tool_name in ("Read", "Edit", "Write", "Glob", "Grep"):
-                            path = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("pattern", "")
-                            last_tool_detail = path.split("/")[-1][:60] if "/" in str(path) else str(path)[:60]
-                        elif tool_name == "Task":
-                            last_tool_detail = tool_input.get("description", "")[:60]
-                        elif tool_name == "EnterPlanMode":
-                            last_tool_detail = "Planning..."
-                        elif tool_name == "ExitPlanMode":
-                            last_tool_detail = "Plan ready"
-
-            # Determine phase from collected data
-            if plan_mode:
-                result["phase"] = "planning"
-                result["detail"] = active_form or "Planning..."
-                result["tool"] = "EnterPlanMode"
-            elif last_tool == "Task":
-                result["phase"] = "running_task"
-                result["detail"] = active_form or last_tool_detail or "Running agent..."
-                result["tool"] = last_tool
-            elif last_tool in ("Edit", "Write", "Bash", "Read", "Glob", "Grep", "TodoWrite",
-                               "NotebookEdit", "TaskCreate", "TaskUpdate"):
-                result["phase"] = "working"
-                result["detail"] = active_form or f"{last_tool}: {last_tool_detail}" if last_tool_detail else active_form or "Working..."
-                result["tool"] = last_tool
-            elif last_tool:
-                result["phase"] = "working"
-                result["detail"] = active_form or last_tool_detail or f"Using {last_tool}"
-                result["tool"] = last_tool
-            else:
-                result["phase"] = "idle"
-                result["detail"] = ""
-
-        except Exception as e:
-            logger.debug(f"Phase detection error: {e}")
-
-        # Update cache
-        try:
-            _phase_cache.update({"log_path": str(log_file), "mtime": st.st_mtime,
-                                  "size": st.st_size, "result": result})
-        except Exception:
-            pass
-
-        return result
-
-    # ===== Team Phase Detection (per-pane, no pgrep) =====
-    _team_phase_cache: dict = {}  # key: "session:target:cwd:log_path" -> {mtime, size, result}
+    # _detect_phase and _detect_phase_for_cwd deleted — logic moved to drivers/claude.py
     _git_info_cache: dict = {}    # key: cwd_str -> {result, ts}
-
-    def _detect_phase_for_cwd(session_name: str, target: str, cwd_path: Path) -> dict:
-        """Phase detection using an explicit cwd instead of the global active target.
-
-        Uses log file recency as activity indicator (NOT a gate).
-        Always parses JSONL + checks pane_title regardless of activity.
-        """
-        result = {
-            "phase": "idle",
-            "detail": "",
-            "tool": "",
-            "waiting_reason": None,
-            "permission_tool": None,
-            "permission_target": None,
-            "active": False,
-        }
-
-        # Find log file using cwd_path directly
-        project_id = str(cwd_path.resolve()).replace("~", "-").replace("/", "-")
-        claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
-        if not claude_projects_dir.exists():
-            return result
-        jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
-        if not jsonl_files:
-            return result
-        log_file = max(jsonl_files, key=lambda f: f.stat().st_mtime)
-
-        # Check log recency (informational, NOT a gate)
-        try:
-            st = log_file.stat()
-            log_age = time.time() - st.st_mtime
-            result["active"] = log_age < 30
-        except Exception:
-            return result
-
-        # Check cache
-        cache_key = f"{session_name}:{target}:{cwd_path}:{log_file}"
-        cached = _team_phase_cache.get(cache_key)
-        if (cached
-                and cached["mtime"] == st.st_mtime
-                and cached["size"] == st.st_size
-                and cached["result"] is not None):
-            return cached["result"]
-
-        # Cache miss - ALWAYS parse (even if inactive)
-        try:
-            file_size = st.st_size
-            read_size = min(file_size, 8192)
-            with open(log_file, 'rb') as f:
-                if file_size > read_size:
-                    f.seek(file_size - read_size)
-                tail_bytes = f.read(read_size)
-            tail_text = tail_bytes.decode('utf-8', errors='replace')
-
-            lines = tail_text.split('\n')
-            if file_size > read_size:
-                lines = lines[1:]  # Skip partial first line
-
-            entries = []
-            for line in reversed(lines):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-                if len(entries) >= 30:
-                    break
-
-            # Check pane_title for signal detection
-            pane_title = ""
-            if target:
-                try:
-                    tmux_target = get_tmux_target(session_name, target)
-                    title_result = subprocess.run(
-                        ["tmux", "display-message", "-t", tmux_target, "-p", "#{pane_title}"],
-                        capture_output=True, text=True, timeout=2
-                    )
-                    if title_result.returncode == 0:
-                        pane_title = title_result.stdout.strip()
-                        if "Signal Detection Pending" in pane_title:
-                            result["phase"] = "waiting"
-                            result["detail"] = "Signal Detection Pending"
-                            result["waiting_reason"] = "permission"
-                            # Extract permission info from last tool_use
-                            for entry in entries:
-                                msg = entry.get("message", {})
-                                if entry.get("type") != "assistant":
-                                    continue
-                                content = msg.get("content", [])
-                                if not isinstance(content, list):
-                                    continue
-                                for block in content:
-                                    if isinstance(block, dict) and block.get("type") == "tool_use":
-                                        tool_name = block.get("name", "")
-                                        tool_input = block.get("input", {})
-                                        if tool_name == "Bash":
-                                            result["permission_tool"] = "Bash"
-                                            result["permission_target"] = tool_input.get("command", "")[:80]
-                                        elif tool_name in ("Edit", "Write", "Read"):
-                                            result["permission_tool"] = tool_name
-                                            result["permission_target"] = tool_input.get("file_path", "")[:80]
-                                        else:
-                                            result["permission_tool"] = tool_name
-                                            result["permission_target"] = ""
-                                        break
-                                if result["permission_tool"]:
-                                    break
-                            _team_phase_cache[cache_key] = {
-                                "mtime": st.st_mtime, "size": st.st_size, "result": result
-                            }
-                            if len(_team_phase_cache) > 50:
-                                oldest_key = next(iter(_team_phase_cache))
-                                del _team_phase_cache[oldest_key]
-                            return result
-                except Exception:
-                    pass
-
-            # Scan entries (reverse chronological)
-            plan_mode = False
-            last_tool = None
-            last_tool_detail = ""
-            active_form = ""
-
-            for entry in entries:
-                msg = entry.get("message", {})
-                msg_type = entry.get("type", "")
-
-                if msg_type != "assistant":
-                    continue
-
-                content = msg.get("content", [])
-                if isinstance(content, str):
-                    continue
-                if not isinstance(content, list):
-                    continue
-
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") != "tool_use":
-                        continue
-
-                    tool_name = block.get("name", "")
-                    tool_input = block.get("input", {})
-
-                    if tool_name == "AskUserQuestion":
-                        result["phase"] = "waiting"
-                        result["waiting_reason"] = "question"
-                        questions = tool_input.get("questions", [])
-                        if questions:
-                            result["detail"] = questions[0].get("question", "Needs input")[:80]
-                        else:
-                            result["detail"] = "Needs input"
-                        result["tool"] = tool_name
-                        _team_phase_cache[cache_key] = {
-                            "mtime": st.st_mtime, "size": st.st_size, "result": result
-                        }
-                        if len(_team_phase_cache) > 50:
-                            oldest_key = next(iter(_team_phase_cache))
-                            del _team_phase_cache[oldest_key]
-                        return result
-
-                    if tool_name == "EnterPlanMode" and not last_tool:
-                        plan_mode = True
-
-                    if tool_name == "ExitPlanMode":
-                        plan_mode = False
-
-                    if tool_name == "TodoWrite":
-                        todos = tool_input.get("todos", [])
-                        in_progress = [t for t in todos if t.get("status") == "in_progress"]
-                        if in_progress:
-                            active_form = in_progress[0].get("activeForm", "")
-
-                    if not last_tool and tool_name:
-                        last_tool = tool_name
-                        if tool_name == "Bash":
-                            cmd = tool_input.get("command", "")
-                            last_tool_detail = cmd[:60]
-                        elif tool_name in ("Read", "Edit", "Write", "Glob", "Grep"):
-                            path = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("pattern", "")
-                            last_tool_detail = path.split("/")[-1][:60] if "/" in str(path) else str(path)[:60]
-                        elif tool_name == "Task":
-                            last_tool_detail = tool_input.get("description", "")[:60]
-                        elif tool_name == "EnterPlanMode":
-                            last_tool_detail = "Planning..."
-                        elif tool_name == "ExitPlanMode":
-                            last_tool_detail = "Plan ready"
-
-            # Determine phase from collected data
-            if plan_mode:
-                result["phase"] = "planning"
-                result["detail"] = active_form or "Planning..."
-                result["tool"] = "EnterPlanMode"
-            elif last_tool == "Task":
-                result["phase"] = "running_task"
-                result["detail"] = active_form or last_tool_detail or "Running agent..."
-                result["tool"] = last_tool
-            elif last_tool in ("Edit", "Write", "Bash", "Read", "Glob", "Grep", "TodoWrite",
-                               "NotebookEdit", "TaskCreate", "TaskUpdate"):
-                result["phase"] = "working"
-                result["detail"] = active_form or (f"{last_tool}: {last_tool_detail}" if last_tool_detail else "Working...")
-                result["tool"] = last_tool
-            elif last_tool:
-                result["phase"] = "working"
-                result["detail"] = active_form or last_tool_detail or f"Using {last_tool}"
-                result["tool"] = last_tool
-            else:
-                result["phase"] = "idle"
-                result["detail"] = ""
-
-        except Exception as e:
-            logger.debug(f"Team phase detection error: {e}")
-
-        # Update cache + evict if over cap
-        _team_phase_cache[cache_key] = {
-            "mtime": st.st_mtime, "size": st.st_size, "result": result
-        }
-        if len(_team_phase_cache) > 50:
-            oldest_key = next(iter(_team_phase_cache))
-            del _team_phase_cache[oldest_key]
-
-        return result
 
     def _get_git_info(cwd: Path) -> dict:
         """Get branch name and worktree status for a pane's cwd."""
@@ -5576,10 +4992,10 @@ Only the top 1–3 risks worth caring about.
 
         sess = session or app.state.current_session
 
-        # Get all panes
+        # Get all panes (include pane_pid and pane_title for driver observe)
         result = subprocess.run(
             ["tmux", "list-panes", "-s", "-t", sess,
-             "-F", "#{window_index}:#{pane_index}|#{pane_current_path}|#{window_name}"],
+             "-F", "#{window_index}:#{pane_index}|#{pane_current_path}|#{window_name}|#{pane_pid}|#{pane_title}"],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode != 0:
@@ -5587,6 +5003,7 @@ Only the top 1–3 risks worth caring about.
 
         leader = None
         agents = []
+        driver = app.state.driver
         for line in result.stdout.strip().split("\n"):
             parts = line.split("|")
             if len(parts) < 3:
@@ -5594,6 +5011,8 @@ Only the top 1–3 risks worth caring about.
             target_id = parts[0]
             cwd = parts[1]
             window_name = parts[2]
+            pane_pid_str = parts[3] if len(parts) > 3 else ""
+            pane_title = parts[4] if len(parts) > 4 else ""
 
             if window_name == "leader":
                 role = "leader"
@@ -5605,23 +5024,30 @@ Only the top 1–3 risks worth caring about.
                 continue  # Skip non-team panes
 
             cwd_path = Path(cwd)
-
-            phase_result = _detect_phase_for_cwd(sess, target_id, cwd_path)
+            ctx = ObserveContext(
+                session_name=sess,
+                target=target_id,
+                tmux_target=get_tmux_target(sess, target_id),
+                shell_pid=int(pane_pid_str) if pane_pid_str.isdigit() else None,
+                pane_title=pane_title,
+                repo_path=cwd_path if cwd_path.exists() else None,
+            )
+            obs = driver.observe(ctx)
             git_info = _get_git_info_cached(cwd_path)
 
             entry = {
                 "target_id": target_id,
                 "agent_name": name,
                 "team_role": role,
-                "phase": phase_result["phase"],
-                "detail": phase_result["detail"],
-                "tool": phase_result.get("tool", ""),
-                "active": phase_result["active"],
-                "waiting_reason": phase_result.get("waiting_reason"),
+                "phase": obs.phase,
+                "detail": obs.detail,
+                "tool": obs.tool,
+                "active": obs.active,
+                "waiting_reason": obs.waiting_reason,
                 "permission": {
-                    "tool": phase_result.get("permission_tool", ""),
-                    "target": phase_result.get("permission_target", ""),
-                } if phase_result.get("waiting_reason") == "permission" else None,
+                    "tool": obs.permission_tool or "",
+                    "target": obs.permission_target or "",
+                } if obs.waiting_reason == "permission" else None,
                 "git": git_info,
             }
 
@@ -5784,7 +5210,7 @@ Only the top 1–3 risks worth caring about.
         # Discover team panes
         result = subprocess.run(
             ["tmux", "list-panes", "-s", "-t", sess,
-             "-F", "#{window_index}:#{pane_index}|#{pane_current_path}|#{window_name}"],
+             "-F", "#{window_index}:#{pane_index}|#{pane_current_path}|#{window_name}|#{pane_pid}|#{pane_title}"],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode != 0:
@@ -5792,6 +5218,7 @@ Only the top 1–3 risks worth caring about.
 
         leader = None
         agents = []
+        driver = app.state.driver
         for line in result.stdout.strip().split("\n"):
             parts = line.split("|")
             if len(parts) < 3:
@@ -5799,6 +5226,8 @@ Only the top 1–3 risks worth caring about.
             target_id = parts[0]
             cwd = parts[1]
             window_name = parts[2]
+            pane_pid_str = parts[3] if len(parts) > 3 else ""
+            pane_title = parts[4] if len(parts) > 4 else ""
 
             if window_name == "leader":
                 role = "leader"
@@ -5811,14 +5240,22 @@ Only the top 1–3 risks worth caring about.
 
             cwd_path = Path(cwd)
             git_info = _get_git_info_cached(cwd_path)
-            phase_result = _detect_phase_for_cwd(sess, target_id, cwd_path)
+            ctx = ObserveContext(
+                session_name=sess,
+                target=target_id,
+                tmux_target=get_tmux_target(sess, target_id),
+                shell_pid=int(pane_pid_str) if pane_pid_str.isdigit() else None,
+                pane_title=pane_title,
+                repo_path=cwd_path if cwd_path.exists() else None,
+            )
+            obs = driver.observe(ctx)
 
             entry = {
                 "target_id": target_id,
                 "agent_name": name,
                 "team_role": role,
                 "cwd": cwd,
-                "phase": phase_result["phase"],
+                "phase": obs.phase,
                 "git": git_info,
             }
 
@@ -5984,81 +5421,65 @@ Reply with:
         pane_id: str = Query(None),
         token: Optional[str] = Query(None),
     ):
-        """Get Claude's current phase for the status strip."""
+        """Get agent's current phase for the status strip. Delegates to driver."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        session = app.state.current_session
         target = pane_id or app.state.active_target
+        ctx = _build_observe_context(target) if target else None
 
-        # Check if Claude is running (reuse health check logic)
-        claude_running = False
-        if target:
-            try:
-                tmux_target = get_tmux_target(session, target)
-                pane_info = subprocess.run(
-                    ["tmux", "display-message", "-t", tmux_target, "-p", "#{pane_pid}"],
-                    capture_output=True, text=True, timeout=2
-                )
-                if pane_info.returncode == 0:
-                    shell_pid = pane_info.stdout.strip()
-                    if shell_pid.isdigit():
-                        proc_check = subprocess.run(
-                            ["pgrep", "-f", "claude", "-P", shell_pid],
-                            capture_output=True, text=True, timeout=2
-                        )
-                        claude_running = proc_check.returncode == 0 and proc_check.stdout.strip() != ""
-            except Exception:
-                pass
+        if ctx is None:
+            return {
+                "phase": "idle", "detail": "", "tool": "",
+                "session": app.state.current_session,
+                "pane_id": target or "",
+                "claude_running": False,
+            }
 
-        result = _detect_phase(session, target, claude_running)
-        result["claude_running"] = claude_running
-        return result
+        obs = app.state.driver.observe(ctx)
+        return {
+            "phase": obs.phase,
+            "detail": obs.detail,
+            "tool": obs.tool,
+            "session": app.state.current_session,
+            "pane_id": target or "",
+            "claude_running": obs.running,
+        }
 
-    @app.post("/api/claude/start")
-    async def start_claude_in_pane(
+    @app.post("/api/agent/start")
+    @app.post("/api/claude/start")  # permanent alias
+    async def start_agent_in_pane(
         request: Request,
         pane_id: str = Query(...),
         token: Optional[str] = Query(None),
     ):
         """
-        Start Claude in a pane if not already running.
+        Start agent in a pane if not already running.
 
-        Returns 409 if Claude is already running.
-        Uses the repo's startup_command from config if available.
+        Returns 409 if agent is already running.
+        Uses driver.start_command() for the default, or repo's startup_command.
         """
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        # Check health first
-        try:
-            pane_info = subprocess.run(
-                ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_pid}"],
-                capture_output=True, text=True, timeout=5
-            )
-            if pane_info.returncode != 0:
-                return JSONResponse({"error": "Pane not found"}, status_code=404)
+        driver = app.state.driver
+        agent_name = driver.display_name()
 
-            shell_pid = pane_info.stdout.strip()
+        # Check if agent is already running via driver.observe()
+        ctx = _build_observe_context(pane_id)
+        if ctx is None:
+            return JSONResponse({"error": "Pane not found"}, status_code=404)
 
-            # Check if claude is already running
-            if shell_pid.isdigit():
-                proc_check = subprocess.run(
-                    ["pgrep", "-f", "claude", "-P", shell_pid],
-                    capture_output=True, text=True, timeout=5
-                )
-                if proc_check.returncode == 0 and proc_check.stdout.strip():
-                    return JSONResponse({
-                        "error": "Claude is already running in this pane",
-                        "claude_pid": int(proc_check.stdout.strip().split("\n")[0])
-                    }, status_code=409)
-
-        except Exception as e:
-            logger.error(f"Error checking claude status: {e}")
-            return JSONResponse({"error": str(e)}, status_code=500)
+        obs = driver.observe(ctx)
+        if obs.running:
+            return JSONResponse({
+                "error": f"{agent_name} is already running in this pane",
+                "agent_pid": obs.pid,
+            }, status_code=409)
 
         # Get startup command from request body or find matching repo
-        startup_cmd = "claude"  # Default
+        default_cmd = driver.start_command()[0]
+        startup_cmd = default_cmd
         repo_label = None
 
         try:
@@ -6093,10 +5514,11 @@ Reply with:
             )
 
             logger.info(f"Started '{startup_cmd}' in pane {pane_id}")
-            app.state.audit_log.log("claude_start", {
+            app.state.audit_log.log("agent_start", {
                 "pane_id": pane_id,
                 "command": startup_cmd,
                 "repo_label": repo_label,
+                "agent_type": driver.id(),
             })
 
             return {
@@ -6106,9 +5528,9 @@ Reply with:
             }
 
         except subprocess.TimeoutExpired:
-            return JSONResponse({"error": "Timeout starting Claude"}, status_code=504)
+            return JSONResponse({"error": f"Timeout starting {agent_name}"}, status_code=504)
         except Exception as e:
-            logger.error(f"Error starting Claude: {e}")
+            logger.error(f"Error starting {agent_name}: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/api/runner/commands")
@@ -7782,8 +7204,9 @@ Reply with:
                             session = app.state.current_session
                             target = app.state.active_target
                             if session and detector.log_file:
+                                tmux_t = get_tmux_target(session, target)
                                 perm = await asyncio.get_event_loop().run_in_executor(
-                                    None, detector.check_sync, session, target
+                                    None, detector.check_sync, session, target, tmux_t
                                 )
                                 if perm:
                                     await send_typed(websocket, "permission_request", perm, level="urgent")
@@ -8041,11 +7464,11 @@ Reply with:
                 _perm_pending_since = 0
                 _last_activity_time = time.time()
                 _was_active_phase = False
-                _was_claude_running = False
+                _was_agent_running = False
                 _crash_candidate_since = 0
-                _last_log_mtime = 0.0
-                _last_log_size = 0
                 _last_snap_time = 0.0  # Rate-limit auto snapshots
+                driver = app.state.driver
+                agent_name = driver.display_name()
 
                 while True:
                     await asyncio.sleep(5)
@@ -8058,60 +7481,31 @@ Reply with:
                         pane_target = f"{session}:{target}" if target else session
                         extra = {"session": session, "pane_id": target or ""}
 
-                        # Track log activity
-                        try:
-                            repo_path = get_current_repo_path()
-                            if repo_path:
-                                pid = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
-                                cpd = Path.home() / ".claude" / "projects" / pid
-                                if cpd.exists():
-                                    jf = list(cpd.glob("*.jsonl"))
-                                    if jf:
-                                        lf = max(jf, key=lambda f: f.stat().st_mtime)
-                                        st = lf.stat()
-                                        if st.st_mtime != _last_log_mtime or st.st_size != _last_log_size:
-                                            _last_activity_time = time.time()
-                                            _last_log_mtime = st.st_mtime
-                                            _last_log_size = st.st_size
-                        except Exception:
-                            pass
+                        # Use driver.observe() for all detection
+                        ctx = _build_observe_context(target) if target else None
+                        if ctx is None:
+                            continue
+                        obs = driver.observe(ctx)
 
-                        # Check if Claude is running
-                        claude_running = False
-                        if target:
-                            try:
-                                tmux_t = get_tmux_target(session, target)
-                                pi = subprocess.run(
-                                    ["tmux", "display-message", "-t", tmux_t, "-p", "#{pane_pid}"],
-                                    capture_output=True, text=True, timeout=2
-                                )
-                                if pi.returncode == 0:
-                                    spid = pi.stdout.strip()
-                                    if spid.isdigit():
-                                        pc = subprocess.run(
-                                            ["pgrep", "-f", "claude", "-P", spid],
-                                            capture_output=True, text=True, timeout=2
-                                        )
-                                        claude_running = pc.returncode == 0 and pc.stdout.strip() != ""
-                            except Exception:
-                                pass
-
-                        # Get current phase (reuse cached result)
-                        phase_result = _detect_phase(session, target, claude_running)
-                        current_phase = phase_result.get("phase", "idle")
+                        agent_running = obs.running
+                        current_phase = obs.phase
                         is_active = current_phase not in ("idle",)
+
+                        # Track activity time from observation
+                        if obs.active:
+                            _last_activity_time = time.time()
 
                         # === Permission push (existing) ===
                         if app.state.active_websocket is None:
                             detector = app.state.permission_detector
                             if detector.log_file:
-                                perm = detector.check_sync(session, target)
+                                perm = detector.check_sync(session, target, ctx.tmux_target)
                                 if perm:
                                     if _perm_pending_since == 0:
                                         _perm_pending_since = time.time()
                                     elif time.time() - _perm_pending_since > 10:
                                         await maybe_send_push(
-                                            "Claude needs approval",
+                                            f"{agent_name} needs approval",
                                             f"Allow {perm['tool']}: {perm['target'][:80]}?",
                                             "permission",
                                             extra_data=extra,
@@ -8124,22 +7518,22 @@ Reply with:
                             idle_duration = time.time() - _last_activity_time
                             if idle_duration > 20:
                                 await maybe_send_push(
-                                    "Claude finished",
+                                    f"{agent_name} finished",
                                     f"Turn complete in {pane_target}. Tap to review.",
                                     "completed",
                                     extra_data=extra,
                                 )
 
                         # === Crashed push (process-tree check with debounce) ===
-                        if _was_claude_running and not claude_running:
+                        if _was_agent_running and not agent_running:
                             if _crash_candidate_since == 0:
                                 _crash_candidate_since = time.time()
                             elif time.time() - _crash_candidate_since > 10:
                                 # Confirm no output for 10s
                                 if time.time() - _last_activity_time > 10:
                                     await maybe_send_push(
-                                        "Claude crashed",
-                                        f"Claude stopped in {pane_target}. Tap to respawn.",
+                                        f"{agent_name} crashed",
+                                        f"{agent_name} stopped in {pane_target}. Tap to respawn.",
                                         "crashed",
                                         extra_data=extra,
                                     )
@@ -8149,16 +7543,21 @@ Reply with:
 
                         # === Auto-capture snapshots (event-driven, rate-limited) ===
                         now = time.time()
-                        if (is_active and _last_log_mtime > 0
+                        if (is_active and obs.active
                                 and now - _last_snap_time > 30):
                             try:
+                                phase_result = {
+                                    "phase": obs.phase, "detail": obs.detail,
+                                    "tool": obs.tool, "session": session,
+                                    "pane_id": target or "",
+                                }
                                 _try_auto_snapshot(session, target, phase_result)
                                 _last_snap_time = now
                             except Exception:
                                 pass
 
                         _was_active_phase = is_active
-                        _was_claude_running = claude_running
+                        _was_agent_running = agent_running
 
                     except Exception as e:
                         logger.debug(f"push_monitor error: {e}")
