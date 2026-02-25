@@ -394,6 +394,83 @@ html, body {
 
 /* CWD mismatch warning banner */
 /* Agent crash warning banner */
+/* Connection state banner */
+.connection-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    flex-shrink: 0;
+}
+
+.connection-banner.hidden {
+    display: none;
+}
+
+.connection-banner.disconnected {
+    background: rgba(248, 81, 73, 0.15);
+    border-bottom: 1px solid var(--danger);
+    color: var(--danger);
+}
+
+.connection-banner.reconnecting {
+    background: rgba(210, 153, 34, 0.15);
+    border-bottom: 1px solid var(--warning);
+    color: var(--warning);
+}
+
+.connection-banner.degraded {
+    background: rgba(88, 166, 255, 0.1);
+    border-bottom: 1px solid var(--accent);
+    color: var(--accent);
+}
+
+.connection-banner-icon {
+    flex-shrink: 0;
+}
+
+.connection-banner-text {
+    flex: 1;
+}
+
+.connection-banner-action {
+    padding: 4px 12px;
+    min-height: 32px;
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 6px;
+    color: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.connection-banner-action.hidden {
+    display: none;
+}
+
+.connection-banner-action:active {
+    opacity: 0.7;
+}
+
+/* Reconnecting spinner */
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+.connection-banner.reconnecting .connection-banner-icon::after {
+    content: '';
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--warning);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: middle;
+}
+
 .agent-crash-banner {
     display: flex;
     align-items: center;
@@ -512,6 +589,96 @@ html, body {
 
 .status-action-btn:active {
     opacity: 0.8;
+}
+
+/* ===== System Status Strip (team mode) ===== */
+.system-status-strip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    height: 48px;
+    background: var(--bg-secondary, #161b22);
+    border-bottom: 1px solid var(--border, #30363d);
+    font-size: 13px;
+    flex-shrink: 0;
+}
+
+.system-status-strip.hidden {
+    display: none;
+}
+
+.system-status-strip .status-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+}
+
+.system-state-icon {
+    font-size: 16px;
+    flex-shrink: 0;
+}
+
+.system-summary {
+    color: var(--text-primary);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.system-status-strip .status-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.leader-state {
+    font-size: 11px;
+    padding: 2px 8px;
+    background: var(--bg-tertiary);
+    border-radius: 10px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.leader-state.hidden {
+    display: none;
+}
+
+.reconnect-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    background: rgba(248, 81, 73, 0.15);
+    border-radius: 10px;
+    color: var(--danger);
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.reconnect-badge.hidden {
+    display: none;
+}
+
+.approval-count {
+    font-size: 11px;
+    padding: 2px 8px;
+    min-width: 20px;
+    text-align: center;
+    background: rgba(248, 81, 73, 0.15);
+    border-radius: 10px;
+    color: var(--danger);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.approval-count.hidden {
+    display: none;
 }
 
 /* Project context banner */
@@ -662,6 +829,70 @@ html, body {
 
 .log-view.hidden {
     display: none !important;
+}
+
+/* Log filter bar */
+.log-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.log-filter-bar.hidden {
+    display: none;
+}
+
+.log-agent-filter {
+    min-height: 32px;
+    padding: 4px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: inherit;
+    flex-shrink: 0;
+}
+
+.log-filter-types {
+    display: flex;
+    gap: 2px;
+    flex: 1;
+    overflow-x: auto;
+}
+
+.log-type-btn {
+    padding: 4px 10px;
+    min-height: 32px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.log-type-btn.active {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.log-type-btn:not(.active):active {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+/* Filtered log cards */
+.log-card.filtered-out {
+    display: none;
 }
 
 .log-view-content {
@@ -900,6 +1131,32 @@ html, body {
 
 .terminal-view .terminal-container {
     flex: 1;
+}
+
+/* Terminal agent selector */
+.terminal-agent-selector {
+    display: flex;
+    align-items: center;
+    padding: 4px 8px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.terminal-agent-selector.hidden {
+    display: none;
+}
+
+.terminal-agent-select {
+    width: 100%;
+    min-height: 44px;
+    padding: 6px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-family: inherit;
 }
 
 /* Interactive mode badge + toggle */
@@ -1735,33 +1992,147 @@ html, body {
 
 /* View bar - View mode only */
 /* Tab position indicator (dots) */
+/* Legacy tab-indicator (kept for reference, replaced by view-switcher) */
 .tab-indicator {
+    display: none;
+}
+
+/* View switcher — explicit segmented control */
+.view-switcher {
+    display: flex;
+    gap: 2px;
+    padding: 6px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.view-switcher.hidden {
+    display: none;
+}
+
+.view-tab {
+    flex: 1;
+    min-height: 36px;
+    padding: 6px 12px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.view-tab.active {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+}
+
+.view-tab:not(.active):active {
+    background: var(--bg-tertiary);
+}
+
+.view-tab[data-view="terminal"] {
+    opacity: 0.7;
+}
+
+.view-tab[data-view="terminal"].active {
+    opacity: 1;
+}
+
+/* Collapse toggle wrapper (moved out of old tab indicator) */
+.collapse-toggle-wrapper {
     display: flex;
     justify-content: center;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 0;
+    padding: 4px 0;
     background: var(--bg-secondary);
     border-top: 1px solid var(--border);
     flex-shrink: 0;
 }
 
-.tab-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--border);
-    transition: all 0.2s ease;
+/* ===== Contextual Action Bar ===== */
+.action-bar {
+    display: flex;
+    gap: 8px;
+    padding: 8px 12px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+    align-items: center;
+}
+
+.action-bar.hidden {
+    display: none;
+}
+
+.action-bar-btn {
+    min-height: 44px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
     cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    color: var(--accent);
+    flex: 1;
+    white-space: nowrap;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
 }
 
-.tab-dot.active {
+.action-bar-btn:active {
+    background: rgba(88, 166, 255, 0.15);
+}
+
+.action-bar-btn.primary {
     background: var(--accent);
-    transform: scale(1.2);
+    color: white;
+    border-color: var(--accent);
 }
 
-.tab-dot:hover {
-    background: var(--text-secondary);
+.action-bar-btn.primary:active {
+    background: var(--accent-hover);
+}
+
+.approval-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex: 1;
+    background: rgba(248, 81, 73, 0.1);
+    border-radius: 8px;
+    padding: 10px 12px;
+    gap: 12px;
+}
+
+.approval-banner-text {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--danger);
+}
+
+.approval-banner-btn {
+    min-height: 36px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid var(--danger);
+    background: transparent;
+    color: var(--danger);
+    white-space: nowrap;
+}
+
+.approval-banner-btn:active {
+    background: rgba(248, 81, 73, 0.2);
 }
 
 .view-bar {
@@ -6540,5 +6911,267 @@ html, body {
 
 .team-card-btn.dispatch:active {
     background: rgba(88, 166, 255, 0.15);
+}
+
+/* ===== Team Sections (urgency-driven layout) ===== */
+
+.team-section {
+    margin-bottom: 12px;
+}
+
+.team-section-header {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    cursor: pointer;
+    min-height: 36px;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.team-section-header .section-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+}
+
+.team-section-header .section-count {
+    margin-left: 6px;
+    font-size: 11px;
+    padding: 1px 6px;
+    background: var(--bg-tertiary);
+    border-radius: 10px;
+    color: var(--text-secondary);
+}
+
+.team-section-header .section-chevron {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--text-secondary);
+    transition: transform 0.2s;
+}
+
+.team-section.section-collapsed .section-chevron {
+    transform: rotate(-90deg);
+}
+
+/* Attention section header — red title */
+.team-section.attention .section-title {
+    color: var(--danger);
+}
+
+.team-section.attention .section-count {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--danger);
+}
+
+/* Section body — collapsible */
+.team-section-body {
+    transition: max-height 0.2s ease-out, opacity 0.15s ease-out;
+    max-height: 2000px;
+    opacity: 1;
+    overflow: hidden;
+}
+
+.team-section-body.collapsed {
+    max-height: 0;
+    opacity: 0;
+}
+
+/* ===== Redesigned Team Cards ===== */
+
+/* Override old header layout for badge-driven design */
+.team-card .team-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    gap: 8px;
+    border-bottom: none;
+    min-height: 32px;
+}
+
+.team-card-header-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.team-card-menu-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 16px;
+    padding: 4px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    min-width: 32px;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.team-card-menu-btn:active {
+    background: var(--bg-tertiary);
+}
+
+/* Phase badge */
+.team-card-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+.badge-danger {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--danger);
+}
+
+.badge-warning {
+    background: rgba(210, 153, 34, 0.15);
+    color: var(--warning);
+}
+
+.badge-blue {
+    background: rgba(88, 166, 255, 0.15);
+    color: var(--accent);
+}
+
+.badge-purple {
+    background: rgba(168, 85, 247, 0.15);
+    color: #a855f7;
+}
+
+.badge-amber {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+}
+
+.badge-gray {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
+/* Card info section (name + subtitle) */
+.team-card-info {
+    padding: 0 10px 6px;
+}
+
+.team-card-info .team-card-name {
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--text-primary);
+}
+
+.team-card-subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Card body (output lines) */
+.team-card .team-card-body {
+    padding: 4px 10px 6px;
+    min-height: 0;
+}
+
+.team-card .team-card-body pre {
+    max-height: 3em;
+    line-height: 1.4;
+}
+
+/* Footer info (branch + worktree) — tiny, muted */
+.team-card-footer-info {
+    padding: 4px 10px 6px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    border-top: 1px solid var(--border);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.team-card-footer-info.danger {
+    color: var(--danger);
+    font-weight: bold;
+}
+
+/* Urgency visual weight */
+.team-card.urgency-critical {
+    border-left: 3px solid var(--danger);
+    box-shadow: 0 2px 8px rgba(248, 81, 73, 0.15);
+}
+
+.team-card.urgency-high {
+    border-left: 3px solid var(--warning);
+}
+
+.team-card.urgency-low {
+    opacity: 0.75;
+}
+
+/* Permission action buttons — full-width */
+.team-card-permission-actions {
+    display: flex;
+    gap: 8px;
+    padding: 8px 10px;
+    border-top: 1px solid var(--border);
+}
+
+.team-card-action-btn {
+    flex: 1;
+    min-height: 48px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+    border: none;
+}
+
+.team-card-action-btn.allow {
+    background: var(--success);
+    color: white;
+}
+
+.team-card-action-btn.allow:active {
+    background: #2ea043;
+}
+
+.team-card-action-btn.deny {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+}
+
+.team-card-action-btn.deny:active {
+    background: var(--bg-tertiary);
+}
+
+.team-card-action-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* ===== Card transitions ===== */
+.team-card {
+    transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+}
+
+/* ===== Reduced motion ===== */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+    }
 }
 

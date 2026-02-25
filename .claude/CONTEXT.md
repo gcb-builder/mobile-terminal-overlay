@@ -3,34 +3,56 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Leader Dispatch: Plan Routing + Message Leader
-- **Last Updated:** 2026-02-24
-- **Server Version:** v255 (terminal.js), v115 (sw.js cache), v155 (styles.css)
+- **Stage:** Mobile Layout Hierarchy (Phase 1-3 complete)
+- **Last Updated:** 2026-02-25
+- **Server Version:** v257 (terminal.js), v115 (sw.js cache), v157 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
 
-## Active Work: Leader Dispatch (2026-02-24)
+## Active Work: Mobile Layout Hierarchy (2026-02-25)
+
+### Feature: Urgency-Driven Mobile Layout
+Reimplemented mobile UI with information hierarchy: status strip → view switcher → sectioned team cards → contextual action bar. Attention flows top-down based on urgency.
+
+### Architecture: UIState Mapping Layer
+- `deriveUIState(agent)` — pure function mapping server data → rendering decisions
+- `deriveSystemSummary(agents, uiStates)` — system-wide status for strip
+- Section classification: permission/question → Attention, working/planning/waiting → Active, idle → Idle
+- SACRED RULE: "Needs Attention" is for actionable-by-human states ONLY
+
+### Phase 1: Layout Skeleton + View Switcher + Team Sections
+- **View switcher:** Explicit [Team] [Log] [Terminal] segmented control (replaces dot indicators)
+- **Team sections:** Needs Attention → Active → Idle with collapsible headers
+- **Contextual action bar:** Dynamic per view (Dispatch/Message for team, Select/Compose for terminal, approval banner when pending)
+- **DOM reorder:** header → statusStrip → crashBanner → viewSwitcher → banners → views → terminalBlock → controlBars → actionBar
+
+### Phase 2: Card Redesign + Status Strip Enhancement
+- **Card redesign:** Phase badge + name + subtitle + 2-line output + branch footer
+- **Urgency visual weight:** critical (red border + shadow), high (amber border), low (muted)
+- **Red accent rule:** Max 1 red element per card (border + badge only)
+- **Permission buttons:** Full-width 48px Allow/Deny, disable on click with loading text
+- **System status strip:** 48px, system summary, leader state pill, approval count badge, reconnect badge
+
+### Phase 3: Log View + Terminal Polish + Connection States
+- **Log filter bar:** Agent selector + type filters (All/Errors/Permissions/Output)
+- **Event classifier:** `classifyLogEntry()` tags entries for filtering
+- **Terminal agent selector:** Dropdown at top of terminal view when team present
+- **Connection banners:** Red (disconnected), amber+spinner (reconnecting), blue (degraded)
+
+### Files Changed
+- `mobile_terminal/static/index.html` — DOM restructure, view switcher, system status strip, connection banner, log filter bar, terminal agent selector, action bar
+- `mobile_terminal/static/styles.css` — View switcher, team sections, card redesign, badge colors, urgency weights, permission actions, system status strip, action bar, log filter bar, terminal agent selector, connection banners, reduced-motion
+- `mobile_terminal/static/terminal.js` — deriveUIState(), deriveSystemSummary(), updateViewSwitcher(), setupViewSwitcher(), renderTeamCards() → section-based, renderTeamSection(), createTeamCard() → badge-driven, updateSystemStatus(), updateActionBar(), scrollToFirstAttention(), classifyLogEntry(), applyLogFilter(), setupLogFilterBar(), updateTerminalAgentSelector(), updateConnectionBanner()
+
+### Legacy viewBar
+- Hidden with `style="display:none"`, buttons still exist for JS references (drawersBtn, selectCopyBtn, challengeBtn, composeBtn)
+- Action bar delegates clicks to legacy buttons via `.click()`
+
+---
+
+## Previous: Leader Dispatch (2026-02-24)
 
 ### Feature: Plan Routing + Message Leader
 Select a plan file, assemble dispatch.md with context + roster + orchestration instructions, write to leader CWD, and send tmux instruction.
-
-#### Server Endpoint
-- **`POST /api/team/dispatch`** - Assembles dispatch.md from plan + roster + context, writes to `{leader_cwd}/.claude/dispatch.md` + archive, sends instruction via `tmux send-keys`
-  - Params: `plan_filename`, `include_context` (bool), `preferences` (optional), `dispatch_id` (optional)
-  - Discovers team panes, gets git info + phase for roster table
-  - Template: What to do now, Response contract, Roster, Plan, Background, Constraints
-  - Returns: `dispatch_id`, `agents_count`, `warning_main_agents`
-
-#### Dispatch Bar UI
-- `#teamDispatchBar` - Above team cards (not destroyed by renderTeamCards innerHTML)
-- Plan select dropdown (populated from `/api/plans`, persisted in localStorage)
-- Dispatch button (enabled when plan selected + leader exists + not in-flight)
-- Message leader input + Send button (sends to leader via existing `sendTeamInput`)
-
-### Files Changed
-- `mobile_terminal/server.py` - POST /api/team/dispatch
-- `mobile_terminal/static/index.html` - #teamDispatchBar, version bumps (v155/v255)
-- `mobile_terminal/static/styles.css` - .team-dispatch-bar, .dispatch-row, .dispatch-plan-select, .leader-message-input, .team-card-btn.dispatch
-- `mobile_terminal/static/terminal.js` - populateDispatchPlans(), dispatchToLeader(), sendLeaderMessage(), updateDispatchButtonState(), wiring
 
 ---
 

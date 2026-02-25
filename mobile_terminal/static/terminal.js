@@ -5,7 +5,7 @@
  */
 
 // VERSION DIAGNOSTIC - if you see this in console, browser has v247 code
-console.log('=== TERMINAL.JS v247 PERMISSION BANNER + V2 MESSAGES ===');
+console.log('=== TERMINAL.JS v257 UISTATE + VIEW SWITCHER + TEAM SECTIONS ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 
 // Get token from URL (may be null if --no-auth)
@@ -1198,6 +1198,60 @@ function updateConnectionIndicator(status) {
 
     indicator.className = 'connection-indicator ' + status;
     indicator.title = status === 'connected' ? 'Connected' : 'Disconnected';
+
+    // Update reconnect badge in system status strip
+    const reconnectBadge = document.getElementById('reconnectBadge');
+    if (reconnectBadge) {
+        if (status === 'connected') {
+            reconnectBadge.classList.add('hidden');
+        } else {
+            reconnectBadge.classList.remove('hidden');
+        }
+    }
+
+    // Update connection banner
+    updateConnectionBanner(status);
+}
+
+/**
+ * Show/hide connection state banner.
+ * States: 'connected', 'disconnected', 'reconnecting'
+ */
+function updateConnectionBanner(status) {
+    const banner = document.getElementById('connectionBanner');
+    if (!banner) return;
+
+    const icon = document.getElementById('connectionBannerIcon');
+    const text = document.getElementById('connectionBannerText');
+    const action = document.getElementById('connectionBannerAction');
+
+    if (status === 'connected') {
+        banner.classList.add('hidden');
+        banner.className = 'connection-banner hidden';
+        return;
+    }
+
+    banner.classList.remove('hidden');
+
+    if (status === 'reconnecting') {
+        banner.className = 'connection-banner reconnecting';
+        if (icon) icon.textContent = '';  // CSS spinner via ::after
+        if (text) text.textContent = 'Reconnecting...';
+        if (action) action.classList.add('hidden');
+    } else {
+        // disconnected
+        banner.className = 'connection-banner disconnected';
+        if (icon) icon.textContent = '\u26A0';
+        if (text) text.textContent = 'Connection lost';
+        if (action) {
+            action.classList.remove('hidden');
+            action.textContent = 'Reconnect';
+            action.onclick = () => {
+                if (typeof manualReconnect === 'function') manualReconnect();
+                updateConnectionBanner('reconnecting');
+            };
+        }
+    }
 }
 
 /**
@@ -1549,7 +1603,10 @@ function connect() {
         }, RECONNECT_OVERLAY_GRACE_MS);
 
         // Reconnect with exponential backoff (starts immediately, overlay is delayed)
-        reconnectTimer = setTimeout(connect, reconnectDelay);
+        reconnectTimer = setTimeout(() => {
+            updateConnectionBanner('reconnecting');
+            connect();
+        }, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
     };
 
@@ -1650,18 +1707,10 @@ function toggleControlBarsCollapse() {
     const isCollapsed = controlBarsContainer.classList.toggle('collapsed');
     // Update button icon state
     collapseToggle.classList.toggle('collapsed', isCollapsed);
-    // Also collapse/expand the view bar (Select, Stop, Challenge, Compose)
-    if (viewBar) {
-        viewBar.classList.toggle('collapsed', isCollapsed);
-    }
 
     // When expanding in log or terminal view, also remove 'hidden' to ensure visibility
-    // (hidden might be present if view was switched while collapsed)
     if (!isCollapsed && (currentView === 'log' || currentView === 'terminal')) {
         controlBarsContainer.classList.remove('hidden');
-        if (viewBar) {
-            viewBar.classList.remove('hidden');
-        }
     }
 
     // Don't resize - keeps terminal stable, prevents tmux reflow/corruption
@@ -2626,9 +2675,15 @@ async function updateTeamState() {
     // Detect team presence transitions
     if (hadTeam !== hasTeam) {
         updateTabIndicator();
+        updateLogFilterBarVisibility();
         // If team disappeared while viewing team, switch to log
         if (!hasTeam && currentView === 'team') {
             switchToView('log');
+        }
+        // Hide system strip when team disappears
+        if (!hasTeam) {
+            const sysStrip = document.getElementById('systemStatusStrip');
+            if (sysStrip) sysStrip.classList.add('hidden');
         }
     }
 }
@@ -4298,6 +4353,125 @@ function setupCommandHistory() {
     });
 }
 
+// ===== UIState Mapping Layer =====
+// Pure functions that derive UI rendering state from server observations.
+// Every rendering decision reads from UIState, not raw server data.
+
+/**
+ * Derive UI rendering state from a single agent's server data.
+ * Pure function — no side effects, no DOM access.
+ * @param {Object} agent - Agent data from /api/team/state
+ * @returns {Object} UIState with section, urgency, badge, subtitle, etc.
+ */
+function deriveUIState(agent) {
+    const ui = {
+        section: 'active',
+        urgency: 5,
+        badgeText: '',
+        badgeColor: '',
+        subtitle: '',
+        showPermissionActions: false,
+        permissionInfo: null,
+        needsAttention: false,
+        isRunning: false,
+    };
+
+    // SACRED RULE: "Needs Attention" is for actionable-by-human states ONLY.
+    if (agent.waiting_reason === 'permission') {
+        ui.section = 'attention';
+        ui.urgency = 10;
+        ui.badgeText = 'Permission Required';
+        ui.badgeColor = 'danger';
+        ui.subtitle = (
+            (agent.permission?.tool || 'Tool') + ': ' +
+            (agent.permission?.target || '')
+        ).slice(0, 60);
+        ui.showPermissionActions = true;
+        ui.permissionInfo = agent.permission || null;
+        ui.needsAttention = true;
+    } else if (agent.waiting_reason === 'question') {
+        ui.section = 'attention';
+        ui.urgency = 8;
+        ui.badgeText = 'Needs Input';
+        ui.badgeColor = 'warning';
+        ui.subtitle = agent.detail || 'Waiting for answer';
+        ui.needsAttention = true;
+    } else if (agent.phase === 'working' || agent.phase === 'running_task') {
+        ui.section = 'active';
+        ui.urgency = 6;
+        ui.badgeText = agent.phase === 'running_task' ? 'Running Task' : 'Working';
+        ui.badgeColor = agent.phase === 'running_task' ? 'purple' : 'blue';
+        ui.subtitle = agent.detail || 'Working...';
+        ui.isRunning = true;
+    } else if (agent.phase === 'planning') {
+        ui.section = 'active';
+        ui.urgency = 5;
+        ui.badgeText = 'Planning';
+        ui.badgeColor = 'amber';
+        ui.subtitle = agent.detail || 'Planning...';
+        ui.isRunning = true;
+    } else if (agent.phase === 'waiting' && !agent.waiting_reason) {
+        // Generic "waiting" WITHOUT a specific reason = NOT attention.
+        // Could be inter-agent wait, rate limit — NOT human-actionable.
+        ui.section = 'active';
+        ui.urgency = 4;
+        ui.badgeText = 'Waiting';
+        ui.badgeColor = 'gray';
+        ui.subtitle = agent.detail || 'Waiting...';
+        ui.isRunning = true;
+    } else {
+        ui.section = 'idle';
+        ui.urgency = 3;
+        ui.badgeText = 'Idle';
+        ui.badgeColor = 'gray';
+        ui.subtitle = '';
+        ui.isRunning = false;
+    }
+
+    // Role microcopy
+    if (agent.team_role === 'leader' && ui.isRunning) {
+        ui.subtitle = ui.subtitle || 'Orchestrating';
+    } else if (agent.team_role === 'agent' && ui.isRunning) {
+        ui.subtitle = ui.subtitle || 'Executing task';
+    }
+
+    return ui;
+}
+
+/**
+ * Derive system-level summary from all agents' UIStates.
+ * @param {Array} agents - Raw agent data array
+ * @param {Array} uiStates - Corresponding UIState array
+ * @returns {Object} { icon, text, level, attentionCount, runningCount }
+ */
+function deriveSystemSummary(agents, uiStates) {
+    const attentionCount = uiStates.filter(u => u.needsAttention).length;
+    const runningCount = uiStates.filter(u => u.isRunning).length;
+    const idleCount = uiStates.filter(u => u.section === 'idle').length;
+
+    let icon, text, level;
+
+    if (attentionCount > 0) {
+        icon = '\u{1F7E1}';
+        level = 'warning';
+        const parts = [];
+        if (runningCount > 0) parts.push(runningCount + ' running');
+        parts.push(attentionCount + ' needs approval');
+        text = parts.join(' \u00B7 ');
+    } else if (runningCount > 0) {
+        icon = '\u{1F7E2}';
+        level = 'ok';
+        text = runningCount + ' running';
+        if (idleCount > 0) text += ' \u00B7 ' + idleCount + ' idle';
+    } else {
+        icon = '\u{1F7E2}';
+        level = 'ok';
+        text = 'All idle';
+    }
+
+    return { icon, text, level, attentionCount, runningCount };
+}
+
 /**
  * View toggle: Log | Terminal | Context | Touch
  */
@@ -4326,52 +4500,116 @@ function setupViewToggle() {
     if (interactiveToggle) {
         interactiveToggle.addEventListener('click', toggleInteractiveMode);
     }
+
+    // Terminal agent selector
+    const agentSelect = document.getElementById('terminalAgentSelect');
+    if (agentSelect) {
+        agentSelect.addEventListener('change', () => {
+            const targetId = agentSelect.value;
+            if (targetId) {
+                selectTarget(targetId);
+            }
+        });
+    }
+}
+
+/**
+ * Populate terminal agent selector dropdown from team state.
+ * Only shown when team is detected.
+ */
+function updateTerminalAgentSelector() {
+    const wrapper = document.getElementById('terminalAgentSelector');
+    const select = document.getElementById('terminalAgentSelect');
+    if (!wrapper || !select) return;
+
+    const hasTeam = teamState && teamState.has_team && teamState.team;
+    if (!hasTeam) {
+        wrapper.classList.add('hidden');
+        return;
+    }
+
+    wrapper.classList.remove('hidden');
+
+    // Collect agents
+    const agents = [];
+    if (teamState.team.leader) agents.push(teamState.team.leader);
+    if (teamState.team.agents) agents.push(...teamState.team.agents);
+
+    // Preserve current selection
+    const current = select.value || activeTarget;
+
+    select.innerHTML = '';
+    agents.forEach(agent => {
+        const opt = document.createElement('option');
+        opt.value = agent.target_id;
+        const role = agent.team_role === 'leader' ? ' (leader)' : '';
+        const phase = agent.phase ? ' \u2014 ' + agent.phase : '';
+        opt.textContent = (agent.agent_name || agent.target_id) + role + phase;
+        if (agent.target_id === current) opt.selected = true;
+        select.appendChild(opt);
+    });
 }
 
 // Dynamic tab order based on team presence
 function getTabOrder() {
-    if (teamState && teamState.has_team) return ['log', 'team', 'terminal'];
+    if (teamState && teamState.has_team) return ['team', 'log', 'terminal'];
     return ['log', 'terminal'];
 }
 
 function clearAllTabActive() {
-    // Tab buttons removed from header - dots handle indication now
-    // This function is kept for compatibility but no longer needed
+    // Legacy compat stub — no-op
 }
 
 /**
- * Update the dot indicator to reflect current view.
- * Dynamically creates dots from getTabOrder() before the collapseToggle.
+ * Update the view switcher to reflect current view and available tabs.
+ * Shows/hides switcher based on team presence, updates active state.
  */
-function updateTabIndicator() {
-    const tabIndicator = document.getElementById('tabIndicator');
-    const collapseToggle = document.getElementById('collapseToggle');
-    if (!tabIndicator || !collapseToggle) return;
+function updateViewSwitcher() {
+    const switcher = document.getElementById('viewSwitcher');
+    if (!switcher) return;
 
-    // Remove existing dots
-    tabIndicator.querySelectorAll('.tab-dot').forEach(d => d.remove());
-
-    // Create dots for current tab order
     const order = getTabOrder();
-    order.forEach(viewName => {
-        const dot = document.createElement('span');
-        dot.className = 'tab-dot' + (viewName === currentView ? ' active' : '');
-        dot.dataset.view = viewName;
-        // Tap handler
-        let dotHandled = false;
-        const handleDotTap = (e) => {
-            if (dotHandled) return;
-            dotHandled = true;
-            e.preventDefault();
-            e.stopPropagation();
-            if (viewName !== currentView) {
-                switchToView(viewName);
-            }
-            setTimeout(() => { dotHandled = false; }, 300);
-        };
-        dot.addEventListener('touchstart', handleDotTap, { passive: false });
-        dot.addEventListener('click', handleDotTap);
-        tabIndicator.insertBefore(dot, collapseToggle);
+    const hasTeam = teamState && teamState.has_team;
+
+    // Show switcher when team is present, hide otherwise
+    if (hasTeam) {
+        switcher.classList.remove('hidden');
+    } else {
+        switcher.classList.add('hidden');
+        return;
+    }
+
+    // Update active state on all tabs
+    switcher.querySelectorAll('.view-tab').forEach(tab => {
+        const view = tab.dataset.view;
+        tab.classList.toggle('active', view === currentView);
+        // Hide tabs not in current order (e.g., team tab when no team)
+        tab.style.display = order.includes(view) ? '' : 'none';
+    });
+}
+
+// Backward compat — old callers reference updateTabIndicator
+function updateTabIndicator() {
+    updateViewSwitcher();
+}
+
+/**
+ * Setup view switcher click handlers
+ */
+function setupViewSwitcher() {
+    const switcher = document.getElementById('viewSwitcher');
+    if (!switcher) return;
+
+    let switchHandled = false;
+    switcher.addEventListener('click', (e) => {
+        const tab = e.target.closest('.view-tab');
+        if (!tab || switchHandled) return;
+        switchHandled = true;
+        const view = tab.dataset.view;
+        if (view && view !== currentView) {
+            switchToView(view);
+        }
+        setTimeout(() => { switchHandled = false; }, 300);
     });
 }
 
@@ -4493,12 +4731,12 @@ function switchToLogView() {
     }
     hideAllContainers();
     if (logView) logView.classList.remove('hidden');
-    viewBar.classList.remove('hidden');  // Show action bar (Select, Stop, Challenge, Compose)
     // Show control bars if unlocked (same as terminal view)
     if (isControlUnlocked) {
         controlBarsContainer.classList.remove('hidden');
     }
-    updateTabIndicator();
+    updateViewSwitcher();
+    updateActionBar();
     // Restore active prompt pre (hidden in terminal view)
     if (activePromptContent) activePromptContent.style.display = '';
     // Switch to tail mode - no xterm rendering, lightweight updates
@@ -4522,12 +4760,13 @@ function switchToTerminalView() {
     currentView = 'terminal';
     hideAllContainers();
     if (terminalView) terminalView.classList.remove('hidden');
-    viewBar.classList.remove('hidden');  // Show action bar in terminal view
     // Only show control bars if unlocked
     if (isControlUnlocked) {
         controlBarsContainer.classList.remove('hidden');
     }
-    updateTabIndicator();
+    updateViewSwitcher();
+    updateActionBar();
+    updateTerminalAgentSelector();
     // Hide active prompt pre — live xterm already shows terminal content
     if (activePromptContent) activePromptContent.style.display = 'none';
 
@@ -4561,10 +4800,10 @@ function switchToTeamView() {
     // Show dispatch bar
     const dispatchBar = document.getElementById('teamDispatchBar');
     if (dispatchBar) dispatchBar.classList.remove('hidden');
-    // Hide viewBar and controlBars -- no Select/Compose needed in team view
-    viewBar.classList.add('hidden');
+    // Hide controlBars — no Select/Compose needed in team view
     controlBarsContainer.classList.add('hidden');
-    updateTabIndicator();
+    updateViewSwitcher();
+    updateActionBar();
     // Lightweight mode -- no xterm rendering
     setOutputMode('tail');
     // Load plans and auto-refresh team cards
@@ -4617,26 +4856,282 @@ async function refreshTeamCards() {
     }
 }
 
+// Track last system summary for action bar updates
+let lastSystemSummary = null;
+
 function renderTeamCards(state, captures) {
     const teamViewEl = document.getElementById('teamView');
     if (!teamViewEl || !state || !state.team) return;
 
+    // Collect all agents
+    const allAgents = [];
+    if (state.team.leader) allAgents.push(state.team.leader);
+    if (state.team.agents) allAgents.push(...state.team.agents);
+
+    // Derive UIState for each agent
+    const uiPairs = allAgents.map(a => ({ agent: a, ui: deriveUIState(a) }));
+
+    const attention = uiPairs.filter(p => p.ui.section === 'attention');
+    const active = uiPairs.filter(p => p.ui.section === 'active');
+    const idle = uiPairs.filter(p => p.ui.section === 'idle');
+
+    teamViewEl.innerHTML = '';
+
+    if (attention.length) {
+        teamViewEl.appendChild(renderTeamSection('Needs Attention', attention, captures, 'attention'));
+    }
+    if (active.length) {
+        teamViewEl.appendChild(renderTeamSection('Active', active, captures, 'active'));
+    }
+    if (idle.length) {
+        // Auto-expand if only 1 idle agent, collapse if > 1
+        const collapsed = idle.length > 1;
+        teamViewEl.appendChild(renderTeamSection('Idle', idle, captures, 'idle', collapsed));
+    }
+
+    // Update system status summary
+    const uiStates = uiPairs.map(p => p.ui);
+    lastSystemSummary = deriveSystemSummary(allAgents, uiStates);
+    updateSystemStatus(lastSystemSummary);
+    updateActionBar();
+
+    // Auto-scroll attention section into view
+    if (attention.length) {
+        const attentionSection = teamViewEl.querySelector('.team-section.attention');
+        if (attentionSection) {
+            attentionSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }
+
+    updateDispatchButtonState();
+}
+
+/**
+ * Render a collapsible section of team cards.
+ * @param {string} title - Section header text
+ * @param {Array} uiPairs - [{agent, ui}] pairs for this section
+ * @param {Object} captures - Terminal captures keyed by target_id
+ * @param {string} sectionType - 'attention' | 'active' | 'idle'
+ * @param {boolean} collapsed - Whether to start collapsed
+ */
+function renderTeamSection(title, uiPairs, captures, sectionType, collapsed = false) {
+    const section = document.createElement('div');
+    section.className = 'team-section ' + sectionType;
+
+    // Header (clickable to toggle collapse)
+    const header = document.createElement('div');
+    header.className = 'team-section-header';
+
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'section-title';
+    titleSpan.textContent = title;
+    header.appendChild(titleSpan);
+
+    const count = document.createElement('span');
+    count.className = 'section-count';
+    count.textContent = uiPairs.length;
+    header.appendChild(count);
+
+    const chevron = document.createElement('span');
+    chevron.className = 'section-chevron';
+    chevron.textContent = '\u25BC';
+    header.appendChild(chevron);
+
+    section.appendChild(header);
+
+    // Body (card grid)
+    const body = document.createElement('div');
+    body.className = 'team-section-body' + (collapsed ? ' collapsed' : '');
+
     const grid = document.createElement('div');
     grid.className = 'team-cards-grid';
 
-    // Leader first, then agents
-    const agents = [];
-    if (state.team.leader) agents.push(state.team.leader);
-    if (state.team.agents) agents.push(...state.team.agents);
-
-    agents.forEach(agent => {
+    uiPairs.forEach(({ agent, ui }) => {
         const capture = captures[agent.target_id] || {};
-        grid.appendChild(createTeamCard(agent, capture));
+        grid.appendChild(createTeamCard(agent, capture, ui));
     });
 
-    teamViewEl.innerHTML = '';
-    teamViewEl.appendChild(grid);
-    updateDispatchButtonState();
+    body.appendChild(grid);
+    section.appendChild(body);
+
+    // Toggle collapse on header click
+    header.addEventListener('click', () => {
+        body.classList.toggle('collapsed');
+        section.classList.toggle('section-collapsed');
+    });
+
+    return section;
+}
+
+/**
+ * Update the system status strip from summary data.
+ * Only called on team state updates, not terminal output.
+ * Uses dedicated systemStatusStrip (hides single-agent strip when team present).
+ */
+function updateSystemStatus(summary) {
+    if (!summary) return;
+
+    // Hide single-agent strip when using system summary
+    const agentStrip = document.getElementById('agentStatusStrip');
+    if (agentStrip) agentStrip.classList.add('hidden');
+
+    const strip = document.getElementById('systemStatusStrip');
+    if (!strip) return;
+
+    strip.classList.remove('hidden');
+
+    // System icon + summary text
+    const icon = document.getElementById('systemStateIcon');
+    const summaryEl = document.getElementById('systemSummary');
+    if (icon) icon.textContent = summary.icon;
+    if (summaryEl) summaryEl.textContent = summary.text;
+
+    // Leader state pill
+    const leaderEl = document.getElementById('leaderState');
+    if (leaderEl) {
+        if (teamState && teamState.team && teamState.team.leader) {
+            const leader = teamState.team.leader;
+            const leaderPhase = leader.phase || 'idle';
+            const labels = {
+                working: 'Orchestrating',
+                running_task: 'Orchestrating',
+                planning: 'Planning',
+                waiting: 'Waiting',
+                idle: 'Idle'
+            };
+            leaderEl.textContent = labels[leaderPhase] || leaderPhase;
+            leaderEl.classList.remove('hidden');
+        } else {
+            leaderEl.classList.add('hidden');
+        }
+    }
+
+    // Approval count badge
+    const approvalEl = document.getElementById('approvalCount');
+    if (approvalEl) {
+        if (summary.attentionCount > 0) {
+            approvalEl.textContent = summary.attentionCount;
+            approvalEl.classList.remove('hidden');
+        } else {
+            approvalEl.classList.add('hidden');
+        }
+    }
+}
+
+/**
+ * Update the contextual action bar based on current view and system state.
+ * Called on view switch and team state update.
+ */
+function updateActionBar() {
+    const bar = document.getElementById('actionBar');
+    if (!bar) return;
+
+    bar.innerHTML = '';
+    const hasTeam = teamState && teamState.has_team;
+
+    if (currentView === 'team' && hasTeam) {
+        const summary = lastSystemSummary;
+        if (summary && summary.attentionCount > 0) {
+            // Show approval banner
+            const banner = document.createElement('div');
+            banner.className = 'approval-banner';
+
+            const text = document.createElement('span');
+            text.className = 'approval-banner-text';
+            text.textContent = summary.attentionCount + ' approval' +
+                (summary.attentionCount > 1 ? 's' : '') + ' pending';
+            banner.appendChild(text);
+
+            const btn = document.createElement('button');
+            btn.className = 'approval-banner-btn';
+            btn.textContent = 'Review Now';
+            btn.addEventListener('click', scrollToFirstAttention);
+            banner.appendChild(btn);
+
+            bar.appendChild(banner);
+        } else {
+            // Show Dispatch + Message buttons
+            const dispatchBtn = document.createElement('button');
+            dispatchBtn.className = 'action-bar-btn';
+            dispatchBtn.textContent = 'Dispatch Plan';
+            dispatchBtn.addEventListener('click', () => {
+                // Open the dispatch bar's plan select
+                const dispatchBar = document.getElementById('teamDispatchBar');
+                if (dispatchBar) {
+                    dispatchBar.classList.remove('hidden');
+                    const sel = document.getElementById('dispatchPlanSelect');
+                    if (sel) sel.focus();
+                }
+            });
+            bar.appendChild(dispatchBtn);
+
+            const msgBtn = document.createElement('button');
+            msgBtn.className = 'action-bar-btn';
+            msgBtn.textContent = 'Message Leader';
+            msgBtn.addEventListener('click', () => {
+                const input = document.getElementById('leaderMessageInput');
+                if (input) {
+                    const dispatchBar = document.getElementById('teamDispatchBar');
+                    if (dispatchBar) dispatchBar.classList.remove('hidden');
+                    input.focus();
+                }
+            });
+            bar.appendChild(msgBtn);
+        }
+        bar.classList.remove('hidden');
+    } else if (currentView === 'terminal') {
+        // Terminal view: existing buttons via legacy viewBar references
+        const drawersBtn2 = document.createElement('button');
+        drawersBtn2.className = 'action-bar-btn';
+        drawersBtn2.innerHTML = '&bull;&bull;&bull;';
+        drawersBtn2.addEventListener('click', () => {
+            if (typeof openDrawer === 'function') openDrawer();
+        });
+        bar.appendChild(drawersBtn2);
+
+        const selectBtn2 = document.createElement('button');
+        selectBtn2.className = 'action-bar-btn';
+        selectBtn2.textContent = 'Select';
+        selectBtn2.addEventListener('click', () => {
+            if (selectCopyBtn) selectCopyBtn.click();
+        });
+        bar.appendChild(selectBtn2);
+
+        const challengeBtn2 = document.createElement('button');
+        challengeBtn2.className = 'action-bar-btn';
+        challengeBtn2.textContent = 'Challenge';
+        challengeBtn2.addEventListener('click', () => {
+            if (challengeBtn) challengeBtn.click();
+        });
+        bar.appendChild(challengeBtn2);
+
+        const composeBtn2 = document.createElement('button');
+        composeBtn2.className = 'action-bar-btn';
+        composeBtn2.textContent = 'Compose';
+        composeBtn2.addEventListener('click', () => {
+            if (composeBtn) composeBtn.click();
+        });
+        bar.appendChild(composeBtn2);
+
+        bar.classList.remove('hidden');
+    } else if (currentView === 'log') {
+        // Log view: minimal or hidden — control bars handle this
+        bar.classList.add('hidden');
+    } else {
+        bar.classList.add('hidden');
+    }
+}
+
+/**
+ * Scroll to the first Needs Attention card in team view.
+ */
+function scrollToFirstAttention() {
+    const teamViewEl = document.getElementById('teamView');
+    if (!teamViewEl) return;
+    const attentionSection = teamViewEl.querySelector('.team-section.attention');
+    if (attentionSection) {
+        attentionSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
 }
 
 // ===== Dispatch bar logic =====
@@ -4734,89 +5229,126 @@ async function sendLeaderMessage() {
     updateDispatchButtonState();
 }
 
-function createTeamCard(agent, capture) {
+function createTeamCard(agent, capture, ui) {
+    // Fall back to deriving UIState if not provided (backward compat)
+    if (!ui) ui = deriveUIState(agent);
+
     const card = document.createElement('div');
     card.className = 'team-card';
+    card.dataset.urgency = ui.urgency;
 
-    // Header: status dot + name + phase + branch pill
+    // Apply urgency-based visual weight
+    if (ui.urgency >= 10) {
+        card.classList.add('urgency-critical');
+    } else if (ui.urgency >= 8) {
+        card.classList.add('urgency-high');
+    } else if (ui.urgency <= 3) {
+        card.classList.add('urgency-low');
+    }
+
+    // Header: phase badge + name + overflow menu
     const header = document.createElement('div');
     header.className = 'team-card-header';
 
-    const dot = document.createElement('span');
-    dot.className = 'team-dot ' + (agent.phase || 'idle');
-    header.appendChild(dot);
+    const badge = document.createElement('span');
+    badge.className = 'team-card-badge badge-' + ui.badgeColor;
+    badge.textContent = ui.badgeText;
+    header.appendChild(badge);
 
-    const name = document.createElement('span');
-    name.className = 'team-card-name';
-    name.textContent = agent.agent_name || 'unknown';
-    header.appendChild(name);
+    const headerRight = document.createElement('div');
+    headerRight.className = 'team-card-header-right';
 
-    const phase = document.createElement('span');
-    phase.className = 'team-card-phase';
-    phase.textContent = agent.detail || agent.phase || '';
-    header.appendChild(phase);
-
-    if (agent.git && agent.git.branch) {
-        const branch = document.createElement('span');
-        branch.className = 'team-card-branch';
-        const isMain = agent.git.branch === 'main' || agent.git.branch === 'master';
-        if (isMain) branch.classList.add('danger');
-        branch.textContent = agent.git.branch;
-        if (agent.git.worktree) branch.title = 'worktree: ' + agent.git.worktree;
-        header.appendChild(branch);
-    }
+    const switchLink = document.createElement('button');
+    switchLink.className = 'team-card-menu-btn';
+    switchLink.textContent = '\u22EE';
+    switchLink.title = 'Switch to terminal';
+    switchLink.addEventListener('click', (e) => {
+        e.stopPropagation();
+        selectTarget(agent.target_id);
+        switchToView('terminal');
+    });
+    headerRight.appendChild(switchLink);
+    header.appendChild(headerRight);
 
     card.appendChild(header);
 
-    // Body: tail text (tap to switch to terminal)
-    const body = document.createElement('div');
-    body.className = 'team-card-body';
-    const pre = document.createElement('pre');
+    // Name + subtitle
+    const info = document.createElement('div');
+    info.className = 'team-card-info';
+
+    const name = document.createElement('div');
+    name.className = 'team-card-name';
+    name.textContent = agent.agent_name || 'unknown';
+    info.appendChild(name);
+
+    if (ui.subtitle) {
+        const subtitle = document.createElement('div');
+        subtitle.className = 'team-card-subtitle';
+        subtitle.textContent = ui.subtitle;
+        info.appendChild(subtitle);
+    }
+
+    card.appendChild(info);
+
+    // Body: last 1-2 log lines (tap to switch to terminal)
     const content = (capture.content || '').trim();
-    // Show last 5 non-empty lines
     const lines = content.split('\n').filter(l => l.trim());
-    pre.textContent = lines.slice(-5).join('\n') || '(no output)';
-    body.appendChild(pre);
-    body.addEventListener('click', () => {
-        selectTarget(agent.target_id);
-        switchToView('terminal');
-    });
-    card.appendChild(body);
+    if (lines.length > 0) {
+        const body = document.createElement('div');
+        body.className = 'team-card-body';
+        const pre = document.createElement('pre');
+        pre.textContent = lines.slice(-2).join('\n');
+        body.appendChild(pre);
+        body.addEventListener('click', () => {
+            selectTarget(agent.target_id);
+            switchToView('terminal');
+        });
+        card.appendChild(body);
+    }
 
-    // Footer: Switch button + Allow/Deny when permission waiting
-    const footer = document.createElement('div');
-    footer.className = 'team-card-footer';
+    // Footer: branch + worktree (tiny)
+    if (agent.git && agent.git.branch) {
+        const footer = document.createElement('div');
+        footer.className = 'team-card-footer-info';
+        const branchText = agent.git.branch;
+        const worktreeText = agent.git.worktree ? ' \u00B7 ' + agent.git.worktree : '';
+        footer.textContent = branchText + worktreeText;
+        if (agent.git.branch === 'main' || agent.git.branch === 'master') {
+            footer.classList.add('danger');
+        }
+        card.appendChild(footer);
+    }
 
-    const switchBtn = document.createElement('button');
-    switchBtn.className = 'team-card-btn';
-    switchBtn.textContent = 'Switch';
-    switchBtn.addEventListener('click', () => {
-        selectTarget(agent.target_id);
-        switchToView('terminal');
-    });
-    footer.appendChild(switchBtn);
+    // Permission actions: full-width Allow/Deny
+    if (ui.showPermissionActions) {
+        const actions = document.createElement('div');
+        actions.className = 'team-card-permission-actions';
 
-    if (agent.waiting_reason === 'permission') {
         const allowBtn = document.createElement('button');
-        allowBtn.className = 'team-card-btn allow';
+        allowBtn.className = 'team-card-action-btn allow';
         allowBtn.textContent = 'Allow';
         allowBtn.addEventListener('click', () => {
             allowBtn.disabled = true;
+            denyBtn.disabled = true;
+            allowBtn.textContent = 'Allowing...';
             sendTeamInput(agent.target_id, 'y');
         });
-        footer.appendChild(allowBtn);
 
         const denyBtn = document.createElement('button');
-        denyBtn.className = 'team-card-btn deny';
+        denyBtn.className = 'team-card-action-btn deny';
         denyBtn.textContent = 'Deny';
         denyBtn.addEventListener('click', () => {
             denyBtn.disabled = true;
+            allowBtn.disabled = true;
+            denyBtn.textContent = 'Denying...';
             sendTeamInput(agent.target_id, 'n');
         });
-        footer.appendChild(denyBtn);
+
+        actions.appendChild(allowBtn);
+        actions.appendChild(denyBtn);
+        card.appendChild(actions);
     }
 
-    card.appendChild(footer);
     return card;
 }
 
@@ -5260,6 +5792,102 @@ function setupTranscriptSearch() {
  * Load log content for the hybrid view
  */
 let logLoaded = false;
+let activeLogFilter = 'all';  // Current filter type
+
+/**
+ * Classify a log message group for filtering.
+ * Returns: 'error' | 'permission' | 'output' | 'system'
+ */
+function classifyLogEntry(msg) {
+    const allText = msg.blocks.map(b => b.text).join('\n').toLowerCase();
+
+    // Permission-related entries
+    if (allText.includes('permission') || allText.includes('allow') ||
+        allText.includes('deny') || allText.includes('\u{1F512}')) {
+        return 'permission';
+    }
+
+    // Error entries
+    if (allText.includes('error') || allText.includes('failed') ||
+        allText.includes('exception') || allText.includes('traceback') ||
+        allText.includes('fatal')) {
+        return 'error';
+    }
+
+    // Tool output
+    if (msg.blocks.some(b => b.role === 'tool')) {
+        return 'output';
+    }
+
+    return 'system';
+}
+
+/**
+ * Apply current filter to all log cards in the DOM.
+ */
+function applyLogFilter() {
+    if (!logContent) return;
+    const cards = logContent.querySelectorAll('.log-card');
+    cards.forEach(card => {
+        if (activeLogFilter === 'all') {
+            card.classList.remove('filtered-out');
+            return;
+        }
+        const type = card.dataset.logType || 'system';
+        // Map filter button to entry types
+        const filterMap = {
+            'errors': ['error'],
+            'permissions': ['permission'],
+            'output': ['output', 'system'],
+        };
+        const allowedTypes = filterMap[activeLogFilter] || [];
+        if (allowedTypes.includes(type)) {
+            card.classList.remove('filtered-out');
+        } else {
+            card.classList.add('filtered-out');
+        }
+    });
+}
+
+/**
+ * Setup log filter bar handlers and show/hide based on team presence.
+ */
+function setupLogFilterBar() {
+    const filterBar = document.getElementById('logFilterBar');
+    if (!filterBar) return;
+
+    // Type filter buttons
+    filterBar.querySelectorAll('.log-type-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            filterBar.querySelectorAll('.log-type-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            activeLogFilter = btn.dataset.type;
+            applyLogFilter();
+        });
+    });
+
+    // Agent filter (populate from team state)
+    const agentSelect = document.getElementById('logAgentFilter');
+    if (agentSelect) {
+        agentSelect.addEventListener('change', () => {
+            // Agent filtering is a stretch goal — for now just re-apply type filter
+            applyLogFilter();
+        });
+    }
+}
+
+/**
+ * Show/hide filter bar based on team presence (only useful with multi-agent).
+ */
+function updateLogFilterBarVisibility() {
+    const filterBar = document.getElementById('logFilterBar');
+    if (!filterBar) return;
+    if (teamState && teamState.has_team) {
+        filterBar.classList.remove('hidden');
+    } else {
+        filterBar.classList.add('hidden');
+    }
+}
 
 async function loadLogContent() {
     if (!logContent) return;
@@ -5460,6 +6088,9 @@ async function renderLogEntriesChunked(messages, cached, signal, contentOrMessag
 function createLogCard(msg) {
     const card = document.createElement('div');
     card.className = `log-card ${msg.role === 'user' ? 'user' : 'assistant'}`;
+
+    // Tag for filtering
+    card.dataset.logType = classifyLogEntry(msg);
 
     const header = document.createElement('div');
     header.className = 'log-card-header';
@@ -10561,13 +11192,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupChallenge();
     setupViewToggle();
     setupSwipeNavigation();
-    updateTabIndicator();  // Create initial dots dynamically
+    setupViewSwitcher();
+    updateViewSwitcher();  // Set initial view switcher state
     setupTranscriptSearch();
     startActivityUpdates();
     setupQueue();
     setupCollapseHandler();
     setupSuperCollapseHandler();
     setupScrollTracking();
+    setupLogFilterBar();
     setupPlanPreviewHandler();
     setupDocsButton();
     setupPreviewHandlers();
@@ -10576,6 +11209,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupDirtyChoiceModals();
     setupPermissionBanner();
     setupVoiceInput();
+
+    // Reconnect badge click handler
+    const reconnectBadge = document.getElementById('reconnectBadge');
+    if (reconnectBadge) {
+        reconnectBadge.addEventListener('click', () => {
+            if (typeof manualReconnect === 'function') manualReconnect();
+        });
+    }
 
     // Dispatch bar handlers
     const dispatchBtn = document.getElementById('dispatchBtn');

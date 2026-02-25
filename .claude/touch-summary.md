@@ -4,6 +4,26 @@ Append-only log of implementation batches.
 
 ---
 
+## 2026-02-25: Mobile Layout Hierarchy — Urgency-Driven Team UI
+
+**Goal:** Reimpliment mobile UI with information hierarchy where attention flows based on urgency.
+
+### Files Changed
+- `mobile_terminal/static/index.html` — DOM restructure (status strip → view switcher → banners → views → action bar), system status strip, connection banner, log filter bar, terminal agent selector
+- `mobile_terminal/static/styles.css` — View switcher, team sections, card redesign with badges, urgency visual weights, permission action buttons, system status strip (48px), action bar, log filter bar, terminal agent selector, connection state banners, reduced-motion support
+- `mobile_terminal/static/terminal.js` — UIState mapping layer (deriveUIState, deriveSystemSummary), view switcher logic, section-based team rendering, badge-driven cards, contextual action bar, system status updates, log event classifier + filtering, terminal agent selector, connection state banners
+
+### New Files
+None (all edits to existing files)
+
+### Risks / Follow-ups
+- Legacy viewBar hidden but still in DOM for JS references — can be fully removed when action bar delegates are verified
+- Log filter "agent" dropdown not yet wired to actual agent filtering (type filtering works)
+- Dispatch bottom sheet (Phase 3c spec) deferred — uses existing dispatch bar for now
+- Log view restructuring is client-side filtering only — no server-side event classification yet
+
+---
+
 ## 2026-02-25: Agent Driver Layer — Make MTO Agent-Agnostic
 
 **Goal:** Introduce pluggable AgentDriver layer separating terminal orchestration from agent semantics. Support Claude, Codex, Gemini CLI, or any agent with graceful degradation.

@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=156">
+    <link rel="stylesheet" href="/static/styles.css?v=157">
 </head>
 <body>
     <div class="app">
@@ -54,6 +54,27 @@
             </div>
         </header>
 
+        <!-- Agent status strip (single-agent mode, hidden when team present) -->
+        <div id="agentStatusStrip" class="agent-status-strip hidden">
+            <span id="agentStatusDot" class="status-dot"></span>
+            <span id="agentStatusPhase" class="status-phase"></span>
+            <span id="agentStatusDetail" class="status-detail"></span>
+            <button id="agentStatusAction" class="status-action-btn hidden"></button>
+        </div>
+
+        <!-- System status strip (team mode) -->
+        <div id="systemStatusStrip" class="system-status-strip hidden">
+            <div class="status-left">
+                <span id="systemStateIcon" class="system-state-icon"></span>
+                <span id="systemSummary" class="system-summary"></span>
+            </div>
+            <div class="status-right">
+                <span id="leaderState" class="leader-state hidden"></span>
+                <span id="reconnectBadge" class="reconnect-badge hidden">Reconnect</span>
+                <span id="approvalCount" class="approval-count hidden"></span>
+            </div>
+        </div>
+
         <!-- Agent crash banner -->
         <div id="agentCrashBanner" class="agent-crash-banner hidden">
             <span class="agent-crash-text"><span id="agentCrashMsg">Agent has stopped. Respawn?</span></span>
@@ -61,13 +82,18 @@
             <button id="agentCrashDismissBtn" class="agent-crash-dismiss-btn">&times;</button>
         </div>
 
+        <!-- Connection state banner (visible on disconnect/reconnect) -->
+        <div id="connectionBanner" class="connection-banner hidden">
+            <span id="connectionBannerIcon" class="connection-banner-icon"></span>
+            <span id="connectionBannerText" class="connection-banner-text">Connection lost</span>
+            <button id="connectionBannerAction" class="connection-banner-action hidden">Reconnect</button>
+        </div>
 
-        <!-- Agent status strip -->
-        <div id="agentStatusStrip" class="agent-status-strip hidden">
-            <span id="agentStatusDot" class="status-dot"></span>
-            <span id="agentStatusPhase" class="status-phase"></span>
-            <span id="agentStatusDetail" class="status-detail"></span>
-            <button id="agentStatusAction" class="status-action-btn hidden"></button>
+        <!-- View switcher (Team / Log / Terminal) -->
+        <div id="viewSwitcher" class="view-switcher hidden">
+            <button class="view-tab active" data-view="team">Team</button>
+            <button class="view-tab" data-view="log">Log</button>
+            <button class="view-tab" data-view="terminal">Terminal</button>
         </div>
 
         <!-- Preview mode banner -->
@@ -106,6 +132,17 @@
 
         <!-- Log view: Log + Command input (primary view) -->
         <div id="logView" class="log-view">
+            <div id="logFilterBar" class="log-filter-bar hidden">
+                <select id="logAgentFilter" class="log-agent-filter">
+                    <option value="all">All Agents</option>
+                </select>
+                <div class="log-filter-types">
+                    <button class="log-type-btn active" data-type="all">All</button>
+                    <button class="log-type-btn" data-type="errors">Errors</button>
+                    <button class="log-type-btn" data-type="permissions">Permissions</button>
+                    <button class="log-type-btn" data-type="output">Output</button>
+                </div>
+            </div>
             <div id="logDebug" class="log-debug" style="display:none; padding:4px 8px; background:#333; color:#0f0; font-size:10px; font-family:monospace;"></div>
             <div id="logContent" class="log-view-content"></div>
             <!-- Prompt banner: sticky action bar for questions/confirmations -->
@@ -132,6 +169,11 @@
 
         <!-- Terminal view (secondary, swipe to access) -->
         <div id="terminalView" class="terminal-view hidden">
+            <div id="terminalAgentSelector" class="terminal-agent-selector hidden">
+                <select id="terminalAgentSelect" class="terminal-agent-select">
+                    <option value="">Select agent...</option>
+                </select>
+            </div>
             <div id="interactiveBadge" class="interactive-badge hidden">INTERACTIVE</div>
             <div id="terminal-container" class="terminal-container"></div>
             <button id="interactiveToggle" class="interactive-toggle" title="Enable raw keyboard input for vim/top/fzf">Interactive</button>
@@ -149,8 +191,8 @@
             </div>
         </div>
 
-        <!-- Tab position indicator (dots) + collapse toggle -->
-        <div id="tabIndicator" class="tab-indicator">
+        <!-- Collapse toggle for control bars -->
+        <div id="collapseToggleWrapper" class="collapse-toggle-wrapper">
             <button id="collapseToggle" class="collapse-toggle-btn" aria-label="Toggle control bars">
                 <span class="collapse-icon">&#x25B2;</span>
             </button>
@@ -174,8 +216,13 @@
             <div id="roleBar" class="role-bar"></div>
         </div>
 
-        <!-- Action bar: visible in Terminal view only -->
-        <div id="viewBar" class="view-bar">
+        <!-- Contextual action bar (dynamic content per view) -->
+        <div id="actionBar" class="action-bar hidden">
+            <!-- Populated dynamically by updateActionBar() -->
+        </div>
+
+        <!-- Legacy viewBar (hidden, buttons referenced by existing JS) -->
+        <div id="viewBar" class="view-bar hidden" style="display:none">
             <button id="drawersBtn" class="view-btn drawers-btn">•••<span id="queueBadge" class="queue-badge hidden">0</span></button>
             <button id="selectCopyBtn" class="view-btn select-btn">Select</button>
             <button id="challengeBtn" class="view-btn challenge-btn">Challenge</button>
@@ -534,7 +581,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=256"></script>
+    <script src="/static/terminal.js?v=257"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {
