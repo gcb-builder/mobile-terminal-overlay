@@ -1032,3 +1032,21 @@ Unified single button showing "repo • pane" format with sectioned dropdown:
 - Dispatch writes files to leader CWD filesystem; relies on leader Claude reading `.claude/dispatch.md` when instructed
 - `warning_main_agents` in response flags agents on main/master branch but does not block dispatch
 - Plan list cached in `dispatchPlansCache` per team view visit; not auto-refreshed between visits
+
+---
+
+## 2026-02-26: Bottom Bar Consolidation + Vertical Space Savings
+
+**Goal:** Unify bottom bar layout across all views, eliminate wasted vertical space from standalone strips and dead-band wrappers.
+
+**Files Changed:**
+- `mobile_terminal/static/index.html` — Removed collapseToggleWrapper (moved toggle inside controlBarsContainer), replaced view-switcher tabs with dots inside collapse-row, removed standalone agentStatusStrip, added headerPhaseIndicator to header-right, moved teamDispatchBar from above team cards to bottom bar area, version bumps (styles.css v160, terminal.js v262)
+- `mobile_terminal/static/styles.css` — Added .collapse-row, .view-dots/.view-dot (replaces .view-switcher/.view-tab), .header-phase/.header-phase-label (inline status), .action-bar.collapsed, .team-dispatch-bar.collapsed; removed .collapse-toggle-wrapper, .agent-status-strip replaced with header-phase; updated .collapse-toggle-btn for inline layout
+- `mobile_terminal/static/terminal.js` — Added appendStandardActionButtons() helper, unified log+terminal+team action bar buttons, toggleControlBarsCollapse() now collapses actionBar+dispatchBar too, updateViewSwitcher/setupViewSwitcher use .view-dot, updateAgentPhase targets header indicator, updateSystemStatus hides header indicator in team mode, deriveSystemSummary shows "Idle · names" when all idle, idle cards hidden when all idle (strip is sufficient), switchToTeamView shows controlBars
+
+**New Files:** None
+
+**Risks/Follow-ups:**
+- Old .status-phase, .status-detail, .status-action-btn CSS styles are dead (no HTML/JS refs) — can be cleaned up
+- View dots have 8px hit targets — may be hard to tap; consider adding padding for touch area
+- phaseIdleShowHistoryTimer variable declared but no longer used after updateAgentPhase simplification

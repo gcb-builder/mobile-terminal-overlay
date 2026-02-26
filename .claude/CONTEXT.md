@@ -3,49 +3,45 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Mobile Layout Hierarchy (Phase 1-3 complete)
-- **Last Updated:** 2026-02-25
-- **Server Version:** v257 (terminal.js), v115 (sw.js cache), v157 (styles.css)
+- **Stage:** Bottom bar consolidation complete
+- **Last Updated:** 2026-02-26
+- **Server Version:** v262 (terminal.js), v115 (sw.js cache), v160 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
 
-## Active Work: Mobile Layout Hierarchy (2026-02-25)
+## Active Work: Bottom Bar Consolidation (2026-02-26)
 
-### Feature: Urgency-Driven Mobile Layout
-Reimplemented mobile UI with information hierarchy: status strip → view switcher → sectioned team cards → contextual action bar. Attention flows top-down based on urgency.
+### Feature: Unified Bottom Bars + Vertical Space Savings
+All three views (log/terminal/team) now share identical bottom bar layout. Redundant idle indicators consolidated into system status strip.
 
-### Architecture: UIState Mapping Layer
-- `deriveUIState(agent)` — pure function mapping server data → rendering decisions
-- `deriveSystemSummary(agents, uiStates)` — system-wide status for strip
-- Section classification: permission/question → Attention, working/planning/waiting → Active, idle → Idle
-- SACRED RULE: "Needs Attention" is for actionable-by-human states ONLY
+### Changes
+- **Collapse toggle moved inside controlBarsContainer** — eliminates 32px dead-band wrapper
+- **Collapse-row:** dots (view switcher) + chevron toggle, inline at top of control bars
+- **View switcher → dots:** Compact dot indicators replace text tabs, next to collapse button
+- **Collapse hides all bottom bars:** shortcut bar + dispatch bar + action bar
+- **All views share same action bar:** •••, Select, Challenge, Compose (via `appendStandardActionButtons()`)
+- **Agent status strip → header inline:** Phase dot + label as compact pill in header-right (saves 28px)
+- **System status strip hidden when all idle? No** — shows condensed "Idle · leader, a-1, a-2"
+- **Idle cards hidden when all idle** — strip is sufficient, no big card blocks
+- **Dispatch bar moved to bottom** — between controlBars and actionBar, only visible in team view
 
-### Phase 1: Layout Skeleton + View Switcher + Team Sections
-- **View switcher:** Explicit [Team] [Log] [Terminal] segmented control (replaces dot indicators)
-- **Team sections:** Needs Attention → Active → Idle with collapsible headers
-- **Contextual action bar:** Dynamic per view (Dispatch/Message for team, Select/Compose for terminal, approval banner when pending)
-- **DOM reorder:** header → statusStrip → crashBanner → viewSwitcher → banners → views → terminalBlock → controlBars → actionBar
-
-### Phase 2: Card Redesign + Status Strip Enhancement
-- **Card redesign:** Phase badge + name + subtitle + 2-line output + branch footer
-- **Urgency visual weight:** critical (red border + shadow), high (amber border), low (muted)
-- **Red accent rule:** Max 1 red element per card (border + badge only)
-- **Permission buttons:** Full-width 48px Allow/Deny, disable on click with loading text
-- **System status strip:** 48px, system summary, leader state pill, approval count badge, reconnect badge
-
-### Phase 3: Log View + Terminal Polish + Connection States
-- **Log filter bar:** Agent selector + type filters (All/Errors/Permissions/Output)
-- **Event classifier:** `classifyLogEntry()` tags entries for filtering
-- **Terminal agent selector:** Dropdown at top of terminal view when team present
-- **Connection banners:** Red (disconnected), amber+spinner (reconnecting), blue (degraded)
-
-### Files Changed
-- `mobile_terminal/static/index.html` — DOM restructure, view switcher, system status strip, connection banner, log filter bar, terminal agent selector, action bar
-- `mobile_terminal/static/styles.css` — View switcher, team sections, card redesign, badge colors, urgency weights, permission actions, system status strip, action bar, log filter bar, terminal agent selector, connection banners, reduced-motion
-- `mobile_terminal/static/terminal.js` — deriveUIState(), deriveSystemSummary(), updateViewSwitcher(), setupViewSwitcher(), renderTeamCards() → section-based, renderTeamSection(), createTeamCard() → badge-driven, updateSystemStatus(), updateActionBar(), scrollToFirstAttention(), classifyLogEntry(), applyLogFilter(), setupLogFilterBar(), updateTerminalAgentSelector(), updateConnectionBanner()
+### DOM Order (bottom bars)
+```
+terminalBlock         ← input + send
+controlBarsContainer  ← collapse-row (dots + ▲) + inputBar + controlBar + roleBar
+teamDispatchBar       ← plan select + dispatch, message + send (team only)
+actionBar             ← •••, Select, Challenge, Compose (all views)
+```
 
 ### Legacy viewBar
 - Hidden with `style="display:none"`, buttons still exist for JS references (drawersBtn, selectCopyBtn, challengeBtn, composeBtn)
 - Action bar delegates clicks to legacy buttons via `.click()`
+
+---
+
+## Previous: Urgency-Driven Mobile Layout (2026-02-25)
+
+### Feature: Urgency-Driven Mobile Layout (Phase 1-3)
+Reimplemented mobile UI with information hierarchy: status strip → view switcher → sectioned team cards → contextual action bar. UIState mapping layer: `deriveUIState(agent)` pure function + `deriveSystemSummary(agents, uiStates)`. Section classification: permission/question → Attention, working/planning/waiting → Active, idle → Idle. SACRED RULE: "Needs Attention" is for actionable-by-human states ONLY.
 
 ---
 
