@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=157">
+    <link rel="stylesheet" href="/static/styles.css?v=160">
 </head>
 <body>
     <div class="app">
@@ -44,6 +44,10 @@
                 <div id="targetDropdown" class="target-dropdown hidden"></div>
             </div>
             <div class="header-right">
+                <span id="headerPhaseIndicator" class="header-phase hidden">
+                    <span id="headerPhaseDot" class="status-dot idle"></span>
+                    <span id="headerPhaseLabel" class="header-phase-label">Idle</span>
+                </span>
                 <button id="docsBtn" class="docs-btn" title="View project docs">Docs</button>
                 <span id="lastActivity" class="last-activity" title="Last activity">--</span>
                 <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh">
@@ -53,14 +57,6 @@
                 <span id="connectionIndicator" class="connection-indicator connected" title="Connected"></span>
             </div>
         </header>
-
-        <!-- Agent status strip (single-agent mode, hidden when team present) -->
-        <div id="agentStatusStrip" class="agent-status-strip hidden">
-            <span id="agentStatusDot" class="status-dot"></span>
-            <span id="agentStatusPhase" class="status-phase"></span>
-            <span id="agentStatusDetail" class="status-detail"></span>
-            <button id="agentStatusAction" class="status-action-btn hidden"></button>
-        </div>
 
         <!-- System status strip (team mode) -->
         <div id="systemStatusStrip" class="system-status-strip hidden">
@@ -89,12 +85,7 @@
             <button id="connectionBannerAction" class="connection-banner-action hidden">Reconnect</button>
         </div>
 
-        <!-- View switcher (Team / Log / Terminal) -->
-        <div id="viewSwitcher" class="view-switcher hidden">
-            <button class="view-tab active" data-view="team">Team</button>
-            <button class="view-tab" data-view="log">Log</button>
-            <button class="view-tab" data-view="terminal">Terminal</button>
-        </div>
+        <!-- View switcher moved to collapse-row inside controlBarsContainer -->
 
         <!-- Preview mode banner -->
         <div id="previewBanner" class="preview-banner hidden">
@@ -149,21 +140,6 @@
             <div id="promptBanner" class="prompt-banner"></div>
         </div>
 
-        <!-- Team dispatch bar (above team cards, not destroyed by renderTeamCards) -->
-        <div id="teamDispatchBar" class="team-dispatch-bar hidden">
-            <div class="dispatch-row">
-                <select id="dispatchPlanSelect" class="dispatch-plan-select">
-                    <option value="">Select plan...</option>
-                </select>
-                <button id="dispatchBtn" class="team-card-btn dispatch" disabled>Dispatch</button>
-            </div>
-            <div class="dispatch-row">
-                <input type="text" id="leaderMessageInput" class="leader-message-input"
-                       placeholder="Message leader..." autocomplete="off">
-                <button id="leaderMessageBtn" class="team-card-btn" disabled>Send</button>
-            </div>
-        </div>
-
         <!-- Team view (dynamic, appears when team detected) -->
         <div id="teamView" class="team-view hidden"></div>
 
@@ -191,15 +167,18 @@
             </div>
         </div>
 
-        <!-- Collapse toggle for control bars -->
-        <div id="collapseToggleWrapper" class="collapse-toggle-wrapper">
-            <button id="collapseToggle" class="collapse-toggle-btn" aria-label="Toggle control bars">
-                <span class="collapse-icon">&#x25B2;</span>
-            </button>
-        </div>
-
         <!-- Shortcut bar (Control mode only) -->
         <div id="controlBarsContainer" class="control-bars-container hidden">
+            <div class="collapse-row">
+                <div id="viewSwitcher" class="view-dots hidden">
+                    <button class="view-dot active" data-view="team"></button>
+                    <button class="view-dot" data-view="log"></button>
+                    <button class="view-dot" data-view="terminal"></button>
+                </div>
+                <button id="collapseToggle" class="collapse-toggle-btn" aria-label="Toggle control bars">
+                    <span class="collapse-icon">&#x25B2;</span>
+                </button>
+            </div>
             <div id="inputBar" class="input-bar">
                 <button class="quick-btn" data-key="esc">Esc</button>
                 <button class="quick-btn btn-clear" data-key="clear" title="Clear input">X</button>
@@ -214,6 +193,21 @@
             </div>
             <div id="controlBar" class="control-bar hidden"></div>
             <div id="roleBar" class="role-bar"></div>
+        </div>
+
+        <!-- Team dispatch bar (shown in team view, between shortcuts and action bar) -->
+        <div id="teamDispatchBar" class="team-dispatch-bar hidden">
+            <div class="dispatch-row">
+                <select id="dispatchPlanSelect" class="dispatch-plan-select">
+                    <option value="">Select plan...</option>
+                </select>
+                <button id="dispatchBtn" class="team-card-btn dispatch" disabled>Dispatch</button>
+            </div>
+            <div class="dispatch-row">
+                <input type="text" id="leaderMessageInput" class="leader-message-input"
+                       placeholder="Message leader..." autocomplete="off">
+                <button id="leaderMessageBtn" class="team-card-btn" disabled>Send</button>
+            </div>
         </div>
 
         <!-- Contextual action bar (dynamic content per view) -->
@@ -581,7 +575,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/terminal.js?v=257"></script>
+    <script src="/static/terminal.js?v=262"></script>
     <script>
         // Register service worker for PWA standalone mode
         if ('serviceWorker' in navigator) {

@@ -515,20 +515,25 @@ html, body {
 }
 
 /* Agent status strip */
-.agent-status-strip {
-    display: flex;
+/* Header-inline phase indicator (replaces standalone agent-status-strip) */
+.header-phase {
+    display: inline-flex;
     align-items: center;
-    gap: 8px;
-    padding: 4px 12px;
-    height: 24px;
-    background: var(--bg-secondary, #161b22);
-    border-bottom: 1px solid var(--border, #30363d);
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.06);
     font-size: 11px;
-    flex-shrink: 0;
+    line-height: 1;
 }
 
-.agent-status-strip.hidden {
+.header-phase.hidden {
     display: none;
+}
+
+.header-phase-label {
+    color: var(--text-secondary);
+    white-space: nowrap;
 }
 
 .status-dot {
@@ -1747,19 +1752,27 @@ html, body {
     font-size: 18px;
 }
 
-/* Collapse toggle button in tab indicator */
+/* Collapse row: dots + toggle button */
+.collapse-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 4px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Collapse toggle button (inside collapse row) */
 .collapse-toggle-btn {
     display: flex;
     align-items: center;
     justify-content: center;
     width: 32px;
     height: 24px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    background: transparent;
+    border: none;
     color: var(--text-secondary);
     cursor: pointer;
-    margin-left: 12px;
     touch-action: manipulation;
     -webkit-touch-callout: none;
     user-select: none;
@@ -1793,7 +1806,9 @@ html, body {
     display: none;
 }
 
-.control-bars-container.collapsed {
+.control-bars-container.collapsed .input-bar,
+.control-bars-container.collapsed .control-bar,
+.control-bars-container.collapsed .role-bar {
     display: none;
 }
 
@@ -1997,63 +2012,40 @@ html, body {
     display: none;
 }
 
-/* View switcher — explicit segmented control */
-.view-switcher {
+/* View dots — compact indicator next to collapse toggle */
+.view-dots {
     display: flex;
-    gap: 2px;
-    padding: 6px 12px;
-    background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
+    gap: 8px;
+    align-items: center;
 }
 
-.view-switcher.hidden {
+.view-dots.hidden {
     display: none;
 }
 
-.view-tab {
-    flex: 1;
-    min-height: 36px;
-    padding: 6px 12px;
-    background: transparent;
+.view-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted, #6e7681);
     border: none;
-    border-radius: 6px;
-    color: var(--text-secondary);
-    font-size: 13px;
-    font-weight: 500;
+    padding: 0;
     cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-    user-select: none;
+    transition: background 0.15s, transform 0.15s;
+    touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
 }
 
-.view-tab.active {
-    background: var(--accent);
-    color: white;
-    font-weight: 600;
+.view-dot.active {
+    background: var(--accent, #58a6ff);
+    transform: scale(1.3);
 }
 
-.view-tab:not(.active):active {
-    background: var(--bg-tertiary);
+.view-dot:not(.active):active {
+    background: var(--text-secondary);
 }
 
-.view-tab[data-view="terminal"] {
-    opacity: 0.7;
-}
-
-.view-tab[data-view="terminal"].active {
-    opacity: 1;
-}
-
-/* Collapse toggle wrapper (moved out of old tab indicator) */
-.collapse-toggle-wrapper {
-    display: flex;
-    justify-content: center;
-    padding: 4px 0;
-    background: var(--bg-secondary);
-    border-top: 1px solid var(--border);
-    flex-shrink: 0;
-}
+/* (collapse-toggle-wrapper removed — toggle is now inside controlBarsContainer) */
 
 /* ===== Contextual Action Bar ===== */
 .action-bar {
@@ -2067,7 +2059,8 @@ html, body {
     align-items: center;
 }
 
-.action-bar.hidden {
+.action-bar.hidden,
+.action-bar.collapsed {
     display: none;
 }
 
@@ -6863,7 +6856,8 @@ html, body {
     border-bottom: 1px solid var(--border);
 }
 
-.team-dispatch-bar.hidden {
+.team-dispatch-bar.hidden,
+.team-dispatch-bar.collapsed {
     display: none;
 }
 

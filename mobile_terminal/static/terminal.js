@@ -1708,6 +1708,16 @@ function toggleControlBarsCollapse() {
     // Update button icon state
     collapseToggle.classList.toggle('collapsed', isCollapsed);
 
+    // Also collapse/expand the action bar and dispatch bar
+    const actionBar = document.getElementById('actionBar');
+    if (actionBar) {
+        actionBar.classList.toggle('collapsed', isCollapsed);
+    }
+    const dispatchBar = document.getElementById('teamDispatchBar');
+    if (dispatchBar && !dispatchBar.classList.contains('hidden')) {
+        dispatchBar.classList.toggle('collapsed', isCollapsed);
+    }
+
     // When expanding in log or terminal view, also remove 'hidden' to ensure visibility
     if (!isCollapsed && (currentView === 'log' || currentView === 'terminal')) {
         controlBarsContainer.classList.remove('hidden');
@@ -2733,12 +2743,10 @@ function stopAgentHealthPolling() {
  * Fetch Claude phase and update status strip
  */
 async function updateAgentPhase() {
-    const strip = document.getElementById('agentStatusStrip');
-    const dot = document.getElementById('agentStatusDot');
-    const phaseEl = document.getElementById('agentStatusPhase');
-    const detailEl = document.getElementById('agentStatusDetail');
-    const actionBtn = document.getElementById('agentStatusAction');
-    if (!strip) return;
+    const indicator = document.getElementById('headerPhaseIndicator');
+    const dot = document.getElementById('headerPhaseDot');
+    const labelEl = document.getElementById('headerPhaseLabel');
+    if (!indicator) return;
 
     try {
         const paneParam = activeTarget ? `&pane_id=${encodeURIComponent(activeTarget)}` : '';
@@ -2752,17 +2760,17 @@ async function updateAgentPhase() {
         const phase = data.phase;
         const agentRunning = data.claude_running;
 
-        // Hide strip when idle and agent not running
+        // Hide indicator when idle and agent not running
         if (phase === 'idle' && !agentRunning) {
-            strip.classList.add('hidden');
+            indicator.classList.add('hidden');
             return;
         }
 
-        // Show strip
-        strip.classList.remove('hidden');
+        // Show indicator
+        indicator.classList.remove('hidden');
 
         // Update dot
-        dot.className = 'status-dot ' + phase;
+        if (dot) dot.className = 'status-dot ' + phase;
 
         // Phase labels
         const phaseLabels = {
@@ -2772,53 +2780,21 @@ async function updateAgentPhase() {
             running_task: 'Agent',
             idle: 'Idle',
         };
-        phaseEl.textContent = phaseLabels[phase] || phase;
+        if (labelEl) labelEl.textContent = phaseLabels[phase] || phase;
 
-        // Detail text
-        detailEl.textContent = data.detail || '';
-
-        // Action button logic
-        actionBtn.classList.add('hidden');
-        if (phase === 'waiting') {
-            actionBtn.textContent = 'Approve';
-            actionBtn.classList.remove('hidden');
-            actionBtn.onclick = () => {
-                // Focus terminal for input
-                if (term) term.focus();
-                // Switch to terminal view if on log view
-                const termView = document.getElementById('terminalView');
-                const logViewEl = document.getElementById('logView');
-                if (termView && logViewEl && termView.classList.contains('hidden')) {
-                    logViewEl.classList.add('hidden');
-                    termView.classList.remove('hidden');
-                    outputMode = 'full';
-                }
-            };
-        } else if (phase === 'idle' && prevPhase && prevPhase !== 'idle') {
-            // Briefly show "Open History" after transition to idle
-            actionBtn.textContent = 'History';
-            actionBtn.classList.remove('hidden');
-            actionBtn.onclick = () => {
-                // Open drawer to history tab
-                const drawer = document.getElementById('previewDrawer');
-                if (drawer) {
-                    drawer.classList.remove('hidden');
-                    drawerOpen = true;
-                    // Activate history tab
-                    document.querySelectorAll('.rollback-tab').forEach(t => t.classList.remove('active'));
-                    document.querySelectorAll('.rollback-tab-content').forEach(c => c.classList.add('hidden'));
-                    const histTab = document.querySelector('.rollback-tab[data-tab="history"]');
-                    const histContent = document.getElementById('historyTabContent');
-                    if (histTab) histTab.classList.add('active');
-                    if (histContent) histContent.classList.remove('hidden');
-                }
-            };
-            // Auto-hide after 30s
-            if (phaseIdleShowHistoryTimer) clearTimeout(phaseIdleShowHistoryTimer);
-            phaseIdleShowHistoryTimer = setTimeout(() => {
-                actionBtn.classList.add('hidden');
-                phaseIdleShowHistoryTimer = null;
-            }, 30000);
+        // History action on idle transition (open drawer)
+        if (phase === 'idle' && prevPhase && prevPhase !== 'idle') {
+            const drawer = document.getElementById('previewDrawer');
+            if (drawer) {
+                drawer.classList.remove('hidden');
+                drawerOpen = true;
+                document.querySelectorAll('.rollback-tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.rollback-tab-content').forEach(c => c.classList.add('hidden'));
+                const histTab = document.querySelector('.rollback-tab[data-tab="history"]');
+                const histContent = document.getElementById('historyTabContent');
+                if (histTab) histTab.classList.add('active');
+                if (histContent) histContent.classList.remove('hidden');
+            }
         }
 
     } catch (error) {
@@ -4464,9 +4440,10 @@ function deriveSystemSummary(agents, uiStates) {
         text = runningCount + ' running';
         if (idleCount > 0) text += ' \u00B7 ' + idleCount + ' idle';
     } else {
-        icon = '\u{1F7E2}';
-        level = 'ok';
-        text = 'All idle';
+        icon = '\u26AA';
+        level = 'idle';
+        const names = agents.map(a => a.agent_name || a.agent_type || '?');
+        text = 'Idle \u00B7 ' + names.join(', ');
     }
 
     return { icon, text, level, attentionCount, runningCount };
@@ -4571,7 +4548,7 @@ function updateViewSwitcher() {
     const order = getTabOrder();
     const hasTeam = teamState && teamState.has_team;
 
-    // Show switcher when team is present, hide otherwise
+    // Show dots when team is present, hide otherwise
     if (hasTeam) {
         switcher.classList.remove('hidden');
     } else {
@@ -4579,12 +4556,11 @@ function updateViewSwitcher() {
         return;
     }
 
-    // Update active state on all tabs
-    switcher.querySelectorAll('.view-tab').forEach(tab => {
-        const view = tab.dataset.view;
-        tab.classList.toggle('active', view === currentView);
-        // Hide tabs not in current order (e.g., team tab when no team)
-        tab.style.display = order.includes(view) ? '' : 'none';
+    // Update active state on all dots
+    switcher.querySelectorAll('.view-dot').forEach(dot => {
+        const view = dot.dataset.view;
+        dot.classList.toggle('active', view === currentView);
+        dot.style.display = order.includes(view) ? '' : 'none';
     });
 }
 
@@ -4602,10 +4578,10 @@ function setupViewSwitcher() {
 
     let switchHandled = false;
     switcher.addEventListener('click', (e) => {
-        const tab = e.target.closest('.view-tab');
-        if (!tab || switchHandled) return;
+        const dot = e.target.closest('.view-dot');
+        if (!dot || switchHandled) return;
         switchHandled = true;
-        const view = tab.dataset.view;
+        const view = dot.dataset.view;
         if (view && view !== currentView) {
             switchToView(view);
         }
@@ -4797,11 +4773,10 @@ function switchToTeamView() {
     hideAllContainers();
     const teamViewEl = document.getElementById('teamView');
     if (teamViewEl) teamViewEl.classList.remove('hidden');
-    // Show dispatch bar
-    const dispatchBar = document.getElementById('teamDispatchBar');
-    if (dispatchBar) dispatchBar.classList.remove('hidden');
-    // Hide controlBars — no Select/Compose needed in team view
-    controlBarsContainer.classList.add('hidden');
+    // Show same bottom bars as log/terminal
+    if (isControlUnlocked) {
+        controlBarsContainer.classList.remove('hidden');
+    }
     updateViewSwitcher();
     updateActionBar();
     // Lightweight mode -- no xterm rendering
@@ -4877,14 +4852,16 @@ function renderTeamCards(state, captures) {
 
     teamViewEl.innerHTML = '';
 
+    const allIdle = attention.length === 0 && active.length === 0;
+
     if (attention.length) {
         teamViewEl.appendChild(renderTeamSection('Needs Attention', attention, captures, 'attention'));
     }
     if (active.length) {
         teamViewEl.appendChild(renderTeamSection('Active', active, captures, 'active'));
     }
-    if (idle.length) {
-        // Auto-expand if only 1 idle agent, collapse if > 1
+    if (idle.length && !allIdle) {
+        // Only show idle section when there's mixed state — strip handles all-idle
         const collapsed = idle.length > 1;
         teamViewEl.appendChild(renderTeamSection('Idle', idle, captures, 'idle', collapsed));
     }
@@ -4971,9 +4948,9 @@ function renderTeamSection(title, uiPairs, captures, sectionType, collapsed = fa
 function updateSystemStatus(summary) {
     if (!summary) return;
 
-    // Hide single-agent strip when using system summary
-    const agentStrip = document.getElementById('agentStatusStrip');
-    if (agentStrip) agentStrip.classList.add('hidden');
+    // Hide single-agent header indicator when using system summary
+    const headerPhase = document.getElementById('headerPhaseIndicator');
+    if (headerPhase) headerPhase.classList.add('hidden');
 
     const strip = document.getElementById('systemStatusStrip');
     if (!strip) return;
@@ -5019,6 +4996,35 @@ function updateSystemStatus(summary) {
 }
 
 /**
+ * Append standard action buttons (Drawer, Select, Challenge, Compose) to a bar element.
+ */
+function appendStandardActionButtons(bar) {
+    const btn1 = document.createElement('button');
+    btn1.className = 'action-bar-btn';
+    btn1.innerHTML = '&bull;&bull;&bull;';
+    btn1.addEventListener('click', () => { if (typeof openDrawer === 'function') openDrawer(); });
+    bar.appendChild(btn1);
+
+    const btn2 = document.createElement('button');
+    btn2.className = 'action-bar-btn';
+    btn2.textContent = 'Select';
+    btn2.addEventListener('click', () => { if (selectCopyBtn) selectCopyBtn.click(); });
+    bar.appendChild(btn2);
+
+    const btn3 = document.createElement('button');
+    btn3.className = 'action-bar-btn';
+    btn3.textContent = 'Challenge';
+    btn3.addEventListener('click', () => { if (challengeBtn) challengeBtn.click(); });
+    bar.appendChild(btn3);
+
+    const btn4 = document.createElement('button');
+    btn4.className = 'action-bar-btn';
+    btn4.textContent = 'Compose';
+    btn4.addEventListener('click', () => { if (composeBtn) composeBtn.click(); });
+    bar.appendChild(btn4);
+}
+
+/**
  * Update the contextual action bar based on current view and system state.
  * Called on view switch and team state update.
  */
@@ -5032,7 +5038,7 @@ function updateActionBar() {
     if (currentView === 'team' && hasTeam) {
         const summary = lastSystemSummary;
         if (summary && summary.attentionCount > 0) {
-            // Show approval banner
+            // Show approval banner above standard buttons
             const banner = document.createElement('div');
             banner.className = 'approval-banner';
 
@@ -5049,74 +5055,17 @@ function updateActionBar() {
             banner.appendChild(btn);
 
             bar.appendChild(banner);
-        } else {
-            // Show Dispatch + Message buttons
-            const dispatchBtn = document.createElement('button');
-            dispatchBtn.className = 'action-bar-btn';
-            dispatchBtn.textContent = 'Dispatch Plan';
-            dispatchBtn.addEventListener('click', () => {
-                // Open the dispatch bar's plan select
-                const dispatchBar = document.getElementById('teamDispatchBar');
-                if (dispatchBar) {
-                    dispatchBar.classList.remove('hidden');
-                    const sel = document.getElementById('dispatchPlanSelect');
-                    if (sel) sel.focus();
-                }
-            });
-            bar.appendChild(dispatchBtn);
-
-            const msgBtn = document.createElement('button');
-            msgBtn.className = 'action-bar-btn';
-            msgBtn.textContent = 'Message Leader';
-            msgBtn.addEventListener('click', () => {
-                const input = document.getElementById('leaderMessageInput');
-                if (input) {
-                    const dispatchBar = document.getElementById('teamDispatchBar');
-                    if (dispatchBar) dispatchBar.classList.remove('hidden');
-                    input.focus();
-                }
-            });
-            bar.appendChild(msgBtn);
         }
+        // Same standard buttons as log/terminal
+        appendStandardActionButtons(bar);
         bar.classList.remove('hidden');
-    } else if (currentView === 'terminal') {
-        // Terminal view: existing buttons via legacy viewBar references
-        const drawersBtn2 = document.createElement('button');
-        drawersBtn2.className = 'action-bar-btn';
-        drawersBtn2.innerHTML = '&bull;&bull;&bull;';
-        drawersBtn2.addEventListener('click', () => {
-            if (typeof openDrawer === 'function') openDrawer();
-        });
-        bar.appendChild(drawersBtn2);
-
-        const selectBtn2 = document.createElement('button');
-        selectBtn2.className = 'action-bar-btn';
-        selectBtn2.textContent = 'Select';
-        selectBtn2.addEventListener('click', () => {
-            if (selectCopyBtn) selectCopyBtn.click();
-        });
-        bar.appendChild(selectBtn2);
-
-        const challengeBtn2 = document.createElement('button');
-        challengeBtn2.className = 'action-bar-btn';
-        challengeBtn2.textContent = 'Challenge';
-        challengeBtn2.addEventListener('click', () => {
-            if (challengeBtn) challengeBtn.click();
-        });
-        bar.appendChild(challengeBtn2);
-
-        const composeBtn2 = document.createElement('button');
-        composeBtn2.className = 'action-bar-btn';
-        composeBtn2.textContent = 'Compose';
-        composeBtn2.addEventListener('click', () => {
-            if (composeBtn) composeBtn.click();
-        });
-        bar.appendChild(composeBtn2);
-
+        // Show dispatch bar inline
+        const dispatchBar = document.getElementById('teamDispatchBar');
+        if (dispatchBar) dispatchBar.classList.remove('hidden');
+    } else if (currentView === 'terminal' || currentView === 'log') {
+        // Terminal + Log view: same button bar
+        appendStandardActionButtons(bar);
         bar.classList.remove('hidden');
-    } else if (currentView === 'log') {
-        // Log view: minimal or hidden — control bars handle this
-        bar.classList.add('hidden');
     } else {
         bar.classList.add('hidden');
     }
