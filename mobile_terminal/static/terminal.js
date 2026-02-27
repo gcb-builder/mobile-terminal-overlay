@@ -2787,22 +2787,7 @@ async function updateAgentPhase() {
         };
         if (labelEl) labelEl.textContent = phaseLabels[phase] || phase;
 
-        // History action on idle transition (open drawer)
-        if (phase === 'idle' && prevPhase && prevPhase !== 'idle') {
-            const drawer = document.getElementById('previewDrawer');
-            const backdrop = document.getElementById('drawerBackdrop');
-            if (drawer) {
-                drawer.classList.remove('hidden');
-                if (backdrop) backdrop.classList.remove('hidden');
-                drawerOpen = true;
-                document.querySelectorAll('.rollback-tab').forEach(t => t.classList.remove('active'));
-                document.querySelectorAll('.rollback-tab-content').forEach(c => c.classList.add('hidden'));
-                const histTab = document.querySelector('.rollback-tab[data-tab="history"]');
-                const histContent = document.getElementById('historyTabContent');
-                if (histTab) histTab.classList.add('active');
-                if (histContent) histContent.classList.remove('hidden');
-            }
-        }
+        // (Auto-open drawer on idle transition removed — was disruptive)
 
     } catch (error) {
         console.debug('Phase update error:', error);
