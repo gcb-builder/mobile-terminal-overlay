@@ -2015,7 +2015,7 @@ html, body {
 /* View dots — compact indicator next to collapse toggle */
 .view-dots {
     display: flex;
-    gap: 8px;
+    gap: 0;
     align-items: center;
 }
 
@@ -2024,12 +2024,14 @@ html, body {
 }
 
 .view-dot {
-    width: 8px;
-    height: 8px;
+    /* Visual dot is 10px, but touch target is 44px via padding */
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     background: var(--text-muted, #6e7681);
     border: none;
-    padding: 0;
+    padding: 17px;
+    background-clip: content-box;
     cursor: pointer;
     transition: background 0.15s, transform 0.15s;
     touch-action: manipulation;
@@ -2038,11 +2040,13 @@ html, body {
 
 .view-dot.active {
     background: var(--accent, #58a6ff);
-    transform: scale(1.3);
+    background-clip: content-box;
+    transform: scale(1.2);
 }
 
 .view-dot:not(.active):active {
     background: var(--text-secondary);
+    background-clip: content-box;
 }
 
 /* (collapse-toggle-wrapper removed — toggle is now inside controlBarsContainer) */
