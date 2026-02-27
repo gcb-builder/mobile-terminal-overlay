@@ -732,6 +732,30 @@ const ACTIVE_PROMPT_LINES = 15;  // Lines to capture from current screen
 const ACTIVE_PROMPT_INTERVAL = 1000;  // Wait 1s between requests
 let activePromptController = null;  // AbortController for singleflight loop
 
+/**
+ * Quick busy-state re-check after sending a command.
+ * Polls at 300ms intervals (up to 3 tries) to clear terminalBusy fast,
+ * so the send button doesn't stay stuck as "Q" for a full poll cycle.
+ */
+function scheduleEarlyBusyCheck(attempt = 0) {
+    if (!terminalBusy || attempt >= 3) return;
+    setTimeout(async () => {
+        if (!terminalBusy) return;  // Already cleared by normal poll
+        try {
+            const resp = await apiFetch(`/api/terminal/capture?token=${token}&lines=${ACTIVE_PROMPT_LINES}`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (!data.content) return;
+            const content = stripAnsi(data.content);
+            if (extractPromptContent(content) !== null) {
+                setTerminalBusy(false);
+                return;
+            }
+        } catch (e) { /* ignore */ }
+        scheduleEarlyBusyCheck(attempt + 1);
+    }, 300);
+}
+
 async function refreshActivePrompt(signal) {
     if (!activePromptContent) return;
 
@@ -7956,6 +7980,7 @@ function sendLogCommand() {
     if (!command) {
         sendTextAtomic('', true);
         setTerminalBusy(true);
+        scheduleEarlyBusyCheck();
         captureSnapshot('user_send');
         return;
     }
@@ -7965,6 +7990,7 @@ function sendLogCommand() {
 
     // Mark terminal as busy after sending
     setTerminalBusy(true);
+    scheduleEarlyBusyCheck();
     captureSnapshot('user_send');
 
     // Clear input

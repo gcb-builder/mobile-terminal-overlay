@@ -1758,8 +1758,10 @@ html, body {
     align-items: center;
     justify-content: center;
     gap: 12px;
-    padding: 4px 12px;
+    padding: 0 12px;
+    height: 28px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    overflow: visible;
 }
 
 /* Collapse toggle button (inside collapse row) */
@@ -2024,29 +2026,39 @@ html, body {
 }
 
 .view-dot {
-    /* Visual dot is 10px, but touch target is 44px via padding */
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--text-muted, #6e7681);
+    /* 8px visual dot centered in a 44px touch target */
+    width: 44px;
+    height: 44px;
+    border-radius: 0;
+    background: transparent;
     border: none;
-    padding: 17px;
-    background-clip: content-box;
+    padding: 0;
     cursor: pointer;
-    transition: background 0.15s, transform 0.15s;
+    transition: transform 0.15s;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
-.view-dot.active {
+.view-dot::after {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted, #6e7681);
+    transition: background 0.15s;
+}
+
+.view-dot.active::after {
     background: var(--accent, #58a6ff);
-    background-clip: content-box;
-    transform: scale(1.2);
+    transform: scale(1.3);
 }
 
-.view-dot:not(.active):active {
+.view-dot:not(.active):active::after {
     background: var(--text-secondary);
-    background-clip: content-box;
 }
 
 /* (collapse-toggle-wrapper removed — toggle is now inside controlBarsContainer) */
