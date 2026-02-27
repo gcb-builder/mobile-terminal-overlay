@@ -2785,8 +2785,10 @@ async function updateAgentPhase() {
         // History action on idle transition (open drawer)
         if (phase === 'idle' && prevPhase && prevPhase !== 'idle') {
             const drawer = document.getElementById('previewDrawer');
+            const backdrop = document.getElementById('drawerBackdrop');
             if (drawer) {
                 drawer.classList.remove('hidden');
+                if (backdrop) backdrop.classList.remove('hidden');
                 drawerOpen = true;
                 document.querySelectorAll('.rollback-tab').forEach(t => t.classList.remove('active'));
                 document.querySelectorAll('.rollback-tab-content').forEach(c => c.classList.add('hidden'));
@@ -4546,17 +4548,16 @@ function updateViewSwitcher() {
     if (!switcher) return;
 
     const order = getTabOrder();
-    const hasTeam = teamState && teamState.has_team;
 
-    // Show dots when team is present, hide otherwise
-    if (hasTeam) {
+    // Always show dots when there are 2+ navigable views
+    if (order.length >= 2) {
         switcher.classList.remove('hidden');
     } else {
         switcher.classList.add('hidden');
         return;
     }
 
-    // Update active state on all dots
+    // Update active state on all dots, hide those not in current order
     switcher.querySelectorAll('.view-dot').forEach(dot => {
         const view = dot.dataset.view;
         dot.classList.toggle('active', view === currentView);
