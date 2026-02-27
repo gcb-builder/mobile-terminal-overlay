@@ -810,6 +810,7 @@ let lastSuggestion = '';
 
 function extractAndSuggestCommand(content) {
     if (!logInput) return;
+    if (terminalBusy) return;  // Don't pre-fill while terminal is processing
 
     // Don't overwrite if user is typing
     if (document.activeElement === logInput && logInput.value.length > 0) {
@@ -2429,6 +2430,10 @@ async function selectTarget(targetId, isInitialSync = false) {
     activeTarget = targetId;
     localStorage.setItem('mto_active_target', targetId);
     updateNavLabel();
+
+    // Clear input box — stale content from previous target is irrelevant
+    if (logInput) { logInput.value = ''; logInput.dataset.autoSuggestion = 'false'; }
+    lastSuggestion = '';
 
     // Reset Claude health state for new target
     lastAgentHealth = null;
@@ -7954,6 +7959,7 @@ function sendLogCommand() {
     // Clear input
     logInput.value = '';
     logInput.dataset.autoSuggestion = 'false';
+    lastSuggestion = '';  // Prevent re-fill from prompt loop
 
     // Add to command history
     if (command && commandHistory[commandHistory.length - 1] !== command) {
