@@ -1178,11 +1178,18 @@ def _create_tmux_window(session: str, window_name: str, path: str) -> dict:
 
 
 async def _send_startup_command(pane_id: str, command: str, delay_seconds: float = 0.3):
-    """Send a startup command to a tmux pane after a delay."""
+    """Send a startup command to a tmux pane after a delay.
+
+    Automatically unsets CLAUDECODE env var before the command to prevent
+    "nested session" errors when launching Claude Code from a server that
+    was itself started inside a Claude Code session.
+    """
     await asyncio.sleep(delay_seconds)
     try:
+        # Clear CLAUDECODE so agent CLIs don't refuse to start
+        actual_cmd = f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; {command}"
         subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, "-l", command],
+            ["tmux", "send-keys", "-t", pane_id, "-l", actual_cmd],
             capture_output=True, timeout=5,
         )
         subprocess.run(
@@ -1265,6 +1272,21 @@ async def ensure_tmux_setup(config) -> dict:
             return result
     else:
         logger.info(f"auto_setup: session '{session}' already exists, adopting")
+
+    # Scrub agent env vars from both the tmux global and session environments
+    # so that new windows/panes get a clean shell (prevents "nested session"
+    # errors when the server itself was started inside Claude Code).
+    # Session-level -u only removes the session override, so we must also
+    # scrub the global environment where tmux inherited these vars.
+    for var in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+        subprocess.run(
+            ["tmux", "set-environment", "-g", "-u", var],
+            capture_output=True, timeout=5,
+        )
+        subprocess.run(
+            ["tmux", "set-environment", "-t", session, "-u", var],
+            capture_output=True, timeout=5,
+        )
 
     # List existing windows and match remaining repos
     windows = _list_session_windows(session)
@@ -5503,9 +5525,10 @@ Reply with:
             return JSONResponse({"error": "startup_command exceeds 200 character limit"}, status_code=400)
 
         try:
-            # Send command using literal mode + separate Enter
+            # Clear CLAUDECODE to prevent nested-session errors, then run command
+            actual_cmd = f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; {startup_cmd}"
             subprocess.run(
-                ["tmux", "send-keys", "-t", pane_id, "-l", startup_cmd],
+                ["tmux", "send-keys", "-t", pane_id, "-l", actual_cmd],
                 capture_output=True, timeout=5
             )
             subprocess.run(
