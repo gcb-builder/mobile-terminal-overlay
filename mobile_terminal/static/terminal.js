@@ -3326,7 +3326,7 @@ function setupViewportHandler() {
             renderQueueList();  // Show cached queue items
             // Note: log content is already in DOM, no need to re-render
 
-            // If disconnected, reconnect immediately instead of waiting for backoff
+            // If obviously disconnected, reconnect immediately
             if (!socket || socket.readyState !== WebSocket.OPEN) {
                 console.log('Page visible, reconnecting immediately');
 
@@ -3342,6 +3342,32 @@ function setupViewportHandler() {
 
                 reconnectDelay = INITIAL_RECONNECT_DELAY;
                 connect();
+            } else {
+                // Socket says OPEN but may be stale (mobile background kills TCP
+                // silently). Send a probe ping — if no pong within 3s, force reconnect.
+                console.log('Page visible, probing connection health');
+                const probeStart = Date.now();
+                let probeResolved = false;
+                const prevPongTime = lastPongTime;
+
+                try {
+                    socket.send(JSON.stringify({ type: 'ping' }));
+                } catch (e) {
+                    // Send failed — connection is dead
+                    console.log('Probe send failed, forcing reconnect');
+                    socket.close();
+                    probeResolved = true;
+                }
+
+                if (!probeResolved) {
+                    setTimeout(() => {
+                        // If lastPongTime didn't update, connection is dead
+                        if (lastPongTime <= prevPongTime) {
+                            console.log('Probe timeout — no pong after visibility change, forcing reconnect');
+                            if (socket) socket.close();
+                        }
+                    }, 3000);
+                }
 
                 // If still not connected after timeout, try server restart
                 setTimeout(async () => {
