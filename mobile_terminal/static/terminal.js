@@ -3336,7 +3336,8 @@ function setupViewportHandler() {
             // Note: log content is already in DOM, no need to re-render
 
             // If obviously disconnected, reconnect immediately
-            if (!socket || socket.readyState !== WebSocket.OPEN) {
+            // (but not if already connecting — avoids double-connect on page load)
+            if (!socket || (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING)) {
                 console.log('Page visible, reconnecting immediately');
 
                 // Clear any pending timers to avoid races
@@ -3438,7 +3439,7 @@ function setupViewportHandler() {
     // Handle network state changes (mobile networks are flaky)
     window.addEventListener('online', () => {
         console.log('Network online - checking connection');
-        if (!socket || socket.readyState !== WebSocket.OPEN) {
+        if (!socket || (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING)) {
             console.log('Network back, reconnecting immediately');
 
             // Clear any pending timers

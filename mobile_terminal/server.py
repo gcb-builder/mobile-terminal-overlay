@@ -7216,6 +7216,8 @@ Reply with:
                                 "seq": tail_seq
                             })
                         except Exception as e:
+                            if "websocket.close" in str(e) or "after sending" in str(e):
+                                break
                             logger.debug(f"Tail extraction error: {e}")
 
                     # Check for permission requests every ~1s (5 ticks at 200ms)
