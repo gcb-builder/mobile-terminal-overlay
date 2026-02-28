@@ -4675,6 +4675,61 @@ function switchToView(viewName) {
 /**
  * Setup swipe gesture detection for tab navigation
  */
+/**
+ * Setup draggable resize handle between log and tail areas
+ */
+function setupTailResize() {
+    const handle = document.getElementById('tailResizeHandle');
+    const output = document.getElementById('activePromptContent');
+    if (!handle || !output) return;
+
+    const MIN_HEIGHT = 60;
+    const MAX_HEIGHT = Math.round(window.innerHeight * 0.5);
+    const STORAGE_KEY = 'mto_tail_height';
+
+    // Restore saved height
+    const saved = parseInt(localStorage.getItem(STORAGE_KEY));
+    if (saved && saved >= MIN_HEIGHT && saved <= MAX_HEIGHT) {
+        output.style.height = saved + 'px';
+    }
+
+    let dragging = false;
+    let startY = 0;
+    let startHeight = 0;
+
+    function onStart(e) {
+        dragging = true;
+        startY = e.touches ? e.touches[0].clientY : e.clientY;
+        startHeight = output.offsetHeight;
+        handle.classList.add('active');
+        e.preventDefault();
+    }
+
+    function onMove(e) {
+        if (!dragging) return;
+        const y = e.touches ? e.touches[0].clientY : e.clientY;
+        // Dragging up = larger tail, dragging down = smaller tail
+        const delta = startY - y;
+        const newHeight = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, startHeight + delta));
+        output.style.height = newHeight + 'px';
+    }
+
+    function onEnd() {
+        if (!dragging) return;
+        dragging = false;
+        handle.classList.remove('active');
+        const h = output.offsetHeight;
+        localStorage.setItem(STORAGE_KEY, h.toString());
+    }
+
+    handle.addEventListener('touchstart', onStart, { passive: false });
+    handle.addEventListener('mousedown', onStart);
+    document.addEventListener('touchmove', onMove, { passive: false });
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('touchend', onEnd);
+    document.addEventListener('mouseup', onEnd);
+}
+
 function setupSwipeNavigation() {
     const containers = [
         document.getElementById('logView'),
@@ -11186,6 +11241,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupChallenge();
     setupViewToggle();
     setupSwipeNavigation();
+    setupTailResize();
     setupViewSwitcher();
     updateViewSwitcher();  // Set initial view switcher state
     setupTranscriptSearch();

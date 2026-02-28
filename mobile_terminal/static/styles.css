@@ -917,8 +917,8 @@ html, body {
     background: linear-gradient(to bottom, rgba(88, 166, 255, 0.1), rgba(88, 166, 255, 0.05));
     border-top: 1px solid rgba(88, 166, 255, 0.3);
     border-bottom: 1px solid rgba(88, 166, 255, 0.2);
-    flex-shrink: 1;
-    max-height: 40vh;
+    flex-shrink: 0;
+    max-height: 50vh;
     overflow-y: auto;
 }
 
@@ -998,6 +998,40 @@ html, body {
 }
 
 /* Terminal block: unified active prompt + input */
+/* Draggable resize handle between log and tail */
+.tail-resize-handle {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 20px;
+    background: var(--bg-primary);
+    cursor: ns-resize;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    position: relative;
+}
+
+.tail-resize-grip {
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 9px;
+    color: var(--text-muted);
+    opacity: 0.4;
+    letter-spacing: 1px;
+}
+
+.tail-resize-handle::before {
+    content: '';
+    position: absolute;
+    top: -12px;
+    left: 0;
+    right: 0;
+    height: 24px;
+    background: linear-gradient(to bottom, transparent, var(--bg-primary));
+    pointer-events: none;
+}
+
 .terminal-block {
     background: var(--bg-primary);
     flex-shrink: 0;
@@ -1006,31 +1040,9 @@ html, body {
     position: relative;
 }
 
-/* Gradient fade from log to terminal */
-.terminal-block::before {
-    content: '';
-    position: absolute;
-    top: -24px;
-    left: 0;
-    right: 0;
-    height: 24px;
-    background: linear-gradient(to bottom, transparent, var(--bg-primary));
-    pointer-events: none;
-}
+/* Gradient fade moved to .tail-resize-handle::before */
 
-/* Live terminal label */
-.terminal-block::after {
-    content: '── live ──';
-    position: absolute;
-    top: 0;
-    left: 50%;
-    transform: translateX(-50%);
-    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-    font-size: 9px;
-    color: var(--text-muted);
-    opacity: 0.4;
-    letter-spacing: 1px;
-}
+/* Live terminal label moved to drag handle */
 
 .terminal-block-output {
     font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
