@@ -939,6 +939,11 @@ async function syncPromptToInput() {
         const extracted = extractPromptContent(content);
 
         if (extracted !== null) {
+            // Don't re-fill with the same text we just sent
+            if (extracted && extracted === lastSuggestion) {
+                setTerminalBusy(false);
+                return;
+            }
             logInput.value = extracted;
             logInput.dataset.autoSuggestion = 'false';
             logInput.focus();
@@ -8049,10 +8054,10 @@ function sendLogCommand() {
     scheduleEarlyBusyCheck();
     captureSnapshot('user_send');
 
-    // Clear input
+    // Clear input — set lastSuggestion to sent command so it won't be re-suggested
     logInput.value = '';
     logInput.dataset.autoSuggestion = 'false';
-    lastSuggestion = '';  // Prevent re-fill from prompt loop
+    lastSuggestion = command;
 
     // Add to command history
     if (command && commandHistory[commandHistory.length - 1] !== command) {
