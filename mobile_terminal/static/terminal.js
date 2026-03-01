@@ -841,6 +841,9 @@ function extractAndSuggestCommand(content) {
         return;
     }
 
+    // Skip Claude's session rating prompt — not actionable
+    if (/How is Claude doing/i.test(content)) return;
+
     const lines = content.split('\n');
     let suggestion = '';
 
@@ -6499,6 +6502,13 @@ function clearPendingPrompt() {
 function extractPermissionPrompt(terminalContent) {
     if (!terminalContent) return;
 
+    // Skip Claude's session rating prompt — not actionable
+    if (/How is Claude doing/i.test(terminalContent)) return;
+
+    // Strip box-drawing characters (Claude Code wraps prompts in TUI boxes)
+    // Characters: │ ╭ ╮ ╰ ╯ ─ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼
+    const stripBox = (s) => s.replace(/[│╭╮╰╯─┌┐└┘├┤┬┴┼]/g, '').trim();
+
     // Look for permission prompt patterns
     // Pattern: question line followed by numbered options with ❯ selector
     const lines = terminalContent.split('\n');
@@ -6508,7 +6518,8 @@ function extractPermissionPrompt(terminalContent) {
     let inOptions = false;
 
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
+        const line = stripBox(lines[i]);
+        if (!line) continue;
 
         // Detect question line (ends with ?)
         if (line.endsWith('?') && !line.startsWith('❯') && !line.match(/^\d+\./)) {
@@ -6527,10 +6538,30 @@ function extractPermissionPrompt(terminalContent) {
                     label: optMatch[2].trim().slice(0, 50),  // Truncate long labels
                     description: ''
                 });
-            } else if (line && !line.match(/^\s/) && choices.length > 0) {
-                // Non-indented non-option line - end of options
+            } else if (choices.length > 0 && !line.match(/^\s/)) {
+                // Non-indented non-option line after options - end of options
                 break;
             }
+        }
+    }
+
+    // Also try detecting options without a question line (standalone numbered list)
+    // This handles cases where the question is on a previous screen/scroll
+    if (!questionLine && choices.length === 0) {
+        for (let i = 0; i < lines.length; i++) {
+            const line = stripBox(lines[i]);
+            if (!line) continue;
+            const optMatch = line.match(/^[❯>]?\s*(\d+)\.\s*(.+)$/);
+            if (optMatch) {
+                choices.push({
+                    num: optMatch[1],
+                    label: optMatch[2].trim().slice(0, 50),
+                    description: ''
+                });
+            }
+        }
+        if (choices.length >= 2) {
+            questionLine = 'Select an option:';
         }
     }
 
