@@ -4,6 +4,41 @@ Append-only log of implementation batches.
 
 ---
 
+## 2026-03-02: Prompt Banner "Other" Option with Textarea Input
+
+### Files Changed
+- `mobile_terminal/static/terminal.js` — Modified `showPromptBanner()` (detect "Other" choices, add `many-choices` class for 4+ options, mark buttons with `data-other`), modified `setupPromptBannerHandlers()` (route "Other" buttons to `showOtherInput()`), added 3 new functions: `showOtherInput()`, `restorePromptChoices()`, `sendOtherFeedback()`
+- `mobile_terminal/static/styles.css` — Added `.many-choices` vertical stack layout for 4+ choices, `.prompt-other-input` textarea area with Back/Send buttons, bumped `.prompt-banner` max-height from 50vh to 60vh
+
+### New Files Created
+- None
+
+### Risks / Follow-ups
+- The 50ms delay between choice send and Ctrl+U + feedback send is a heuristic; may need tuning if Claude Code's line editor takes longer to activate
+- Mobile keyboard auto-focus (`setTimeout(() => textarea.focus(), 50)`) may not work on all mobile browsers due to user-gesture requirements
+
+---
+
+## 2026-03-02: Desktop Responsive Multi-Pane Layout
+
+**Goal:** Add responsive desktop layout (>=1024px) that shows Team + Log simultaneously as a multi-pane grid, with Terminal as a dockable bottom panel. Mobile behavior unchanged.
+
+### Files Changed
+- `mobile_terminal/static/index.html` — Wrapped views in `#viewsContainer`, restructured `#teamView` with stable header (`#teamViewHeader`) + cards container (`#teamCardsContainer`), added density toggle, filter bar, terminal panel header with close button. Version bumps: styles.css?v=168, terminal.js?v=273
+- `mobile_terminal/static/styles.css` — Added `--sidebar-width`, `--terminal-panel-height` CSS vars. Added `.views-container` base styles. Added `@media (min-width: 1024px)` block with: CSS grid shell (sidebar + main), team sidebar always-visible, log main area, terminal bottom dock panel, density variants (comfortable/compact/ultra), team filter bar, search input, filter chips, agent selection highlight, hover actions, pane focus indicator, shortcut help modal, terminal panel header/resize styles. ~546 new lines.
+- `mobile_terminal/static/terminal.js` — Added `uiMode`, `desktopFocusedPane`, singleflight guards (`logRefreshInFlight`, `teamRefreshInFlight`), `shouldLogRefreshRun()`/`shouldTeamRefreshRun()` guard helpers. Modified: `switchToView()` (desktop routing), `hideAllContainers()` (desktop early-return), `switchToTerminalView()` (desktop redirect), `setupSwipeNavigation()` (desktop skip), `startTeamCardRefresh()` (use guard helper), `refreshTeamCards()` (singleflight + guard), `startLogAutoRefresh()` (use guard helper), `renderTeamCards()` (write to `#teamCardsContainer`, track agent names, restore selection, apply filters). New functions: `setupDesktopLayout()`, `checkDesktopLayout()`, `enterDesktopLayout()`, `exitDesktopLayout()`, `switchDesktopFocus()`, `openDesktopTerminal()`, `closeDesktopTerminal()`, `setupDesktopTerminalResize()`, `setupDensityToggle()`, `applyDensity()`, `setupTeamFilters()`, `applyTeamFilters()`, `setupDesktopShortcuts()`, agent selection helpers (j/k/a/d/Enter), `toggleShortcutHelp()`, `addDesktopHoverActions()`. ~686 new lines.
+
+### New Files
+None
+
+### Risks / Follow-ups
+- Right-dock terminal layout deferred (bottom-only for now)
+- xterm write queue safety valve (500KB backlog drop) not implemented — deferred
+- Shortcut help modal is JS-generated (not in HTML) — simpler but less discoverable
+- Team filter "working" maps to "active" section, which includes planning/waiting states — may need refinement
+
+---
+
 ## 2026-02-25: Mobile Layout Hierarchy — Urgency-Driven Team UI
 
 **Goal:** Reimpliment mobile UI with information hierarchy where attention flows based on urgency.

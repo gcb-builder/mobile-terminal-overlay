@@ -13,6 +13,8 @@
     --warning: #d29922;
     --border: #30363d;
     --shadow: rgba(0, 0, 0, 0.3);
+    --sidebar-width: 320px;
+    --terminal-panel-height: 300px;
 }
 
 * {
@@ -918,7 +920,7 @@ html, body {
     border-top: 1px solid rgba(88, 166, 255, 0.3);
     border-bottom: 1px solid rgba(88, 166, 255, 0.2);
     flex-shrink: 0;
-    max-height: 50vh;
+    max-height: 60vh;
     overflow-y: auto;
 }
 
@@ -995,6 +997,84 @@ html, body {
 .prompt-dismiss-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
+}
+
+/* Many choices: vertical stack for 4+ options */
+.prompt-banner-choices.many-choices {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.prompt-banner-choices.many-choices .prompt-choice-btn {
+    width: 100%;
+    text-align: left;
+    min-height: 44px;
+}
+
+/* "Other" textarea input area */
+.prompt-other-input {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+
+.prompt-other-textarea {
+    width: 100%;
+    min-height: 80px;
+    max-height: 200px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    font-size: 14px;
+    padding: 8px;
+    border-radius: 6px;
+    resize: vertical;
+    font-family: inherit;
+    box-sizing: border-box;
+}
+
+.prompt-other-textarea:focus {
+    border-color: var(--accent-blue);
+    outline: none;
+}
+
+.prompt-other-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.prompt-other-cancel {
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 10px 16px;
+    font-size: 14px;
+    cursor: pointer;
+    min-height: 44px;
+}
+
+.prompt-other-cancel:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.prompt-other-send {
+    background: var(--accent-blue);
+    color: white;
+    border: 1px solid var(--accent-blue);
+    border-radius: 6px;
+    padding: 10px 16px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    min-height: 44px;
+}
+
+.prompt-other-send:hover {
+    opacity: 0.9;
 }
 
 /* Terminal block: unified active prompt + input */
@@ -7194,6 +7274,550 @@ html, body {
     *, *::before, *::after {
         animation-duration: 0.01ms !important;
         transition-duration: 0.01ms !important;
+    }
+}
+
+/* ===== Views container (mobile: flex column, desktop: CSS grid) ===== */
+.views-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    position: relative;
+}
+
+/* ===== Team view header (hidden on mobile, visible on desktop) ===== */
+.team-view-header {
+    display: none;
+}
+
+.team-cards-container {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* ===== Terminal panel header (hidden on mobile, visible on desktop) ===== */
+.terminal-panel-header {
+    display: none;
+}
+
+/* ===== Desktop density toggle (hidden on mobile) ===== */
+.desktop-density-toggle {
+    display: none;
+}
+
+/* ===== Team filter bar (hidden on mobile) ===== */
+.team-filter-bar {
+    display: none;
+}
+
+/* ===== Desktop multi-pane layout (>=1024px) ===== */
+@media (min-width: 1024px) {
+    /* Grid shell: team sidebar + main area */
+    .app.desktop-multipane .views-container {
+        display: grid;
+        grid-template-columns: var(--sidebar-width) 1fr;
+        grid-template-rows: 1fr;
+    }
+
+    /* Terminal open: add bottom row for terminal panel */
+    .app.desktop-multipane .views-container.terminal-open {
+        grid-template-rows: 1fr var(--terminal-panel-height);
+    }
+
+    /* Team sidebar: always visible in desktop mode */
+    .app.desktop-multipane .team-view {
+        display: flex !important;
+        flex-direction: column;
+        grid-column: 1;
+        grid-row: 1 / -1;
+        border-right: 1px solid var(--border);
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        min-height: 0;
+    }
+
+    /* Team view header: visible on desktop */
+    .app.desktop-multipane .team-view-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: var(--bg-primary);
+        flex-shrink: 0;
+        flex-wrap: wrap;
+    }
+
+    .app.desktop-multipane .team-view-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary);
+        white-space: nowrap;
+    }
+
+    /* Log view: main area */
+    .app.desktop-multipane .log-view {
+        display: flex !important;
+        flex-direction: column;
+        grid-column: 2;
+        grid-row: 1;
+        min-height: 0;
+    }
+
+    /* Terminal view: hidden by default on desktop, shown as bottom panel */
+    .app.desktop-multipane .terminal-view {
+        display: none;
+    }
+
+    /* Terminal as bottom dock panel */
+    .app.desktop-multipane .terminal-view.desktop-panel {
+        display: flex !important;
+        flex-direction: column;
+        grid-column: 2;
+        grid-row: 2;
+        border-top: 2px solid var(--border);
+        min-height: 0;
+    }
+
+    /* Terminal panel header: visible on desktop */
+    .app.desktop-multipane .terminal-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 4px 12px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg-secondary);
+        flex-shrink: 0;
+    }
+
+    .terminal-panel-title {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-secondary);
+    }
+
+    .terminal-panel-btn {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        font-size: 18px;
+        cursor: pointer;
+        padding: 2px 6px;
+        border-radius: 4px;
+    }
+
+    .terminal-panel-btn:hover {
+        color: var(--text-primary);
+        background: var(--bg-tertiary);
+    }
+
+    /* Terminal panel resize handle */
+    .app.desktop-multipane .terminal-panel-resize {
+        height: 6px;
+        cursor: ns-resize;
+        background: var(--bg-secondary);
+        border-top: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .app.desktop-multipane .terminal-panel-resize:hover {
+        background: var(--bg-tertiary);
+    }
+
+    .app.desktop-multipane .terminal-panel-resize::after {
+        content: '';
+        width: 32px;
+        height: 2px;
+        background: var(--border);
+        border-radius: 1px;
+    }
+
+    /* Hide mobile navigation elements on desktop */
+    .app.desktop-multipane .view-dots {
+        display: none !important;
+    }
+
+    .app.desktop-multipane .collapse-row {
+        display: none !important;
+    }
+
+    /* Pane focus indicator */
+    .app.desktop-multipane .pane-focused {
+        box-shadow: inset 0 0 0 1px var(--accent);
+    }
+
+    /* ===== Density toggle (desktop) ===== */
+    .app.desktop-multipane .desktop-density-toggle {
+        display: flex;
+        gap: 2px;
+        margin-left: auto;
+    }
+
+    .density-btn {
+        background: none;
+        border: 1px solid var(--border);
+        color: var(--text-secondary);
+        font-size: 12px;
+        padding: 2px 6px;
+        cursor: pointer;
+        border-radius: 3px;
+        line-height: 1;
+    }
+
+    .density-btn:hover {
+        color: var(--text-primary);
+        background: var(--bg-tertiary);
+    }
+
+    .density-btn.active {
+        color: var(--accent);
+        border-color: var(--accent);
+        background: rgba(88, 166, 255, 0.1);
+    }
+
+    /* ===== Team filter bar (desktop) ===== */
+    .app.desktop-multipane .team-filter-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--border);
+        width: 100%;
+        align-items: center;
+    }
+
+    .team-search-input {
+        flex: 1;
+        min-width: 100px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border);
+        color: var(--text-primary);
+        font-size: 12px;
+        padding: 4px 8px;
+        border-radius: 4px;
+        outline: none;
+    }
+
+    .team-search-input:focus {
+        border-color: var(--accent);
+    }
+
+    .team-search-input::placeholder {
+        color: var(--text-secondary);
+    }
+
+    .team-filter-chips {
+        display: flex;
+        gap: 4px;
+    }
+
+    .team-filter-chip {
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border);
+        color: var(--text-secondary);
+        font-size: 11px;
+        padding: 3px 8px;
+        cursor: pointer;
+        border-radius: 12px;
+        white-space: nowrap;
+    }
+
+    .team-filter-chip:hover {
+        color: var(--text-primary);
+        border-color: var(--text-secondary);
+    }
+
+    .team-filter-chip.active {
+        color: var(--accent);
+        border-color: var(--accent);
+        background: rgba(88, 166, 255, 0.1);
+    }
+
+    /* ===== Compact density (default on desktop) ===== */
+    .app.desktop-multipane .team-cards-grid {
+        grid-template-columns: 1fr;
+        gap: 1px;
+    }
+
+    .app.desktop-multipane .team-card {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        grid-template-rows: auto;
+        align-items: center;
+        border-radius: 0;
+        border-bottom: 1px solid var(--border);
+        padding: 6px 10px;
+        gap: 8px;
+    }
+
+    .app.desktop-multipane .team-card-header {
+        display: contents;
+    }
+
+    .app.desktop-multipane .team-card-badge {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    .app.desktop-multipane .team-card-info {
+        grid-column: 2;
+        grid-row: 1;
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    .app.desktop-multipane .team-card-name {
+        font-size: 13px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .app.desktop-multipane .team-card-subtitle {
+        font-size: 11px;
+        color: var(--text-secondary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .app.desktop-multipane .team-card-header-right {
+        grid-column: 3;
+        grid-row: 1;
+    }
+
+    /* Hide card body (terminal preview) in compact mode */
+    .app.desktop-multipane .team-card-body {
+        display: none;
+    }
+
+    /* Permission actions stay visible in row layout */
+    .app.desktop-multipane .team-card-permission-actions {
+        grid-column: 3;
+        grid-row: 1;
+        display: flex;
+        gap: 4px;
+    }
+
+    .app.desktop-multipane .team-card-permission-actions .team-card-action-btn {
+        min-height: 28px;
+        font-size: 12px;
+        padding: 2px 10px;
+    }
+
+    /* Footer info in compact row */
+    .app.desktop-multipane .team-card-footer-info {
+        display: none;
+    }
+
+    .app.desktop-multipane .team-card-footer-info.danger {
+        display: inline;
+        grid-column: 2;
+        font-size: 10px;
+    }
+
+    /* ===== Comfortable density ===== */
+    .app.desktop-multipane.density-comfortable .team-cards-grid {
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 8px;
+        padding: 8px;
+    }
+
+    .app.desktop-multipane.density-comfortable .team-card {
+        display: block;
+        border-radius: 8px;
+        border-bottom: none;
+        padding: 0;
+    }
+
+    .app.desktop-multipane.density-comfortable .team-card-header {
+        display: flex;
+    }
+
+    .app.desktop-multipane.density-comfortable .team-card-info {
+        display: block;
+    }
+
+    .app.desktop-multipane.density-comfortable .team-card-body {
+        display: block;
+    }
+
+    .app.desktop-multipane.density-comfortable .team-card-footer-info {
+        display: block;
+    }
+
+    .app.desktop-multipane.density-comfortable .team-card-permission-actions {
+        grid-column: unset;
+        grid-row: unset;
+    }
+
+    /* ===== Ultra density ===== */
+    .app.desktop-multipane.density-ultra .team-card {
+        min-height: 24px;
+        padding: 2px 8px;
+        gap: 6px;
+    }
+
+    .app.desktop-multipane.density-ultra .team-card-badge {
+        width: 8px;
+        height: 8px;
+        font-size: 0;
+        border-radius: 50%;
+        min-width: 8px;
+        padding: 0;
+    }
+
+    .app.desktop-multipane.density-ultra .team-card-name {
+        font-size: 11px;
+    }
+
+    .app.desktop-multipane.density-ultra .team-card-subtitle {
+        font-size: 9px;
+    }
+
+    .app.desktop-multipane.density-ultra .team-card-permission-actions .team-card-action-btn {
+        min-height: 22px;
+        font-size: 10px;
+        padding: 1px 6px;
+    }
+
+    .app.desktop-multipane.density-ultra .team-section-header {
+        padding: 2px 8px;
+        font-size: 10px;
+    }
+
+    /* ===== Agent selection (keyboard nav) ===== */
+    .app.desktop-multipane .team-card.agent-selected {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+        background: rgba(88, 166, 255, 0.05);
+    }
+
+    /* ===== Hover actions ===== */
+    .app.desktop-multipane .team-card-hover-actions {
+        display: none;
+        position: absolute;
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        gap: 4px;
+        z-index: 5;
+    }
+
+    .app.desktop-multipane .team-card {
+        position: relative;
+    }
+
+    .app.desktop-multipane .team-card:hover .team-card-hover-actions {
+        display: flex;
+    }
+
+    .team-card-hover-btn {
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border);
+        color: var(--text-secondary);
+        font-size: 11px;
+        padding: 2px 8px;
+        cursor: pointer;
+        border-radius: 3px;
+        white-space: nowrap;
+    }
+
+    .team-card-hover-btn:hover {
+        color: var(--text-primary);
+        background: var(--bg-secondary);
+    }
+
+    .team-card-hover-btn.allow-btn {
+        color: var(--success);
+        border-color: var(--success);
+    }
+
+    .team-card-hover-btn.allow-btn:hover {
+        background: rgba(63, 185, 80, 0.1);
+    }
+
+    /* ===== Shortcut help modal ===== */
+    .shortcut-help-modal {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        background: rgba(0, 0, 0, 0.6);
+        align-items: center;
+        justify-content: center;
+    }
+
+    .shortcut-help-modal.visible {
+        display: flex;
+    }
+
+    .shortcut-help-content {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 20px;
+        max-width: 420px;
+        width: 90%;
+        max-height: 80vh;
+        overflow-y: auto;
+    }
+
+    .shortcut-help-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 16px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .shortcut-help-close {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        font-size: 20px;
+        cursor: pointer;
+    }
+
+    .shortcut-group {
+        margin-bottom: 12px;
+    }
+
+    .shortcut-group-title {
+        font-size: 11px;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 6px;
+    }
+
+    .shortcut-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 3px 0;
+        font-size: 13px;
+        color: var(--text-primary);
+    }
+
+    .shortcut-key {
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 1px 6px;
+        font-family: monospace;
+        font-size: 12px;
+        color: var(--text-secondary);
     }
 }
 

@@ -3,12 +3,41 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Bottom bar consolidation complete
-- **Last Updated:** 2026-02-26
-- **Server Version:** v262 (terminal.js), v115 (sw.js cache), v160 (styles.css)
+- **Stage:** Prompt banner "Other" option + heuristic false-positive fix
+- **Last Updated:** 2026-03-02
+- **Server Version:** v273 (terminal.js), v116 (sw.js cache), v168 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
 
-## Active Work: Bottom Bar Consolidation (2026-02-26)
+## Recent: Prompt Banner "Other" Option + Heuristic Fix (2026-03-02)
+
+### Feature: "Other" Textarea Input
+When Claude presents multi-option prompts (AskUserQuestion), tapping "Other" now shows a blank textarea instead of sending the choice number immediately. On Send: choice number → Ctrl+U (clear prefill) → feedback text. Back returns to choice buttons with zero terminal I/O.
+
+### Feature: Many-Choices Vertical Layout
+Prompts with 4+ choices now stack vertically (full-width buttons) instead of wrapping in a fixed-height area.
+
+### Fix: Heuristic Prompt False Positives
+Method 2 (numbered list detection) now rejects lists containing markdown formatting (`**`, backtick) — these are documentation/summaries, not prompt choices.
+
+### Files Changed
+- `mobile_terminal/static/terminal.js` — Modified `showPromptBanner()`, `setupPromptBannerHandlers()`, added `showOtherInput()`, `restorePromptChoices()`, `sendOtherFeedback()`, added markdown guard in heuristic detection
+- `mobile_terminal/static/styles.css` — Added `.many-choices` layout, `.prompt-other-*` textarea styles
+
+---
+
+## Previous: Desktop Responsive Multi-Pane Layout (2026-03-02)
+
+### Feature: Desktop Multi-Pane Layout (>=1024px)
+On desktop screens, Team sidebar + Log main area shown simultaneously via CSS grid. Terminal docks as bottom panel. Mobile behavior unchanged. Includes density toggle (comfortable/compact/ultra), team search + filter, keyboard shortcuts (j/k/a/d/Enter/1/2/3), hover actions, agent selection.
+
+### Key Architecture
+- `uiMode` global ('mobile-single' | 'desktop-multipane') is the single guard for all desktop behavior
+- `checkDesktopLayout()` runs on load + debounced resize (250ms)
+- `#viewsContainer` wraps all views — flex column on mobile, CSS grid on desktop
+- `#teamCardsContainer` separates team header from card content (stable DOM, no re-render of header)
+- Singleflight guards on both refresh loops prevent request pileup
+
+## Previous: Bottom Bar Consolidation (2026-02-26)
 
 ### Feature: Unified Bottom Bars + Vertical Space Savings
 All three views (log/terminal/team) now share identical bottom bar layout. Redundant idle indicators consolidated into system status strip.

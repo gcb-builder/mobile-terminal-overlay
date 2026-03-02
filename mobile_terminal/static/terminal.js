@@ -4506,6 +4506,27 @@ function deriveSystemSummary(agents, uiStates) {
 let currentView = 'log';  // 'log', 'terminal', 'context', 'touch'
 let transcriptText = '';  // Cached transcript text
 
+// ===== Desktop multi-pane state =====
+let uiMode = 'mobile-single'; // 'mobile-single' | 'desktop-multipane'
+const DESKTOP_BREAKPOINT = 1024;
+let desktopFocusedPane = 'log'; // 'team' | 'log' | 'terminal'
+let desktopResizeTimer = null;
+let logRefreshInFlight = false;
+let teamRefreshInFlight = false;
+let teamDensity = localStorage.getItem('mto_team_density') || 'compact';
+let teamFilterState = { search: '', filter: 'all' };
+let selectedAgentIndex = -1;
+let lastRenderedAgentNames = []; // Track agent order for keyboard nav
+
+function shouldLogRefreshRun() {
+    return document.visibilityState === 'visible' &&
+           (uiMode === 'desktop-multipane' || currentView === 'log');
+}
+function shouldTeamRefreshRun() {
+    return document.visibilityState === 'visible' &&
+           (uiMode === 'desktop-multipane' || currentView === 'team');
+}
+
 // Auto-refresh for log view - singleflight async loop
 let logRefreshController = null;  // AbortController for singleflight loop
 const LOG_REFRESH_INTERVAL = 5000;  // Wait 5s between requests
@@ -4667,6 +4688,14 @@ function switchToPrevTab() {
  * Switch to a specific view by name
  */
 function switchToView(viewName) {
+    if (uiMode === 'desktop-multipane') {
+        if (viewName === 'terminal') {
+            openDesktopTerminal();
+        } else {
+            switchDesktopFocus(viewName);
+        }
+        return;
+    }
     switch (viewName) {
         case 'log':
             switchToLogView();
@@ -4754,6 +4783,7 @@ function setupSwipeNavigation() {
     let touchStartTime = 0;
 
     const handleTouchStart = (e) => {
+        if (uiMode === 'desktop-multipane') return;
         touchStartX = e.touches[0].clientX;
         touchStartY = e.touches[0].clientY;
         touchStartTime = Date.now();
@@ -4789,6 +4819,7 @@ function setupSwipeNavigation() {
 }
 
 function hideAllContainers() {
+    if (uiMode === 'desktop-multipane') return;
     if (logView) logView.classList.add('hidden');
     const teamViewEl = document.getElementById('teamView');
     if (teamViewEl) teamViewEl.classList.add('hidden');
@@ -4838,6 +4869,10 @@ function switchToLogView() {
 }
 
 function switchToTerminalView() {
+    if (uiMode === 'desktop-multipane') {
+        openDesktopTerminal();
+        return;
+    }
     currentView = 'terminal';
     hideAllContainers();
     if (terminalView) terminalView.classList.remove('hidden');
@@ -4898,7 +4933,7 @@ let teamCardRefreshTimer = null;
 function startTeamCardRefresh() {
     stopTeamCardRefresh();
     teamCardRefreshTimer = setInterval(() => {
-        if (currentView === 'team' && document.visibilityState === 'visible') {
+        if (shouldTeamRefreshRun()) {
             refreshTeamCards();
         }
     }, 5000);
@@ -4912,7 +4947,9 @@ function stopTeamCardRefresh() {
 }
 
 async function refreshTeamCards() {
-    if (currentView !== 'team' || !teamState || !teamState.has_team) return;
+    if (!shouldTeamRefreshRun() || !teamState || !teamState.has_team) return;
+    if (teamRefreshInFlight) return;
+    teamRefreshInFlight = true;
 
     const sessParam = currentSession ? `&session=${encodeURIComponent(currentSession)}` : '';
     try {
@@ -4933,6 +4970,8 @@ async function refreshTeamCards() {
         renderTeamCards(teamState, data.captures || {});
     } catch (e) {
         console.warn('Team card refresh failed:', e);
+    } finally {
+        teamRefreshInFlight = false;
     }
 }
 
@@ -4942,6 +4981,9 @@ let lastSystemSummary = null;
 function renderTeamCards(state, captures) {
     const teamViewEl = document.getElementById('teamView');
     if (!teamViewEl || !state || !state.team) return;
+
+    // Use cards container if available (desktop restructured DOM), else fallback
+    const cardsTarget = document.getElementById('teamCardsContainer') || teamViewEl;
 
     // Collect all agents
     const allAgents = [];
@@ -4955,20 +4997,23 @@ function renderTeamCards(state, captures) {
     const active = uiPairs.filter(p => p.ui.section === 'active');
     const idle = uiPairs.filter(p => p.ui.section === 'idle');
 
-    teamViewEl.innerHTML = '';
+    cardsTarget.innerHTML = '';
+
+    // Track agent names for keyboard navigation
+    lastRenderedAgentNames = allAgents.map(a => a.agent_name || 'unknown');
 
     const allIdle = attention.length === 0 && active.length === 0;
 
     if (attention.length) {
-        teamViewEl.appendChild(renderTeamSection('Needs Attention', attention, captures, 'attention'));
+        cardsTarget.appendChild(renderTeamSection('Needs Attention', attention, captures, 'attention'));
     }
     if (active.length) {
-        teamViewEl.appendChild(renderTeamSection('Active', active, captures, 'active'));
+        cardsTarget.appendChild(renderTeamSection('Active', active, captures, 'active'));
     }
     if (idle.length && !allIdle) {
         // Only show idle section when there's mixed state — strip handles all-idle
         const collapsed = idle.length > 1;
-        teamViewEl.appendChild(renderTeamSection('Idle', idle, captures, 'idle', collapsed));
+        cardsTarget.appendChild(renderTeamSection('Idle', idle, captures, 'idle', collapsed));
     }
 
     // Update system status summary
@@ -4979,10 +5024,20 @@ function renderTeamCards(state, captures) {
 
     // Auto-scroll attention section into view
     if (attention.length) {
-        const attentionSection = teamViewEl.querySelector('.team-section.attention');
+        const attentionSection = cardsTarget.querySelector('.team-section.attention');
         if (attentionSection) {
             attentionSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
+    }
+
+    // Restore selected agent highlight after re-render
+    if (uiMode === 'desktop-multipane' && selectedAgentIndex >= 0) {
+        restoreAgentSelection();
+    }
+
+    // Apply filters if active
+    if (uiMode === 'desktop-multipane') {
+        applyTeamFilters();
     }
 
     updateDispatchButtonState();
@@ -5401,6 +5456,11 @@ function createTeamCard(agent, capture, ui) {
         actions.appendChild(allowBtn);
         actions.appendChild(denyBtn);
         card.appendChild(actions);
+    }
+
+    // Desktop hover actions
+    if (uiMode === 'desktop-multipane') {
+        addDesktopHoverActions(card, agent, ui);
     }
 
     return card;
@@ -6383,8 +6443,16 @@ function extractPendingPrompt(content) {
             }
         }
 
-        // Only treat as prompt if we have 2-6 options (likely a real question)
-        if (choices.length >= 2 && choices.length <= 6) {
+        // Reject if choices look like documentation, not prompt options
+        // Markdown bold/code formatting indicates a numbered list in prose, not choices
+        const hasMarkdown = choices.some(c => /\*\*|`/.test(c.label));
+        if (hasMarkdown) {
+            console.debug('[PromptDetect] Heuristic rejected: markdown in numbered list');
+            // Fall through to confirmation detection
+        }
+
+        // Only treat as prompt if we have 2-6 short options (likely a real question)
+        else if (choices.length >= 2 && choices.length <= 6) {
             const promptId = simpleHash(questionText + choices.map(c => c.label).join(''));
 
             if (dismissedPrompts.has(promptId)) {
@@ -6608,13 +6676,20 @@ function showPromptBanner() {
 
     const { text, choices, kind, answered, sentChoice } = pendingPrompt;
 
+    // Detect "Other" choices by label pattern
+    const otherPattern = /^other\b/i;
+    const otherAltPattern = /free.?text|custom.?response|feedback|something.?else|specify/i;
+
     // Build choice buttons HTML
+    const manyChoices = choices.length >= 4;
     let choicesHtml = '';
     for (const choice of choices) {
         const isSelected = answered && sentChoice === choice.num;
+        const isOther = otherPattern.test(choice.label) || otherAltPattern.test(choice.label);
         const btnClass = isSelected ? 'prompt-choice-btn selected' : 'prompt-choice-btn';
         const title = choice.description || choice.label;
-        choicesHtml += `<button class="${btnClass}" data-choice="${choice.num}" title="${escapeHtml(title)}">${escapeHtml(choice.label)}</button>`;
+        const otherAttr = isOther ? ` data-other="true"` : '';
+        choicesHtml += `<button class="${btnClass}" data-choice="${choice.num}"${otherAttr} title="${escapeHtml(title)}">${escapeHtml(choice.label)}</button>`;
     }
 
     // Add dismiss button
@@ -6623,12 +6698,13 @@ function showPromptBanner() {
     // Truncate text for banner
     const displayText = text.length > 100 ? text.slice(0, 100) + '...' : text;
 
+    const choicesClass = manyChoices ? 'prompt-banner-choices many-choices' : 'prompt-banner-choices';
     promptBanner.innerHTML = `
         <div class="prompt-banner-content">
             <span class="prompt-banner-icon">${kind === 'confirmation' ? '⚠️' : '❓'}</span>
             <span class="prompt-banner-text">${escapeHtml(displayText)}</span>
         </div>
-        <div class="prompt-banner-choices">${choicesHtml}</div>
+        <div class="${choicesClass}">${choicesHtml}</div>
     `;
 
     promptBanner.classList.add('visible');
@@ -6657,8 +6733,13 @@ function setupPromptBannerHandlers() {
             e.preventDefault();
             e.stopPropagation();
             const choice = btn.dataset.choice;
-            console.log('[PromptBanner] Button clicked, choice:', choice);
-            sendPromptChoice(choice);
+            if (btn.dataset.other === 'true') {
+                console.log('[PromptBanner] "Other" button clicked, choice:', choice);
+                showOtherInput(choice);
+            } else {
+                console.log('[PromptBanner] Button clicked, choice:', choice);
+                sendPromptChoice(choice);
+            }
         };
     });
 
@@ -6717,6 +6798,86 @@ function sendPromptChoice(choice) {
     }
 
     // Clear prompt after short delay (let the answer process)
+    setTimeout(() => {
+        clearPendingPrompt();
+    }, 1500);
+}
+
+/**
+ * Show textarea for "Other" option — no terminal I/O until Send
+ */
+function showOtherInput(choiceNum) {
+    const choicesDiv = promptBanner.querySelector('.prompt-banner-choices');
+    if (!choicesDiv) return;
+
+    choicesDiv.innerHTML = `
+        <div class="prompt-other-input">
+            <textarea class="prompt-other-textarea"
+                      placeholder="Type your feedback..." rows="3"></textarea>
+            <div class="prompt-other-actions">
+                <button class="prompt-other-cancel">Back</button>
+                <button class="prompt-other-send">Send</button>
+            </div>
+        </div>
+    `;
+
+    const textarea = choicesDiv.querySelector('.prompt-other-textarea');
+    const cancelBtn = choicesDiv.querySelector('.prompt-other-cancel');
+    const sendBtn = choicesDiv.querySelector('.prompt-other-send');
+
+    // Auto-focus textarea so mobile keyboard opens
+    if (textarea) {
+        setTimeout(() => textarea.focus(), 50);
+    }
+
+    cancelBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        restorePromptChoices();
+    };
+
+    sendBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const text = textarea ? textarea.value.trim() : '';
+        if (!text) {
+            textarea.focus();
+            return;
+        }
+        sendOtherFeedback(choiceNum, text);
+    };
+}
+
+/**
+ * Restore original choice buttons (Back from Other input)
+ */
+function restorePromptChoices() {
+    showPromptBanner();
+}
+
+/**
+ * Send "Other" choice + user feedback text to terminal
+ * Sequence: choice number → Ctrl+U (clear prefill) → feedback text
+ */
+function sendOtherFeedback(choiceNum, text) {
+    const choiceStr = String(choiceNum).trim();
+    console.log('[sendOtherFeedback] Sending choice:', choiceStr, 'then feedback:', text);
+
+    sendTextAtomic(choiceStr, true);
+
+    setTimeout(() => {
+        sendInput('\x15'); // Ctrl+U: clear any prefilled text
+        sendTextAtomic(text, true);
+    }, 50);
+
+    if (pendingPrompt) {
+        pendingPrompt.answered = true;
+        pendingPrompt.sentChoice = choiceStr;
+    }
+
+    setTerminalBusy(true);
+    captureSnapshot('user_send');
+
     setTimeout(() => {
         clearPendingPrompt();
     }, 1500);
@@ -7908,8 +8069,8 @@ async function startLogAutoRefresh() {
     // Singleflight async loop - only one request at a time
     while (!signal.aborted) {
         try {
-            // Skip if page not visible or not in log view
-            if (document.visibilityState === 'visible' && currentView === 'log') {
+            // Skip if page not visible or not in relevant view
+            if (shouldLogRefreshRun()) {
                 await refreshLogContent(signal);
             }
             await abortableSleep(LOG_REFRESH_INTERVAL, signal);
@@ -11240,6 +11401,607 @@ function showToast(message, type = 'success', duration = 3000) {
 }
 
 
+// ===== Desktop Multi-Pane Layout =====
+
+/**
+ * Setup desktop layout detection and resize handler
+ */
+function setupDesktopLayout() {
+    checkDesktopLayout();
+    window.addEventListener('resize', () => {
+        clearTimeout(desktopResizeTimer);
+        desktopResizeTimer = setTimeout(checkDesktopLayout, 250);
+    });
+
+    // Pane focus via click
+    const teamViewEl = document.getElementById('teamView');
+    const logViewEl = document.getElementById('logView');
+    if (teamViewEl) {
+        teamViewEl.addEventListener('click', () => {
+            if (uiMode === 'desktop-multipane') switchDesktopFocus('team');
+        });
+    }
+    if (logViewEl) {
+        logViewEl.addEventListener('click', () => {
+            if (uiMode === 'desktop-multipane') switchDesktopFocus('log');
+        });
+    }
+
+    // Terminal close button
+    const closeBtn = document.getElementById('terminalCloseBtn');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', () => {
+            if (uiMode === 'desktop-multipane') closeDesktopTerminal();
+        });
+    }
+
+    // Density toggle
+    setupDensityToggle();
+
+    // Team filters
+    setupTeamFilters();
+
+    // Keyboard shortcuts
+    setupDesktopShortcuts();
+}
+
+/**
+ * Check if we should be in desktop or mobile mode
+ */
+function checkDesktopLayout() {
+    const shouldBeDesktop = window.innerWidth >= DESKTOP_BREAKPOINT;
+    const wasDesktop = uiMode === 'desktop-multipane';
+
+    if (shouldBeDesktop && !wasDesktop) {
+        enterDesktopLayout();
+    } else if (!shouldBeDesktop && wasDesktop) {
+        exitDesktopLayout();
+    }
+}
+
+/**
+ * Enter desktop multi-pane mode
+ */
+function enterDesktopLayout() {
+    uiMode = 'desktop-multipane';
+    const app = document.querySelector('.app');
+    if (app) app.classList.add('desktop-multipane');
+
+    // Show both team + log simultaneously
+    const teamViewEl = document.getElementById('teamView');
+    if (teamViewEl) teamViewEl.classList.remove('hidden');
+    if (logView) logView.classList.remove('hidden');
+    if (terminalView) terminalView.classList.add('hidden');
+
+    // Restore active prompt (in case we were in terminal view)
+    if (activePromptContent) activePromptContent.style.display = '';
+
+    // Set output mode to tail (no xterm rendering unless terminal panel opened)
+    setOutputMode('tail');
+
+    // Start both refresh timers
+    startLogAutoRefresh();
+    startTailViewport();
+    startTeamCardRefresh();
+    refreshTeamCards();
+
+    // Load log if needed
+    if (!logLoaded) loadLogContent();
+
+    // Apply density
+    applyDensity(teamDensity);
+
+    // Set default focus
+    switchDesktopFocus('log');
+
+    console.debug('[Desktop] Entered multi-pane layout');
+}
+
+/**
+ * Exit desktop mode, restore mobile single-view
+ */
+function exitDesktopLayout() {
+    uiMode = 'mobile-single';
+    const app = document.querySelector('.app');
+    if (app) {
+        app.classList.remove('desktop-multipane');
+        app.classList.remove('density-comfortable', 'density-compact', 'density-ultra');
+    }
+
+    // Close terminal panel if open
+    const container = document.getElementById('viewsContainer');
+    if (container) container.classList.remove('terminal-open');
+    if (terminalView) terminalView.classList.remove('desktop-panel');
+
+    // Remove pane focus indicators
+    document.querySelectorAll('.pane-focused').forEach(el => el.classList.remove('pane-focused'));
+
+    // Restore mobile view
+    switchToView(currentView === 'terminal' ? 'terminal' : currentView === 'team' ? 'team' : 'log');
+
+    console.debug('[Desktop] Exited to mobile layout');
+}
+
+/**
+ * Switch focus between panes in desktop mode (team/log)
+ */
+function switchDesktopFocus(viewName) {
+    desktopFocusedPane = viewName;
+    currentView = viewName; // Keep currentView in sync for API compat
+
+    // Update pane focus indicators
+    const teamViewEl = document.getElementById('teamView');
+    const logViewEl = document.getElementById('logView');
+
+    document.querySelectorAll('.pane-focused').forEach(el => el.classList.remove('pane-focused'));
+    if (viewName === 'team' && teamViewEl) teamViewEl.classList.add('pane-focused');
+    if (viewName === 'log' && logViewEl) logViewEl.classList.add('pane-focused');
+}
+
+/**
+ * Open terminal as bottom dock panel (desktop)
+ */
+function openDesktopTerminal() {
+    const container = document.getElementById('viewsContainer');
+    if (!container || !terminalView) return;
+
+    container.classList.add('terminal-open');
+    terminalView.classList.add('desktop-panel');
+    terminalView.classList.remove('hidden');
+    desktopFocusedPane = 'terminal';
+    currentView = 'terminal';
+
+    updateTerminalAgentSelector();
+
+    // Fit xterm and switch to full mode
+    requestAnimationFrame(() => {
+        if (fitAddon) fitAddon.fit();
+        sendResize();
+        setOutputMode('full');
+        if (terminal) terminal.focus();
+    });
+
+    // Setup resize handle for terminal panel
+    setupDesktopTerminalResize();
+}
+
+/**
+ * Close terminal bottom dock panel (desktop)
+ */
+function closeDesktopTerminal() {
+    const container = document.getElementById('viewsContainer');
+    if (!container || !terminalView) return;
+
+    container.classList.remove('terminal-open');
+    terminalView.classList.remove('desktop-panel');
+    terminalView.classList.add('hidden');
+
+    // Switch back to tail mode
+    setOutputMode('tail');
+
+    // Restore active prompt
+    if (activePromptContent) activePromptContent.style.display = '';
+
+    // Return focus to log
+    switchDesktopFocus('log');
+}
+
+/**
+ * Setup resize handle for desktop terminal panel
+ */
+let desktopTerminalResizeCleanup = null;
+function setupDesktopTerminalResize() {
+    // Clean up previous handler
+    if (desktopTerminalResizeCleanup) desktopTerminalResizeCleanup();
+
+    const container = document.getElementById('viewsContainer');
+    if (!container) return;
+
+    let dragging = false;
+    let startY = 0;
+    let startHeight = 0;
+    const MIN_HEIGHT = 120;
+    const MAX_HEIGHT = Math.round(window.innerHeight * 0.7);
+
+    function onPointerDown(e) {
+        // Only start drag from the border area (top 6px of terminal panel)
+        const termRect = terminalView.getBoundingClientRect();
+        if (Math.abs(e.clientY - termRect.top) > 8) return;
+
+        dragging = true;
+        startY = e.clientY;
+        startHeight = terminalView.offsetHeight;
+        document.body.style.cursor = 'ns-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    }
+
+    function onPointerMove(e) {
+        if (!dragging) return;
+        const delta = startY - e.clientY;
+        const newHeight = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, startHeight + delta));
+        container.style.setProperty('--terminal-panel-height', newHeight + 'px');
+        // Re-fit terminal
+        if (fitAddon) requestAnimationFrame(() => fitAddon.fit());
+    }
+
+    function onPointerUp() {
+        if (!dragging) return;
+        dragging = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        // Save height
+        const h = terminalView.offsetHeight;
+        localStorage.setItem('mto_desktop_terminal_height', h.toString());
+        sendResize();
+    }
+
+    if (terminalView) terminalView.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('pointermove', onPointerMove);
+    document.addEventListener('pointerup', onPointerUp);
+
+    // Restore saved height
+    const saved = parseInt(localStorage.getItem('mto_desktop_terminal_height'));
+    if (saved && saved >= MIN_HEIGHT && saved <= MAX_HEIGHT) {
+        container.style.setProperty('--terminal-panel-height', saved + 'px');
+    }
+
+    desktopTerminalResizeCleanup = () => {
+        if (terminalView) terminalView.removeEventListener('pointerdown', onPointerDown);
+        document.removeEventListener('pointermove', onPointerMove);
+        document.removeEventListener('pointerup', onPointerUp);
+        desktopTerminalResizeCleanup = null;
+    };
+}
+
+/**
+ * Density toggle handler
+ */
+function setupDensityToggle() {
+    const toggle = document.getElementById('desktopDensityToggle');
+    if (!toggle) return;
+
+    toggle.addEventListener('click', (e) => {
+        const btn = e.target.closest('.density-btn');
+        if (!btn) return;
+        const density = btn.dataset.density;
+        if (density) {
+            teamDensity = density;
+            localStorage.setItem('mto_team_density', density);
+            applyDensity(density);
+        }
+    });
+}
+
+/**
+ * Apply density class to app
+ */
+function applyDensity(density) {
+    const app = document.querySelector('.app');
+    if (!app) return;
+    app.classList.remove('density-comfortable', 'density-compact', 'density-ultra');
+    if (density !== 'compact') {
+        app.classList.add('density-' + density);
+    }
+    // Update button active state
+    const toggle = document.getElementById('desktopDensityToggle');
+    if (toggle) {
+        toggle.querySelectorAll('.density-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.density === density);
+        });
+    }
+}
+
+/**
+ * Team filter + search handlers
+ */
+function setupTeamFilters() {
+    const searchInput = document.getElementById('teamSearchInput');
+    const filterBar = document.getElementById('teamFilterBar');
+
+    if (searchInput) {
+        searchInput.addEventListener('input', () => {
+            teamFilterState.search = searchInput.value.toLowerCase();
+            applyTeamFilters();
+        });
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                searchInput.value = '';
+                teamFilterState.search = '';
+                searchInput.blur();
+                applyTeamFilters();
+            }
+        });
+    }
+
+    if (filterBar) {
+        filterBar.addEventListener('click', (e) => {
+            const chip = e.target.closest('.team-filter-chip');
+            if (!chip) return;
+            const filter = chip.dataset.filter;
+            if (filter) {
+                teamFilterState.filter = filter;
+                filterBar.querySelectorAll('.team-filter-chip').forEach(c => {
+                    c.classList.toggle('active', c.dataset.filter === filter);
+                });
+                applyTeamFilters();
+            }
+        });
+    }
+}
+
+/**
+ * Apply current filter state to team cards
+ */
+function applyTeamFilters() {
+    const cardsTarget = document.getElementById('teamCardsContainer');
+    if (!cardsTarget) return;
+
+    const cards = cardsTarget.querySelectorAll('.team-card');
+    const sections = cardsTarget.querySelectorAll('.team-section');
+    const search = teamFilterState.search;
+    const filter = teamFilterState.filter;
+
+    cards.forEach(card => {
+        let visible = true;
+
+        // Search filter
+        if (search) {
+            const name = (card.querySelector('.team-card-name')?.textContent || '').toLowerCase();
+            const subtitle = (card.querySelector('.team-card-subtitle')?.textContent || '').toLowerCase();
+            visible = name.includes(search) || subtitle.includes(search);
+        }
+
+        // Category filter
+        if (visible && filter !== 'all') {
+            const section = card.closest('.team-section');
+            if (section) {
+                const sectionType = section.classList.contains('attention') ? 'attention' :
+                    section.classList.contains('active') ? 'working' :
+                    section.classList.contains('idle') ? 'idle' : '';
+                visible = sectionType === filter;
+            }
+        }
+
+        card.style.display = visible ? '' : 'none';
+    });
+
+    // Hide sections where all cards are hidden
+    sections.forEach(section => {
+        const visibleCards = section.querySelectorAll('.team-card:not([style*="display: none"])');
+        section.style.display = visibleCards.length > 0 ? '' : 'none';
+    });
+}
+
+/**
+ * Desktop keyboard shortcuts
+ */
+function setupDesktopShortcuts() {
+    document.addEventListener('keydown', (e) => {
+        if (uiMode !== 'desktop-multipane') return;
+
+        // Skip if input/textarea/select focused
+        const tag = document.activeElement?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+        // Skip if any modal visible
+        if (document.querySelector('.compose-modal:not(.hidden)') ||
+            document.querySelector('.challenge-modal:not(.hidden)') ||
+            document.querySelector('.docs-modal:not(.hidden)') ||
+            document.querySelector('.shortcut-help-modal.visible')) return;
+
+        // Skip if interactive mode
+        if (typeof interactiveMode !== 'undefined' && interactiveMode) return;
+
+        const key = e.key;
+
+        switch (key) {
+            case '1':
+                e.preventDefault();
+                switchDesktopFocus('team');
+                break;
+            case '2':
+                e.preventDefault();
+                switchDesktopFocus('log');
+                break;
+            case '3':
+                e.preventDefault();
+                if (desktopFocusedPane === 'terminal') {
+                    closeDesktopTerminal();
+                } else {
+                    openDesktopTerminal();
+                }
+                break;
+            case 'j':
+                e.preventDefault();
+                selectNextAgent();
+                break;
+            case 'k':
+                e.preventDefault();
+                selectPrevAgent();
+                break;
+            case 'a':
+                e.preventDefault();
+                approveSelectedAgent();
+                break;
+            case 'd':
+                e.preventDefault();
+                denySelectedAgent();
+                break;
+            case 'Enter':
+                if (selectedAgentIndex >= 0) {
+                    e.preventDefault();
+                    openSelectedAgentTerminal();
+                }
+                break;
+            case '/':
+                e.preventDefault();
+                focusSearchInput();
+                break;
+            case 'Escape':
+                if (desktopFocusedPane === 'terminal') {
+                    e.preventDefault();
+                    closeDesktopTerminal();
+                } else if (document.querySelector('.shortcut-help-modal.visible')) {
+                    document.querySelector('.shortcut-help-modal.visible').classList.remove('visible');
+                }
+                break;
+            case '?':
+                if (e.shiftKey) {
+                    e.preventDefault();
+                    toggleShortcutHelp();
+                }
+                break;
+        }
+    });
+}
+
+/**
+ * Agent selection helpers for keyboard nav
+ */
+function selectNextAgent() {
+    const cards = getVisibleTeamCards();
+    if (cards.length === 0) return;
+    selectedAgentIndex = Math.min(selectedAgentIndex + 1, cards.length - 1);
+    highlightSelectedAgent(cards);
+}
+
+function selectPrevAgent() {
+    const cards = getVisibleTeamCards();
+    if (cards.length === 0) return;
+    selectedAgentIndex = Math.max(selectedAgentIndex - 1, 0);
+    highlightSelectedAgent(cards);
+}
+
+function getVisibleTeamCards() {
+    const container = document.getElementById('teamCardsContainer');
+    if (!container) return [];
+    return Array.from(container.querySelectorAll('.team-card:not([style*="display: none"])'));
+}
+
+function highlightSelectedAgent(cards) {
+    if (!cards) cards = getVisibleTeamCards();
+    // Remove all selections
+    document.querySelectorAll('.team-card.agent-selected').forEach(c => c.classList.remove('agent-selected'));
+    if (selectedAgentIndex >= 0 && selectedAgentIndex < cards.length) {
+        cards[selectedAgentIndex].classList.add('agent-selected');
+        cards[selectedAgentIndex].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+}
+
+function restoreAgentSelection() {
+    const cards = getVisibleTeamCards();
+    if (selectedAgentIndex >= cards.length) selectedAgentIndex = cards.length - 1;
+    highlightSelectedAgent(cards);
+}
+
+function approveSelectedAgent() {
+    const cards = getVisibleTeamCards();
+    if (selectedAgentIndex < 0 || selectedAgentIndex >= cards.length) return;
+    const card = cards[selectedAgentIndex];
+    const allowBtn = card.querySelector('.team-card-action-btn.allow');
+    if (allowBtn && !allowBtn.disabled) allowBtn.click();
+}
+
+function denySelectedAgent() {
+    const cards = getVisibleTeamCards();
+    if (selectedAgentIndex < 0 || selectedAgentIndex >= cards.length) return;
+    const card = cards[selectedAgentIndex];
+    const denyBtn = card.querySelector('.team-card-action-btn.deny');
+    if (denyBtn && !denyBtn.disabled) denyBtn.click();
+}
+
+function openSelectedAgentTerminal() {
+    const cards = getVisibleTeamCards();
+    if (selectedAgentIndex < 0 || selectedAgentIndex >= cards.length) return;
+    const card = cards[selectedAgentIndex];
+    const menuBtn = card.querySelector('.team-card-menu-btn');
+    if (menuBtn) menuBtn.click();
+}
+
+function focusSearchInput() {
+    const input = document.getElementById('teamSearchInput');
+    if (input) input.focus();
+}
+
+/**
+ * Shortcut help modal
+ */
+function toggleShortcutHelp() {
+    let modal = document.querySelector('.shortcut-help-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.className = 'shortcut-help-modal';
+        modal.innerHTML = `
+            <div class="shortcut-help-content">
+                <div class="shortcut-help-title">
+                    <span>Keyboard Shortcuts</span>
+                    <button class="shortcut-help-close">&times;</button>
+                </div>
+                <div class="shortcut-group">
+                    <div class="shortcut-group-title">Navigation</div>
+                    <div class="shortcut-row"><span>Focus team</span><span class="shortcut-key">1</span></div>
+                    <div class="shortcut-row"><span>Focus log</span><span class="shortcut-key">2</span></div>
+                    <div class="shortcut-row"><span>Toggle terminal</span><span class="shortcut-key">3</span></div>
+                    <div class="shortcut-row"><span>Search agents</span><span class="shortcut-key">/</span></div>
+                </div>
+                <div class="shortcut-group">
+                    <div class="shortcut-group-title">Agent Selection</div>
+                    <div class="shortcut-row"><span>Next agent</span><span class="shortcut-key">j</span></div>
+                    <div class="shortcut-row"><span>Previous agent</span><span class="shortcut-key">k</span></div>
+                    <div class="shortcut-row"><span>Approve</span><span class="shortcut-key">a</span></div>
+                    <div class="shortcut-row"><span>Deny</span><span class="shortcut-key">d</span></div>
+                    <div class="shortcut-row"><span>Open terminal</span><span class="shortcut-key">Enter</span></div>
+                </div>
+                <div class="shortcut-group">
+                    <div class="shortcut-group-title">Other</div>
+                    <div class="shortcut-row"><span>Close terminal</span><span class="shortcut-key">Esc</span></div>
+                    <div class="shortcut-row"><span>This help</span><span class="shortcut-key">Shift+?</span></div>
+                </div>
+            </div>`;
+        document.body.appendChild(modal);
+        modal.querySelector('.shortcut-help-close').addEventListener('click', () => {
+            modal.classList.remove('visible');
+        });
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.classList.remove('visible');
+        });
+    }
+    modal.classList.toggle('visible');
+}
+
+/**
+ * Add hover actions to team card (desktop only)
+ */
+function addDesktopHoverActions(card, agent, ui) {
+    const actions = document.createElement('div');
+    actions.className = 'team-card-hover-actions';
+
+    const viewBtn = document.createElement('button');
+    viewBtn.className = 'team-card-hover-btn';
+    viewBtn.textContent = 'View';
+    viewBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        selectTarget(agent.target_id);
+        switchToView('terminal');
+    });
+    actions.appendChild(viewBtn);
+
+    if (ui.showPermissionActions) {
+        const allowBtn = document.createElement('button');
+        allowBtn.className = 'team-card-hover-btn allow-btn';
+        allowBtn.textContent = 'Allow';
+        allowBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            sendTeamInput(agent.target_id, 'y');
+        });
+        actions.appendChild(allowBtn);
+    }
+
+    card.appendChild(actions);
+}
+
+
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
     initDOMElements();
@@ -11295,6 +12057,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupDirtyChoiceModals();
     setupPermissionBanner();
     setupVoiceInput();
+    setupDesktopLayout();
 
     // Reconnect badge click handler
     const reconnectBadge = document.getElementById('reconnectBadge');
@@ -11350,8 +12113,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // WebSocket connection is independent of config/session/queue
     connect();
 
-    // Start with log view as primary
-    switchToLogView();
+    // Start with log view as primary (desktop layout already handled in setupDesktopLayout)
+    if (uiMode !== 'desktop-multipane') {
+        switchToLogView();
+    }
 
     // Background init: Load session, config, queue in parallel (non-blocking)
     // These enhance the UI but are not required for basic terminal operation
