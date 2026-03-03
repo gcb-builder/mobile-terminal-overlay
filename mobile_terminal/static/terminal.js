@@ -6433,8 +6433,7 @@ function extractPendingPrompt(content) {
         return;
     }
 
-    // Method 2: Heuristic detection - look for numbered lists at end of message
-    // Pattern: text followed by numbered options (1. ... 2. ... etc)
+    // Method 2: Heuristic detection - numbered list at end of message
     const numberedListMatch = assistantContent.match(/([^\n]+(?:\n[^\n]+)*)\n\n?((?:\d+\.\s+.+\n?)+)$/);
     if (numberedListMatch) {
         const questionText = numberedListMatch[1].trim();
@@ -6454,16 +6453,58 @@ function extractPendingPrompt(content) {
             }
         }
 
-        // Reject if choices look like documentation, not prompt options
-        // Markdown bold/code formatting indicates a numbered list in prose, not choices
-        const hasMarkdown = choices.some(c => /\*\*|`/.test(c.label));
-        if (hasMarkdown) {
-            console.debug('[PromptDetect] Heuristic rejected: markdown in numbered list');
-            // Fall through to confirmation detection
+        // --- Rejection gates (all must pass) ---
+        let rejected = false;
+        let rejectReason = '';
+
+        // Gate 1: Prompt intent — must end with ? OR contain a prompt-intent phrase
+        const promptIntentRe = /\b(choose|pick|select|which|what do you want|would you like|do you prefer|do you want)\b/i;
+        if (!questionText.endsWith('?') && !promptIntentRe.test(questionText)) {
+            rejected = true;
+            rejectReason = 'no question mark or prompt-intent phrase';
         }
 
-        // Only treat as prompt if we have 2-6 short options (likely a real question)
-        else if (choices.length >= 2 && choices.length <= 6) {
+        // Gate 2: Option count 2-6
+        if (!rejected && (choices.length < 2 || choices.length > 6)) {
+            rejected = true;
+            rejectReason = 'option count out of range: ' + choices.length;
+        }
+
+        // Gate 3: Markdown formatting in labels (documentation, not choices)
+        if (!rejected) {
+            const hasMarkdown = choices.some(c => /\*\*|`/.test(c.label));
+            if (hasMarkdown) {
+                rejected = true;
+                rejectReason = 'markdown in labels';
+            }
+        }
+
+        // Gate 4: Label length — reject if max > 120 OR (avg > 60 AND 4+ choices)
+        if (!rejected && choices.length > 0) {
+            const maxLen = Math.max(...choices.map(c => c.label.length));
+            const avgLen = choices.reduce((sum, c) => sum + c.label.length, 0) / choices.length;
+            if (maxLen > 120 || (avgLen > 60 && choices.length >= 4)) {
+                rejected = true;
+                rejectReason = `label length: max=${maxLen}, avg=${Math.round(avgLen)}`;
+            }
+        }
+
+        // Gate 5: Menu-like check — at least one option must look like a real choice
+        if (!rejected) {
+            const choiceTokenRe = /\b(other|none|cancel|back|yes|no|skip|default)\b/i;
+            const hasMenuLikeOption = choices.some(c =>
+                c.label.length <= 32 || choiceTokenRe.test(c.label)
+            );
+            if (!hasMenuLikeOption) {
+                rejected = true;
+                rejectReason = 'no menu-like options (all labels > 32 chars, no choice tokens)';
+            }
+        }
+
+        if (rejected) {
+            console.debug('[PromptDetect] Heuristic rejected:', rejectReason);
+            // Fall through to confirmation detection (Method 3)
+        } else {
             const promptId = simpleHash(questionText + choices.map(c => c.label).join(''));
 
             if (dismissedPrompts.has(promptId)) {
@@ -6472,7 +6513,7 @@ function extractPendingPrompt(content) {
             }
 
             if (pendingPrompt && pendingPrompt.id === promptId) {
-                return;  // Same prompt
+                return;
             }
 
             pendingPrompt = {
@@ -6624,23 +6665,36 @@ function extractPermissionPrompt(terminalContent) {
         }
     }
 
-    // Also try detecting options without a question line (standalone numbered list)
-    // This handles cases where the question is on a previous screen/scroll
+    // Standalone option detection — only if selector (❯ or >) present
     if (!questionLine && choices.length === 0) {
+        let hasSelector = false;
         for (let i = 0; i < lines.length; i++) {
             const line = stripBox(lines[i]);
             if (!line) continue;
-            const optMatch = line.match(/^[❯>]?\s*(\d+)\.\s*(.+)$/);
+            const optMatch = line.match(/^([❯>])\s*(\d+)\.\s*(.+)$/);
             if (optMatch) {
+                hasSelector = true;
                 choices.push({
-                    num: optMatch[1],
-                    label: optMatch[2].trim().slice(0, 50),
+                    num: optMatch[2],
+                    label: optMatch[3].trim().slice(0, 50),
                     description: ''
                 });
+            } else {
+                // Also collect non-selector numbered items IF we already found a selector
+                const plainMatch = line.match(/^\s*(\d+)\.\s*(.+)$/);
+                if (plainMatch && hasSelector) {
+                    choices.push({
+                        num: plainMatch[1],
+                        label: plainMatch[2].trim().slice(0, 50),
+                        description: ''
+                    });
+                }
             }
         }
-        if (choices.length >= 2) {
+        if (choices.length >= 2 && hasSelector) {
             questionLine = 'Select an option:';
+        } else {
+            choices = [];
         }
     }
 
@@ -6700,14 +6754,19 @@ function showPromptBanner() {
         const btnClass = isSelected ? 'prompt-choice-btn selected' : 'prompt-choice-btn';
         const title = choice.description || choice.label;
         const otherAttr = isOther ? ` data-other="true"` : '';
-        choicesHtml += `<button class="${btnClass}" data-choice="${choice.num}"${otherAttr} title="${escapeHtml(title)}">${escapeHtml(choice.label)}</button>`;
+        const descHtml = (choice.description && choice.description !== choice.label)
+            ? `<span class="prompt-choice-desc">${escapeHtml(choice.description)}</span>`
+            : '';
+        choicesHtml += `<button class="${btnClass}" data-choice="${choice.num}"${otherAttr} title="${escapeHtml(title)}">
+            <span class="prompt-choice-label">${escapeHtml(choice.label)}</span>
+            ${descHtml}
+        </button>`;
     }
 
     // Add dismiss button
     choicesHtml += `<button class="prompt-dismiss-btn" title="Dismiss (won't ask again)">✕</button>`;
 
-    // Truncate text for banner
-    const displayText = text.length > 100 ? text.slice(0, 100) + '...' : text;
+    const displayText = text;
 
     const choicesClass = manyChoices ? 'prompt-banner-choices many-choices' : 'prompt-banner-choices';
     promptBanner.innerHTML = `
@@ -6730,6 +6789,7 @@ function showPromptBanner() {
 function hidePromptBanner() {
     if (!promptBanner) return;
     promptBanner.classList.remove('visible');
+    promptBanner.classList.remove('expanded');
 }
 
 /**
@@ -6753,6 +6813,14 @@ function setupPromptBannerHandlers() {
             }
         };
     });
+
+    // Tap text to expand/collapse
+    const textEl = promptBanner.querySelector('.prompt-banner-text');
+    if (textEl) {
+        textEl.onclick = () => {
+            promptBanner.classList.toggle('expanded');
+        };
+    }
 
     // Dismiss button
     const dismissBtn = promptBanner.querySelector('.prompt-dismiss-btn');

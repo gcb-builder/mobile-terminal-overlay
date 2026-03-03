@@ -945,6 +945,15 @@ html, body {
     color: var(--text-primary);
     line-height: 1.4;
     word-break: break-word;
+    max-height: 4.2em;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+.prompt-banner.expanded .prompt-banner-text {
+    max-height: 40vh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 .prompt-banner-choices {
@@ -954,17 +963,31 @@ html, body {
 }
 
 .prompt-choice-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
     background: var(--bg-tertiary);
     color: var(--text-primary);
     border: 1px solid var(--border-color);
     border-radius: 6px;
     padding: 10px 16px;
     font-size: 14px;
-    font-weight: 500;
     cursor: pointer;
     min-height: 44px;
     min-width: 60px;
     transition: background 0.15s, border-color 0.15s;
+}
+
+.prompt-choice-label {
+    font-weight: 500;
+}
+
+.prompt-choice-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-weight: 400;
+    margin-top: 2px;
+    line-height: 1.3;
 }
 
 .prompt-choice-btn:hover {
