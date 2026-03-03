@@ -1,4 +1,5 @@
 {
+  "id": "/terminal",
   "name": "Mobile Terminal Overlay",
   "short_name": "Terminal",
   "description": "Mobile-optimized terminal UI for tmux sessions",
@@ -7,8 +8,8 @@
   "display": "standalone",
   "display_override": ["standalone", "window-controls-overlay"],
   "orientation": "portrait",
-  "background_color": "#0b0f14",
-  "theme_color": "#0b0f14",
+  "background_color": "#1e1e1e",
+  "theme_color": "#1e1e1e",
   "icons": [
     {
       "src": "/static/icon-192.png",
