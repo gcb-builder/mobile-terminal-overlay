@@ -4,6 +4,20 @@ Append-only log of implementation batches.
 
 ---
 
+## 2026-03-03: Queue Insert-to-Edit + Per-Pane Scoping
+
+### Files Changed
+- `mobile_terminal/server.py` — Added `_queue_key()` static method to CommandQueue, added `pane_id` param to all CommandQueue methods (`_get_queue`, `_load_from_disk`, `_save_to_disk`, `enqueue`, `dequeue`, `reorder`, `list_items`, `pause`, `resume`, `is_paused`, `flush`, `get_next_unsafe`, `_send_item`, `send_next_unsafe`), added `pane_id` query param to all queue API endpoints, updated `_process_loop` to use `active_target`, updated `get_queue_file`/`load_queue_from_disk`/`save_queue_to_disk` for pane_id
+- `mobile_terminal/static/terminal.js` — Replaced `sendNextUnsafe()` with `insertNextToInput()`, added `reorderQueueItem()`, updated `renderQueueList()` with reorder buttons and tap-to-insert handlers, updated `getQueueStorageKey()` to include pane, added `pane_id` to all queue API calls, added queue save/load/reconcile in `selectTarget()`, updated `setupQueue()` wiring
+- `mobile_terminal/static/styles.css` — Added `.queue-item[data-status="queued"]` cursor/active styles, added `.queue-item-reorder` and `.queue-reorder-btn` styles
+- `mobile_terminal/static/index.html` — Renamed "Send Next" to "Insert", bumped versions (styles v169, terminal.js v274)
+
+### Risks / Follow-ups
+- Old localStorage keys (`mto_queue_<session>`) won't match new keys (`mto_queue_<session>:<pane>`); existing queued items in localStorage will be orphaned on first load after upgrade (acceptable — reconcileQueue will re-sync from server)
+- Queue reorder error handling: on server error, items are swapped back locally but server state may diverge until next reconcile
+
+---
+
 ## 2026-03-02: Prompt Banner "Other" Option with Textarea Input
 
 ### Files Changed

@@ -3,10 +3,29 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Prompt banner "Other" option + heuristic false-positive fix
-- **Last Updated:** 2026-03-02
-- **Server Version:** v273 (terminal.js), v116 (sw.js cache), v168 (styles.css)
+- **Stage:** Queue insert-to-edit + per-pane scoping
+- **Last Updated:** 2026-03-03
+- **Server Version:** v274 (terminal.js), v116 (sw.js cache), v169 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
+
+## Recent: Queue Insert-to-Edit + Per-Pane Scoping (2026-03-03)
+
+### Feature: Insert-to-Edit
+Replaced "Send Next" button with "Insert" — pops next queued item into the input box for editing before sending. Tapping any queued item also inserts it. Queue items are removed on insert; user sends via normal input flow.
+
+### Feature: Reorder Queue Items
+Added up/down arrow buttons (▲/▼) per queued item. Swap locally + POST to /api/queue/reorder. First queued item hides ▲, last hides ▼.
+
+### Feature: Per-Pane Queue Scoping
+Queue is now keyed by `session:pane_id` instead of just `session`. Server CommandQueue uses `_queue_key()` helper. All queue API endpoints accept optional `pane_id` param. Client includes `activeTarget` in all queue API calls and localStorage keys. On target switch: saves current queue, loads new pane's queue, reconciles with server.
+
+### Files Changed
+- `mobile_terminal/server.py` — `_queue_key()` helper, pane_id param on all CommandQueue methods and API endpoints, `_process_loop` uses `active_target`
+- `mobile_terminal/static/terminal.js` — `insertNextToInput()`, `reorderQueueItem()`, reorder buttons in `renderQueueList()`, tap-to-insert, per-pane `getQueueStorageKey()`, pane_id in all API calls, queue save/load on target switch
+- `mobile_terminal/static/styles.css` — `.queue-item[data-status="queued"]` cursor/active styles, `.queue-item-reorder` and `.queue-reorder-btn` styles
+- `mobile_terminal/static/index.html` — "Send Next" → "Insert", version bumps
+
+---
 
 ## Recent: Prompt Banner "Other" Option + Heuristic Fix (2026-03-02)
 

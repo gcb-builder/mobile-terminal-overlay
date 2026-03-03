@@ -489,19 +489,28 @@ class CommandQueue:
         """Set the FastAPI app reference for accessing state."""
         self._app = app
 
-    def _get_queue(self, session: str) -> List[QueueItem]:
-        """Get or create queue for session, loading from disk if needed."""
-        if session not in self._queues:
-            self._queues[session] = []
-            # Load from disk on first access
-            if session not in self._loaded_sessions:
-                self._load_from_disk(session)
-                self._loaded_sessions.add(session)
-        return self._queues[session]
+    @staticmethod
+    def _queue_key(session: str, pane_id: Optional[str] = None) -> str:
+        """Build internal dict key: 'session:pane_id' when pane_id given, else 'session'."""
+        if pane_id:
+            return f"{session}:{pane_id}"
+        return session
 
-    def _load_from_disk(self, session: str):
-        """Load queue from disk for a session."""
-        items_data = load_queue_from_disk(session)
+    def _get_queue(self, session: str, pane_id: Optional[str] = None) -> List[QueueItem]:
+        """Get or create queue for session+pane, loading from disk if needed."""
+        key = self._queue_key(session, pane_id)
+        if key not in self._queues:
+            self._queues[key] = []
+            # Load from disk on first access
+            if key not in self._loaded_sessions:
+                self._load_from_disk(session, pane_id)
+                self._loaded_sessions.add(key)
+        return self._queues[key]
+
+    def _load_from_disk(self, session: str, pane_id: Optional[str] = None):
+        """Load queue from disk for a session+pane."""
+        key = self._queue_key(session, pane_id)
+        items_data = load_queue_from_disk(session, pane_id)
         items = []
         for data in items_data:
             try:
@@ -520,14 +529,15 @@ class CommandQueue:
             except Exception as e:
                 logger.warning(f"Skipping invalid queue item: {e}")
         if items:
-            self._queues[session] = items
-            logger.info(f"Loaded {len(items)} queued items for session {session}")
+            self._queues[key] = items
+            logger.info(f"Loaded {len(items)} queued items for {key}")
 
-    def _save_to_disk(self, session: str):
-        """Save queue to disk for a session."""
-        queue = self._queues.get(session, [])
+    def _save_to_disk(self, session: str, pane_id: Optional[str] = None):
+        """Save queue to disk for a session+pane."""
+        key = self._queue_key(session, pane_id)
+        queue = self._queues.get(key, [])
         items_data = [asdict(item) for item in queue]
-        save_queue_to_disk(session, items_data)
+        save_queue_to_disk(session, items_data, pane_id)
 
     def _classify_policy(self, text: str) -> str:
         """Determine if command is safe or unsafe."""
@@ -554,14 +564,14 @@ class CommandQueue:
         # Default to safe for short, simple commands
         return "safe"
 
-    def enqueue(self, session: str, text: str, policy: str = "auto", item_id: Optional[str] = None) -> tuple:
+    def enqueue(self, session: str, text: str, policy: str = "auto", item_id: Optional[str] = None, pane_id: Optional[str] = None) -> tuple:
         """
         Add a command to the queue.
 
         Returns (item, is_new) tuple. If item_id already exists, returns existing item
         with is_new=False (idempotency).
         """
-        queue = self._get_queue(session)
+        queue = self._get_queue(session, pane_id)
 
         # Idempotency check: if ID provided and exists, return existing
         if item_id:
@@ -581,58 +591,61 @@ class CommandQueue:
             created_at=time.time(),
         )
         queue.append(item)
-        self._save_to_disk(session)
+        self._save_to_disk(session, pane_id)
         return (item, True)
 
-    def dequeue(self, session: str, item_id: str) -> bool:
+    def dequeue(self, session: str, item_id: str, pane_id: Optional[str] = None) -> bool:
         """Remove an item from the queue."""
-        queue = self._get_queue(session)
+        queue = self._get_queue(session, pane_id)
         for i, item in enumerate(queue):
             if item.id == item_id:
                 queue.pop(i)
-                self._save_to_disk(session)
+                self._save_to_disk(session, pane_id)
                 return True
         return False
 
-    def reorder(self, session: str, item_id: str, new_index: int) -> bool:
+    def reorder(self, session: str, item_id: str, new_index: int, pane_id: Optional[str] = None) -> bool:
         """Move an item to a new position."""
-        queue = self._get_queue(session)
+        queue = self._get_queue(session, pane_id)
         for i, item in enumerate(queue):
             if item.id == item_id:
                 queue.pop(i)
                 new_index = max(0, min(new_index, len(queue)))
                 queue.insert(new_index, item)
-                self._save_to_disk(session)
+                self._save_to_disk(session, pane_id)
                 return True
         return False
 
-    def list_items(self, session: str) -> List[QueueItem]:
+    def list_items(self, session: str, pane_id: Optional[str] = None) -> List[QueueItem]:
         """Get all items in the queue."""
-        return self._get_queue(session).copy()
+        return self._get_queue(session, pane_id).copy()
 
-    def pause(self, session: str) -> None:
-        """Pause queue processing for a session."""
-        self._paused[session] = True
+    def pause(self, session: str, pane_id: Optional[str] = None) -> None:
+        """Pause queue processing for a session+pane."""
+        key = self._queue_key(session, pane_id)
+        self._paused[key] = True
 
-    def resume(self, session: str) -> None:
-        """Resume queue processing for a session."""
-        self._paused[session] = False
+    def resume(self, session: str, pane_id: Optional[str] = None) -> None:
+        """Resume queue processing for a session+pane."""
+        key = self._queue_key(session, pane_id)
+        self._paused[key] = False
 
-    def is_paused(self, session: str) -> bool:
+    def is_paused(self, session: str, pane_id: Optional[str] = None) -> bool:
         """Check if queue is paused."""
-        return self._paused.get(session, False)
+        key = self._queue_key(session, pane_id)
+        return self._paused.get(key, False)
 
-    def flush(self, session: str) -> int:
+    def flush(self, session: str, pane_id: Optional[str] = None) -> int:
         """Clear all queued items. Returns count cleared."""
-        queue = self._get_queue(session)
+        queue = self._get_queue(session, pane_id)
         count = len(queue)
         queue.clear()
-        self._save_to_disk(session)
+        self._save_to_disk(session, pane_id)
         return count
 
-    def get_next_unsafe(self, session: str) -> Optional[QueueItem]:
+    def get_next_unsafe(self, session: str, pane_id: Optional[str] = None) -> Optional[QueueItem]:
         """Get the next unsafe item waiting for manual send."""
-        queue = self._get_queue(session)
+        queue = self._get_queue(session, pane_id)
         for item in queue:
             if item.status == "queued" and item.policy == "unsafe":
                 return item
@@ -685,7 +698,7 @@ class CommandQueue:
 
         return False
 
-    async def _send_item(self, session: str, item: QueueItem) -> bool:
+    async def _send_item(self, session: str, item: QueueItem, pane_id: Optional[str] = None) -> bool:
         """Send a single item to the terminal."""
         if not self._app:
             return False
@@ -712,7 +725,7 @@ class CommandQueue:
             if success:
                 item.status = "sent"
                 item.sent_at = time.time()
-                self._save_to_disk(session)  # Persist sent status
+                self._save_to_disk(session, pane_id)  # Persist sent status
 
                 # Notify client
                 if websocket:
@@ -729,18 +742,18 @@ class CommandQueue:
             else:
                 item.status = "failed"
                 item.error = "Send timeout"
-                self._save_to_disk(session)  # Persist failed status
+                self._save_to_disk(session, pane_id)  # Persist failed status
                 return False
 
         except Exception as e:
             item.status = "failed"
             item.error = str(e)
-            self._save_to_disk(session)  # Persist failed status
+            self._save_to_disk(session, pane_id)  # Persist failed status
             return False
 
-    async def send_next_unsafe(self, session: str, item_id: Optional[str] = None) -> Optional[QueueItem]:
+    async def send_next_unsafe(self, session: str, item_id: Optional[str] = None, pane_id: Optional[str] = None) -> Optional[QueueItem]:
         """Manually send the next unsafe item (or specific item)."""
-        queue = self._get_queue(session)
+        queue = self._get_queue(session, pane_id)
 
         # Find the item
         item = None
@@ -750,7 +763,7 @@ class CommandQueue:
                     item = i
                     break
         else:
-            item = self.get_next_unsafe(session)
+            item = self.get_next_unsafe(session, pane_id)
 
         if not item:
             return None
@@ -758,12 +771,12 @@ class CommandQueue:
         # Wait for ready and send
         for _ in range(20):  # Try for 2 seconds
             if await self._check_ready(session):
-                await self._send_item(session, item)
+                await self._send_item(session, item, pane_id)
                 return item
             await asyncio.sleep(0.1)
 
         # Timeout waiting for ready, send anyway
-        await self._send_item(session, item)
+        await self._send_item(session, item, pane_id)
         return item
 
     async def _process_loop(self) -> None:
@@ -780,11 +793,14 @@ class CommandQueue:
             if not current_session:
                 continue
 
-            # Process only current session
-            if self.is_paused(current_session):
+            # Use active_target as pane_id for per-pane queue scoping
+            pane_id = getattr(self._app.state, 'active_target', None)
+
+            # Process only current session+pane
+            if self.is_paused(current_session, pane_id):
                 continue
 
-            queue = self._get_queue(current_session)
+            queue = self._get_queue(current_session, pane_id)
             if not queue:
                 continue
 
@@ -803,7 +819,7 @@ class CommandQueue:
                 continue
 
             # Send the item
-            await self._send_item(current_session, item)
+            await self._send_item(current_session, item, pane_id)
 
             # Cooldown
             await asyncio.sleep(self.COOLDOWN_MS / 1000)
@@ -842,18 +858,21 @@ QUEUE_DIR = Path.home() / ".cache" / "mobile-overlay" / "queue"
 PLAN_LINKS_FILE = Path.home() / ".claude" / "plan-links.json"
 
 
-def get_queue_file(session: str) -> Path:
-    """Get the queue file path for a session."""
+def get_queue_file(session: str, pane_id: Optional[str] = None) -> Path:
+    """Get the queue file path for a session (optionally scoped by pane)."""
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     # Sanitize session name for filename
     safe_name = session.replace("/", "_").replace(":", "_")
+    if pane_id:
+        safe_pane = pane_id.replace("/", "_").replace(":", "_").replace(".", "_")
+        return QUEUE_DIR / f"{safe_name}_{safe_pane}.jsonl"
     return QUEUE_DIR / f"{safe_name}.jsonl"
 
 
-def load_queue_from_disk(session: str) -> list:
+def load_queue_from_disk(session: str, pane_id: Optional[str] = None) -> list:
     """Load queue items from JSONL file."""
     import json
-    queue_file = get_queue_file(session)
+    queue_file = get_queue_file(session, pane_id)
     items = []
     if queue_file.exists():
         try:
@@ -867,10 +886,10 @@ def load_queue_from_disk(session: str) -> list:
     return items
 
 
-def save_queue_to_disk(session: str, items: list):
+def save_queue_to_disk(session: str, items: list, pane_id: Optional[str] = None):
     """Save queue items to JSONL file."""
     import json
-    queue_file = get_queue_file(session)
+    queue_file = get_queue_file(session, pane_id)
     try:
         QUEUE_DIR.mkdir(parents=True, exist_ok=True)
         with open(queue_file, "w") as f:
@@ -4086,6 +4105,7 @@ Only the top 1–3 risks worth caring about.
         session: str = Query(...),
         policy: str = Query("auto"),  # "auto" | "safe" | "unsafe"
         id: Optional[str] = Query(None),  # Client-provided ID for idempotency
+        pane_id: Optional[str] = Query(None),  # Per-pane scoping
         token: Optional[str] = Query(None),
     ):
         """
@@ -4102,7 +4122,7 @@ Only the top 1–3 risks worth caring about.
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        item, is_new = app.state.command_queue.enqueue(session, text, policy, item_id=id)
+        item, is_new = app.state.command_queue.enqueue(session, text, policy, item_id=id, pane_id=pane_id)
 
         # Notify connected clients only for new items
         if is_new and app.state.active_websocket:
@@ -4120,14 +4140,15 @@ Only the top 1–3 risks worth caring about.
     @app.get("/api/queue/list")
     async def queue_list(
         session: str = Query(...),
+        pane_id: Optional[str] = Query(None),
         token: Optional[str] = Query(None),
     ):
-        """List all queued items for a session."""
+        """List all queued items for a session+pane."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        items = app.state.command_queue.list_items(session)
-        paused = app.state.command_queue.is_paused(session)
+        items = app.state.command_queue.list_items(session, pane_id)
+        paused = app.state.command_queue.is_paused(session, pane_id)
         return {
             "items": [asdict(i) for i in items],
             "paused": paused,
@@ -4138,13 +4159,14 @@ Only the top 1–3 risks worth caring about.
     async def queue_remove(
         session: str = Query(...),
         item_id: str = Query(...),
+        pane_id: Optional[str] = Query(None),
         token: Optional[str] = Query(None),
     ):
         """Remove an item from the queue."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        success = app.state.command_queue.dequeue(session, item_id)
+        success = app.state.command_queue.dequeue(session, item_id, pane_id)
 
         if success and app.state.active_websocket:
             try:
@@ -4163,32 +4185,34 @@ Only the top 1–3 risks worth caring about.
         session: str = Query(...),
         item_id: str = Query(...),
         new_index: int = Query(...),
+        pane_id: Optional[str] = Query(None),
         token: Optional[str] = Query(None),
     ):
         """Reorder an item in the queue."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        success = app.state.command_queue.reorder(session, item_id, new_index)
+        success = app.state.command_queue.reorder(session, item_id, new_index, pane_id)
         return {"status": "ok" if success else "not_found"}
 
     @app.post("/api/queue/pause")
     async def queue_pause(
         session: str = Query(...),
+        pane_id: Optional[str] = Query(None),
         token: Optional[str] = Query(None),
     ):
-        """Pause queue processing for a session."""
+        """Pause queue processing for a session+pane."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        app.state.command_queue.pause(session)
+        app.state.command_queue.pause(session, pane_id)
 
         if app.state.active_websocket:
             try:
                 await app.state.active_websocket.send_json({
                     "type": "queue_state",
                     "paused": True,
-                    "count": len(app.state.command_queue.list_items(session)),
+                    "count": len(app.state.command_queue.list_items(session, pane_id)),
                 })
             except Exception:
                 pass
@@ -4198,20 +4222,21 @@ Only the top 1–3 risks worth caring about.
     @app.post("/api/queue/resume")
     async def queue_resume(
         session: str = Query(...),
+        pane_id: Optional[str] = Query(None),
         token: Optional[str] = Query(None),
     ):
-        """Resume queue processing for a session."""
+        """Resume queue processing for a session+pane."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        app.state.command_queue.resume(session)
+        app.state.command_queue.resume(session, pane_id)
 
         if app.state.active_websocket:
             try:
                 await app.state.active_websocket.send_json({
                     "type": "queue_state",
                     "paused": False,
-                    "count": len(app.state.command_queue.list_items(session)),
+                    "count": len(app.state.command_queue.list_items(session, pane_id)),
                 })
             except Exception:
                 pass
@@ -4222,6 +4247,7 @@ Only the top 1–3 risks worth caring about.
     async def queue_flush(
         session: str = Query(...),
         confirm: bool = Query(False),
+        pane_id: Optional[str] = Query(None),
         token: Optional[str] = Query(None),
     ):
         """Clear all queued items. Requires confirm=true."""
@@ -4229,10 +4255,10 @@ Only the top 1–3 risks worth caring about.
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         if not confirm:
-            items = app.state.command_queue.list_items(session)
+            items = app.state.command_queue.list_items(session, pane_id)
             return {"status": "confirm_required", "count": len(items)}
 
-        count = app.state.command_queue.flush(session)
+        count = app.state.command_queue.flush(session, pane_id)
 
         if app.state.active_websocket:
             try:
@@ -4250,6 +4276,7 @@ Only the top 1–3 risks worth caring about.
     async def queue_send_next(
         session: str = Query(...),
         item_id: Optional[str] = Query(None),
+        pane_id: Optional[str] = Query(None),
         token: Optional[str] = Query(None),
     ):
         """
@@ -4259,7 +4286,7 @@ Only the top 1–3 risks worth caring about.
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        item = await app.state.command_queue.send_next_unsafe(session, item_id)
+        item = await app.state.command_queue.send_next_unsafe(session, item_id, pane_id)
 
         if item:
             return {"status": "ok", "item": asdict(item)}

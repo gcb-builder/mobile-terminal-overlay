@@ -1,17 +1,18 @@
 /* Mobile Terminal Overlay - Styles */
 
 :root {
-    --bg-primary: #0b0f14;
-    --bg-secondary: #1a1f26;
-    --bg-tertiary: #252b33;
-    --text-primary: #e6edf3;
-    --text-secondary: #8b949e;
-    --accent: #58a6ff;
-    --accent-hover: #79b8ff;
-    --danger: #f85149;
-    --success: #3fb950;
-    --warning: #d29922;
-    --border: #30363d;
+    /* VS Code Dark+ inspired palette */
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-tertiary: #2d2d2d;
+    --text-primary: #d4d4d4;
+    --text-secondary: #858585;
+    --accent: #3794ff;
+    --accent-hover: #4fc1ff;
+    --danger: #f14c4c;
+    --success: #89d185;
+    --warning: #cca700;
+    --border: #3c3c3c;
     --shadow: rgba(0, 0, 0, 0.3);
     --sidebar-width: 320px;
     --terminal-panel-height: 300px;
@@ -177,7 +178,7 @@ html, body {
 
 .nav-pane-option.active {
     color: var(--accent);
-    background: rgba(88, 166, 255, 0.1);
+    background: rgba(55, 148, 255, 0.1);
 }
 
 .nav-pane-option .nav-check {
@@ -254,9 +255,9 @@ html, body {
     font-size: 9px;
     padding: 2px 6px;
     background: transparent;
-    border: 1px solid rgba(248, 81, 73, 0.4);
+    border: 1px solid rgba(241, 76, 76, 0.4);
     border-radius: 10px;
-    color: #f85149;
+    color: var(--danger);
     flex-shrink: 0;
     margin-left: 8px;
     cursor: pointer;
@@ -264,8 +265,8 @@ html, body {
 }
 .nav-kill-btn:hover,
 .nav-kill-btn:active {
-    background: rgba(248, 81, 73, 0.15);
-    border-color: #f85149;
+    background: rgba(241, 76, 76, 0.15);
+    border-color: var(--danger);
 }
 
 /* Action option (+ New Window) */
@@ -361,7 +362,7 @@ html, body {
 
 .target-option.active {
     color: var(--accent);
-    background: rgba(88, 166, 255, 0.1);
+    background: rgba(55, 148, 255, 0.1);
 }
 
 .target-option .target-project {
@@ -412,19 +413,19 @@ html, body {
 }
 
 .connection-banner.disconnected {
-    background: rgba(248, 81, 73, 0.15);
+    background: rgba(241, 76, 76, 0.15);
     border-bottom: 1px solid var(--danger);
     color: var(--danger);
 }
 
 .connection-banner.reconnecting {
-    background: rgba(210, 153, 34, 0.15);
+    background: rgba(204, 167, 0, 0.15);
     border-bottom: 1px solid var(--warning);
     color: var(--warning);
 }
 
 .connection-banner.degraded {
-    background: rgba(88, 166, 255, 0.1);
+    background: rgba(55, 148, 255, 0.1);
     border-bottom: 1px solid var(--accent);
     color: var(--accent);
 }
@@ -660,7 +661,7 @@ html, body {
 .reconnect-badge {
     font-size: 11px;
     padding: 2px 8px;
-    background: rgba(248, 81, 73, 0.15);
+    background: rgba(241, 76, 76, 0.15);
     border-radius: 10px;
     color: var(--danger);
     font-weight: 500;
@@ -677,7 +678,7 @@ html, body {
     padding: 2px 8px;
     min-width: 20px;
     text-align: center;
-    background: rgba(248, 81, 73, 0.15);
+    background: rgba(241, 76, 76, 0.15);
     border-radius: 10px;
     color: var(--danger);
     font-weight: 600;
@@ -691,7 +692,7 @@ html, body {
 /* Project context banner */
 .context-banner {
     padding: 6px 12px;
-    background: rgba(88, 166, 255, 0.1);
+    background: rgba(55, 148, 255, 0.1);
     border-bottom: 1px solid var(--accent);
     font-size: 12px;
     flex-shrink: 0;
@@ -916,9 +917,9 @@ html, body {
     flex-direction: column;
     gap: 8px;
     padding: 12px;
-    background: linear-gradient(to bottom, rgba(88, 166, 255, 0.1), rgba(88, 166, 255, 0.05));
-    border-top: 1px solid rgba(88, 166, 255, 0.3);
-    border-bottom: 1px solid rgba(88, 166, 255, 0.2);
+    background: linear-gradient(to bottom, rgba(55, 148, 255, 0.1), rgba(55, 148, 255, 0.05));
+    border-top: 1px solid rgba(55, 148, 255, 0.3);
+    border-bottom: 1px solid rgba(55, 148, 255, 0.2);
     flex-shrink: 0;
     max-height: 60vh;
     overflow-y: auto;
@@ -1011,12 +1012,20 @@ html, body {
     min-height: 44px;
 }
 
-/* "Other" textarea input area */
+/* "Other" textarea input area — fixed bottom sheet to escape flex constraints */
 .prompt-other-input {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 500;
     display: flex;
     flex-direction: column;
     gap: 8px;
-    width: 100%;
+    padding: 12px;
+    background: var(--bg-secondary);
+    border-top: 2px solid var(--accent-blue);
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
 }
 
 .prompt-other-textarea {
@@ -1362,7 +1371,7 @@ html, body {
 
 .log-card.user {
     border-left-color: var(--accent);
-    background: rgba(88, 166, 255, 0.05);
+    background: rgba(55, 148, 255, 0.05);
 }
 
 .log-card.assistant {
@@ -1714,8 +1723,8 @@ html, body {
     padding: 2px 8px;
     font-size: 12px;
     font-weight: 500;
-    color: #3fb950;
-    background: rgba(63, 185, 80, 0.15);
+    color: var(--success);
+    background: rgba(137, 209, 133, 0.15);
     border-radius: 10px;
     animation: working-pulse 1.5s ease-in-out infinite;
 }
@@ -1738,7 +1747,7 @@ html, body {
 .log-thinking-dot {
     width: 6px;
     height: 6px;
-    background: #3fb950;
+    background: var(--success);
     border-radius: 50%;
     animation: thinking-pulse 1s ease-in-out infinite;
 }
@@ -1968,7 +1977,7 @@ html, body {
 }
 
 .role-btn:active {
-    background: rgba(210, 153, 34, 0.2);
+    background: rgba(204, 167, 0, 0.2);
 }
 
 /* Quick commands bar */
@@ -2024,20 +2033,20 @@ html, body {
 /* Colored button variants */
 .btn-yes {
     color: var(--success) !important;
-    border-color: rgba(63, 185, 80, 0.4) !important;
+    border-color: rgba(137, 209, 133, 0.4) !important;
 }
 
 .btn-yes:active {
-    background: rgba(63, 185, 80, 0.3) !important;
+    background: rgba(137, 209, 133, 0.3) !important;
 }
 
 .btn-no {
     color: var(--error) !important;
-    border-color: rgba(248, 81, 73, 0.4) !important;
+    border-color: rgba(241, 76, 76, 0.4) !important;
 }
 
 .btn-no:active {
-    background: rgba(248, 81, 73, 0.3) !important;
+    background: rgba(241, 76, 76, 0.3) !important;
 }
 
 .btn-enter {
@@ -2052,12 +2061,12 @@ html, body {
 
 .btn-stop {
     color: var(--error) !important;
-    border-color: rgba(248, 81, 73, 0.5) !important;
-    background: rgba(248, 81, 73, 0.15) !important;
+    border-color: rgba(241, 76, 76, 0.5) !important;
+    background: rgba(241, 76, 76, 0.15) !important;
 }
 
 .btn-stop:active {
-    background: rgba(248, 81, 73, 0.4) !important;
+    background: rgba(241, 76, 76, 0.4) !important;
 }
 
 .btn-tmux {
@@ -2071,12 +2080,12 @@ html, body {
 
 .btn-queue {
     color: var(--cyan) !important;
-    border-color: rgba(88, 166, 255, 0.5) !important;
-    background: rgba(88, 166, 255, 0.15) !important;
+    border-color: rgba(55, 148, 255, 0.5) !important;
+    background: rgba(55, 148, 255, 0.15) !important;
 }
 
 .btn-queue:active {
-    background: rgba(88, 166, 255, 0.4) !important;
+    background: rgba(55, 148, 255, 0.4) !important;
 }
 
 .btn-clear {
@@ -2189,7 +2198,7 @@ html, body {
 }
 
 .action-bar-btn:active {
-    background: rgba(88, 166, 255, 0.15);
+    background: rgba(55, 148, 255, 0.15);
 }
 
 .action-bar-btn.primary {
@@ -2207,7 +2216,7 @@ html, body {
     align-items: center;
     justify-content: space-between;
     flex: 1;
-    background: rgba(248, 81, 73, 0.1);
+    background: rgba(241, 76, 76, 0.1);
     border-radius: 8px;
     padding: 10px 12px;
     gap: 12px;
@@ -2233,7 +2242,7 @@ html, body {
 }
 
 .approval-banner-btn:active {
-    background: rgba(248, 81, 73, 0.2);
+    background: rgba(241, 76, 76, 0.2);
 }
 
 .view-bar {
@@ -2273,7 +2282,7 @@ html, body {
 }
 
 .view-btn:active {
-    background: rgba(88, 166, 255, 0.2);
+    background: rgba(55, 148, 255, 0.2);
 }
 
 .view-btn.select-btn.active {
@@ -2288,7 +2297,7 @@ html, body {
 }
 
 .view-btn.queue-btn:active {
-    background: rgba(210, 153, 34, 0.2);
+    background: rgba(204, 167, 0, 0.2);
 }
 
 .view-btn .queue-badge {
@@ -2868,7 +2877,7 @@ html, body {
 }
 
 .compose-action.attach-icon:active {
-    background: rgba(210, 153, 34, 0.2);
+    background: rgba(204, 167, 0, 0.2);
 }
 
 .compose-action.attach-icon.uploading {
@@ -4157,7 +4166,7 @@ html, body {
 }
 
 .transcript-line.command {
-    background: rgba(88, 166, 255, 0.08);
+    background: rgba(55, 148, 255, 0.08);
     border-left-color: var(--accent);
     margin-top: 8px;
 }
@@ -4511,7 +4520,7 @@ html, body {
 }
 
 .queue-toggle-btn:active {
-    background: rgba(210, 153, 34, 0.2);
+    background: rgba(204, 167, 0, 0.2);
 }
 
 .queue-badge {
@@ -4593,7 +4602,7 @@ html, body {
 }
 
 .queue-pause-btn:active {
-    background: rgba(210, 153, 34, 0.2);
+    background: rgba(204, 167, 0, 0.2);
 }
 
 .queue-pause-btn.paused {
@@ -4703,12 +4712,12 @@ html, body {
 }
 
 .queue-item-policy.safe {
-    background: rgba(63, 185, 80, 0.2);
+    background: rgba(137, 209, 133, 0.2);
     color: var(--success);
 }
 
 .queue-item-policy.unsafe {
-    background: rgba(248, 81, 73, 0.2);
+    background: rgba(241, 76, 76, 0.2);
     color: var(--error);
 }
 
@@ -4728,9 +4737,43 @@ html, body {
 }
 
 .queue-item-remove:active {
-    background: rgba(248, 81, 73, 0.2);
+    background: rgba(241, 76, 76, 0.2);
     color: var(--error);
     border-color: var(--error);
+}
+
+/* Tappable queued items (tap to insert into input) */
+.queue-item[data-status="queued"] {
+    cursor: pointer;
+}
+
+.queue-item[data-status="queued"]:active {
+    background: var(--bg-secondary);
+}
+
+/* Queue item reorder controls */
+.queue-item-reorder {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+.queue-reorder-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 10px;
+    padding: 2px 6px;
+    cursor: pointer;
+    line-height: 1;
+    min-height: 22px;
+    border-radius: 3px;
+}
+
+.queue-reorder-btn:active {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
 }
 
 /* Queue drawer footer */
@@ -4945,7 +4988,7 @@ html, body {
 
 .preview-list-item.active {
     border-color: var(--accent);
-    background: rgba(88, 166, 255, 0.1);
+    background: rgba(55, 148, 255, 0.1);
 }
 
 .preview-time {
@@ -4963,12 +5006,12 @@ html, body {
 }
 
 .preview-label-badge.user_send {
-    background: rgba(88, 166, 255, 0.2);
+    background: rgba(55, 148, 255, 0.2);
     color: var(--accent);
 }
 
 .preview-label-badge.manual {
-    background: rgba(210, 153, 34, 0.2);
+    background: rgba(204, 167, 0, 0.2);
     color: var(--warning);
 }
 
@@ -5022,7 +5065,7 @@ html, body {
 
 .preview-list-item.pinned {
     border-color: var(--warning);
-    background: rgba(210, 153, 34, 0.08);
+    background: rgba(204, 167, 0, 0.08);
 }
 
 /* Export button */
@@ -5149,7 +5192,7 @@ html, body {
 
 /* Label badges for different snapshot types */
 .preview-label-badge.tool_call {
-    background: rgba(88, 166, 255, 0.2);
+    background: rgba(55, 148, 255, 0.2);
     color: var(--accent);
 }
 
@@ -5159,7 +5202,7 @@ html, body {
 }
 
 .preview-label-badge.error {
-    background: rgba(248, 81, 73, 0.2);
+    background: rgba(241, 76, 76, 0.2);
     color: var(--error);
 }
 
@@ -5185,17 +5228,17 @@ html, body {
 }
 
 .git-status-banner.clean {
-    background: rgba(63, 185, 80, 0.1);
+    background: rgba(137, 209, 133, 0.1);
     border-color: var(--success);
 }
 
 .git-status-banner.dirty {
-    background: rgba(210, 153, 34, 0.15);
+    background: rgba(204, 167, 0, 0.15);
     border-color: var(--warning);
 }
 
 .git-status-banner.no-repo {
-    background: rgba(248, 81, 73, 0.1);
+    background: rgba(241, 76, 76, 0.1);
     border-color: var(--error);
 }
 
@@ -5223,21 +5266,21 @@ html, body {
     margin-left: 4px;
     padding: 2px 6px;
     border-radius: 4px;
-    background: rgba(88, 166, 255, 0.15);
+    background: rgba(55, 148, 255, 0.15);
     font-size: 12px;
 }
 
 .git-status-pr:hover {
-    background: rgba(88, 166, 255, 0.25);
+    background: rgba(55, 148, 255, 0.25);
 }
 
 .git-status-pr.open {
     color: var(--success);
-    background: rgba(63, 185, 80, 0.15);
+    background: rgba(137, 209, 133, 0.15);
 }
 
 .git-status-pr.open:hover {
-    background: rgba(63, 185, 80, 0.25);
+    background: rgba(137, 209, 133, 0.25);
 }
 
 .git-status-pr.closed {
@@ -5424,12 +5467,12 @@ html, body {
 }
 
 .git-dry-run-result.success {
-    background: rgba(63, 185, 80, 0.1);
+    background: rgba(137, 209, 133, 0.1);
     border-color: var(--success);
 }
 
 .git-dry-run-result.error {
-    background: rgba(248, 81, 73, 0.1);
+    background: rgba(241, 76, 76, 0.1);
     border-color: var(--error);
 }
 
@@ -5715,12 +5758,12 @@ html, body {
 }
 
 .process-status-banner.running {
-    background: rgba(63, 185, 80, 0.1);
+    background: rgba(137, 209, 133, 0.1);
     border-color: var(--success);
 }
 
 .process-status-banner.dead {
-    background: rgba(248, 81, 73, 0.1);
+    background: rgba(241, 76, 76, 0.1);
     border-color: var(--error);
 }
 
@@ -5831,12 +5874,12 @@ html, body {
 }
 
 .process-result.success {
-    background: rgba(63, 185, 80, 0.1);
+    background: rgba(137, 209, 133, 0.1);
     border-color: var(--success);
 }
 
 .process-result.error {
-    background: rgba(248, 81, 73, 0.1);
+    background: rgba(241, 76, 76, 0.1);
     border-color: var(--error);
 }
 
@@ -6226,12 +6269,12 @@ html, body {
 }
 
 .dirty-choice-header.warning {
-    background: rgba(248, 81, 73, 0.15);
+    background: rgba(241, 76, 76, 0.15);
     border-bottom-color: var(--error);
 }
 
 .dirty-choice-header.success {
-    background: rgba(63, 185, 80, 0.15);
+    background: rgba(137, 209, 133, 0.15);
     border-bottom-color: var(--success);
 }
 
@@ -6942,7 +6985,7 @@ html, body {
 }
 
 .team-card-btn.allow:active {
-    background: rgba(63, 185, 80, 0.15);
+    background: rgba(137, 209, 133, 0.15);
 }
 
 .team-card-btn.deny {
@@ -6951,7 +6994,7 @@ html, body {
 }
 
 .team-card-btn.deny:active {
-    background: rgba(248, 81, 73, 0.15);
+    background: rgba(241, 76, 76, 0.15);
 }
 
 /* Dispatch bar */
@@ -7012,7 +7055,7 @@ html, body {
 }
 
 .team-card-btn.dispatch:active {
-    background: rgba(88, 166, 255, 0.15);
+    background: rgba(55, 148, 255, 0.15);
 }
 
 /* ===== Team Sections (urgency-driven layout) ===== */
@@ -7065,7 +7108,7 @@ html, body {
 }
 
 .team-section.attention .section-count {
-    background: rgba(248, 81, 73, 0.15);
+    background: rgba(241, 76, 76, 0.15);
     color: var(--danger);
 }
 
@@ -7131,17 +7174,17 @@ html, body {
 }
 
 .badge-danger {
-    background: rgba(248, 81, 73, 0.15);
+    background: rgba(241, 76, 76, 0.15);
     color: var(--danger);
 }
 
 .badge-warning {
-    background: rgba(210, 153, 34, 0.15);
+    background: rgba(204, 167, 0, 0.15);
     color: var(--warning);
 }
 
 .badge-blue {
-    background: rgba(88, 166, 255, 0.15);
+    background: rgba(55, 148, 255, 0.15);
     color: var(--accent);
 }
 
@@ -7210,7 +7253,7 @@ html, body {
 /* Urgency visual weight */
 .team-card.urgency-critical {
     border-left: 3px solid var(--danger);
-    box-shadow: 0 2px 8px rgba(248, 81, 73, 0.15);
+    box-shadow: 0 2px 8px rgba(241, 76, 76, 0.15);
 }
 
 .team-card.urgency-high {
@@ -7479,7 +7522,7 @@ html, body {
     .density-btn.active {
         color: var(--accent);
         border-color: var(--accent);
-        background: rgba(88, 166, 255, 0.1);
+        background: rgba(55, 148, 255, 0.1);
     }
 
     /* ===== Team filter bar (desktop) ===== */
@@ -7537,7 +7580,7 @@ html, body {
     .team-filter-chip.active {
         color: var(--accent);
         border-color: var(--accent);
-        background: rgba(88, 166, 255, 0.1);
+        background: rgba(55, 148, 255, 0.1);
     }
 
     /* ===== Compact density (default on desktop) ===== */
@@ -7699,7 +7742,7 @@ html, body {
     .app.desktop-multipane .team-card.agent-selected {
         outline: 2px solid var(--accent);
         outline-offset: -2px;
-        background: rgba(88, 166, 255, 0.05);
+        background: rgba(55, 148, 255, 0.05);
     }
 
     /* ===== Hover actions ===== */
@@ -7743,7 +7786,7 @@ html, body {
     }
 
     .team-card-hover-btn.allow-btn:hover {
-        background: rgba(63, 185, 80, 0.1);
+        background: rgba(137, 209, 133, 0.1);
     }
 
     /* ===== Shortcut help modal ===== */

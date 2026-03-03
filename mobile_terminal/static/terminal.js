@@ -643,26 +643,26 @@ function initTerminal() {
         smoothScrollDuration: 0,  // Disable smooth scroll - causes delays on mobile
         overviewRulerWidth: 0,
         theme: {
-            background: '#0b0f14',
-            foreground: '#e6edf3',
-            cursor: '#0b0f14',  // Same as background = invisible
-            cursorAccent: '#0b0f14',
-            selection: 'rgba(88, 166, 255, 0.3)',
-            black: '#0b0f14',
-            red: '#f85149',
-            green: '#3fb950',
-            yellow: '#d29922',
-            blue: '#58a6ff',
-            magenta: '#bc8cff',
-            cyan: '#39c5cf',
-            white: '#e6edf3',
-            brightBlack: '#6e7681',
-            brightRed: '#ff7b72',
-            brightGreen: '#56d364',
-            brightYellow: '#e3b341',
-            brightBlue: '#79c0ff',
+            background: '#1e1e1e',
+            foreground: '#d4d4d4',
+            cursor: '#1e1e1e',  // Same as background = invisible
+            cursorAccent: '#1e1e1e',
+            selection: 'rgba(55, 148, 255, 0.3)',
+            black: '#1e1e1e',
+            red: '#f14c4c',
+            green: '#89d185',
+            yellow: '#cca700',
+            blue: '#569cd6',
+            magenta: '#c586c0',
+            cyan: '#4ec9b0',
+            white: '#d4d4d4',
+            brightBlack: '#808080',
+            brightRed: '#f14c4c',
+            brightGreen: '#89d185',
+            brightYellow: '#e5c07b',
+            brightBlue: '#3794ff',
             brightMagenta: '#d2a8ff',
-            brightCyan: '#56d4dd',
+            brightCyan: '#4ec9b0',
             brightWhite: '#ffffff',
         },
         allowProposedApi: true,
@@ -2458,10 +2458,21 @@ async function selectTarget(targetId, isInitialSync = false) {
     const statusText = document.getElementById('statusText');
     const previousTarget = activeTarget;
 
+    // Save current pane's queue before switching
+    if (!isInitialSync) {
+        saveQueueToStorage();
+    }
+
     // === OPTIMISTIC: Apply target locally immediately ===
     activeTarget = targetId;
     localStorage.setItem('mto_active_target', targetId);
     updateNavLabel();
+
+    // Load new target's queue from localStorage
+    queueItems = loadQueueFromStorage();
+    renderQueueList();
+    // Background reconcile with server for the new pane
+    reconcileQueue();
 
     // Clear input box — stale content from previous target is irrelevant
     if (logInput) { logInput.value = ''; logInput.dataset.autoSuggestion = 'false'; }
@@ -8532,10 +8543,11 @@ function makeQueueId() {
 }
 
 /**
- * Get localStorage key for queue (scoped to session)
+ * Get localStorage key for queue (scoped to session + pane)
  */
 function getQueueStorageKey(session) {
-    return QUEUE_STORAGE_PREFIX + (session || 'default');
+    const pane = activeTarget || 'default';
+    return QUEUE_STORAGE_PREFIX + (session || 'default') + ':' + pane;
 }
 
 /**
@@ -8604,7 +8616,9 @@ async function reconcileQueue() {
     // Fetch server state
     let serverItems = [];
     try {
-        const resp = await fetch(`/api/queue/list?session=${encodeURIComponent(currentSession)}&token=${token}`);
+        const listParams = new URLSearchParams({ session: currentSession, token: token });
+        if (activeTarget) listParams.set('pane_id', activeTarget);
+        const resp = await fetch(`/api/queue/list?${listParams}`);
         if (resp.ok) {
             const data = await resp.json();
             serverItems = data.items || [];
@@ -8641,6 +8655,7 @@ async function reconcileQueue() {
                 id: item.id,  // Pass our ID for idempotency
                 token: token
             });
+            if (activeTarget) params.set('pane_id', activeTarget);
             const resp = await fetch(`/api/queue/enqueue?${params}`, { method: 'POST' });
             if (resp.ok) {
                 const data = await resp.json();
@@ -8691,12 +8706,24 @@ function renderQueueList() {
         return;
     }
 
-    queueList.innerHTML = queueItems.map(item => {
+    // Build list of queued-status indices for hiding first/last arrows
+    const queuedIndices = [];
+    queueItems.forEach((item, i) => { if (item.status === 'queued') queuedIndices.push(i); });
+    const firstQueued = queuedIndices[0];
+    const lastQueued = queuedIndices[queuedIndices.length - 1];
+
+    queueList.innerHTML = queueItems.map((item, idx) => {
         const displayText = item.text.length > 40 ? item.text.slice(0, 40) + '...' : item.text;
         const escapedText = displayText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const isQueued = item.status === 'queued';
+        const reorderHtml = isQueued ? `
+                <div class="queue-item-reorder">
+                    <button class="queue-reorder-btn up" data-id="${item.id}" data-dir="up"${idx === firstQueued ? ' style="visibility:hidden"' : ''}>&#x25B2;</button>
+                    <button class="queue-reorder-btn down" data-id="${item.id}" data-dir="down"${idx === lastQueued ? ' style="visibility:hidden"' : ''}>&#x25BC;</button>
+                </div>` : '';
         return `
-            <div class="queue-item" data-id="${item.id}">
-                <span class="queue-item-status ${item.status}"></span>
+            <div class="queue-item" data-id="${item.id}" data-status="${item.status}">
+                <span class="queue-item-status ${item.status}"></span>${reorderHtml}
                 <div class="queue-item-content">
                     <div class="queue-item-text">${escapedText || '(Enter)'}</div>
                     <div class="queue-item-meta">
@@ -8717,6 +8744,21 @@ function renderQueueList() {
             e.stopPropagation();
             const id = btn.dataset.id;
             removeQueueItem(id);
+        });
+    });
+
+    // Tap-to-insert on queued items
+    queueList.querySelectorAll('.queue-item[data-status="queued"]').forEach(el => {
+        el.addEventListener('click', () => {
+            insertNextToInput(el.dataset.id);
+        });
+    });
+
+    // Reorder button handlers
+    queueList.querySelectorAll('.queue-reorder-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation(); // Don't trigger tap-to-insert
+            reorderQueueItem(btn.dataset.id, btn.dataset.dir);
         });
     });
 }
@@ -8752,7 +8794,9 @@ async function refreshQueueList() {
     if (!currentSession) return;
 
     try {
-        const resp = await fetch(`/api/queue/list?session=${encodeURIComponent(currentSession)}&token=${token}`);
+        const listParams = new URLSearchParams({ session: currentSession, token: token });
+        if (activeTarget) listParams.set('pane_id', activeTarget);
+        const resp = await fetch(`/api/queue/list?${listParams}`);
         if (resp.ok) {
             const data = await resp.json();
             queueItems = data.items || [];
@@ -8805,6 +8849,7 @@ async function enqueueCommand(text, policy = 'auto') {
             id: itemId,  // Client-generated ID for idempotency
             token: token
         });
+        if (activeTarget) params.set('pane_id', activeTarget);
         const resp = await fetch(`/api/queue/enqueue?${params}`, {
             method: 'POST'
         });
@@ -8846,6 +8891,7 @@ async function removeQueueItem(itemId) {
             item_id: itemId,
             token: token
         });
+        if (activeTarget) params.set('pane_id', activeTarget);
         await fetch(`/api/queue/remove?${params}`, {
             method: 'POST'
         });
@@ -8866,6 +8912,7 @@ async function toggleQueuePause() {
         session: currentSession,
         token: token
     });
+    if (activeTarget) params.set('pane_id', activeTarget);
 
     try {
         const resp = await fetch(`${endpoint}?${params}`, {
@@ -8891,25 +8938,61 @@ function updatePauseButton() {
 }
 
 /**
- * Send next unsafe item manually
+ * Insert next queued item (or specific item) into the input box for editing.
+ * Removes the item from the queue — user sends manually after optional edit.
  */
-async function sendNextUnsafe() {
-    if (!currentSession) return;
+function insertNextToInput(specificId) {
+    const item = specificId
+        ? queueItems.find(i => i.id === specificId && i.status === 'queued')
+        : queueItems.find(i => i.status === 'queued');
+    if (!item) return;
 
+    // Put text into input box
+    const logInput = document.getElementById('logInput');
+    if (logInput) {
+        logInput.value = item.text;
+        logInput.focus();
+    }
+
+    // Remove from queue (local + server)
+    removeQueueItem(item.id);
+}
+
+/**
+ * Reorder a queue item up or down.
+ */
+async function reorderQueueItem(itemId, direction) {
+    const idx = queueItems.findIndex(i => i.id === itemId);
+    if (idx < 0) return;
+
+    const newIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (newIdx < 0 || newIdx >= queueItems.length) return;
+
+    // Swap locally
+    const tmp = queueItems[idx];
+    queueItems[idx] = queueItems[newIdx];
+    queueItems[newIdx] = tmp;
+    saveQueueToStorage();
+    renderQueueList();
+
+    // Sync with server
     try {
         const params = new URLSearchParams({
             session: currentSession,
+            item_id: itemId,
+            new_index: newIdx.toString(),
             token: token
         });
-        const resp = await fetch(`/api/queue/send-next?${params}`, {
-            method: 'POST'
-        });
-
-        if (resp.ok) {
-            refreshQueueList();
-        }
+        if (activeTarget) params.set('pane_id', activeTarget);
+        await fetch(`/api/queue/reorder?${params}`, { method: 'POST' });
     } catch (e) {
-        console.error('Failed to send next:', e);
+        console.error('Failed to reorder queue item:', e);
+        // Revert on error
+        const tmp2 = queueItems[idx];
+        queueItems[idx] = queueItems[newIdx];
+        queueItems[newIdx] = tmp2;
+        saveQueueToStorage();
+        renderQueueList();
     }
 }
 
@@ -8927,6 +9010,7 @@ async function flushQueue() {
             confirm: 'true',
             token: token
         });
+        if (activeTarget) params.set('pane_id', activeTarget);
         const resp = await fetch(`/api/queue/flush?${params}`, {
             method: 'POST'
         });
@@ -8986,7 +9070,7 @@ function setupQueue() {
     }
 
     if (queueSendNext) {
-        queueSendNext.addEventListener('click', sendNextUnsafe);
+        queueSendNext.addEventListener('click', () => insertNextToInput());
     }
 
     if (queueFlush) {
