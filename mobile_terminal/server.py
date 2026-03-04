@@ -1530,6 +1530,28 @@ def create_app(config: Config) -> FastAPI:
         if not provided or not secrets.compare_digest(provided, expected):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
+    # Content Security Policy
+    CSP_POLICY = "; ".join([
+        "default-src 'self'",
+        "script-src 'self' https://cdn.jsdelivr.net",
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+        "connect-src 'self' ws: wss:",
+        "img-src 'self' data: blob:",
+        "font-src 'self'",
+        "frame-src *",  # dev preview iframes
+        "base-uri 'self'",
+        "form-action 'self'",
+    ])
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = CSP_POLICY
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
     # Mount static files
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

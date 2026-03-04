@@ -11855,3 +11855,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 });
+
+// Register service worker for PWA standalone mode
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js?v=116', { scope: '/' })
+        .catch(err => console.log('SW registration failed:', err));
+}
