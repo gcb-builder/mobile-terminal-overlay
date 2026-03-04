@@ -6081,6 +6081,9 @@ Reply with:
 
     # ========== Git Rollback API ==========
 
+    _pr_info_cache: Dict[str, dict] = {}  # repo_path -> {data, time}
+    PR_INFO_CACHE_TTL = 120.0  # seconds
+
     @app.get("/api/rollback/git/status")
     async def git_status(
         token: Optional[str] = Query(None),
@@ -6139,23 +6142,29 @@ Reply with:
             if display_path.startswith(home):
                 display_path = "~" + display_path[len(home):]
 
-            # Check for associated PR (using gh CLI if available)
+            # Check for associated PR (cached, 120s TTL)
             pr_info = None
-            try:
-                pr_result = subprocess.run(
-                    ["gh", "pr", "view", "--json", "number,title,url,state"],
-                    cwd=repo_path, capture_output=True, text=True, timeout=5
-                )
-                if pr_result.returncode == 0:
-                    pr_data = json.loads(pr_result.stdout)
-                    pr_info = {
-                        "number": pr_data.get("number"),
-                        "title": pr_data.get("title"),
-                        "url": pr_data.get("url"),
-                        "state": pr_data.get("state"),
-                    }
-            except Exception:
-                pass  # gh not available or no PR
+            cache_key = str(repo_path)
+            cached_pr = _pr_info_cache.get(cache_key)
+            if cached_pr and (time.time() - cached_pr["time"]) < PR_INFO_CACHE_TTL:
+                pr_info = cached_pr["data"]
+            else:
+                try:
+                    pr_result = subprocess.run(
+                        ["gh", "pr", "view", "--json", "number,title,url,state"],
+                        cwd=repo_path, capture_output=True, text=True, timeout=5
+                    )
+                    if pr_result.returncode == 0:
+                        pr_data = json.loads(pr_result.stdout)
+                        pr_info = {
+                            "number": pr_data.get("number"),
+                            "title": pr_data.get("title"),
+                            "url": pr_data.get("url"),
+                            "state": pr_data.get("state"),
+                        }
+                    _pr_info_cache[cache_key] = {"data": pr_info, "time": time.time()}
+                except Exception:
+                    pass  # gh not available or no PR
 
             return {
                 "has_repo": True,

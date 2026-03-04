@@ -8,6 +8,14 @@
 console.log('=== TERMINAL.JS v257 UISTATE + VIEW SWITCHER + TEAM SECTIONS ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 
+// Global error boundary for debugging
+window.addEventListener('error', (e) => {
+    console.error('Global error:', e.error || e.message);
+});
+window.addEventListener('unhandledrejection', (e) => {
+    console.error('Unhandled rejection:', e.reason);
+});
+
 // Get token from URL (may be null if --no-auth)
 const urlParams = new URLSearchParams(window.location.search);
 const token = urlParams.get('token') || '';
@@ -1370,7 +1378,6 @@ function connect() {
             reconnectOverlayTimer = null;
         }
         // Update status to show connection established, waiting for data
-        const statusText = document.getElementById('statusText');
         if (statusText && !statusOverlay.classList.contains('hidden')) {
             statusText.textContent = 'Connected, loading...';
         }
@@ -1460,7 +1467,6 @@ function connect() {
                     }, 50);
                 }
                 updateLastActivity();
-                const statusOverlay = document.getElementById('statusOverlay');
                 if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
                     statusOverlay.classList.add('hidden');
                 }
@@ -1487,7 +1493,6 @@ function connect() {
                         }
                         // Hide overlay immediately on hello - connection is established
                         // Don't wait for terminal data (which may not arrive in tail mode)
-                        const statusOverlay = document.getElementById('statusOverlay');
                         if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
                             statusOverlay.classList.add('hidden');
                         }
@@ -1528,7 +1533,6 @@ function connect() {
             queuedWrite(event.data);
             updateLastActivity();
             // Hide loading overlay when terminal data arrives
-            const statusOverlay = document.getElementById('statusOverlay');
             if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
                 statusOverlay.classList.add('hidden');
             }
@@ -2421,13 +2425,16 @@ function showTargetMissingWarning() {
 /**
  * Select a target pane (optimistic - applies locally first, syncs in background)
  */
+let targetSelectController = null;
 async function selectTarget(targetId, isInitialSync = false) {
     repoDropdown.classList.add('hidden');
 
     if (targetId === activeTarget && !isInitialSync) return;
 
-    const statusOverlay = document.getElementById('statusOverlay');
-    const statusText = document.getElementById('statusText');
+    // Cancel any in-flight target select request
+    if (targetSelectController) targetSelectController.abort();
+    targetSelectController = new AbortController();
+
     const previousTarget = activeTarget;
 
     // Save current pane's queue before switching
@@ -2465,7 +2472,7 @@ async function selectTarget(targetId, isInitialSync = false) {
     try {
         const response = await fetchWithTimeout(
             `/api/target/select?target_id=${encodeURIComponent(targetId)}&token=${token}`,
-            { method: 'POST' },
+            { method: 'POST', signal: targetSelectController.signal },
             8000  // 8s timeout for target select
         );
 
