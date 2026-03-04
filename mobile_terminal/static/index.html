@@ -53,7 +53,7 @@
                 <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh">
                     <span>↻</span>
                 </button>
-                <button id="pushToggleBtn" class="push-toggle-btn hidden" title="Push notifications">&#x1F514;</button>
+                <button id="pushToggleBtn" class="push-toggle-btn hidden" title="Push notifications" aria-label="Push notifications">&#x1F514;</button>
                 <span id="connectionIndicator" class="connection-indicator connected" title="Connected"></span>
             </div>
         </header>
@@ -75,7 +75,7 @@
         <div id="agentCrashBanner" class="agent-crash-banner hidden">
             <span class="agent-crash-text"><span id="agentCrashMsg">Agent has stopped. Respawn?</span></span>
             <button id="agentRespawnBtn" class="agent-respawn-btn">Respawn</button>
-            <button id="agentCrashDismissBtn" class="agent-crash-dismiss-btn">&times;</button>
+            <button id="agentCrashDismissBtn" class="agent-crash-dismiss-btn" aria-label="Dismiss">&times;</button>
         </div>
 
         <!-- Connection state banner (visible on disconnect/reconnect) -->
@@ -99,7 +99,7 @@
             <div id="contextBannerHeader" class="context-banner-header">
                 <span class="context-banner-label">Context</span>
                 <span id="contextBannerPreview" class="context-banner-preview"></span>
-                <button id="contextBannerDismiss" class="context-banner-dismiss">&times;</button>
+                <button id="contextBannerDismiss" class="context-banner-dismiss" aria-label="Dismiss">&times;</button>
             </div>
             <div id="contextBannerBody" class="context-banner-body hidden"></div>
         </div>
@@ -126,7 +126,7 @@
             <!-- Log view: Log + Command input (primary view) -->
             <div id="logView" class="log-view">
                 <div id="logFilterBar" class="log-filter-bar hidden">
-                    <select id="logAgentFilter" class="log-agent-filter">
+                    <select id="logAgentFilter" class="log-agent-filter" aria-label="Filter by agent">
                         <option value="all">All Agents</option>
                     </select>
                     <div class="log-filter-types">
@@ -145,13 +145,13 @@
                 <div class="team-view-header">
                     <span class="team-view-title">Team</span>
                     <div id="desktopDensityToggle" class="desktop-density-toggle">
-                        <button class="density-btn" data-density="comfortable" title="Cards">&#x25A6;</button>
-                        <button class="density-btn active" data-density="compact" title="Rows">&#x2630;</button>
-                        <button class="density-btn" data-density="ultra" title="Lines">&#x2500;</button>
+                        <button class="density-btn" data-density="comfortable" title="Cards" aria-label="Card view">&#x25A6;</button>
+                        <button class="density-btn active" data-density="compact" title="Rows" aria-label="Row view">&#x2630;</button>
+                        <button class="density-btn" data-density="ultra" title="Lines" aria-label="Line view">&#x2500;</button>
                     </div>
                     <div id="teamFilterBar" class="team-filter-bar">
                         <input type="text" id="teamSearchInput" class="team-search-input"
-                               placeholder="Search agents..." autocomplete="off">
+                               placeholder="Search agents..." autocomplete="off" aria-label="Search agents">
                         <div class="team-filter-chips">
                             <button class="team-filter-chip active" data-filter="all">All</button>
                             <button class="team-filter-chip" data-filter="attention">Blocked</button>
@@ -168,11 +168,11 @@
                 <div class="terminal-panel-header">
                     <span class="terminal-panel-title">Terminal</span>
                     <div class="terminal-panel-controls">
-                        <button id="terminalCloseBtn" class="terminal-panel-btn" title="Close">&times;</button>
+                        <button id="terminalCloseBtn" class="terminal-panel-btn" title="Close" aria-label="Close terminal">&times;</button>
                     </div>
                 </div>
                 <div id="terminalAgentSelector" class="terminal-agent-selector hidden">
-                    <select id="terminalAgentSelect" class="terminal-agent-select">
+                    <select id="terminalAgentSelect" class="terminal-agent-select" aria-label="Select agent">
                         <option value="">Select agent...</option>
                     </select>
                 </div>
@@ -197,7 +197,8 @@
                 <span class="terminal-prompt">❯</span>
                 <input type="text" id="logInput" class="terminal-input"
                        placeholder="command or prompt..."
-                       autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                       autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+                       aria-label="Command input">
                 <button id="logSend" class="terminal-send-btn">⏎</button>
             </div>
         </div>
@@ -219,8 +220,8 @@
                 <button class="quick-btn btn-clear" data-key="clear" title="Clear input">X</button>
                 <button class="quick-btn btn-stop" data-key="ctrl-c">^C</button>
                 <span class="bar-separator"></span>
-                <button class="quick-btn" data-key="down">&#x2193;</button>
-                <button class="quick-btn" data-key="up">&#x2191;</button>
+                <button class="quick-btn" data-key="down" aria-label="Down arrow">&#x2193;</button>
+                <button class="quick-btn" data-key="up" aria-label="Up arrow">&#x2191;</button>
                 <button class="quick-btn btn-tmux" data-key="ctrl-b">^B</button>
                 <button class="quick-btn btn-queue" data-key="queue" title="Add to queue">Q</button>
                 <button class="quick-btn" data-key="tab">Tab</button>
@@ -233,14 +234,14 @@
         <!-- Team dispatch bar (shown in team view, between shortcuts and action bar) -->
         <div id="teamDispatchBar" class="team-dispatch-bar hidden">
             <div class="dispatch-row">
-                <select id="dispatchPlanSelect" class="dispatch-plan-select">
+                <select id="dispatchPlanSelect" class="dispatch-plan-select" aria-label="Select plan">
                     <option value="">Select plan...</option>
                 </select>
                 <button id="dispatchBtn" class="team-card-btn dispatch" disabled>Dispatch</button>
             </div>
             <div class="dispatch-row">
                 <input type="text" id="leaderMessageInput" class="leader-message-input"
-                       placeholder="Message leader..." autocomplete="off">
+                       placeholder="Message leader..." autocomplete="off" aria-label="Message leader">
                 <button id="leaderMessageBtn" class="team-card-btn" disabled>Send</button>
             </div>
         </div>
@@ -263,18 +264,19 @@
             <div class="compose-modal-content">
                 <div class="compose-header">
                     <span class="compose-title">Compose Message</span>
-                    <select id="composeThinkMode" class="compose-think-select">
+                    <select id="composeThinkMode" class="compose-think-select" aria-label="Think mode">
                         <option value="">Mode</option>
                         <option value="ultrathink">Ultrathink</option>
                         <option value="think hard">Think Hard</option>
                         <option value="think">Think</option>
                         <option value="plan">Plan</option>
                     </select>
-                    <button id="composeClose" class="compose-close">&times;</button>
+                    <button id="composeClose" class="compose-close" aria-label="Close">&times;</button>
                 </div>
                 <textarea
                     id="composeInput"
                     class="compose-input"
+                    aria-label="Compose message"
                     placeholder="Type with predictive text or use voice input..."
                     autocomplete="on"
                     autocorrect="on"
@@ -286,7 +288,7 @@
                 <div id="composeAttachments" class="compose-attachments hidden"></div>
                 <div class="compose-footer">
                     <input type="file" id="composeFileInput" accept="*/*" hidden>
-                    <button id="composeAttach" class="compose-action attach-icon" title="Attach file">&#x1F4CE;</button>
+                    <button id="composeAttach" class="compose-action attach-icon" title="Attach file" aria-label="Attach file">&#x1F4CE;</button>
                     <button id="composePaste" class="compose-action secondary" title="Paste from clipboard">Paste</button>
                     <button id="composeMic" class="compose-action mic-btn" title="Voice input">Mic</button>
                     <button id="composeClear" class="compose-action secondary">Clear</button>
@@ -304,10 +306,10 @@
             <div class="challenge-modal-content">
                 <div class="challenge-header">
                     <span class="challenge-title">Challenge</span>
-                    <select id="challengeModel" class="challenge-model-select">
+                    <select id="challengeModel" class="challenge-model-select" aria-label="Select model">
                         <option value="">Loading...</option>
                     </select>
-                    <button id="challengeClose" class="challenge-close">&times;</button>
+                    <button id="challengeClose" class="challenge-close" aria-label="Close">&times;</button>
                 </div>
 
                 <!-- Collapsible input section -->
@@ -322,6 +324,7 @@
                         <textarea
                             id="challengeProblem"
                             class="challenge-problem-input"
+                            aria-label="Problem description"
                             placeholder="Describe the specific problem you're debugging or want reviewed..."
                             rows="3"
                         ></textarea>
@@ -376,14 +379,14 @@
             <div class="docs-modal-content">
                 <div class="docs-modal-header">
                     <span id="docsModalTitle" class="docs-modal-title">Docs</span>
-                    <button id="docsModalClose" class="docs-modal-close">&times;</button>
+                    <button id="docsModalClose" class="docs-modal-close" aria-label="Close">&times;</button>
                 </div>
                 <div class="docs-tabs">
                     <button class="docs-tab active" data-tab="plans">Plans</button>
                     <button class="docs-tab" data-tab="context">Context</button>
                     <button class="docs-tab" data-tab="touch">Touch</button>
                     <button class="docs-tab" data-tab="sessions">Sessions</button>
-                    <button class="docs-tab" data-tab="search">&#x1F50D;</button>
+                    <button class="docs-tab" data-tab="search" aria-label="Search">&#x1F50D;</button>
                 </div>
                 <div id="docsModalBody" class="docs-modal-body">
                     Loading...
@@ -396,7 +399,7 @@
             <div class="new-window-content">
                 <div class="new-window-header">
                     <span class="new-window-title">New Window in Repo</span>
-                    <button id="newWindowClose" class="new-window-close">&times;</button>
+                    <button id="newWindowClose" class="new-window-close" aria-label="Close">&times;</button>
                 </div>
                 <div class="new-window-body">
                     <div class="new-window-field">
@@ -504,7 +507,7 @@
                     <button class="rollback-tab" data-tab="process">Process</button>
                     <button class="rollback-tab" data-tab="mcp">MCP</button>
                 </div>
-                <button id="previewDrawerClose" class="preview-drawer-close">&times;</button>
+                <button id="previewDrawerClose" class="preview-drawer-close" aria-label="Close drawer">&times;</button>
             </div>
             <!-- Queue tab content -->
             <div id="queueTabContent" class="rollback-tab-content active">
@@ -526,7 +529,7 @@
                 </div>
                 <div id="runnerCommands" class="runner-commands"></div>
                 <div class="runner-custom">
-                    <input type="text" id="runnerCustomInput" class="runner-custom-input" placeholder="Custom command...">
+                    <input type="text" id="runnerCustomInput" class="runner-custom-input" placeholder="Custom command..." aria-label="Custom command">
                     <button id="runnerCustomBtn" class="runner-custom-btn">Run</button>
                 </div>
             </div>
@@ -613,7 +616,7 @@
                     <p class="process-description">Loading...</p>
                 </div>
                 <div class="mcp-add-section mcp-plugin-add">
-                    <input id="pluginIdInput" class="mcp-input" placeholder="Plugin ID (e.g. code-simplifier@claude-plugins-official)">
+                    <input id="pluginIdInput" class="mcp-input" placeholder="Plugin ID (e.g. code-simplifier@claude-plugins-official)" aria-label="Plugin ID">
                     <button id="pluginAddBtn" class="process-action-btn primary">Enable Plugin</button>
                 </div>
                 <!-- MCP Servers section -->
@@ -626,9 +629,9 @@
                 </div>
                 <div class="mcp-add-section">
                     <div class="mcp-add-header" id="mcpFormHeader">Add Server</div>
-                    <input id="mcpNameInput" class="mcp-input" placeholder="Name (e.g. chrome-devtools)">
-                    <input id="mcpCommandInput" class="mcp-input" placeholder="Command (e.g. npx)">
-                    <input id="mcpArgsInput" class="mcp-input" placeholder="Args (e.g. -y @anthropic/server-chrome)">
+                    <input id="mcpNameInput" class="mcp-input" placeholder="Name (e.g. chrome-devtools)" aria-label="Server name">
+                    <input id="mcpCommandInput" class="mcp-input" placeholder="Command (e.g. npx)" aria-label="Server command">
+                    <input id="mcpArgsInput" class="mcp-input" placeholder="Args (e.g. -y @anthropic/server-chrome)" aria-label="Server arguments">
                     <div class="mcp-form-actions">
                         <button id="mcpAddBtn" class="process-action-btn primary">Add Server</button>
                         <button id="mcpCancelEditBtn" class="process-action-btn hidden">Cancel</button>
