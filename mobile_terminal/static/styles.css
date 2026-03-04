@@ -16,6 +16,26 @@
     --shadow: rgba(0, 0, 0, 0.3);
     --sidebar-width: 320px;
     --terminal-panel-height: 300px;
+
+    /* Aliases for existing variables */
+    --error: var(--danger);
+    --accent-red: var(--danger);
+    --accent-blue: var(--accent);
+    --accent-green: var(--success);
+    --border-color: var(--border);
+
+    /* Additional semantic colors */
+    --text-muted: #6e7681;
+    --accent-cyan: #4ec9b0;
+    --accent-magenta: #c586c0;
+    --cyan: #4ec9b0;
+    --magenta: #c586c0;
+    --info: #bc8cff;
+    --bg-hover: #2a2d2e;
+    --bg-elevated: #333333;
+    --surface-2: #2d2d2d;
+    --surface-3: #333333;
+    --font-mono: 'Menlo', 'Monaco', 'Courier New', monospace;
 }
 
 * {
