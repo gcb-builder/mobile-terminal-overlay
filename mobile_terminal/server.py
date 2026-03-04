@@ -20,6 +20,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import threading
 import time
@@ -91,6 +92,7 @@ async def get_bounded_snapshot(session: str, active_target: str = None, max_byte
     target = get_tmux_target(session, active_target) if active_target else session
 
     # Start with 50 lines, reduce if too large
+    content = ""
     for lines in [50, 30, 20, 10]:
         try:
             result = subprocess.run(

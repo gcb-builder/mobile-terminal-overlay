@@ -3956,7 +3956,8 @@ function setupChallenge() {
             lastResponseText = data.content || 'No response received';
 
             // Format the result with markdown-like headers
-            let content = lastResponseText
+            // Escape HTML first to prevent XSS from model output
+            let content = escapeHtml(lastResponseText)
                 .replace(/^(\d+\.\s*Problem Analysis:)/gm, '<h3>Problem Analysis</h3>')
                 .replace(/^(\d+\.\s*Potential Causes:)/gm, '<h3>Potential Causes</h3>')
                 .replace(/^(\d+\.\s*Suggested Fix:)/gm, '<h3>Suggested Fix</h3>')
@@ -3987,7 +3988,7 @@ function setupChallenge() {
 
         } catch (error) {
             console.error('Challenge error:', error);
-            challengeResultContent.innerHTML = `<p style="color: var(--danger);">Error: ${error.message}</p>`;
+            challengeResultContent.innerHTML = `<p style="color: var(--danger);">Error: ${escapeHtml(error.message)}</p>`;
             challengeResult.classList.remove('loading');
             challengeStatus.textContent = '';
         } finally {
@@ -4129,7 +4130,7 @@ function renderAttachments() {
         <div class="attachment-item">
             <img src="${att.localUrl}" alt="" class="attachment-thumb">
             <div class="attachment-info">
-                <span class="attachment-path">${att.path}</span>
+                <span class="attachment-path">${escapeHtml(att.path)}</span>
                 <span class="attachment-size">${formatFileSize(att.size)}</span>
             </div>
             <button class="attachment-remove" data-idx="${idx}">&times;</button>
@@ -6063,7 +6064,7 @@ async function loadLogContent() {
         console.error('Log error:', error);
         // Only show error if we don't have existing content
         if (!hasContent) {
-            logContent.innerHTML = `<div class="log-error">Error loading log: ${error.message}</div>`;
+            logContent.innerHTML = `<div class="log-error">Error loading log: ${escapeHtml(error.message)}</div>`;
         }
     }
 }
@@ -7485,7 +7486,7 @@ function setupDocsButton() {
             if (!resp.ok) throw new Error('Failed to load files');
             fileTreeCache = await resp.json();
         } catch (e) {
-            docsModalBody.innerHTML = `<div class="docs-error">Error: ${e.message}</div>`;
+            docsModalBody.innerHTML = `<div class="docs-error">Error: ${escapeHtml(e.message)}</div>`;
             return;
         }
 
@@ -7653,7 +7654,7 @@ function setupDocsButton() {
                 loadSearchTab();
             });
         } catch (e) {
-            docsModalBody.innerHTML = `<div class="docs-error">Error: ${e.message}</div>`;
+            docsModalBody.innerHTML = `<div class="docs-error">Error: ${escapeHtml(e.message)}</div>`;
         }
     }
 
@@ -8782,7 +8783,7 @@ function renderQueueList() {
 
     queueList.innerHTML = queueItems.map((item, idx) => {
         const displayText = item.text.length > 40 ? item.text.slice(0, 40) + '...' : item.text;
-        const escapedText = displayText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const escapedText = escapeHtml(displayText);
         const isQueued = item.status === 'queued';
         const reorderHtml = isQueued ? `
                 <div class="queue-item-reorder">
@@ -10384,7 +10385,7 @@ async function historyDryRunRevert() {
             dryRunResult.innerHTML = `<div class="dry-run-error">✗ Dry-run failed: ${escapeHtml(data.error || 'Unknown error')}</div>`;
         }
     } catch (e) {
-        dryRunResult.innerHTML = `<div class="dry-run-error">✗ Error: ${e.message}</div>`;
+        dryRunResult.innerHTML = `<div class="dry-run-error">✗ Error: ${escapeHtml(e.message)}</div>`;
     } finally {
         if (dryRunBtn) {
             dryRunBtn.disabled = false;
@@ -11291,7 +11292,7 @@ async function terminateProcess(force = false) {
     } catch (e) {
         console.error('Terminate failed:', e);
         resultDiv.classList.add('error');
-        resultDiv.innerHTML = `<pre>Error: ${e.message}</pre>`;
+        resultDiv.innerHTML = `<pre>Error: ${escapeHtml(e.message)}</pre>`;
     }
 
     // Refresh status
@@ -11340,7 +11341,7 @@ async function respawnProcess() {
     } catch (e) {
         console.error('Respawn failed:', e);
         resultDiv.classList.add('error');
-        resultDiv.innerHTML = `<pre>Error: ${e.message}</pre>`;
+        resultDiv.innerHTML = `<pre>Error: ${escapeHtml(e.message)}</pre>`;
     }
 
     // Refresh status
