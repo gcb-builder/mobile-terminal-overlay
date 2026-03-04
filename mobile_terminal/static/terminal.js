@@ -458,7 +458,6 @@ let composeInput, composeClose, composeClear, composePaste, composeInsert, compo
 let composeAttach, composeFileInput, composeThinkMode, composeAttachments;
 let selectCopyBtn, drawersBtn, challengeBtn;
 let challengeModal, challengeClose, challengeResult, challengeStatus, challengeRun;
-let terminalViewBtn, transcriptViewBtn, transcriptContainer, transcriptContent, transcriptSearch, transcriptSearchCount;
 let logView, logInput, logSend, logContent, refreshBtn;
 let terminalView;
 
@@ -576,12 +575,6 @@ function initDOMElements() {
     challengeResult = document.getElementById('challengeResult');
     challengeStatus = document.getElementById('challengeStatus');
     challengeRun = document.getElementById('challengeRun');
-    terminalViewBtn = document.getElementById('terminalViewBtn');
-    transcriptViewBtn = document.getElementById('transcriptViewBtn');
-    transcriptContainer = document.getElementById('transcriptContainer');
-    transcriptContent = document.getElementById('transcriptContent');
-    transcriptSearch = document.getElementById('transcriptSearch');
-    transcriptSearchCount = document.getElementById('transcriptSearchCount');
     lastActivityElement = document.getElementById('lastActivity');
     logView = document.getElementById('logView');
     logInput = document.getElementById('logInput');
@@ -591,7 +584,6 @@ function initDOMElements() {
     terminalView = document.getElementById('terminalView');
     terminalBlock = document.getElementById('terminalBlock');
     activePromptContent = document.getElementById('activePromptContent');
-    quickResponses = document.getElementById('quickResponses');
     // Queue elements (now inside unified drawer)
     queueList = document.getElementById('queueList');
     queueCount = document.getElementById('queueCount');
@@ -613,7 +605,7 @@ function initDOMElements() {
 }
 
 // Additional DOM elements
-let terminalBlock, activePromptContent, quickResponses;
+let terminalBlock, activePromptContent;
 let queueList, queueCount, queueBadge, queueTabBadge;
 let queuePauseBtn, queueSendNext, queueFlush;
 let newWindowModal, newWindowClose, newWindowRepo, newWindowName;
@@ -2433,20 +2425,6 @@ function showTargetMissingWarning() {
 }
 
 /**
- * Update target label in header (legacy - now handled by updateNavLabel)
- */
-function updateTargetLabel() {
-    updateNavLabel();
-}
-
-/**
- * Render target dropdown options (legacy - now handled by populateRepoDropdown)
- */
-function renderTargetDropdown() {
-    // No-op: target dropdown is now unified into repo dropdown
-}
-
-/**
  * Select a target pane (optimistic - applies locally first, syncs in background)
  */
 async function selectTarget(targetId, isInitialSync = false) {
@@ -3100,20 +3078,12 @@ function getTargetParams() {
 function toggleTargetLock() {
     targetLocked = !targetLocked;
     localStorage.setItem('mto_target_locked', targetLocked);
-    updateLockUI();
 
     if (targetLocked) {
         showToast('Target locked - stays on selected pane', 'success');
     } else {
         showToast('Follow mode - follows tmux active pane', 'warning');
     }
-}
-
-/**
- * Update lock button UI (legacy - lock button now hidden)
- */
-function updateLockUI() {
-    // No-op: lock button is now hidden in unified nav
 }
 
 /**
@@ -4358,24 +4328,6 @@ function setupCommandHistory() {
             inputBuffer = '';
             historyIndex = -1;
         }
-        // Arrow up - previous in history
-        else if (domEvent.key === 'ArrowUp' && commandHistory.length > 0) {
-            if (historyIndex === -1) {
-                currentInput = inputBuffer;
-            }
-            if (historyIndex < commandHistory.length - 1) {
-                historyIndex++;
-                // Clear current line and insert history item
-                // This works with bash-style line editing
-            }
-        }
-        // Arrow down - next in history
-        else if (domEvent.key === 'ArrowDown' && historyIndex >= 0) {
-            historyIndex--;
-            if (historyIndex === -1) {
-                // Restore original input
-            }
-        }
         // Regular character - add to buffer
         else if (key.length === 1 && !domEvent.ctrlKey && !domEvent.metaKey) {
             inputBuffer += key;
@@ -4516,14 +4468,12 @@ function deriveSystemSummary(agents, uiStates) {
  * View toggle: Log | Terminal | Context | Touch
  */
 let currentView = 'log';  // 'log', 'terminal', 'context', 'touch'
-let transcriptText = '';  // Cached transcript text
 
 // ===== Desktop multi-pane state =====
 let uiMode = 'mobile-single'; // 'mobile-single' | 'desktop-multipane'
 const DESKTOP_BREAKPOINT = 1024;
 let desktopFocusedPane = 'log'; // 'team' | 'log' | 'terminal'
 let desktopResizeTimer = null;
-let logRefreshInFlight = false;
 let teamRefreshInFlight = false;
 let teamDensity = localStorage.getItem('mto_team_density') || 'compact';
 let teamFilterState = { search: '', filter: 'all' };
@@ -4615,10 +4565,6 @@ function updateTerminalAgentSelector() {
 function getTabOrder() {
     if (teamState && teamState.has_team) return ['team', 'log', 'terminal'];
     return ['log', 'terminal'];
-}
-
-function clearAllTabActive() {
-    // Legacy compat stub — no-op
 }
 
 /**
@@ -4838,7 +4784,6 @@ function hideAllContainers() {
     const dispatchBar = document.getElementById('teamDispatchBar');
     if (dispatchBar) dispatchBar.classList.add('hidden');
     if (terminalView) terminalView.classList.add('hidden');
-    if (transcriptContainer) transcriptContainer.classList.add('hidden');
     // Stop auto-refresh when leaving log view
     stopLogAutoRefresh();
     stopTailViewport();
@@ -4876,8 +4821,6 @@ function switchToLogView() {
     startLogAutoRefresh();
     // Start tail viewport refresh
     startTailViewport();
-    // Check for active plan
-    checkActivePlan();
 }
 
 function switchToTerminalView() {
@@ -5499,64 +5442,6 @@ async function sendTeamInput(targetId, text) {
     setTimeout(() => refreshTeamCards(), 1500);
 }
 
-let transcriptSource = '';  // 'log' or 'capture'
-
-async function fetchTranscript() {
-    const cacheKey = `cache_log_${currentSession || 'default'}`;
-    const cached = localStorage.getItem(cacheKey);
-
-    // Show cached content immediately if available
-    if (cached) {
-        try {
-            const { content } = JSON.parse(cached);
-            transcriptText = content;
-            renderTranscript(transcriptText);
-        } catch (e) {
-            // Invalid cache, ignore
-        }
-    } else {
-        transcriptContent.textContent = `Loading ${agentName} log...`;
-    }
-    transcriptSearchCount.textContent = '';
-
-    try {
-        // Use new /api/log endpoint for Claude conversation logs
-        // Include pane_id to avoid race condition with other tabs
-        const paneParam = activeTarget ? `&pane_id=${encodeURIComponent(activeTarget)}` : '';
-        const response = await fetch(`/api/log?token=${token}${paneParam}`);
-        if (!response.ok) {
-            throw new Error('Failed to fetch log');
-        }
-        const data = await response.json();
-
-        if (!data.exists) {
-            transcriptContent.innerHTML = `<p class="no-content">No ${agentName} log found for this project.</p>`;
-            localStorage.removeItem(cacheKey);
-            return;
-        }
-
-        transcriptText = data.content || '';
-        transcriptSource = 'log';
-
-        // Show truncation indicator if applicable
-        const statusLabel = data.truncated ? 'Truncated' : 'Full';
-        transcriptSearchCount.textContent = statusLabel;
-
-        renderTranscript(transcriptText);
-
-        // Cache the content
-        localStorage.setItem(cacheKey, JSON.stringify({
-            content: transcriptText,
-            timestamp: Date.now()
-        }));
-    } catch (error) {
-        console.error('Log error:', error);
-        if (!cached) {
-            transcriptContent.innerHTML = '<p class="error-content">Error loading log: ' + error.message + '</p>';
-        }
-    }
-}
-
 /**
  * Clean terminal output by removing clutter
  * - Collapse multiple blank lines
@@ -5658,260 +5543,8 @@ function stripAnsi(text) {
         .replace(/\r/g, '\n');
 }
 
-function renderTranscript(text, searchTerm = '') {
-    // Strip ANSI codes for clean display
-    text = stripAnsi(text);
-
-    // Pre-process: merge continuation lines for better word wrap
-    text = mergeTranscriptLines(text);
-
-    const lines = text.split('\n');
-    let html = '';
-    let searchCount = 0;
-    let lastWasEmpty = false;
-
-    // Collapsible output block tracking
-    let outputBuffer = [];
-    let outputContext = '';  // What triggered this output (tool name or command)
-
-    // Patterns for detecting different line types
-    const promptPattern = /^(\s*)([\$#>❯]|\w+@[\w.-]+[:\$#]|\([\w-]+\)\s*[\$#])/;
-    const toolCallPattern = /^(\s*)[•●]\s*\w+[\(:\[]/;  // • Bash(, • Read:, etc.
-    const bulletPattern = /^(\s*)[•●-]\s+/;  // Any bullet point
-    const hrPattern = /^[\s]*[_\-=]{3,}[\s]*$/;  // Horizontal rules: ___, ---, ===
-    const pathPattern = /(\/[\w./-]+|~\/[\w./-]*)/g;
-    const flagPattern = /(\s--?[\w-]+)/g;
-    const stringPattern = /("[^"]*"|'[^']*')/g;
-    const codePattern = /`([^`]+)`/g;  // Inline code in backticks
-
-    // Helper to flush output buffer as collapsible block
-    function flushOutputBuffer() {
-        if (outputBuffer.length === 0) return;
-
-        const lineCount = outputBuffer.length;
-        const preview = outputBuffer[0].text.slice(0, 50) + (outputBuffer[0].text.length > 50 ? '...' : '');
-        const summary = outputContext ? `${outputContext} output` : `${lineCount} line${lineCount > 1 ? 's' : ''}`;
-
-        // Only collapse if more than 3 lines
-        if (lineCount > 3) {
-            html += `<details class="output-block"><summary class="output-summary">${summary}</summary><div class="output-content">`;
-            for (const item of outputBuffer) {
-                html += item.html;
-            }
-            html += '</div></details>';
-        } else {
-            // Small output - don't collapse
-            for (const item of outputBuffer) {
-                html += item.html;
-            }
-        }
-
-        outputBuffer = [];
-        outputContext = '';
-    }
-
-    for (const line of lines) {
-        const isEmpty = line.trim() === '';
-
-        // Collapse consecutive blank lines
-        if (isEmpty) {
-            if (!lastWasEmpty) {
-                if (outputBuffer.length > 0) {
-                    outputBuffer.push({ text: '', html: '<div class="transcript-line empty"></div>' });
-                } else {
-                    html += '<div class="transcript-line empty"></div>';
-                }
-            }
-            lastWasEmpty = true;
-            continue;
-        }
-        lastWasEmpty = false;
-
-        // Horizontal rule - flush buffer first
-        if (hrPattern.test(line)) {
-            flushOutputBuffer();
-            html += '<hr class="transcript-hr">';
-            continue;
-        }
-
-        const isPromptLine = promptPattern.test(line);
-        const isToolCall = toolCallPattern.test(line);
-        const isBullet = bulletPattern.test(line);
-        const isStructural = isPromptLine || isToolCall || isBullet;
-
-        // If we hit a structural line, flush any pending output
-        if (isStructural) {
-            flushOutputBuffer();
-        }
-
-        let escaped = line
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-
-        // Apply shell syntax highlighting ONLY to command lines (not Claude output)
-        if (isPromptLine) {
-            // Highlight paths, flags, strings first (before adding HTML)
-            escaped = escaped.replace(pathPattern, '\x00PATH\x01$1\x00/PATH\x01');
-            escaped = escaped.replace(flagPattern, '\x00FLAG\x01$1\x00/FLAG\x01');
-            escaped = escaped.replace(stringPattern, '\x00STR\x01$1\x00/STR\x01');
-
-            // Highlight the prompt itself
-            escaped = escaped.replace(
-                /^(\s*)([\$#&gt;❯]|[\w]+@[\w.-]+[:\$#]|\([\w-]+\)\s*[\$#])/,
-                '$1\x00PROMPT\x01$2\x00/PROMPT\x01'
-            );
-
-            // Convert placeholders to HTML
-            escaped = escaped
-                .replace(/\x00PATH\x01/g, '<span class="path">')
-                .replace(/\x00\/PATH\x01/g, '</span>')
-                .replace(/\x00FLAG\x01/g, '<span class="flag">')
-                .replace(/\x00\/FLAG\x01/g, '</span>')
-                .replace(/\x00STR\x01/g, '<span class="string">')
-                .replace(/\x00\/STR\x01/g, '</span>')
-                .replace(/\x00PROMPT\x01/g, '<span class="prompt">')
-                .replace(/\x00\/PROMPT\x01/g, '</span>');
-        } else if (isToolCall) {
-            // Extract tool name for context
-            const toolMatch = line.match(/[•●]\s*(\w+)/);
-            outputContext = toolMatch ? toolMatch[1] : '';
-
-            // Highlight tool name: • ToolName(
-            escaped = escaped.replace(
-                /^(\s*)([•●]\s*)(\w+)([\(:\[])/,
-                '$1<span class="tool-bullet">$2</span><span class="tool-name">$3</span>$4'
-            );
-        } else if (isBullet) {
-            // Highlight bullet points
-            escaped = escaped.replace(
-                /^(\s*)([•●-])(\s+)/,
-                '$1<span class="bullet">$2</span>$3'
-            );
-        }
-
-        // Highlight inline code (backticks) - safe for all lines
-        escaped = escaped.replace(codePattern, '<code class="inline-code">$1</code>');
-
-        // Apply search highlighting if searching
-        if (searchTerm) {
-            const regex = new RegExp(`(${escapeRegExp(searchTerm)})`, 'gi');
-            const matches = escaped.match(regex);
-            if (matches) searchCount += matches.length;
-            escaped = escaped.replace(regex, '<span class="highlight">$1</span>');
-        }
-
-        // Determine line class
-        let lineClass = 'transcript-line output';
-        if (isPromptLine) {
-            lineClass = 'transcript-line command';
-        } else if (isToolCall) {
-            lineClass = 'transcript-line tool-call';
-        } else if (isBullet) {
-            lineClass = 'transcript-line bullet-item';
-        }
-
-        const lineHtml = `<div class="${lineClass}">${escaped}</div>`;
-
-        // Collect output lines into buffer, structural lines go directly to html
-        if (!isStructural) {
-            outputBuffer.push({ text: line, html: lineHtml });
-        } else {
-            html += lineHtml;
-        }
-    }
-
-    // Flush any remaining output
-    flushOutputBuffer();
-
-    transcriptContent.innerHTML = html;
-
-    if (searchTerm) {
-        transcriptSearchCount.textContent = searchCount > 0 ? `${searchCount} match${searchCount === 1 ? '' : 'es'}` : 'No matches';
-        const firstMatch = transcriptContent.querySelector('.highlight');
-        if (firstMatch) {
-            firstMatch.classList.add('current');
-            firstMatch.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-    } else {
-        // Show source indicator when not searching
-        const sourceLabel = transcriptSource === 'log' ? 'Live Log' : 'Snapshot';
-        transcriptSearchCount.textContent = sourceLabel;
-    }
-}
-
-/**
- * Merge continuation lines for better word wrap
- * Lines that are just wrapped text (don't start with special patterns) get merged
- */
-function mergeTranscriptLines(text) {
-    const lines = text.split('\n');
-    const merged = [];
-
-    // Patterns that indicate a new logical line (not a continuation)
-    const newLinePatterns = [
-        /^[\s]*$/,                           // Empty line
-        /^[\s]*[•●-]\s/,                     // Bullet point
-        /^[\s]*[\$#>❯]/,                     // Prompt
-        /^[\s]*\w+@[\w.-]+[:\$#]/,           // user@host prompt
-        /^[\s]*\([^)]+\)\s*[\$#]/,           // (env) $ prompt
-        /^[\s]*[_\-=]{3,}[\s]*$/,            // Horizontal rule
-        /^[\s]*\d+\.\s/,                     // Numbered list
-        /^[\s]*[A-Z][a-z]+:\s/,              // Label: value
-        /^[\s]*```/,                         // Code fence
-        /^[\s]*#+\s/,                        // Markdown header
-        /^[\s]*\|/,                          // Table row
-        /^\s{4,}/,                           // Heavily indented (code block)
-    ];
-
-    const isNewLogicalLine = (line) => {
-        return newLinePatterns.some(p => p.test(line));
-    };
-
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-
-        // If this is a new logical line or first line, start fresh
-        if (merged.length === 0 || isNewLogicalLine(line)) {
-            merged.push(line);
-        } else {
-            // This is a continuation - merge with previous line
-            const prev = merged[merged.length - 1];
-            // Only merge if previous line doesn't end with punctuation that suggests completion
-            if (prev && !prev.match(/[.!?:]\s*$/) && line.trim()) {
-                merged[merged.length - 1] = prev + ' ' + line.trim();
-            } else {
-                merged.push(line);
-            }
-        }
-    }
-
-    return merged.join('\n');
-}
-
 function escapeRegExp(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function setupTranscriptSearch() {
-    let searchDebounce = null;
-
-    if (!transcriptSearch) return;
-
-    transcriptSearch.addEventListener('input', (e) => {
-        clearTimeout(searchDebounce);
-        searchDebounce = setTimeout(() => {
-            renderTranscript(transcriptText, e.target.value);
-        }, 200);
-    });
-
-    // Clear search on Escape
-    transcriptSearch.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            transcriptSearch.value = '';
-            renderTranscript(transcriptText, '');
-        }
-    });
 }
 
 /**
@@ -6057,9 +5690,6 @@ async function loadLogContent() {
         // Update last modified time for change detection
         lastLogModified = data.modified || 0;
 
-        // Load suggestions from terminal capture (not JSONL log)
-        loadTerminalSuggestions();
-
     } catch (error) {
         console.error('Log error:', error);
         // Only show error if we don't have existing content
@@ -6194,11 +5824,10 @@ async function renderLogEntriesChunked(messages, cached, signal, contentOrMessag
     scheduleSuperCollapse();
     schedulePlanPreviews();
 
-    // Extract suggestions and prompts
+    // Extract prompts
     const contentString = Array.isArray(contentOrMessages)
         ? contentOrMessages.join('\n\n')
         : (contentOrMessages || '');
-    extractAndShowSuggestions(contentString);
     extractPendingPrompt(contentString);
 
     // Scroll to bottom
@@ -7409,14 +7038,6 @@ function setupPlanPreviewHandler() {
 }
 
 /**
- * Legacy function - no longer needed since Docs button is always visible
- * Kept for compatibility with existing call sites
- */
-async function checkActivePlan() {
-    // No-op: docsBtn is always visible
-}
-
-/**
  * Setup docs button and modal handlers
  * Tabs: Plans (with selector), Context, Touch, Sessions (read-only viewer)
  */
@@ -8089,45 +7710,6 @@ function extractDynamicSuggestion(content) {
 }
 
 /**
- * DEPRECATED: Suggestion extraction has been replaced by tail viewport
- * The tail viewport shows Claude's native suggestions directly
- */
-function extractAndShowSuggestions(content) {
-    // No-op - tail viewport handles suggestion display now
-}
-
-/**
- * Parse terminal capture for Claude's state
- * NOTE: This is now a no-op since updateTailViewport() handles:
- * - Terminal tail display (shows Claude's questions/suggestions natively)
- * - Working indicator updates
- * The old question/suggestion extraction is no longer needed.
- */
-async function parseTerminalState() {
-    // No longer needed - updateTailViewport() handles everything
-    // Kept for backward compatibility with loadTerminalSuggestions alias
-}
-
-/**
- * DEPRECATED: Question banner has been replaced by tail viewport
- * The tail viewport shows Claude's native question UI directly
- */
-function updateQuestionBanner(content, isWaitingForInput) {
-    // No-op - tail viewport handles question display now
-}
-
-/**
- * DEPRECATED: Suggestion UI has been replaced by tail viewport
- * The tail viewport shows Claude's native suggestions directly
- */
-function updateSuggestion(content) {
-    // No-op - tail viewport handles suggestion display now
-}
-
-// Alias for backward compatibility
-const loadTerminalSuggestions = parseTerminalState;
-
-/**
  * Escape HTML entities
  */
 function escapeHtml(text) {
@@ -8240,8 +7822,6 @@ async function refreshLogContent(signal) {
             hidePermissionBanner();
         }
 
-        // Load suggestions from terminal capture (not JSONL log)
-        loadTerminalSuggestions();
     } catch (error) {
         if (error.name === 'AbortError') throw error;  // Re-throw abort
         console.debug('Log auto-refresh failed:', error);
@@ -8276,23 +7856,6 @@ function setupLogInput() {
     // Focus mode: when input is tapped, refresh the active prompt
     logInput.addEventListener('focus', () => {
         refreshActivePrompt();
-    });
-}
-
-/**
- * Setup quick response buttons (1, 2, 3, yes, no)
- * These send directly to the terminal for fast mobile interaction
- */
-function setupQuickResponses() {
-    if (!quickResponses) return;
-
-    quickResponses.querySelectorAll('.quick-response-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const value = btn.dataset.value;
-            if (value) {
-                sendTextAtomic(value, true);
-            }
-        });
     });
 }
 
@@ -8368,228 +7931,6 @@ function queueLogCommand() {
         }
     });
 }
-
-/**
- * Setup hybrid view with draggable resize handle (hold-to-drag)
- * NOTE: This is no longer used with the new log/terminal tab architecture
- */
-function setupHybridView() {
-    // Hybrid view has been replaced with separate log and terminal tabs
-    return;
-
-    const HOLD_DELAY = 150;  // ms to hold before drag activates
-
-    let isDragging = false;
-    let isHolding = false;
-    let holdTimer = null;
-    let startY = 0;
-    let startLogHeight = 0;
-
-    // Get the hybrid view's available height
-    function getAvailableHeight() {
-        return hybridView.clientHeight - resizeHandle.offsetHeight;
-    }
-
-    // Update section heights based on log height percentage
-    function setSectionHeights(logHeightPx) {
-        const availableHeight = getAvailableHeight();
-        const minHeight = 60;  // Minimum height for either section
-
-        // Clamp log height
-        logHeightPx = Math.max(minHeight, Math.min(availableHeight - minHeight, logHeightPx));
-
-        // Apply heights using flex-basis
-        const logPercent = (logHeightPx / availableHeight) * 100;
-        logSection.style.flex = `0 0 ${logPercent}%`;
-        terminalSection.style.flex = `1 1 ${100 - logPercent}%`;
-    }
-
-    // Activate drag mode after hold delay
-    function activateDrag() {
-        isDragging = true;
-        isHolding = false;
-
-        // Prevent text selection during drag
-        document.body.style.userSelect = 'none';
-        document.body.style.webkitUserSelect = 'none';
-
-        // Add active state to handle
-        resizeHandle.classList.add('active');
-
-        // Scroll log to bottom when drag starts
-        if (logContent) {
-            logContent.scrollTop = logContent.scrollHeight;
-        }
-    }
-
-    // Handle touch/mouse down - start hold timer
-    function onPointerDown(e) {
-        // Clear any existing timer
-        if (holdTimer) clearTimeout(holdTimer);
-
-        isHolding = true;
-        startY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
-        startLogHeight = logSection.offsetHeight;
-
-        // Start hold timer - drag activates after delay
-        holdTimer = setTimeout(() => {
-            if (isHolding) {
-                activateDrag();
-            }
-        }, HOLD_DELAY);
-    }
-
-    // Handle drag move
-    function onPointerMove(e) {
-        // If still in hold phase and moved too much, cancel
-        if (isHolding && !isDragging) {
-            const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
-            const deltaY = Math.abs(clientY - startY);
-            // If moved more than 10px before hold completes, cancel (probably scrolling)
-            if (deltaY > 10) {
-                cancelHold();
-            }
-            return;
-        }
-
-        if (!isDragging) return;
-
-        e.preventDefault();
-        const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
-        const deltaY = clientY - startY;
-        const newLogHeight = startLogHeight + deltaY;
-
-        setSectionHeights(newLogHeight);
-    }
-
-    // Cancel hold without activating drag
-    function cancelHold() {
-        if (holdTimer) {
-            clearTimeout(holdTimer);
-            holdTimer = null;
-        }
-        isHolding = false;
-    }
-
-    // Handle drag end
-    function onPointerUp() {
-        cancelHold();
-
-        if (!isDragging) return;
-
-        isDragging = false;
-        document.body.style.userSelect = '';
-        document.body.style.webkitUserSelect = '';
-        resizeHandle.classList.remove('active');
-
-        // Enable force scroll flag - this makes the write handler scroll after EACH write
-        // This is the key: scrollToBottom() during active writes is ignored,
-        // but scrolling AFTER each write completes works
-        forceScrollToBottom = true;
-        setTimeout(() => { forceScrollToBottom = false; }, 1000);
-
-        // Resize terminal after drag completes
-        setTimeout(() => {
-            if (fitAddon) fitAddon.fit();
-            sendResize();
-
-            // Scroll log to bottom
-            if (logContent) {
-                logContent.scrollTop = logContent.scrollHeight;
-            }
-        }, 50);
-    }
-
-    // Touch events for mobile
-    resizeHandle.addEventListener('touchstart', onPointerDown, { passive: true });
-    document.addEventListener('touchmove', onPointerMove, { passive: false });
-    document.addEventListener('touchend', onPointerUp);
-    document.addEventListener('touchcancel', onPointerUp);
-
-    // Mouse events for desktop
-    resizeHandle.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('mousemove', onPointerMove);
-    document.addEventListener('mouseup', onPointerUp);
-
-    // Header refresh button - refreshes log or terminal based on current view
-    // Triple-tap to toggle debug mode
-    let refreshClickCount = 0;
-    let refreshClickTimer = null;
-    if (refreshBtn) {
-        refreshBtn.addEventListener('click', async () => {
-            refreshClickCount++;
-            if (refreshClickTimer) clearTimeout(refreshClickTimer);
-
-            if (refreshClickCount >= 3) {
-                // Triple-click: toggle debug banner
-                const debugEl = document.getElementById('logDebug');
-                if (debugEl) {
-                    debugEl.style.display = debugEl.style.display === 'none' ? 'block' : 'none';
-                }
-                refreshClickCount = 0;
-                return;
-            }
-
-            refreshClickTimer = setTimeout(async () => {
-                refreshClickCount = 0;
-
-                if (currentView === 'terminal') {
-                    // Terminal view: resize tmux pane to fix garbled output, then refresh
-                    refreshBtn.disabled = true;
-                    try {
-                        if (!socket || socket.readyState !== WebSocket.OPEN) {
-                            showToast('Reconnecting...', 'info');
-                            connect();
-                            await new Promise(r => setTimeout(r, 1000));
-                        }
-
-                        // Fit terminal and get current dimensions
-                        if (terminal && fitAddon) {
-                            fitAddon.fit();
-                        }
-                        const cols = terminal ? terminal.cols : 80;
-                        const rows = terminal ? terminal.rows : 24;
-
-                        // Send dimensions to resize tmux pane before capture
-                        const response = await fetch(`/api/refresh?token=${token}&cols=${cols}&rows=${rows}`);
-                        if (!response.ok) {
-                            throw new Error(`HTTP ${response.status}`);
-                        }
-                        const data = await response.json();
-                        if (data.error) {
-                            showToast(`Refresh failed: ${data.error}`, 'error');
-                        } else if (data.content && terminal) {
-                            terminal.clear();
-                            // Use queued write to avoid blocking
-                            queuedWrite(data.content);
-                            showToast('Terminal refreshed', 'success');
-                        } else if (!data.content) {
-                            showToast('No terminal content', 'info');
-                        }
-                    } catch (e) {
-                        console.error('Terminal refresh failed:', e);
-                        showToast(`Refresh failed: ${e.message}`, 'error');
-                    } finally {
-                        refreshBtn.disabled = false;
-                    }
-                } else {
-                    // Log view: force refresh and render
-                    logLoaded = false;
-                    lastLogModified = 0;
-                    lastLogContentHash = '';
-                    userAtBottom = true;
-                    if (pendingLogContent) {
-                        renderLogEntries(pendingLogContent);
-                        pendingLogContent = null;
-                    }
-                    loadLogContent();
-                    syncPromptToInput();
-                }
-            }, 300);
-        });
-    }
-}
-
 
 // ================== Queue Functions ==================
 
@@ -10120,6 +9461,17 @@ let lastKnownCommitHash = null;  // Track for auto-clearing snapshots on new com
 let historyDryRunValidatedHash = null;  // Commit hash that passed dry-run
 
 /**
+ * Clear all snapshots
+ */
+async function clearSnapshots() {
+    try {
+        await fetch(`/api/rollback/preview/clear?token=${token}`, { method: 'POST' });
+    } catch (e) {
+        console.error('Failed to clear snapshots:', e);
+    }
+}
+
+/**
  * Load unified history (commits + snapshots)
  */
 async function loadHistory() {
@@ -10447,11 +9799,8 @@ async function historyExecuteRevert() {
     }
 }
 
-// Keep old git variables for compatibility with other code
-let gitCommits = [];
-let selectedCommitHash = null;
-let lastRevertCommit = null;  // The SHA of the revert commit (for undo = revert-the-revert)
 let gitStatus = null;  // Current git status (branch, dirty, ahead/behind)
+let selectedCommitHash = null;
 let dryRunValidatedHash = null;  // Commit hash that passed dry-run (safer revert UX)
 
 /**
@@ -10902,294 +10251,6 @@ function switchRollbackTab(tabName) {
         mcpContent?.classList.add('active');
         loadPlugins();
         loadMcpServers();
-    }
-}
-
-/**
- * Load git commits list
- */
-async function loadGitCommits() {
-    const list = document.getElementById('gitCommitList');
-    if (!list) return;
-
-    list.innerHTML = '<div class="git-empty">Loading...</div>';
-
-    try {
-        const resp = await fetch(`/api/rollback/git/commits?token=${token}`);
-        if (!resp.ok) throw new Error('Failed to load commits');
-
-        const data = await resp.json();
-        gitCommits = data.commits || [];
-
-        // Auto-clear snapshots when a new commit is detected
-        if (gitCommits.length > 0) {
-            const latestHash = gitCommits[0].hash;
-            if (lastKnownCommitHash && lastKnownCommitHash !== latestHash) {
-                // New commit detected - clear snapshots
-                console.log('New commit detected, clearing snapshots');
-                await clearSnapshots();
-                showToast('Snapshots cleared (new commit)', 'info', 2000);
-            }
-            lastKnownCommitHash = latestHash;
-        }
-
-        renderGitCommitList();
-    } catch (e) {
-        console.error('Failed to load git commits:', e);
-        list.innerHTML = '<div class="git-empty">Failed to load commits</div>';
-    }
-}
-
-/**
- * Clear all snapshots
- */
-async function clearSnapshots() {
-    try {
-        await fetch(`/api/rollback/preview/clear?token=${token}`, { method: 'POST' });
-    } catch (e) {
-        console.error('Failed to clear snapshots:', e);
-    }
-}
-
-/**
- * Render git commits list
- */
-function renderGitCommitList() {
-    const list = document.getElementById('gitCommitList');
-    if (!list) return;
-
-    if (gitCommits.length === 0) {
-        list.innerHTML = '<div class="git-empty">No commits found</div>';
-        return;
-    }
-
-    list.innerHTML = gitCommits.map(commit => `
-        <div class="git-commit-item" data-hash="${commit.hash}">
-            <span class="git-commit-hash">${commit.hash.substring(0, 7)}</span>
-            <span class="git-commit-subject">${escapeHtml(commit.subject)}</span>
-            <span class="git-commit-meta">${escapeHtml(commit.author)} &middot; ${commit.date}</span>
-        </div>
-    `).join('');
-}
-
-/**
- * Show git commit list (hide detail)
- */
-function showGitCommitList() {
-    const list = document.getElementById('gitCommitList');
-    const detail = document.getElementById('gitCommitDetail');
-    const dryRunResult = document.getElementById('gitDryRunResult');
-
-    list?.classList.remove('hidden');
-    detail?.classList.add('hidden');
-    dryRunResult?.classList.add('hidden');
-    selectedCommitHash = null;
-    dryRunValidatedHash = null;  // Reset dry-run validation
-}
-
-/**
- * Show git commit detail
- */
-async function showGitCommitDetail(hash) {
-    const list = document.getElementById('gitCommitList');
-    const detail = document.getElementById('gitCommitDetail');
-    const content = document.getElementById('gitDetailContent');
-    const hashSpan = document.getElementById('gitDetailHash');
-    const dryRunResult = document.getElementById('gitDryRunResult');
-
-    if (!detail || !content) return;
-
-    selectedCommitHash = hash;
-    dryRunValidatedHash = null;  // Reset dry-run validation for new commit
-    list?.classList.add('hidden');
-    detail.classList.remove('hidden');
-    dryRunResult?.classList.add('hidden');
-
-    // Update button states (revert disabled until dry-run passes)
-    updateRevertButtonState();
-
-    if (hashSpan) hashSpan.textContent = hash.substring(0, 7);
-    content.innerHTML = '<div class="git-empty">Loading...</div>';
-
-    try {
-        const resp = await fetch(`/api/rollback/git/commit/${hash}?token=${token}`);
-        if (!resp.ok) throw new Error('Failed to load commit');
-
-        const data = await resp.json();
-
-        content.innerHTML = `
-            <div class="git-detail-subject">${escapeHtml(data.subject)}</div>
-            ${data.body ? `<div class="git-detail-body">${escapeHtml(data.body)}</div>` : ''}
-            <div class="git-detail-meta">
-                <strong>Author:</strong> ${escapeHtml(data.author)}<br>
-                <strong>Date:</strong> ${escapeHtml(data.date)}
-            </div>
-            ${data.stat ? `<div class="git-detail-stat">${escapeHtml(data.stat)}</div>` : ''}
-        `;
-    } catch (e) {
-        console.error('Failed to load commit detail:', e);
-        content.innerHTML = '<div class="git-empty">Failed to load commit details</div>';
-    }
-}
-
-/**
- * Dry run revert for selected commit
- */
-async function dryRunRevert() {
-    if (!selectedCommitHash) return;
-
-    const dryRunBtn = document.getElementById('gitDryRunBtn');
-    const dryRunResult = document.getElementById('gitDryRunResult');
-
-    if (!dryRunBtn || !dryRunResult) return;
-
-    dryRunBtn.disabled = true;
-    dryRunBtn.textContent = 'Checking...';
-    dryRunResult.classList.remove('hidden', 'success', 'error');
-    dryRunResult.innerHTML = '<pre>Running dry-run...</pre>';
-
-    try {
-        const resp = await fetch(`/api/rollback/git/revert/dry-run?commit_hash=${selectedCommitHash}&token=${token}`, {
-            method: 'POST'
-        });
-        if (!resp.ok) {
-            let errMsg = `Server error (${resp.status})`;
-            try { const d = await resp.json(); errMsg = d.error || errMsg; } catch {}
-            dryRunResult.classList.add('error');
-            dryRunResult.innerHTML = `<pre>${escapeHtml(errMsg)}</pre>`;
-            dryRunValidatedHash = null;
-            return;
-        }
-        const data = await resp.json();
-
-        if (data.success) {
-            dryRunResult.classList.add('success');
-            dryRunResult.innerHTML = `<pre>${escapeHtml(data.message)}\n\n${escapeHtml(data.changes || 'No changes')}</pre>`;
-            // Mark this commit as validated - enables Revert button
-            dryRunValidatedHash = selectedCommitHash;
-        } else {
-            dryRunResult.classList.add('error');
-            dryRunResult.innerHTML = `<pre>Error: ${escapeHtml(data.error || 'Unknown error')}\n${escapeHtml(data.details || '')}</pre>`;
-            dryRunValidatedHash = null;  // Clear validation on failure
-        }
-    } catch (e) {
-        console.error('Dry run failed:', e);
-        dryRunResult.classList.add('error');
-        dryRunResult.innerHTML = `<pre>Error: ${e.message}</pre>`;
-        dryRunValidatedHash = null;  // Clear validation on error
-    } finally {
-        dryRunBtn.disabled = false;
-        dryRunBtn.textContent = 'Dry Run';
-        updateRevertButtonState();  // Update Revert button state
-    }
-}
-
-/**
- * Execute revert for selected commit
- */
-async function executeRevert() {
-    if (!selectedCommitHash) return;
-
-    if (!confirm(`Are you sure you want to revert commit ${selectedCommitHash.substring(0, 7)}?\n\nThis will create a new commit that undoes the changes.`)) {
-        return;
-    }
-
-    const revertBtn = document.getElementById('gitRevertBtn');
-    const dryRunResult = document.getElementById('gitDryRunResult');
-
-    if (!revertBtn || !dryRunResult) return;
-
-    revertBtn.disabled = true;
-    revertBtn.textContent = 'Reverting...';
-    dryRunResult.classList.remove('hidden', 'success', 'error');
-    dryRunResult.innerHTML = '<pre>Executing revert...</pre>';
-
-    try {
-        const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedCommitHash}&token=${token}&${getTargetParams()}`, {
-            method: 'POST'
-        });
-        if (!resp.ok) {
-            let errMsg = `Server error (${resp.status})`;
-            try { const d = await resp.json(); errMsg = d.error || errMsg; } catch {}
-            dryRunResult.classList.add('error');
-            dryRunResult.innerHTML = `<pre>${escapeHtml(errMsg)}</pre>`;
-            return;
-        }
-        const data = await resp.json();
-
-        if (data.success) {
-            lastRevertCommit = data.new_commit;  // Store revert commit SHA for undo
-            dryRunValidatedHash = null;  // Clear validation after successful revert
-            dryRunResult.classList.add('success');
-            dryRunResult.innerHTML = `<pre>Revert successful!\nNew commit: ${data.new_commit.substring(0, 7)}\n\nTo undo, click "Undo Revert" (creates another revert commit).</pre>
-                <button id="gitUndoBtn" class="git-action-btn secondary" style="margin-top: 8px;">Undo Revert</button>`;
-            showToast('Revert successful', 'success');
-
-            // Add undo handler
-            document.getElementById('gitUndoBtn')?.addEventListener('click', undoRevert);
-
-            // Refresh commits list
-            loadGitCommits();
-        } else {
-            dryRunResult.classList.add('error');
-            dryRunResult.innerHTML = `<pre>Error: ${escapeHtml(data.error || 'Unknown error')}</pre>`;
-        }
-    } catch (e) {
-        console.error('Revert failed:', e);
-        dryRunResult.classList.add('error');
-        dryRunResult.innerHTML = `<pre>Error: ${e.message}</pre>`;
-    } finally {
-        revertBtn.textContent = 'Revert';
-        updateRevertButtonState();  // Update button state (will disable since dry-run cleared)
-    }
-}
-
-/**
- * Undo the last revert (by reverting the revert commit - non-destructive)
- */
-async function undoRevert() {
-    if (!lastRevertCommit) return;
-
-    if (!confirm('Are you sure you want to undo the revert?\n\nThis will create a new commit that undoes the revert (revert-the-revert).')) {
-        return;
-    }
-
-    const dryRunResult = document.getElementById('gitDryRunResult');
-    if (!dryRunResult) return;
-
-    dryRunResult.innerHTML = '<pre>Undoing revert...</pre>';
-
-    try {
-        const resp = await fetch(`/api/rollback/git/revert/undo?revert_commit=${lastRevertCommit}&token=${token}`, {
-            method: 'POST'
-        });
-        if (!resp.ok) {
-            let errMsg = `Server error (${resp.status})`;
-            try { const d = await resp.json(); errMsg = d.error || errMsg; } catch {}
-            dryRunResult.classList.add('error');
-            dryRunResult.innerHTML = `<pre>${escapeHtml(errMsg)}</pre>`;
-            return;
-        }
-        const data = await resp.json();
-
-        if (data.success) {
-            dryRunResult.classList.remove('error');
-            dryRunResult.classList.add('success');
-            dryRunResult.innerHTML = `<pre>Undo successful!\nCreated commit: ${data.new_commit.substring(0, 7)}</pre>`;
-            lastRevertCommit = null;
-            showToast('Undo successful', 'success');
-
-            // Refresh commits list and status
-            loadGitStatus();
-            loadGitCommits();
-        } else {
-            dryRunResult.classList.add('error');
-            dryRunResult.innerHTML = `<pre>Error: ${escapeHtml(data.error || 'Unknown error')}\n${escapeHtml(data.details || '')}</pre>`;
-        }
-    } catch (e) {
-        console.error('Undo failed:', e);
-        dryRunResult.classList.add('error');
-        dryRunResult.innerHTML = `<pre>Error: ${e.message}</pre>`;
     }
 }
 
@@ -12692,9 +11753,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Initialize terminal (but it starts hidden in terminal tab)
     initTerminal();
 
-    // Setup quick response buttons
-    setupQuickResponses();
-
     // Hide control bars initially (view mode)
     controlBarsContainer.classList.add('hidden');
 
@@ -12716,7 +11774,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupTailResize();
     setupViewSwitcher();
     updateViewSwitcher();  // Set initial view switcher state
-    setupTranscriptSearch();
     startActivityUpdates();
     setupQueue();
     setupCollapseHandler();
