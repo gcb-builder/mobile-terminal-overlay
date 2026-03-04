@@ -52,6 +52,16 @@ def strip_ansi(text: str) -> str:
     return _ANSI_ESCAPE_RE.sub('', text)
 
 
+def get_project_id(repo_path: Path, strip_leading: bool = False) -> str:
+    """Convert repo path to Claude project ID string.
+
+    Matches the directory naming convention used by Claude Code under
+    ~/.claude/projects/.
+    """
+    pid = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+    return pid.lstrip("-") if strip_leading else pid
+
+
 def find_utf8_boundary(data: bytes, max_len: int) -> int:
     """Find the last valid UTF-8 character boundary at or before max_len.
 
@@ -2800,73 +2810,51 @@ def create_app(config: Config) -> FastAPI:
 
         return result
 
-    @app.get("/api/context")
-    async def get_context(token: Optional[str] = Query(None)):
-        """
-        Get the .claude/CONTEXT.md file from the current repo.
-        """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    def _read_claude_file(filename: str, label: str):
+        """Read a file from the current repo's .claude/ directory.
 
+        Returns a dict with exists, content, path, session, and modified fields.
+        Used by /api/context, /api/docs/context, /api/touch, /api/docs/touch.
+        """
         repo_path = get_current_repo_path()
         if not repo_path:
             return {"exists": False, "content": "", "session": app.state.current_session}
-        context_file = repo_path / ".claude" / "CONTEXT.md"
 
-        if not context_file.exists():
+        target_file = repo_path / ".claude" / filename
+        if not target_file.exists():
             return {
                 "exists": False,
                 "content": "",
-                "path": str(context_file),
+                "path": str(target_file),
                 "session": app.state.current_session,
             }
 
         try:
-            content = context_file.read_text(errors="replace")
+            content = target_file.read_text(errors="replace")
             return {
                 "exists": True,
                 "content": content,
-                "path": str(context_file),
+                "path": str(target_file),
                 "session": app.state.current_session,
-                "modified": context_file.stat().st_mtime,
+                "modified": target_file.stat().st_mtime,
             }
         except Exception as e:
-            logger.error(f"Error reading context file: {e}")
+            logger.error(f"Error reading {label}: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/context")
+    async def get_context(token: Optional[str] = Query(None)):
+        """Get the .claude/CONTEXT.md file from the current repo."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return _read_claude_file("CONTEXT.md", "context file")
 
     @app.get("/api/touch")
     async def get_touch(token: Optional[str] = Query(None)):
-        """
-        Get the .claude/touch-summary.md file from the current repo.
-        """
+        """Get the .claude/touch-summary.md file from the current repo."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-        repo_path = get_current_repo_path()
-        if not repo_path:
-            return {"exists": False, "content": "", "session": app.state.current_session}
-        touch_file = repo_path / ".claude" / "touch-summary.md"
-
-        if not touch_file.exists():
-            return {
-                "exists": False,
-                "content": "",
-                "path": str(touch_file),
-                "session": app.state.current_session,
-            }
-
-        try:
-            content = touch_file.read_text(errors="replace")
-            return {
-                "exists": True,
-                "content": content,
-                "path": str(touch_file),
-                "session": app.state.current_session,
-                "modified": touch_file.stat().st_mtime,
-            }
-        except Exception as e:
-            logger.error(f"Error reading touch file: {e}")
-            return JSONResponse({"error": str(e)}, status_code=500)
+        return _read_claude_file("touch-summary.md", "touch file")
 
     @app.get("/api/plan")
     async def get_plan(
@@ -3148,7 +3136,7 @@ def create_app(config: Config) -> FastAPI:
         if not repo_path:
             return
 
-        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+        project_id = get_project_id(repo_path)
         claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
 
         if not claude_projects_dir.exists():
@@ -3281,9 +3269,7 @@ def create_app(config: Config) -> FastAPI:
             return {"exists": False, "content": "", "error": "No repo path found"}
 
         # Convert repo path to Claude's project identifier format
-        # e.g., /home/user/dev/myproject -> -home-user-dev-myproject
-        # Note: Claude Code strips ~ from paths before converting
-        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+        project_id = get_project_id(repo_path)
         claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
 
         # Helper to return cached content
@@ -3460,7 +3446,7 @@ def create_app(config: Config) -> FastAPI:
         if not repo_path:
             return {"cleared": False, "error": "No repo path found"}
 
-        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+        project_id = get_project_id(repo_path)
         cache_path = get_log_cache_path(project_id)
 
         if cache_path.exists():
@@ -3489,7 +3475,7 @@ def create_app(config: Config) -> FastAPI:
         if not repo_path:
             return {"sessions": [], "error": "No repo path found"}
 
-        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+        project_id = get_project_id(repo_path)
         claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
 
         if not claude_projects_dir.exists():
@@ -3579,7 +3565,7 @@ def create_app(config: Config) -> FastAPI:
         if not repo_path:
             return JSONResponse({"error": "No repo path found"}, status_code=400)
 
-        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+        project_id = get_project_id(repo_path)
         claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
 
         log_file = claude_projects_dir / f"{session_id}.jsonl"
@@ -3630,69 +3616,17 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/docs/context")
     async def get_context_doc(token: Optional[str] = Query(None)):
-        """
-        Read .claude/CONTEXT.md from the current target's repo.
-        Returns the raw markdown content for display in Docs modal.
-        """
+        """Read .claude/CONTEXT.md for display in Docs modal."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-        repo_path = get_current_repo_path()
-        if not repo_path:
-            return {"exists": False, "content": "", "error": "No repo path found"}
-
-        context_file = repo_path / ".claude" / "CONTEXT.md"
-        if not context_file.exists():
-            return {
-                "exists": False,
-                "content": "",
-                "path": str(context_file),
-            }
-
-        try:
-            content = context_file.read_text(errors="replace")
-            return {
-                "exists": True,
-                "content": content,
-                "path": str(context_file),
-                "modified": context_file.stat().st_mtime,
-            }
-        except Exception as e:
-            logger.error(f"Error reading CONTEXT.md: {e}")
-            return JSONResponse({"error": str(e)}, status_code=500)
+        return _read_claude_file("CONTEXT.md", "CONTEXT.md")
 
     @app.get("/api/docs/touch")
     async def get_touch_summary(token: Optional[str] = Query(None)):
-        """
-        Read .claude/touch-summary.md from the current target's repo.
-        Returns the raw markdown content for display in Docs modal.
-        """
+        """Read .claude/touch-summary.md for display in Docs modal."""
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-        repo_path = get_current_repo_path()
-        if not repo_path:
-            return {"exists": False, "content": "", "error": "No repo path found"}
-
-        touch_file = repo_path / ".claude" / "touch-summary.md"
-        if not touch_file.exists():
-            return {
-                "exists": False,
-                "content": "",
-                "path": str(touch_file),
-            }
-
-        try:
-            content = touch_file.read_text(errors="replace")
-            return {
-                "exists": True,
-                "content": content,
-                "path": str(touch_file),
-                "modified": touch_file.stat().st_mtime,
-            }
-        except Exception as e:
-            logger.error(f"Error reading touch-summary.md: {e}")
-            return JSONResponse({"error": str(e)}, status_code=500)
+        return _read_claude_file("touch-summary.md", "touch-summary.md")
 
     @app.get("/api/terminal/capture")
     async def capture_terminal(
@@ -4501,7 +4435,7 @@ Only the top 1–3 risks worth caring about.
         try:
             repo_path = get_current_repo_path()
             if repo_path:
-                project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-").lstrip("-")
+                project_id = get_project_id(repo_path, strip_leading=True)
                 claude_dir = Path.home() / ".claude" / "projects" / project_id
                 jsonl_files = sorted(claude_dir.glob("*.jsonl"),
                                    key=lambda f: f.stat().st_mtime, reverse=True)
@@ -5117,7 +5051,7 @@ Only the top 1–3 risks worth caring about.
         repo_path = get_current_repo_path()
         if not repo_path:
             return
-        project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+        project_id = get_project_id(repo_path)
         cpd = Path.home() / ".claude" / "projects" / project_id
         if not cpd.exists():
             return

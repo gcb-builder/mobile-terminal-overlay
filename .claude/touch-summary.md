@@ -4,6 +4,21 @@ Append-only log of implementation batches.
 
 ---
 
+## 2026-03-04: Batch 4 — Consolidate Duplicate Utility Functions
+
+### Files Changed
+- `mobile_terminal/static/terminal.js` — Removed 2 duplicate `escapeHtml()` definitions (DOM-based closure version at former line 7282 and module-scope version at former line 11109); kept string-replacement version with added null guard. Removed `formatBytes()` (closure, former line 7522) and replaced call with `formatFileSize()`. Removed `formatRelativeTime()` (closure, former line 7509) and replaced call with `formatTimeAgo(s.modified * 1000)`. Net: 11887 -> 11846 lines (-41 lines).
+- `mobile_terminal/server.py` — Added `get_project_id(repo_path, strip_leading=False)` helper near top of file; replaced 6 inline `str(repo_path.resolve()).replace(...)` calls and 1 `.lstrip("-")` variant. Added `_read_claude_file(filename, label)` helper; refactored `/api/context`, `/api/touch`, `/api/docs/context`, `/api/docs/touch` to use it (4 endpoints -> 4 thin wrappers + 1 helper). Net: 7879 -> 7813 lines (-66 lines).
+
+### New Files Created
+- None
+
+### Risks / Follow-ups
+- `formatTimeAgo()` returns compact format ("5m") vs old `formatRelativeTime()` which returned "5m ago". The shorter format is consistent with how the rest of the app displays time in compact contexts.
+- The `get_project_id` helper with `strip_leading=True` preserves the one call site that used `.lstrip("-")`. Both path formats continue to work as before.
+
+---
+
 ## 2026-03-04: Batch 2C — Server + HTML Dead Code Cleanup
 
 ### Files Changed

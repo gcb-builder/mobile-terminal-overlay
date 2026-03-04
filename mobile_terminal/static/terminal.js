@@ -7279,12 +7279,6 @@ function setupDocsButton() {
         }
     }
 
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
     // Plans tab with dropdown selector
     async function loadPlansTab() {
         try {
@@ -7442,8 +7436,8 @@ function setupDocsButton() {
                 const isCurrent = s.is_current;
                 const shortId = s.id.substring(0, 8) + '...';
                 const preview = s.preview || '(empty)';
-                const modified = s.modified ? formatRelativeTime(new Date(s.modified)) : '';
-                const size = s.size ? formatBytes(s.size) : '';
+                const modified = s.modified ? formatTimeAgo(s.modified * 1000) : '';
+                const size = s.size ? formatFileSize(s.size) : '';
 
                 html += `
                     <div class="docs-session-item ${isCurrent ? 'current' : ''}">
@@ -7503,26 +7497,6 @@ function setupDocsButton() {
             console.error('Failed to load session content:', e);
             docsModalBody.innerHTML = '<div class="docs-empty" style="color: var(--danger);">Error loading session</div>';
         }
-    }
-
-    // Helper functions
-    function formatRelativeTime(date) {
-        const now = new Date();
-        const diff = now - date;
-        const minutes = Math.floor(diff / 60000);
-        const hours = Math.floor(diff / 3600000);
-        const days = Math.floor(diff / 86400000);
-
-        if (minutes < 1) return 'just now';
-        if (minutes < 60) return `${minutes}m ago`;
-        if (hours < 24) return `${hours}h ago`;
-        return `${days}d ago`;
-    }
-
-    function formatBytes(bytes) {
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
 
     // Open modal
@@ -7713,6 +7687,7 @@ function extractDynamicSuggestion(content) {
  * Escape HTML entities
  */
 function escapeHtml(text) {
+    if (!text) return '';
     return text
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
@@ -11102,16 +11077,6 @@ async function updatePushButton() {
 // ============================================================================
 // END COMPANION FEATURES
 // ============================================================================
-
-/**
- * Escape HTML to prevent XSS
- */
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
 
 /**
  * Show a toast notification
