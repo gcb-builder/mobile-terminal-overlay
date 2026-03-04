@@ -1691,8 +1691,8 @@ html, body {
 }
 
 .quick-btn {
-    min-width: 36px;
-    height: 36px;
+    min-width: 44px;
+    height: 44px;
     padding: 0 8px;
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.1);
@@ -2294,8 +2294,8 @@ html, body {
 }
 
 .compose-close {
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
     background: transparent;
     border: none;
     color: var(--text-secondary);
@@ -2480,8 +2480,8 @@ html, body {
     position: absolute;
     top: -6px;
     right: -6px;
-    width: 20px;
-    height: 20px;
+    width: 24px;
+    height: 24px;
     background: var(--danger);
     color: white;
     border: none;
@@ -2489,6 +2489,10 @@ html, body {
     font-size: 14px;
     line-height: 1;
     cursor: pointer;
+    /* Invisible padding for 44px tap area */
+    padding: 0;
+    box-sizing: content-box;
+    -webkit-tap-highlight-color: transparent;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2549,8 +2553,8 @@ html, body {
 }
 
 .challenge-close {
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
     background: transparent;
     border: none;
     color: var(--text-secondary);
@@ -2946,6 +2950,8 @@ html, body {
 }
 
 .docs-modal-close {
+    min-width: 44px;
+    min-height: 44px;
     background: none;
     border: none;
     font-size: 24px;
@@ -3686,8 +3692,8 @@ html, body {
 }
 
 .preview-drawer-close {
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
     background: transparent;
     border: none;
     color: var(--text-secondary);
@@ -5466,6 +5472,8 @@ html, body {
 }
 
 .new-window-close {
+    min-width: 44px;
+    min-height: 44px;
     background: none;
     border: none;
     color: var(--text-secondary);
