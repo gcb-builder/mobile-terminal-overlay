@@ -3,10 +3,10 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Codebase Cleanup (Batches 1-4 complete, 5-8 pending)
+- **Stage:** Architecture Review Phase 1 (Security) complete
 - **Last Updated:** 2026-03-04
-- **Server Version:** v274 (terminal.js), v116 (sw.js cache), v169 (styles.css)
-- **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
+- **Server Version:** v276 (terminal.js), v116 (sw.js cache), v170 (styles.css)
+- **Server Start:** `./venv/bin/mobile-terminal --session claude --no-auth --host 0.0.0.0 --verbose > /tmp/mto-server.log 2>&1 &`
 
 ## Recent: Codebase Cleanup Batches 1-4 (2026-03-04)
 
@@ -53,11 +53,40 @@
 - Extracted get_project_id() helper, replaced 7 inline computations
 - Extracted _read_claude_file() helper for 4 doc endpoints
 
-### Remaining Batches (lower priority, future session)
-- **Batch 5:** State leaks — Set overflow protection, URL.createObjectURL leak, GitOpLock TOCTOU
-- **Batch 6:** Efficiency — Cache gh pr view, AbortController for target-select, global error boundary
+### Batches 5-8 (completed)
+- **Batch 5:** State leaks — Set overflow, URL revocation, GitOpLock TOCTOU
+- **Batch 6:** Efficiency — PR cache, AbortController, global error boundary
 - **Batch 7:** Accessibility — aria-labels on icon buttons and form inputs
 - **Batch 8:** Mobile touch targets — 44px minimum on small buttons
+
+## Architecture Review Phase 1: Security (2026-03-04)
+
+### Commit 1: XSS Sink Fixes (`586beab`)
+- Added single-quote escaping and String() coercion to escapeHtml()
+- Fixed 22 innerHTML XSS vectors: populateRepoDropdown, renderTreeNode,
+  renderFileTree, openFileInModal, createLogCard, challenge modal,
+  plan refs, process/terminate, history timeline, queue/snapshot lists
+- All server/tmux/filesystem data now goes through escapeHtml()
+
+### Commit 2: Auth Consolidation (`409f709`) — -163 lines
+- Replaced 97 copy-pasted token checks with verify_token() FastAPI dependency
+- Token accepted via Authorization: Bearer, X-MTO-Token header, or query param
+- Client sends X-MTO-Token header via apiHeaders() helper
+- Default bind: 127.0.0.1 (was 0.0.0.0), default auth: ON (was OFF)
+- Added --no-auth CLI flag, startup warning for 0.0.0.0 without auth
+- secrets.compare_digest() for constant-time token comparison
+
+### Commit 3: CSP + Script Loading (`680b850`)
+- Added Content-Security-Policy middleware: self + cdn.jsdelivr.net for scripts
+- Added X-Content-Type-Options, X-Frame-Options, Referrer-Policy headers
+- Added defer to 4 CDN scripts + terminal.js (unblocks DOM parsing)
+- Moved inline SW registration to terminal.js (no more unsafe-inline scripts)
+
+### Commit 4: Async Subprocess (`e043fad`)
+- Added run_subprocess() helper wrapping subprocess.run in run_in_executor
+- Converted 81 subprocess.run calls in async functions
+- Covers: tmux, git, pgrep, gh, systemctl, tailscale commands
+- 13 sync-context calls remain (tmux session helpers, git info cache)
 
 ### Total Impact
 - ~2400 lines of dead code removed
