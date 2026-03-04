@@ -43,17 +43,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--host",
-        default="0.0.0.0",
-        help="Server host (default: 0.0.0.0)",
+        default="127.0.0.1",
+        help="Server host (default: 127.0.0.1, use 0.0.0.0 for network access)",
     )
     parser.add_argument(
         "--token", "-t",
-        help="Auth token (implies --require-token, auto-generated if not set)",
+        help="Auth token (auto-generated if not set)",
+    )
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Disable token authentication (only for trusted networks like Tailscale)",
     )
     parser.add_argument(
         "--require-token",
         action="store_true",
-        help="Enable token authentication (disabled by default for Tailscale use)",
+        help="(Deprecated, auth is now on by default) Enable token authentication",
     )
     parser.add_argument(
         "--no-discovery",
@@ -113,6 +118,8 @@ def main() -> int:
         config.port = args.port
     if args.host:
         config.host = args.host
+    if args.no_auth:
+        config.no_auth = True
     if args.token:
         config.token = args.token
         config.no_auth = False  # --token implies auth required

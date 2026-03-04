@@ -29,9 +29,17 @@ const clientId = sessionStorage.getItem('mto_client_id') || crypto.randomUUID();
 sessionStorage.setItem('mto_client_id', clientId);
 console.log('Client ID:', clientId.slice(0, 8));
 
-// Helper for fetch with client ID header
+// Standard headers for all API requests
+// Token sent via header (preferred) in addition to query string (backward compat)
+function apiHeaders(extra = {}) {
+    const h = { 'X-Client-ID': clientId, ...extra };
+    if (token) h['X-MTO-Token'] = token;
+    return h;
+}
+
+// Helper for fetch with auth + client ID headers
 function apiFetch(url, options = {}) {
-    const headers = { 'X-Client-ID': clientId, ...(options.headers || {}) };
+    const headers = apiHeaders(options.headers);
     return fetch(url, { ...options, headers });
 }
 
@@ -45,7 +53,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
         const response = await fetch(url, {
             ...options,
             signal: controller.signal,
-            headers: { 'X-Client-ID': clientId, ...(options.headers || {}) }
+            headers: apiHeaders(options.headers)
         });
         return response;
     } finally {

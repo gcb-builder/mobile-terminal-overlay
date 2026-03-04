@@ -60,11 +60,11 @@ class Config:
     # Session settings
     session_name: str = "mobile-term"
     port: int = 8765
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
 
-    # Authentication (disabled by default, use --require-token to enable)
+    # Authentication (enabled by default, use --no-auth to disable)
     token: Optional[str] = None  # Auto-generated if not set
-    no_auth: bool = True  # Auth disabled by default (Tailscale-friendly)
+    no_auth: bool = False  # Auth enabled by default; use --no-auth for trusted networks
 
     # Quick commands (sent on tap)
     quick_commands: List[QuickCommand] = field(default_factory=lambda: [
@@ -275,7 +275,7 @@ def merge_configs(base: Config, override: Config) -> Config:
     result = Config(
         session_name=override.session_name if override.session_name != "mobile-term" else base.session_name,
         port=override.port if override.port != 8765 else base.port,
-        host=override.host if override.host != "0.0.0.0" else base.host,
+        host=override.host if override.host != "127.0.0.1" else base.host,
         token=override.token or base.token,
         quick_commands=override.quick_commands if override.quick_commands else base.quick_commands,
         role_prefixes=override.role_prefixes if override.role_prefixes else base.role_prefixes,

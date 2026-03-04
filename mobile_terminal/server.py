@@ -847,7 +847,7 @@ class CommandQueue:
             self._processor_task = None
 
 
-from fastapi import FastAPI, File, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -1506,6 +1506,30 @@ def create_app(config: Config) -> FastAPI:
         except Exception:
             pass  # Connection may be closed
 
+
+    def verify_token(
+        token: Optional[str] = Query(None),
+        authorization: Optional[str] = Header(None),
+        x_mto_token: Optional[str] = Header(None, alias="X-MTO-Token"),
+    ):
+        """Verify auth token from header or query parameter.
+
+        Checks in order: Authorization: Bearer <token>, X-MTO-Token header,
+        then query parameter (backward compat). Raises 401 if none match.
+        """
+        if app.state.no_auth:
+            return
+        expected = app.state.token
+        provided = None
+        if authorization and authorization.startswith("Bearer "):
+            provided = authorization[7:]
+        elif x_mto_token:
+            provided = x_mto_token
+        elif token:
+            provided = token
+        if not provided or not secrets.compare_digest(provided, expected):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
     # Mount static files
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -1526,23 +1550,16 @@ def create_app(config: Config) -> FastAPI:
         return HTMLResponse(status_code=404)
 
     @app.get("/")
-    async def index(token: Optional[str] = Query(None)):
+    async def index(_auth=Depends(verify_token)):
         """Serve the main HTML page."""
-        if not app.state.no_auth and token != app.state.token:
-            return HTMLResponse(
-                content="<h1>401 Unauthorized</h1><p>Invalid or missing token.</p>",
-                status_code=401,
-            )
         return FileResponse(
             STATIC_DIR / "index.html",
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
         )
 
     @app.get("/config")
-    async def get_config(request: Request, token: Optional[str] = Query(None)):
+    async def get_config(request: Request, _auth=Depends(verify_token)):
         """Return client configuration as JSON, with per-device overrides."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
         result = app.state.config.to_dict()
         device = _resolve_device(request, app.state.config.devices)
         if device:
@@ -1560,10 +1577,8 @@ def create_app(config: Config) -> FastAPI:
         return {"status": "ok", "version": "0.2.0"}
 
     @app.get("/api/setup-status")
-    async def setup_status(token: Optional[str] = Query(None)):
+    async def setup_status(_auth=Depends(verify_token)):
         """Return tmux auto-setup status and result."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
         return {
             "auto_setup": config.auto_setup,
             "result": app.state.setup_result,
@@ -1571,15 +1586,13 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/tmux/sessions")
     async def get_tmux_sessions(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         prefix: str = Query(""),
     ):
         """
         List available tmux sessions.
         Optionally filter by prefix (e.g., 'claude-' for Claude sessions).
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         sessions = list_tmux_sessions(prefix)
         return {
@@ -1589,13 +1602,11 @@ def create_app(config: Config) -> FastAPI:
         }
 
     @app.get("/api/targets")
-    async def list_targets(token: Optional[str] = Query(None)):
+    async def list_targets(_auth=Depends(verify_token)):
         """
         List all panes/windows in the current session with their working directories.
         Used for explicit target selection when working with multiple projects.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session = app.state.current_session
         targets = []
@@ -1690,14 +1701,12 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/target/select")
     async def select_target(
         target_id: str = Query(...),
-        token: Optional[str] = Query(None)
+        _auth=Depends(verify_token)
     ):
         """Set the active target pane for repo operations."""
         _start_total = time.time()
         logger.info(f"[TIMING] /api/target/select START target_id={target_id}")
 
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session = app.state.current_session
 
@@ -1832,7 +1841,7 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/window/new")
     async def create_new_window(
         request: Request,
-        token: Optional[str] = Query(None)
+        _auth=Depends(verify_token)
     ):
         """
         Create a new tmux window in a repo's configured session.
@@ -1843,8 +1852,6 @@ def create_app(config: Config) -> FastAPI:
           - window_name: (optional) Name for the new window
           - auto_start_agent: (optional, default false) Start agent after creating window
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Parse JSON body
         try:
@@ -2000,7 +2007,7 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/pane/kill")
     async def kill_pane(
         request: Request,
-        token: Optional[str] = Query(None)
+        _auth=Depends(verify_token)
     ):
         """
         Kill a tmux pane. Cannot kill the currently active pane.
@@ -2008,8 +2015,6 @@ def create_app(config: Config) -> FastAPI:
         JSON body:
           - target_id: Pane target in "window:pane" format (e.g. "2:0")
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         try:
             body = await request.json()
@@ -2063,13 +2068,11 @@ def create_app(config: Config) -> FastAPI:
         return {"success": True, "killed": target_id}
 
     @app.get("/api/workspace/dirs")
-    async def list_workspace_dirs(token: Optional[str] = Query(None)):
+    async def list_workspace_dirs(_auth=Depends(verify_token)):
         """
         List directories under configured workspace_dirs for new window creation.
         Excludes hidden dirs and dirs already in config.repos.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Build set of resolved repo paths for exclusion
         repo_paths = set()
@@ -2110,12 +2113,10 @@ def create_app(config: Config) -> FastAPI:
         return {"dirs": dirs}
 
     @app.get("/api/repos")
-    async def list_repos(token: Optional[str] = Query(None)):
+    async def list_repos(_auth=Depends(verify_token)):
         """
         List configured repos available for new window creation.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repos_list = []
         for repo in config.repos:
@@ -2135,13 +2136,11 @@ def create_app(config: Config) -> FastAPI:
         }
 
     @app.get("/api/files/tree")
-    async def list_files_tree(token: Optional[str] = Query(None)):
+    async def list_files_tree(_auth=Depends(verify_token)):
         """
         List all files in repo as a flat list grouped by directory.
         Uses git ls-files to respect .gitignore.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -2191,13 +2190,11 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/api/files/search")
-    async def search_files(q: str = Query(""), token: Optional[str] = Query(None), limit: int = Query(20)):
+    async def search_files(q: str = Query(""), _auth=Depends(verify_token), limit: int = Query(20)):
         """
         Search files in the current repo.
         Uses git ls-files to respect .gitignore.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         if not q or len(q) < 1:
             return {"files": []}
@@ -2240,13 +2237,11 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/api/file")
-    async def read_file(path: str = Query(...), token: Optional[str] = Query(None)):
+    async def read_file(path: str = Query(...), _auth=Depends(verify_token)):
         """
         Read a file from the current repo.
         Path is relative to repo root.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -2279,7 +2274,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/transcript")
     async def get_transcript(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         lines: int = Query(500),
         session: Optional[str] = Query(None),
         pane: int = Query(0),
@@ -2295,8 +2290,6 @@ def create_app(config: Config) -> FastAPI:
 
         Uses same 300ms cache as /api/terminal/capture.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         target_session = session or app.state.current_session
         if not target_session:
@@ -2342,7 +2335,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/refresh")
     async def refresh_terminal(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         cols: Optional[int] = Query(None),
         rows: Optional[int] = Query(None),
     ):
@@ -2351,8 +2344,6 @@ def create_app(config: Config) -> FastAPI:
         If cols/rows provided, resizes tmux pane first to fix garbled output.
         Uses capture-pane with visible content only.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         try:
             session_name = app.state.current_session
@@ -2405,7 +2396,7 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.post("/api/restart")
-    async def restart_server(request: Request, token: Optional[str] = Query(None)):
+    async def restart_server(request: Request, _auth=Depends(verify_token)):
         """
         Trigger a safe server restart without affecting tmux/Claude sessions.
 
@@ -2413,8 +2404,6 @@ def create_app(config: Config) -> FastAPI:
         - Tries systemd first, falls back to execv
         - Returns 202 immediately, restart happens after response flushes
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Debounce: prevent restart loops
         RESTART_COOLDOWN = 30  # seconds
@@ -2470,13 +2459,11 @@ def create_app(config: Config) -> FastAPI:
         return JSONResponse({"status": "restarting"}, status_code=202)
 
     @app.post("/api/reload-env")
-    async def reload_env(token: Optional[str] = Query(None)):
+    async def reload_env(_auth=Depends(verify_token)):
         """
         Reload environment variables from .env file.
         Useful for updating API keys without full server restart.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         try:
             from dotenv import load_dotenv
@@ -2499,10 +2486,8 @@ def create_app(config: Config) -> FastAPI:
     # --- MCP Server Management ---
 
     @app.get("/api/mcp-servers")
-    async def list_mcp_servers(token: Optional[str] = Query(None)):
+    async def list_mcp_servers(_auth=Depends(verify_token)):
         """List MCP servers from ~/.claude/settings.json."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         settings, error = load_claude_settings()
         servers = settings.get("mcpServers", {})
@@ -2513,10 +2498,8 @@ def create_app(config: Config) -> FastAPI:
         }
 
     @app.post("/api/mcp-servers")
-    async def add_mcp_server(request: Request, token: Optional[str] = Query(None)):
+    async def add_mcp_server(request: Request, _auth=Depends(verify_token)):
         """Add or update an MCP server in ~/.claude/settings.json (upsert)."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         try:
             body = await request.json()
@@ -2583,10 +2566,8 @@ def create_app(config: Config) -> FastAPI:
         return {"success": True, "name": name, "updated": updated}
 
     @app.delete("/api/mcp-servers/{name}")
-    async def remove_mcp_server(name: str, token: Optional[str] = Query(None)):
+    async def remove_mcp_server(name: str, _auth=Depends(verify_token)):
         """Remove an MCP server from ~/.claude/settings.json."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         if not MCP_NAME_RE.match(name):
             return JSONResponse({"error": "Invalid server name"}, status_code=400)
@@ -2618,10 +2599,8 @@ def create_app(config: Config) -> FastAPI:
     # --- Plugin Management ---
 
     @app.get("/api/plugins")
-    async def list_plugins(token: Optional[str] = Query(None)):
+    async def list_plugins(_auth=Depends(verify_token)):
         """List enabled plugins and installed plugin IDs."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         settings, error = load_claude_settings()
         enabled = settings.get("enabledPlugins", {})
@@ -2641,10 +2620,8 @@ def create_app(config: Config) -> FastAPI:
         }
 
     @app.post("/api/plugins/toggle")
-    async def toggle_plugin(request: Request, token: Optional[str] = Query(None)):
+    async def toggle_plugin(request: Request, _auth=Depends(verify_token)):
         """Enable or disable a plugin in ~/.claude/settings.json."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         try:
             body = await request.json()
@@ -2844,22 +2821,18 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/api/context")
-    async def get_context(token: Optional[str] = Query(None)):
+    async def get_context(_auth=Depends(verify_token)):
         """Get the .claude/CONTEXT.md file from the current repo."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
         return _read_claude_file("CONTEXT.md", "context file")
 
     @app.get("/api/touch")
-    async def get_touch(token: Optional[str] = Query(None)):
+    async def get_touch(_auth=Depends(verify_token)):
         """Get the .claude/touch-summary.md file from the current repo."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
         return _read_claude_file("touch-summary.md", "touch file")
 
     @app.get("/api/plan")
     async def get_plan(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         filename: str = Query(..., description="Plan filename"),
         preview: bool = Query(True, description="Return only first 10 lines"),
     ):
@@ -2867,8 +2840,6 @@ def create_app(config: Config) -> FastAPI:
         Get a plan file from ~/.claude/plans/.
         Returns preview (first 10 lines) by default, or full content.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Sanitize filename - only allow alphanumeric, dash, underscore, dot
         if not re.match(r'^[\w\-\.]+\.md$', filename):
@@ -2904,7 +2875,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/plan/active")
     async def get_active_plan(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         preview: bool = Query(True, description="Return only first 15 lines"),
     ):
         """
@@ -2912,8 +2883,6 @@ def create_app(config: Config) -> FastAPI:
         Priority: 1) Explicit link, 2) Content grep with scoring.
         Returns status: "found" | "ambiguous" | "none"
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         plans_dir = Path.home() / ".claude" / "plans"
         if not plans_dir.exists():
@@ -2997,10 +2966,8 @@ def create_app(config: Config) -> FastAPI:
         }
 
     @app.get("/api/plans")
-    async def list_all_plans(token: Optional[str] = Query(None)):
+    async def list_all_plans(_auth=Depends(verify_token)):
         """List all plan files for manual browsing/selection."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         plans_dir = Path.home() / ".claude" / "plans"
         if not plans_dir.exists():
@@ -3035,14 +3002,12 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/plan/link")
     async def link_plan(
         filename: str = Query(..., description="Plan filename to link"),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """
         Link a plan to the current repo.
         Creates an explicit mapping in plan-links.json.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -3072,13 +3037,11 @@ def create_app(config: Config) -> FastAPI:
 
     @app.delete("/api/plan/link")
     async def unlink_plan(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """
         Unlink the plan for the current repo.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -3220,7 +3183,7 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/log")
     async def get_log(
         request: Request,
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         limit: int = Query(200),
         session_id: Optional[str] = Query(None, description="Specific session UUID to view (for Docs browser)"),
         pane_id: Optional[str] = Query(None, description="Pane ID (window:pane) to get log for, avoids race with global state"),
@@ -3238,8 +3201,6 @@ def create_app(config: Config) -> FastAPI:
         client_id = request.headers.get('X-Client-ID', 'unknown')[:8]
         logger.debug(f"[{client_id}] GET /api/log pane_id={pane_id}")
 
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Use pane_id if provided (avoids race condition with multi-tab)
         # Otherwise fall back to global active_target
@@ -3438,10 +3399,8 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.delete("/api/log/cache")
-    async def clear_log_cache(token: Optional[str] = Query(None)):
+    async def clear_log_cache(_auth=Depends(verify_token)):
         """Clear the cached log for the current project."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -3462,15 +3421,13 @@ def create_app(config: Config) -> FastAPI:
         return {"cleared": False, "error": "No cache file exists"}
 
     @app.get("/api/log/sessions")
-    async def list_log_sessions(token: Optional[str] = Query(None)):
+    async def list_log_sessions(_auth=Depends(verify_token)):
         """
         List available log files for the current project directory.
         Returns metadata for each session log to allow manual selection.
         """
         from datetime import datetime
 
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -3552,15 +3509,13 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/log/select")
     async def select_log_session(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         session_id: str = Query(..., description="Session UUID to pin"),
     ):
         """
         Pin a specific log file to the current target.
         This overrides auto-detection until unpinned.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -3590,12 +3545,10 @@ def create_app(config: Config) -> FastAPI:
         }
 
     @app.post("/api/log/unpin")
-    async def unpin_log_session(token: Optional[str] = Query(None)):
+    async def unpin_log_session(_auth=Depends(verify_token)):
         """
         Unpin the current target's log file, reverting to auto-detection.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         target_id = app.state.active_target
         if not target_id:
@@ -3616,23 +3569,19 @@ def create_app(config: Config) -> FastAPI:
         }
 
     @app.get("/api/docs/context")
-    async def get_context_doc(token: Optional[str] = Query(None)):
+    async def get_context_doc(_auth=Depends(verify_token)):
         """Read .claude/CONTEXT.md for display in Docs modal."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
         return _read_claude_file("CONTEXT.md", "CONTEXT.md")
 
     @app.get("/api/docs/touch")
-    async def get_touch_summary(token: Optional[str] = Query(None)):
+    async def get_touch_summary(_auth=Depends(verify_token)):
         """Read .claude/touch-summary.md for display in Docs modal."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
         return _read_claude_file("touch-summary.md", "touch-summary.md")
 
     @app.get("/api/terminal/capture")
     async def capture_terminal(
         request: Request,
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         lines: int = Query(50),
         session: Optional[str] = Query(None),
         pane: int = Query(0),
@@ -3655,8 +3604,6 @@ def create_app(config: Config) -> FastAPI:
         client_id = request.headers.get('X-Client-ID', 'unknown')[:8]
         logger.debug(f"[{client_id}] GET /api/terminal/capture lines={lines}")
 
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Use provided session or fall back to current
         target_session = session or app.state.current_session
@@ -3728,7 +3675,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/terminal/snapshot")
     async def terminal_snapshot(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         target: Optional[str] = Query(None),
     ):
         """
@@ -3738,8 +3685,6 @@ def create_app(config: Config) -> FastAPI:
         accurate screen reproduction. Limited to 80 lines max.
         Used by client when terminal render queue overflows.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session_name = app.state.current_session
         if not session_name:
@@ -3785,21 +3730,19 @@ def create_app(config: Config) -> FastAPI:
             return {"content": "", "error": str(e)}
 
     @app.get("/api/challenge/models")
-    async def get_challenge_models(token: Optional[str] = Query(None)):
+    async def get_challenge_models(_auth=Depends(verify_token)):
         """
         Get list of available AI models for challenge function.
 
         Returns only models whose provider has a valid API key configured.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         models = get_available_models()
         return {"models": models, "default": DEFAULT_MODEL}
 
     @app.post("/api/challenge")
     async def challenge_code(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         model: str = Query(DEFAULT_MODEL),
         problem: str = Query(""),
         include_terminal: bool = Query(True),
@@ -3822,8 +3765,6 @@ def create_app(config: Config) -> FastAPI:
 
         Returns AI's analysis focused on the specific problem.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -4108,7 +4049,7 @@ Only the top 1–3 risks worth caring about.
     @app.post("/api/upload")
     async def upload_image(
         file: UploadFile = File(...),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """
         Upload an image file for use in terminal prompts.
@@ -4116,8 +4057,6 @@ Only the top 1–3 risks worth caring about.
         Saves to .claude/uploads/ directory (git-ignored).
         Returns the relative path for insertion into terminal.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate content type
         allowed_types = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
@@ -4157,22 +4096,18 @@ Only the top 1–3 risks worth caring about.
             return JSONResponse({"error": "Failed to save file"}, status_code=500)
 
     @app.get("/current-session")
-    async def get_current_session(token: Optional[str] = Query(None)):
+    async def get_current_session(_auth=Depends(verify_token)):
         """Return current session name."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
         return {"session": app.state.current_session}
 
     @app.post("/switch-repo")
-    async def switch_repo(session: str = Query(...), token: Optional[str] = Query(None)):
+    async def switch_repo(session: str = Query(...), _auth=Depends(verify_token)):
         """
         Switch to a different tmux session (repo).
 
         This closes the current pty and prepares for a new connection.
         The client should reconnect the WebSocket after this call.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate session is in configured repos (or is the default session)
         valid_sessions = [r.session for r in config.repos] + [config.session_name]
@@ -4228,7 +4163,7 @@ Only the top 1–3 risks worth caring about.
         policy: str = Query("auto"),  # "auto" | "safe" | "unsafe"
         id: Optional[str] = Query(None),  # Client-provided ID for idempotency
         pane_id: Optional[str] = Query(None),  # Per-pane scoping
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """
         Add command to the deferred queue.
@@ -4241,8 +4176,6 @@ Only the top 1–3 risks worth caring about.
         If `id` is provided and already exists, returns the existing item
         without creating a duplicate (idempotency).
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         item, is_new = app.state.command_queue.enqueue(session, text, policy, item_id=id, pane_id=pane_id)
 
@@ -4263,11 +4196,9 @@ Only the top 1–3 risks worth caring about.
     async def queue_list(
         session: str = Query(...),
         pane_id: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """List all queued items for a session+pane."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         items = app.state.command_queue.list_items(session, pane_id)
         paused = app.state.command_queue.is_paused(session, pane_id)
@@ -4282,11 +4213,9 @@ Only the top 1–3 risks worth caring about.
         session: str = Query(...),
         item_id: str = Query(...),
         pane_id: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Remove an item from the queue."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         success = app.state.command_queue.dequeue(session, item_id, pane_id)
 
@@ -4308,11 +4237,9 @@ Only the top 1–3 risks worth caring about.
         item_id: str = Query(...),
         new_index: int = Query(...),
         pane_id: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Reorder an item in the queue."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         success = app.state.command_queue.reorder(session, item_id, new_index, pane_id)
         return {"status": "ok" if success else "not_found"}
@@ -4321,11 +4248,9 @@ Only the top 1–3 risks worth caring about.
     async def queue_pause(
         session: str = Query(...),
         pane_id: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Pause queue processing for a session+pane."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         app.state.command_queue.pause(session, pane_id)
 
@@ -4345,11 +4270,9 @@ Only the top 1–3 risks worth caring about.
     async def queue_resume(
         session: str = Query(...),
         pane_id: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Resume queue processing for a session+pane."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         app.state.command_queue.resume(session, pane_id)
 
@@ -4370,11 +4293,9 @@ Only the top 1–3 risks worth caring about.
         session: str = Query(...),
         confirm: bool = Query(False),
         pane_id: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Clear all queued items. Requires confirm=true."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         if not confirm:
             items = app.state.command_queue.list_items(session, pane_id)
@@ -4399,14 +4320,12 @@ Only the top 1–3 risks worth caring about.
         session: str = Query(...),
         item_id: Optional[str] = Query(None),
         pane_id: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """
         Manually send the next unsafe item (or specific item).
         Bypasses policy check for one item.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         item = await app.state.command_queue.send_next_unsafe(session, item_id, pane_id)
 
@@ -4422,11 +4341,9 @@ Only the top 1–3 risks worth caring about.
     @app.post("/api/rollback/preview/capture")
     async def capture_preview(
         label: str = Query("manual"),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Capture a snapshot of current session state."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session = app.state.current_session
         if not session:
@@ -4478,11 +4395,9 @@ Only the top 1–3 risks worth caring about.
     async def list_previews(
         limit: int = Query(50),
         pane_id: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """List available snapshots, optionally filtered by pane_id."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session = app.state.current_session
         target = pane_id or app.state.active_target
@@ -4501,11 +4416,9 @@ Only the top 1–3 risks worth caring about.
     @app.get("/api/rollback/preview/{snap_id}")
     async def get_preview(
         snap_id: str,
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Get full snapshot data. Populates heavy fields on demand."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session = app.state.current_session
         target = app.state.active_target
@@ -4553,11 +4466,9 @@ Only the top 1–3 risks worth caring about.
     async def annotate_snapshot(
         snap_id: str,
         request: Request,
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Add a note or image_path to a snapshot."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         body = await request.json()
         note = body.get("note", "")
@@ -4597,11 +4508,9 @@ Only the top 1–3 risks worth caring about.
     @app.post("/api/rollback/preview/select")
     async def select_preview(
         snap_id: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Enter or exit preview mode (snap_id=null exits)."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session = app.state.current_session
 
@@ -4620,11 +4529,9 @@ Only the top 1–3 risks worth caring about.
     async def pin_snapshot(
         snap_id: str,
         pinned: bool = Query(True),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Pin or unpin a snapshot to prevent eviction."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session = app.state.current_session
         success = app.state.snapshot_buffer.pin_snapshot(session, snap_id, pinned)
@@ -4638,11 +4545,9 @@ Only the top 1–3 risks worth caring about.
     @app.get("/api/rollback/preview/{snap_id}/export")
     async def export_snapshot(
         snap_id: str,
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Export snapshot as JSON file."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session = app.state.current_session
         snapshot = app.state.snapshot_buffer.get_snapshot(session, snap_id)
@@ -4663,11 +4568,9 @@ Only the top 1–3 risks worth caring about.
     async def diff_snapshots(
         snap_a: str = Query(...),
         snap_b: str = Query(...),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Compare two snapshots."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session = app.state.current_session
         a = app.state.snapshot_buffer.get_snapshot(session, snap_a)
@@ -4688,11 +4591,9 @@ Only the top 1–3 risks worth caring about.
 
     @app.post("/api/rollback/preview/clear")
     async def clear_previews(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Clear all snapshots for current session."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         session = app.state.current_session
         count = app.state.snapshot_buffer.clear(session)
@@ -4703,11 +4604,9 @@ Only the top 1–3 risks worth caring about.
     @app.get("/api/rollback/audit")
     async def get_audit_log(
         limit: int = Query(100),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Get recent audit log entries."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         entries = app.state.audit_log.get_entries(limit)
         return {"entries": entries}
@@ -4716,11 +4615,9 @@ Only the top 1–3 risks worth caring about.
     async def log_audit_action(
         action: str = Query(...),
         details: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Log an audit action from client."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         detail_dict = {}
         if details:
@@ -4738,7 +4635,7 @@ Only the top 1–3 risks worth caring about.
 
     @app.post("/api/process/terminate")
     async def terminate_process(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         force: bool = Query(False),
         session: Optional[str] = Query(None),
         pane_id: Optional[str] = Query(None),
@@ -4748,8 +4645,6 @@ Only the top 1–3 risks worth caring about.
 
         First tries SIGTERM, then SIGKILL if force=True or if SIGTERM fails.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate target before destructive operation
         target_check = validate_target(session, pane_id)
@@ -4812,7 +4707,7 @@ Only the top 1–3 risks worth caring about.
 
     @app.post("/api/process/respawn")
     async def respawn_process(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         session: Optional[str] = Query(None),
         pane_id: Optional[str] = Query(None),
     ):
@@ -4821,8 +4716,6 @@ Only the top 1–3 risks worth caring about.
 
         Terminates existing process (if any) and creates a new one.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate target before destructive operation
         target_check = validate_target(session, pane_id)
@@ -4886,11 +4779,9 @@ Only the top 1–3 risks worth caring about.
 
     @app.get("/api/process/status")
     async def process_status(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Get current process status."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         child_pid = app.state.child_pid
         is_running = False
@@ -4987,7 +4878,7 @@ Only the top 1–3 risks worth caring about.
     @app.get("/api/health/claude")  # permanent alias
     async def check_agent_health(
         pane_id: str = Query(...),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """
         Check agent status for a specific pane.
@@ -4995,8 +4886,6 @@ Only the top 1–3 risks worth caring about.
         Returns flat Observation JSON: agent_type, agent_name, running, pid,
         phase, detail, tool, active, waiting_reason, permission_tool, permission_target.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         ctx = _build_observe_context(pane_id)
         if ctx is None:
@@ -5154,11 +5043,9 @@ Only the top 1–3 risks worth caring about.
     @app.get("/api/team/state")
     async def get_team_state(
         session: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Batch endpoint: phase + permission + git info for all team panes."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         sess = session or app.state.current_session
 
@@ -5241,11 +5128,9 @@ Only the top 1–3 risks worth caring about.
     async def get_team_capture(
         session: Optional[str] = Query(None),
         lines: int = Query(8),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Batch capture last N lines from each team pane."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         sess = session or app.state.current_session
         lines = max(1, min(lines, 50))  # Clamp 1-50
@@ -5299,11 +5184,9 @@ Only the top 1–3 risks worth caring about.
         target_id: str = Query(...),
         text: str = Query(...),
         session: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Send input to a specific team pane without switching activeTarget."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         sess = session or app.state.current_session
 
@@ -5352,11 +5235,9 @@ Only the top 1–3 risks worth caring about.
         preferences: Optional[str] = Query(None),
         dispatch_id: Optional[str] = Query(None),
         session: Optional[str] = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Assemble dispatch.md from plan + context + roster, write to leader CWD, send instruction."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         sess = session or app.state.current_session
 
@@ -5589,11 +5470,9 @@ Reply with:
     @app.get("/api/status/phase")
     async def get_status_phase(
         pane_id: str = Query(None),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Get agent's current phase for the status strip. Delegates to driver."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         target = pane_id or app.state.active_target
         ctx = _build_observe_context(target) if target else None
@@ -5621,7 +5500,7 @@ Reply with:
     async def start_agent_in_pane(
         request: Request,
         pane_id: str = Query(...),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """
         Start agent in a pane if not already running.
@@ -5629,8 +5508,6 @@ Reply with:
         Returns 409 if agent is already running.
         Uses driver.start_command() for the default, or repo's startup_command.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         driver = app.state.driver
         agent_name = driver.display_name()
@@ -5706,11 +5583,9 @@ Reply with:
 
     @app.get("/api/runner/commands")
     async def list_runner_commands(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """List available runner commands."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         return {"commands": RUNNER_COMMANDS}
 
@@ -5718,7 +5593,7 @@ Reply with:
     async def execute_runner_command(
         command_id: str = Query(...),
         variant: int = Query(0),  # Which command variant to use
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         session: Optional[str] = Query(None),
         pane_id: Optional[str] = Query(None),
     ):
@@ -5728,8 +5603,6 @@ Reply with:
         Sends the command to the PTY (same as user typing it).
         Only commands in RUNNER_COMMANDS are allowed.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate target before executing
         target_check = validate_target(session, pane_id)
@@ -5777,7 +5650,7 @@ Reply with:
     @app.post("/api/runner/custom")
     async def execute_custom_command(
         command: str = Query(...),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         session: Optional[str] = Query(None),
         pane_id: Optional[str] = Query(None),
     ):
@@ -5786,8 +5659,6 @@ Reply with:
 
         This is more permissive than the queue but still has some safety rails.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate target before executing
         target_check = validate_target(session, pane_id)
@@ -5919,11 +5790,9 @@ Reply with:
 
     @app.get("/api/preview/config")
     async def get_preview_config(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Load preview.config.json from current repo."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         config = load_preview_config(repo_path)
@@ -5941,11 +5810,9 @@ Reply with:
 
     @app.get("/api/preview/status")
     async def get_preview_status(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Check health of all configured preview services."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         global _preview_status_cache_time
 
@@ -5983,13 +5850,11 @@ Reply with:
     @app.post("/api/preview/start")
     async def start_preview_service(
         service_id: str = Query(...),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         session: Optional[str] = Query(None),
         pane_id: Optional[str] = Query(None),
     ):
         """Start a preview service by sending its startCommand to PTY."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate target (safety: must match current session/pane)
         target_check = validate_target(session, pane_id)
@@ -6045,13 +5910,11 @@ Reply with:
     @app.post("/api/preview/stop")
     async def stop_preview_service(
         service_id: str = Query(...),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         session: Optional[str] = Query(None),
         pane_id: Optional[str] = Query(None),
     ):
         """Stop a preview service by sending Ctrl+C to PTY."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate target (safety: must match current session/pane)
         target_check = validate_target(session, pane_id)
@@ -6086,11 +5949,9 @@ Reply with:
 
     @app.get("/api/rollback/git/status")
     async def git_status(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Get current git status: branch, dirty, ahead/behind, lock status."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -6188,11 +6049,9 @@ Reply with:
     @app.get("/api/rollback/git/commits")
     async def list_git_commits(
         limit: int = Query(20),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """List recent git commits."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -6226,11 +6085,9 @@ Reply with:
     @app.get("/api/history")
     async def get_unified_history(
         limit: int = Query(30),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Get unified history: commits + snapshots merged chronologically."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         items = []
         session = app.state.current_session
@@ -6289,11 +6146,9 @@ Reply with:
     @app.get("/api/rollback/git/commit/{commit_hash}")
     async def get_git_commit_detail(
         commit_hash: str,
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Get commit details including changed files."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate hash format (security)
         if not re.match(r'^[a-f0-9]{7,40}$', commit_hash):
@@ -6341,11 +6196,9 @@ Reply with:
     @app.post("/api/rollback/git/revert/dry-run")
     async def dry_run_revert(
         commit_hash: str = Query(...),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Preview revert without executing."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate hash format
         if not re.match(r'^[a-f0-9]{7,40}$', commit_hash):
@@ -6423,13 +6276,11 @@ Reply with:
     @app.post("/api/rollback/git/revert/execute")
     async def execute_revert(
         commit_hash: str = Query(...),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         session: Optional[str] = Query(None),
         pane_id: Optional[str] = Query(None),
     ):
         """Execute git revert."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate target before destructive operation
         target_check = validate_target(session, pane_id)
@@ -6513,11 +6364,9 @@ Reply with:
     @app.post("/api/rollback/git/revert/undo")
     async def undo_revert(
         revert_commit: str = Query(..., description="SHA of the revert commit to undo"),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Undo a revert by reverting the revert commit (non-destructive)."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate hash format
         if not re.match(r'^[a-f0-9]{7,40}$', revert_commit):
@@ -6585,11 +6434,9 @@ Reply with:
 
     @app.post("/api/git/stash/push")
     async def stash_push(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Create a stash with auto-generated message."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -6640,11 +6487,9 @@ Reply with:
 
     @app.get("/api/git/stash/list")
     async def stash_list(
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """List all stashes."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -6677,11 +6522,9 @@ Reply with:
     @app.post("/api/git/stash/apply")
     async def stash_apply(
         ref: str = Query("stash@{0}"),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Apply a stash without removing it."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate stash ref format
         if not re.match(r'^stash@\{\d+\}$', ref):
@@ -6733,11 +6576,9 @@ Reply with:
     @app.post("/api/git/stash/drop")
     async def stash_drop(
         ref: str = Query("stash@{0}"),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """Drop a stash."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate stash ref format
         if not re.match(r'^stash@\{\d+\}$', ref):
@@ -6781,13 +6622,11 @@ Reply with:
     @app.post("/api/git/discard")
     async def git_discard(
         include_untracked: bool = Query(False),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
         session: Optional[str] = Query(None),
         pane_id: Optional[str] = Query(None),
     ):
         """Discard all uncommitted changes. Optionally remove untracked files."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate target before destructive operation
         target_check = validate_target(session, pane_id)
@@ -6872,14 +6711,12 @@ Reply with:
         text: str = Query(...),
         session: str = Query(...),
         msg_id: str = Query(...),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """
         Send a line of text to the terminal with Enter.
         Uses the InputQueue for serialized, atomic writes with ACKs.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate session matches current
         if session != app.state.current_session:
@@ -6913,14 +6750,12 @@ Reply with:
         key: str = Query(...),
         session: str = Query(...),
         msg_id: str = Query(...),
-        token: Optional[str] = Query(None),
+        _auth=Depends(verify_token),
     ):
         """
         Send a control key using tmux send-keys.
         Supports: C-c, C-d, C-z, C-l, Tab, Escape, Enter, Up, Down, Left, Right, etc.
         """
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Validate session matches current
         if session != app.state.current_session:
@@ -6992,15 +6827,10 @@ Reply with:
             return JSONResponse({"error": str(e), "id": msg_id}, status_code=500)
 
     @app.websocket("/ws/terminal")
-    async def terminal_websocket(websocket: WebSocket, token: Optional[str] = Query(None)):
+    async def terminal_websocket(websocket: WebSocket, _auth=Depends(verify_token)):
         """WebSocket endpoint for terminal I/O."""
         _ws_start = time.time()
         logger.info(f"[TIMING] WebSocket /ws/terminal START")
-
-        # Validate token (skip if no_auth)
-        if not app.state.no_auth and token != app.state.token:
-            await websocket.close(code=4001)
-            return
 
         # Use lock to prevent concurrent connection setup
         async with app.state.ws_connect_lock:
@@ -7534,18 +7364,14 @@ Reply with:
         _push_cooldowns[push_type] = now
 
     @app.get("/api/push/vapid-key")
-    async def get_vapid_key(token: str = Query(None)):
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    async def get_vapid_key(_auth=Depends(verify_token)):
         pub_key = getattr(app.state, 'vapid_public_key', None)
         if not pub_key:
             return JSONResponse({"error": "Push not configured"}, status_code=503)
         return {"key": pub_key}
 
     @app.post("/api/push/subscribe")
-    async def push_subscribe(request: Request, token: str = Query(None)):
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    async def push_subscribe(request: Request, _auth=Depends(verify_token)):
         sub = await request.json()
         subs = load_push_subscriptions()
         subs = [s for s in subs if s.get('endpoint') != sub.get('endpoint')]
@@ -7554,9 +7380,7 @@ Reply with:
         return {"ok": True}
 
     @app.delete("/api/push/subscribe")
-    async def push_unsubscribe(request: Request, token: str = Query(None)):
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    async def push_unsubscribe(request: Request, _auth=Depends(verify_token)):
         sub = await request.json()
         subs = load_push_subscriptions()
         subs = [s for s in subs if s.get('endpoint') != sub.get('endpoint')]
@@ -7616,24 +7440,22 @@ Reply with:
                 logger.error(f"auto_setup: failed: {e}")
                 app.state.setup_result = {"error": str(e)}
 
+        print(f"\n{'=' * 60}")
+        print(f"Mobile Terminal Overlay v0.2.0")
+        print(f"{'=' * 60}")
+        print(f"Session: {config.session_name}")
+        print(f"Host:    {config.host}")
         if app.state.no_auth:
-            url = f"http://localhost:{config.port}/"
-            print(f"\n{'=' * 60}")
-            print(f"Mobile Terminal Overlay v0.1.0")
-            print(f"{'=' * 60}")
-            print(f"Session: {config.session_name}")
             print(f"Auth:    DISABLED (--no-auth)")
-            print(f"URL:     {url}")
-            print(f"{'=' * 60}\n")
+            url = f"http://localhost:{config.port}/"
+            if config.host == "0.0.0.0":
+                print(f"WARNING: Listening on all interfaces without auth!")
+                print(f"         Use --no-auth only on trusted networks (e.g. Tailscale)")
         else:
-            url = f"http://localhost:{config.port}/?token={app.state.token}"
-            print(f"\n{'=' * 60}")
-            print(f"Mobile Terminal Overlay v0.1.0")
-            print(f"{'=' * 60}")
-            print(f"Session: {config.session_name}")
             print(f"Token:   {app.state.token}")
-            print(f"URL:     {url}")
-            print(f"{'=' * 60}\n")
+            url = f"http://localhost:{config.port}/?token={app.state.token}"
+        print(f"URL:     {url}")
+        print(f"{'=' * 60}\n")
 
         # Start background push monitor
         if config.push_enabled and getattr(app.state, 'vapid_key_path', None):
