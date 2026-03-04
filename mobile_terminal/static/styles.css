@@ -5977,7 +5977,8 @@ html, body {
     margin-bottom: 16px;
 }
 
-.mcp-server-item {
+.mcp-server-item,
+.mcp-plugin-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -6076,16 +6077,6 @@ html, body {
 
 .mcp-plugin-add {
     margin-bottom: 16px;
-}
-
-.mcp-plugin-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px 12px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
 }
 
 .mcp-plugin-name {

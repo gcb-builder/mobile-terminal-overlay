@@ -9625,7 +9625,6 @@ function setupPreviewHandlers() {
 let mcpEditingName = null;
 let mcpDirty = false;
 let mcpServersCache = {};
-let pluginsCache = {};
 
 /**
  * Split a string into args respecting single and double quotes.
@@ -9656,13 +9655,12 @@ async function loadPlugins() {
     if (!list) return;
 
     try {
-        const response = await fetch(`/api/plugins?token=${token}`);
+        const response = await apiFetch(`/api/plugins?token=${token}`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
 
         const enabled = data.enabled || {};
         const installed = data.installed || [];
-        pluginsCache = enabled;
 
         // Merge: show all installed + all enabled (union)
         const allIds = new Set([...Object.keys(enabled), ...installed]);
@@ -9704,7 +9702,7 @@ async function loadPlugins() {
  */
 async function togglePlugin(name, enabled) {
     try {
-        const response = await fetch(`/api/plugins/toggle?token=${token}`, {
+        const response = await apiFetch(`/api/plugins/toggle?token=${token}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, enabled }),
@@ -9715,17 +9713,19 @@ async function togglePlugin(name, enabled) {
         if (!response.ok) {
             showToast(data.error || 'Failed to toggle plugin', 'error');
             await loadPlugins(); // revert checkbox
-            return;
+            return false;
         }
 
         const action = enabled ? 'Enabled' : 'Disabled';
         showToast(`${action} ${name.split('@')[0]}`, 'success');
         mcpSetDirty();
+        return true;
 
     } catch (error) {
         console.error('Failed to toggle plugin:', error);
         showToast('Failed to toggle plugin', 'error');
         await loadPlugins();
+        return false;
     }
 }
 
@@ -9740,28 +9740,10 @@ async function addPlugin() {
         return;
     }
 
-    try {
-        const response = await fetch(`/api/plugins/toggle?token=${token}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, enabled: true }),
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-            showToast(data.error || 'Failed to enable plugin', 'error');
-            return;
-        }
-
-        showToast(`Enabled ${name.split('@')[0]}`, 'success');
+    const ok = await togglePlugin(name, true);
+    if (ok) {
         if (input) input.value = '';
         await loadPlugins();
-        mcpSetDirty();
-
-    } catch (error) {
-        console.error('Failed to add plugin:', error);
-        showToast('Failed to enable plugin', 'error');
     }
 }
 
@@ -9780,7 +9762,7 @@ async function loadMcpServers() {
     }
 
     try {
-        const response = await fetch(`/api/mcp-servers?token=${token}`);
+        const response = await apiFetch(`/api/mcp-servers?token=${token}`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
 
@@ -9895,7 +9877,7 @@ async function addMcpServer() {
     }
 
     try {
-        const response = await fetch(`/api/mcp-servers?token=${token}`, {
+        const response = await apiFetch(`/api/mcp-servers?token=${token}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, command, args }),
@@ -9931,7 +9913,7 @@ async function removeMcpServer(name) {
     if (!confirm(`Remove MCP server "${name}"?`)) return;
 
     try {
-        const response = await fetch(
+        const response = await apiFetch(
             `/api/mcp-servers/${encodeURIComponent(name)}?token=${token}`,
             { method: 'DELETE' }
         );
@@ -9959,7 +9941,6 @@ async function removeMcpServer(name) {
 async function mcpSetDirty() {
     mcpDirty = true;
     const banner = document.getElementById('mcpRestartBanner');
-    const btn = document.getElementById('mcpRestartBtn');
     const span = banner?.querySelector('span');
     if (!banner) return;
 
@@ -9967,7 +9948,7 @@ async function mcpSetDirty() {
     let agentRunning = false;
     if (activeTarget) {
         try {
-            const resp = await fetch(`/api/health/agent?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
+            const resp = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
             if (resp.ok) {
                 const data = await resp.json();
                 agentRunning = !!data.running;
@@ -9991,24 +9972,20 @@ async function mcpSetDirty() {
 }
 
 /**
- * Restart active agent from MCP tab.
- * Sends Ctrl-C then starts agent via existing respawnAgent flow.
- */
-/**
  * Stop an agent in a pane and wait for it to exit.
  * @param {string} paneId - pane identifier
  * @param {string} session - tmux session name
  * Returns true if agent stopped, false if timed out.
  */
 async function stopAgentInPane(paneId, session) {
-    await fetch(`/api/sendkey?key=ctrl-c&session=${encodeURIComponent(session)}&msg_id=mcp-stop-${paneId}&token=${token}`, {
+    await apiFetch(`/api/sendkey?key=ctrl-c&session=${encodeURIComponent(session)}&msg_id=mcp-stop-${paneId}&token=${token}`, {
         method: 'POST',
     });
 
     for (let i = 0; i < 20; i++) {
         await new Promise(resolve => setTimeout(resolve, 500));
         try {
-            const resp = await fetch(`/api/health/agent?pane_id=${encodeURIComponent(paneId)}&token=${token}`);
+            const resp = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(paneId)}&token=${token}`);
             if (resp.ok) {
                 const data = await resp.json();
                 if (!data.running) return true;
@@ -10017,7 +9994,7 @@ async function stopAgentInPane(paneId, session) {
     }
 
     // Second Ctrl-C attempt
-    await fetch(`/api/sendkey?key=ctrl-c&session=${encodeURIComponent(session)}&msg_id=mcp-stop2-${paneId}&token=${token}`, {
+    await apiFetch(`/api/sendkey?key=ctrl-c&session=${encodeURIComponent(session)}&msg_id=mcp-stop2-${paneId}&token=${token}`, {
         method: 'POST',
     });
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -10028,12 +10005,11 @@ async function stopAgentInPane(paneId, session) {
  * Start an agent in a pane with --resume flag.
  */
 async function startAgentWithResume(paneId) {
-    const resp = await fetch(`/api/agent/start?pane_id=${encodeURIComponent(paneId)}&token=${token}`, {
+    return apiFetch(`/api/agent/start?pane_id=${encodeURIComponent(paneId)}&token=${token}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ startup_command: 'claude --resume' }),
     });
-    return resp;
 }
 
 /**
@@ -10068,27 +10044,29 @@ async function mcpRestartAgents(mode) {
             // Discover all running agents across all sessions
             let sessions = [currentSession];
             try {
-                const sessResp = await fetch(`/api/tmux/sessions?token=${token}`);
+                const sessResp = await apiFetch(`/api/tmux/sessions?token=${token}`);
                 if (sessResp.ok) {
                     const sessData = await sessResp.json();
                     sessions = sessData.sessions || [currentSession];
                 }
             } catch (e) { /* use current session */ }
 
-            for (const sess of sessions) {
-                try {
-                    const resp = await fetch(`/api/team/state?token=${token}&session=${encodeURIComponent(sess)}`);
-                    if (resp.ok) {
-                        const team = await resp.json();
-                        const panes = team.panes || [];
-                        for (const p of panes) {
-                            if (p.running) {
-                                panesToRestart.push({ paneId: p.pane_id, session: sess });
-                            }
-                        }
+            // Fetch all session states in parallel
+            const stateResults = await Promise.all(
+                sessions.map(sess =>
+                    apiFetch(`/api/team/state?token=${token}&session=${encodeURIComponent(sess)}`)
+                        .then(r => r.ok ? r.json() : null)
+                        .catch(() => null)
+                )
+            );
+            stateResults.forEach((team, i) => {
+                if (!team) return;
+                for (const p of (team.panes || [])) {
+                    if (p.running) {
+                        panesToRestart.push({ paneId: p.pane_id, session: sessions[i] });
                     }
-                } catch (e) { /* skip session */ }
-            }
+                }
+            });
         }
 
         if (panesToRestart.length === 0) {
@@ -10101,16 +10079,11 @@ async function mcpRestartAgents(mode) {
 
         if (clickedBtn) clickedBtn.textContent = `Starting ${panesToRestart.length}...`;
 
-        // Start all agents with --resume
-        let started = 0;
-        for (const p of panesToRestart) {
-            try {
-                const resp = await startAgentWithResume(p.paneId);
-                if (resp.ok) started++;
-            } catch (e) {
-                console.error(`Failed to start agent in ${p.session}:${p.paneId}:`, e);
-            }
-        }
+        // Start all agents with --resume (in parallel)
+        const startResults = await Promise.allSettled(
+            panesToRestart.map(p => startAgentWithResume(p.paneId))
+        );
+        const started = startResults.filter(r => r.status === 'fulfilled' && r.value.ok).length;
 
         const label = panesToRestart.length === 1 ? 'agent' : 'agents';
         showToast(`Restarted ${started}/${panesToRestart.length} ${label} with --resume`, 'success');
@@ -10120,8 +10093,11 @@ async function mcpRestartAgents(mode) {
         const banner = document.getElementById('mcpRestartBanner');
         if (banner) banner.classList.add('hidden');
 
-        agentStartedAt = Date.now();
-        lastAgentHealth = null;
+        // Only reset health tracking if active pane was among those restarted
+        if (panesToRestart.some(p => p.paneId === activeTarget)) {
+            agentStartedAt = Date.now();
+            lastAgentHealth = null;
+        }
 
     } catch (error) {
         console.error('Failed to restart agents:', error);

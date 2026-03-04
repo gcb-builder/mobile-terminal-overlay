@@ -1002,14 +1002,19 @@ MCP_NAME_RE = re.compile(r'^[a-zA-Z0-9._-]{1,64}$')
 MCP_MAX_ARGS_SIZE = 4096
 
 
+PLUGIN_NAME_RE = re.compile(r'^[a-zA-Z0-9._@/-]{1,128}$')
+INSTALLED_PLUGINS_FILE = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+
+
 def load_claude_settings() -> tuple:
     """Read ~/.claude/settings.json. Returns (dict, error_or_None).
-    If file exists but is invalid JSON, returns ({}, error_message) —
+    If file doesn't exist, returns ({}, None).
+    If file is invalid JSON, returns ({}, error_message) —
     callers MUST NOT write when error is set (would destroy user data)."""
-    if not CLAUDE_SETTINGS_FILE.exists():
-        return {}, None
     try:
         return json.loads(CLAUDE_SETTINGS_FILE.read_text(encoding="utf-8")), None
+    except FileNotFoundError:
+        return {}, None
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         logger.warning(f"Invalid settings.json: {e}")
         return {}, f"settings.json is invalid JSON: {e}"
@@ -1026,8 +1031,10 @@ def save_claude_settings(settings: dict):
         f.write(data)
         f.flush()
         os.fsync(f.fileno())
-    if path.exists():
+    try:
         shutil.copy2(path, bak)
+    except FileNotFoundError:
+        pass  # No existing file to back up
     tmp.rename(path)
 
 
@@ -2599,6 +2606,9 @@ def create_app(config: Config) -> FastAPI:
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
+        if not MCP_NAME_RE.match(name):
+            return JSONResponse({"error": "Invalid server name"}, status_code=400)
+
         settings, error = load_claude_settings()
         if error:
             return JSONResponse({"error": error}, status_code=409)
@@ -2625,8 +2635,6 @@ def create_app(config: Config) -> FastAPI:
 
     # --- Plugin Management ---
 
-    INSTALLED_PLUGINS_FILE = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-
     @app.get("/api/plugins")
     async def list_plugins(token: Optional[str] = Query(None)):
         """List enabled plugins and installed plugin IDs."""
@@ -2638,12 +2646,11 @@ def create_app(config: Config) -> FastAPI:
 
         # Read installed plugins for discovery
         installed = []
-        if INSTALLED_PLUGINS_FILE.exists():
-            try:
-                data = json.loads(INSTALLED_PLUGINS_FILE.read_text(encoding="utf-8"))
-                installed = list(data.get("plugins", {}).keys())
-            except Exception:
-                pass
+        try:
+            data = json.loads(INSTALLED_PLUGINS_FILE.read_text(encoding="utf-8"))
+            installed = list(data.get("plugins", {}).keys())
+        except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+            pass
 
         return {
             "enabled": enabled,
@@ -2665,7 +2672,7 @@ def create_app(config: Config) -> FastAPI:
         name = (body.get("name") or "").strip()
         enabled = body.get("enabled", True)
 
-        if not name:
+        if not name or not PLUGIN_NAME_RE.match(name):
             return JSONResponse({"error": "Plugin name is required"}, status_code=400)
 
         settings, error = load_claude_settings()
