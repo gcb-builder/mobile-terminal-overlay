@@ -502,6 +502,7 @@
                     <button class="rollback-tab" data-tab="dev">Dev</button>
                     <button class="rollback-tab" data-tab="history">History</button>
                     <button class="rollback-tab" data-tab="process">Process</button>
+                    <button class="rollback-tab" data-tab="mcp">MCP</button>
                 </div>
                 <button id="previewDrawerClose" class="preview-drawer-close">&times;</button>
             </div>
@@ -593,6 +594,48 @@
                     <button id="processRespawnBtn" class="process-action-btn primary">Respawn Session</button>
                 </div>
                 <div id="processResult" class="process-result hidden"></div>
+            </div>
+            <!-- MCP tab content -->
+            <div id="mcpTabContent" class="rollback-tab-content hidden">
+                <div id="mcpRestartBanner" class="mcp-restart-banner hidden">
+                    <span id="mcpRestartText">Changes saved</span>
+                    <div class="mcp-restart-actions">
+                        <button id="mcpRestartOneBtn" class="mcp-restart-btn">Restart Pane</button>
+                        <button id="mcpRestartAllBtn" class="mcp-restart-btn">Restart All</button>
+                    </div>
+                </div>
+                <p class="process-description mcp-scope-note">Global config (applies to all Claude Code sessions).</p>
+                <!-- Plugins section -->
+                <div class="process-tab-header">
+                    <span class="process-title">Plugins</span>
+                </div>
+                <div id="pluginList" class="mcp-server-list">
+                    <p class="process-description">Loading...</p>
+                </div>
+                <div class="mcp-add-section mcp-plugin-add">
+                    <input id="pluginIdInput" class="mcp-input" placeholder="Plugin ID (e.g. code-simplifier@claude-plugins-official)" />
+                    <button id="pluginAddBtn" class="process-action-btn primary">Enable Plugin</button>
+                </div>
+                <!-- MCP Servers section -->
+                <div class="process-tab-header">
+                    <span class="process-title">MCP Servers</span>
+                    <button id="mcpRefreshBtn" class="process-refresh-btn">Refresh</button>
+                </div>
+                <div id="mcpServerList" class="mcp-server-list">
+                    <p class="process-description">Loading...</p>
+                </div>
+                <div class="mcp-add-section">
+                    <div class="mcp-add-header" id="mcpFormHeader">Add Server</div>
+                    <input id="mcpNameInput" class="mcp-input" placeholder="Name (e.g. chrome-devtools)" />
+                    <input id="mcpCommandInput" class="mcp-input" placeholder="Command (e.g. npx)" />
+                    <input id="mcpArgsInput" class="mcp-input" placeholder="Args (e.g. -y @anthropic/server-chrome)" />
+                    <div class="mcp-form-actions">
+                        <button id="mcpAddBtn" class="process-action-btn primary">Add Server</button>
+                        <button id="mcpCancelEditBtn" class="process-action-btn hidden">Cancel</button>
+                    </div>
+                </div>
+                <div id="mcpResult" class="process-result hidden"></div>
+                <div id="mcpError" class="mcp-error hidden"></div>
             </div>
         </div>
 

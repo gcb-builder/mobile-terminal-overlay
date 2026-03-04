@@ -16,6 +16,7 @@ import os
 import pty
 import re
 import secrets
+import shutil
 import signal
 import struct
 import subprocess
@@ -993,6 +994,41 @@ def save_plan_links(links: dict):
     import json
     PLAN_LINKS_FILE.parent.mkdir(parents=True, exist_ok=True)
     PLAN_LINKS_FILE.write_text(json.dumps(links, indent=2))
+
+
+# Claude Code user-global settings (contains mcpServers key)
+CLAUDE_SETTINGS_FILE = Path.home() / ".claude" / "settings.json"
+MCP_NAME_RE = re.compile(r'^[a-zA-Z0-9._-]{1,64}$')
+MCP_MAX_ARGS_SIZE = 4096
+
+
+def load_claude_settings() -> tuple:
+    """Read ~/.claude/settings.json. Returns (dict, error_or_None).
+    If file exists but is invalid JSON, returns ({}, error_message) —
+    callers MUST NOT write when error is set (would destroy user data)."""
+    if not CLAUDE_SETTINGS_FILE.exists():
+        return {}, None
+    try:
+        return json.loads(CLAUDE_SETTINGS_FILE.read_text(encoding="utf-8")), None
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        logger.warning(f"Invalid settings.json: {e}")
+        return {}, f"settings.json is invalid JSON: {e}"
+
+
+def save_claude_settings(settings: dict):
+    """Atomic write: .tmp + fsync + rename. Keeps one .bak."""
+    path = CLAUDE_SETTINGS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    bak = path.with_suffix(".json.bak")
+    data = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    if path.exists():
+        shutil.copy2(path, bak)
+    tmp.rename(path)
 
 
 def score_plan_for_repo(plan_path: Path, repo_path: Path) -> int:
@@ -2470,6 +2506,194 @@ def create_app(config: Config) -> FastAPI:
         except Exception as e:
             logger.error(f"Failed to reload .env: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
+
+    # --- MCP Server Management ---
+
+    @app.get("/api/mcp-servers")
+    async def list_mcp_servers(token: Optional[str] = Query(None)):
+        """List MCP servers from ~/.claude/settings.json."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        settings, error = load_claude_settings()
+        servers = settings.get("mcpServers", {})
+        return {
+            "servers": servers,
+            "source": str(CLAUDE_SETTINGS_FILE),
+            "error": error,
+        }
+
+    @app.post("/api/mcp-servers")
+    async def add_mcp_server(request: Request, token: Optional[str] = Query(None)):
+        """Add or update an MCP server in ~/.claude/settings.json (upsert)."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+        name = (body.get("name") or "").strip()
+        command = (body.get("command") or "").strip()
+        args = body.get("args", [])
+        env = body.get("env")
+
+        # Validate name
+        if not name or not MCP_NAME_RE.match(name):
+            return JSONResponse(
+                {"error": f"Invalid name: must match {MCP_NAME_RE.pattern}"},
+                status_code=400,
+            )
+
+        # Validate command
+        if not command:
+            return JSONResponse({"error": "Command is required"}, status_code=400)
+
+        # Validate args
+        if not isinstance(args, list):
+            return JSONResponse({"error": "Args must be an array"}, status_code=400)
+        args_size = len(json.dumps(args))
+        if args_size > MCP_MAX_ARGS_SIZE:
+            return JSONResponse(
+                {"error": f"Args too large ({args_size} bytes, max {MCP_MAX_ARGS_SIZE})"},
+                status_code=400,
+            )
+
+        # Validate env
+        if env is not None and not isinstance(env, dict):
+            return JSONResponse({"error": "Env must be an object"}, status_code=400)
+
+        # Load settings — refuse to write if file is corrupt
+        settings, error = load_claude_settings()
+        if error:
+            return JSONResponse({"error": error}, status_code=409)
+
+        # Upsert
+        if "mcpServers" not in settings:
+            settings["mcpServers"] = {}
+        updated = name in settings["mcpServers"]
+        entry = {"command": command, "args": args}
+        if env:
+            entry["env"] = env
+        settings["mcpServers"][name] = entry
+
+        try:
+            save_claude_settings(settings)
+        except Exception as e:
+            logger.error(f"Failed to save settings.json: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+        action = "updated" if updated else "added"
+        logger.info(f"MCP server {action}: {name}")
+        app.state.audit_log.log(
+            "mcp_server_add",
+            {"name": name, "command": command, "updated": updated},
+        )
+
+        return {"success": True, "name": name, "updated": updated}
+
+    @app.delete("/api/mcp-servers/{name}")
+    async def remove_mcp_server(name: str, token: Optional[str] = Query(None)):
+        """Remove an MCP server from ~/.claude/settings.json."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        settings, error = load_claude_settings()
+        if error:
+            return JSONResponse({"error": error}, status_code=409)
+
+        servers = settings.get("mcpServers", {})
+        if name not in servers:
+            return JSONResponse({"error": f"Server '{name}' not found"}, status_code=404)
+
+        del settings["mcpServers"][name]
+        # Clean up empty mcpServers key
+        if not settings["mcpServers"]:
+            del settings["mcpServers"]
+
+        try:
+            save_claude_settings(settings)
+        except Exception as e:
+            logger.error(f"Failed to save settings.json: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+        logger.info(f"MCP server removed: {name}")
+        app.state.audit_log.log("mcp_server_remove", {"name": name})
+
+        return {"success": True, "name": name}
+
+    # --- Plugin Management ---
+
+    INSTALLED_PLUGINS_FILE = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+
+    @app.get("/api/plugins")
+    async def list_plugins(token: Optional[str] = Query(None)):
+        """List enabled plugins and installed plugin IDs."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        settings, error = load_claude_settings()
+        enabled = settings.get("enabledPlugins", {})
+
+        # Read installed plugins for discovery
+        installed = []
+        if INSTALLED_PLUGINS_FILE.exists():
+            try:
+                data = json.loads(INSTALLED_PLUGINS_FILE.read_text(encoding="utf-8"))
+                installed = list(data.get("plugins", {}).keys())
+            except Exception:
+                pass
+
+        return {
+            "enabled": enabled,
+            "installed": installed,
+            "error": error,
+        }
+
+    @app.post("/api/plugins/toggle")
+    async def toggle_plugin(request: Request, token: Optional[str] = Query(None)):
+        """Enable or disable a plugin in ~/.claude/settings.json."""
+        if not app.state.no_auth and token != app.state.token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+        name = (body.get("name") or "").strip()
+        enabled = body.get("enabled", True)
+
+        if not name:
+            return JSONResponse({"error": "Plugin name is required"}, status_code=400)
+
+        settings, error = load_claude_settings()
+        if error:
+            return JSONResponse({"error": error}, status_code=409)
+
+        if "enabledPlugins" not in settings:
+            settings["enabledPlugins"] = {}
+
+        if enabled:
+            settings["enabledPlugins"][name] = True
+        else:
+            settings["enabledPlugins"].pop(name, None)
+
+        try:
+            save_claude_settings(settings)
+        except Exception as e:
+            logger.error(f"Failed to save settings.json: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+        action = "enabled" if enabled else "disabled"
+        logger.info(f"Plugin {action}: {name}")
+        app.state.audit_log.log(
+            "plugin_toggle",
+            {"name": name, "enabled": enabled},
+        )
+
+        return {"success": True, "name": name, "enabled": enabled}
 
     def get_repo_path_info() -> dict:
         """

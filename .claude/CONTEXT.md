@@ -3,10 +3,50 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Queue insert-to-edit + per-pane scoping
-- **Last Updated:** 2026-03-03
+- **Stage:** MCP Server + Plugin Management
+- **Last Updated:** 2026-03-04
 - **Server Version:** v274 (terminal.js), v116 (sw.js cache), v169 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
+
+## Recent: MCP Server + Plugin Management (2026-03-04)
+
+### Feature: MCP Server CRUD
+New "MCP" drawer tab for managing Claude Code's global MCP servers (`~/.claude/settings.json` → `mcpServers` key) from mobile. Add, edit, and remove servers without SSH.
+
+- **Atomic writes:** Write to `.tmp`, `fsync`, backup to `.bak`, then `rename` over original
+- **Corruption guard:** `load_claude_settings()` returns `(dict, error)` tuple; endpoints refuse to write (409) when file is corrupt
+- **Input validation:** Name regex `[a-zA-Z0-9._-]{1,64}`, non-empty command, args total < 4KB
+- **Upsert:** POST overwrites if name exists, returns `updated: true/false`
+- **Edit mode:** Tap Edit on a server card → form populates, name disabled, Save Changes / Cancel
+- **Shell-like arg parsing:** `shellSplit()` handles single/double quotes
+
+### Feature: Plugin Toggle Management
+Same tab also manages Claude Code plugins (`enabledPlugins` key). Toggle switches for installed plugins, add new plugins by ID.
+
+- `GET /api/plugins` reads both `enabledPlugins` from settings.json and installed plugins from `~/.claude/plugins/installed_plugins.json`
+- `POST /api/plugins/toggle` enables/disables plugins via atomic settings write
+
+### Feature: Agent Restart with --resume
+After config changes, banner offers restart options to pick up new MCP servers/plugins.
+
+- **Restart Pane:** Stops and restarts agent in current pane only
+- **Restart All:** Enumerates all tmux sessions via `/api/tmux/sessions`, queries `/api/team/state` per session, finds all running agents, restarts all in parallel
+- **Safe stop:** Sends Ctrl-C, polls `/api/health/agent` every 500ms for 10s, sends second Ctrl-C if needed
+- **Resume:** Starts with `claude --resume` to preserve conversation context
+- **Confirmation dialog:** `confirm()` before both restart modes
+- **Smart banner:** Different messages based on whether agent is running
+
+### Fix: Tab Strip Overflow on Mobile
+Added `overflow-x: auto` to `.rollback-tabs` and `flex-shrink: 0` to `.rollback-tab` so MCP tab doesn't push off-screen.
+
+### Files Changed
+- `mobile_terminal/server.py` — `load_claude_settings()` / `save_claude_settings()` atomic helpers, `MCP_NAME_RE` validation, GET/POST/DELETE `/api/mcp-servers`, GET/POST `/api/plugins`, audit logging
+- `mobile_terminal/static/index.html` — MCP tab button, `#mcpTabContent` panel with restart banner, plugins section, server list, add/edit form
+- `mobile_terminal/static/terminal.js` — `shellSplit()`, `loadMcpServers()`, `renderMcpServerCard()`, `editMcpServer()`, `cancelMcpEdit()`, `addMcpServer()`, `removeMcpServer()`, `loadPlugins()`, `togglePlugin()`, `addPlugin()`, `stopAgentInPane()`, `startAgentWithResume()`, `mcpRestartAgents()`, `mcpSetDirty()`, tab wiring + event delegation
+- `mobile_terminal/static/styles.css` — MCP tab styles (~140 lines), plugin toggle switch, tab strip overflow fix
+- `mobile_terminal/static/sw.js` — Cache version bump
+
+---
 
 ## Recent: Queue Insert-to-Edit + Per-Pane Scoping (2026-03-03)
 

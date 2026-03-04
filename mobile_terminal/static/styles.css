@@ -5124,6 +5124,10 @@ html, body {
 .rollback-tabs {
     display: flex;
     gap: 4px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex: 1;
+    min-width: 0;
 }
 
 .rollback-tab {
@@ -5135,6 +5139,8 @@ html, body {
     font-size: 14px;
     font-weight: 500;
     cursor: pointer;
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 
 .rollback-tab.active {
@@ -5912,6 +5918,229 @@ html, body {
     font-size: 11px;
     white-space: pre-wrap;
     color: var(--text-secondary);
+}
+
+/* ============================================================================
+   MCP TAB STYLES
+   ============================================================================ */
+
+.mcp-scope-note {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin: 0 0 8px 0;
+}
+
+.mcp-restart-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: rgba(204, 153, 0, 0.15);
+    border: 1px solid rgba(204, 153, 0, 0.4);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.mcp-restart-banner.hidden {
+    display: none;
+}
+
+.mcp-restart-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.mcp-restart-btn {
+    background: var(--accent-blue);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    min-height: 44px;
+    white-space: nowrap;
+}
+
+.mcp-restart-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.mcp-server-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.mcp-server-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+}
+
+.mcp-server-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: hidden;
+    flex: 1;
+}
+
+.mcp-server-name {
+    font-weight: 500;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.mcp-server-cmd {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mcp-server-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.mcp-server-edit,
+.mcp-server-remove {
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    min-height: 44px;
+}
+
+.mcp-add-section {
+    border-top: 1px solid var(--border-color);
+    padding-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.mcp-add-header {
+    font-weight: 500;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.mcp-form-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.mcp-input {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 14px;
+    min-height: 44px;
+}
+
+.mcp-input:disabled {
+    opacity: 0.5;
+}
+
+.mcp-error {
+    padding: 8px 12px;
+    background: rgba(241, 76, 76, 0.15);
+    border: 1px solid rgba(241, 76, 76, 0.4);
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-primary);
+    margin-top: 8px;
+}
+
+.mcp-error.hidden {
+    display: none;
+}
+
+.mcp-plugin-add {
+    margin-bottom: 16px;
+}
+
+.mcp-plugin-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+}
+
+.mcp-plugin-name {
+    font-size: 13px;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    margin-right: 8px;
+}
+
+.mcp-toggle {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    flex-shrink: 0;
+}
+
+.mcp-toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.mcp-toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.mcp-toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    left: 2px;
+    top: 2px;
+    background: var(--text-muted);
+    border-radius: 50%;
+    transition: transform 0.2s, background 0.2s;
+}
+
+.mcp-toggle input:checked + .mcp-toggle-slider {
+    background: var(--accent-green, #89d185);
+    border-color: var(--accent-green, #89d185);
+}
+
+.mcp-toggle input:checked + .mcp-toggle-slider::before {
+    transform: translateX(20px);
+    background: white;
 }
 
 /* ============================================================================
