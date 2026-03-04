@@ -3,10 +3,69 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** MCP Server + Plugin Management
+- **Stage:** Codebase Cleanup (Batches 1-4 complete, 5-8 pending)
 - **Last Updated:** 2026-03-04
 - **Server Version:** v274 (terminal.js), v116 (sw.js cache), v169 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --verbose > /tmp/mto-server.log 2>&1 &`
+
+## Recent: Codebase Cleanup Batches 1-4 (2026-03-04)
+
+### Batch 1: Bug Fixes (`fc5ce74`)
+- Fixed `get_bounded_snapshot()` unbound variable (`content = ""` before loop)
+- Added missing `import sys` for `do_restart()` execv fallback
+- Fixed XSS in challenge modal (escape AI response before innerHTML)
+- Fixed XSS in attachment paths, queue list, and error handlers
+
+### Batch 2A: Dead JS Removal (`630102d`) — -943 lines
+- Removed transcript system (fetchTranscript, renderTranscript, etc.)
+- Removed legacy git UI (loadGitCommits, showGitCommitList, dryRunRevert, etc.)
+- Removed unreachable setupHybridView (~215 lines)
+- Removed 10 no-op stubs and their call sites
+- Removed dead DOM lookups and globals
+- Preserved: cleanTerminalOutput, stripAnsi, renderPreviewList
+
+### Batch 2B: Dead CSS Removal (`0129b0d`) — -1321 lines
+- Removed search modal, FAB layout, repo/target option dropdowns
+- Removed plan modal + plan linking, queue drawer, view toggle
+- Removed context/touch containers, status phase, thinking indicators
+- Replaced .log-entry with `display: none !important` (historical renders)
+- Fixed duplicate @keyframes, .icon-btn, .transcript-content .prompt
+- Consolidated .icon-btn blocks, removed redundant #repoLabel
+
+### Batch 2C: Server + HTML Cleanup (`027d94d`) — -53 lines
+- Removed unused imports: atexit, deque, find_claude_log_file
+- Removed 30 redundant local imports (subprocess, json, time, re, os)
+- Replaced `import time as _time` / `import json as json_mod` aliases
+- Removed duplicate /restart endpoint (kept /api/restart with debounce)
+- Removed 4 dead HTML element IDs, migrated onclick to addEventListener
+- Normalized self-closing `<input />` tags
+
+### Batch 3: CSS Variables (`77db1c4`) — +15 variables
+- Added 15 missing CSS custom properties to :root
+- Aliases: --error, --accent-red, --accent-blue, --accent-green, --border-color
+- New: --text-muted, --accent-cyan, --accent-magenta, --cyan, --magenta, --info
+- New: --bg-hover, --bg-elevated, --surface-2, --surface-3, --font-mono
+
+### Batch 4: Consolidate Duplicates (`fc41d90`) — -107 lines
+- Consolidated 3 escapeHtml() → 1 (string-replacement version)
+- Removed duplicate formatBytes() → use formatFileSize()
+- Removed duplicate formatRelativeTime() → use formatTimeAgo()
+- Extracted get_project_id() helper, replaced 7 inline computations
+- Extracted _read_claude_file() helper for 4 doc endpoints
+
+### Remaining Batches (lower priority, future session)
+- **Batch 5:** State leaks — Set overflow protection, URL.createObjectURL leak, GitOpLock TOCTOU
+- **Batch 6:** Efficiency — Cache gh pr view, AbortController for target-select, global error boundary
+- **Batch 7:** Accessibility — aria-labels on icon buttons and form inputs
+- **Batch 8:** Mobile touch targets — 44px minimum on small buttons
+
+### Total Impact
+- ~2400 lines of dead code removed
+- 3 bugs fixed (unbound var, missing import, XSS)
+- 15 CSS variables defined
+- 5 duplicate utility groups consolidated
+
+---
 
 ## Recent: MCP Server + Plugin Management (2026-03-04)
 
