@@ -142,7 +142,7 @@
 
             <!-- Team view (dynamic, appears when team detected) -->
             <div id="teamView" class="team-view hidden">
-                <div id="teamViewHeader" class="team-view-header">
+                <div class="team-view-header">
                     <span class="team-view-title">Team</span>
                     <div id="desktopDensityToggle" class="desktop-density-toggle">
                         <button class="density-btn" data-density="comfortable" title="Cards">&#x25A6;</button>
@@ -165,7 +165,7 @@
 
             <!-- Terminal view (secondary, swipe to access) -->
             <div id="terminalView" class="terminal-view hidden">
-                <div id="terminalPanelHeader" class="terminal-panel-header">
+                <div class="terminal-panel-header">
                     <span class="terminal-panel-title">Terminal</span>
                     <div class="terminal-panel-controls">
                         <button id="terminalCloseBtn" class="terminal-panel-btn" title="Close">&times;</button>
@@ -543,7 +543,7 @@
                     <button id="devOpenBtn" class="dev-btn">Open</button>
                     <button id="devCopyBtn" class="dev-btn">Copy</button>
                 </div>
-                <div class="dev-preview-container" id="devPreviewContainer">
+                <div class="dev-preview-container">
                     <iframe id="devPreviewFrame" class="dev-preview-frame hidden"
                             sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
                     <div id="devPreviewPlaceholder" class="dev-preview-placeholder">
@@ -598,7 +598,7 @@
             <!-- MCP tab content -->
             <div id="mcpTabContent" class="rollback-tab-content hidden">
                 <div id="mcpRestartBanner" class="mcp-restart-banner hidden">
-                    <span id="mcpRestartText">Changes saved</span>
+                    <span>Changes saved</span>
                     <div class="mcp-restart-actions">
                         <button id="mcpRestartOneBtn" class="mcp-restart-btn">Restart Pane</button>
                         <button id="mcpRestartAllBtn" class="mcp-restart-btn">Restart All</button>
@@ -613,7 +613,7 @@
                     <p class="process-description">Loading...</p>
                 </div>
                 <div class="mcp-add-section mcp-plugin-add">
-                    <input id="pluginIdInput" class="mcp-input" placeholder="Plugin ID (e.g. code-simplifier@claude-plugins-official)" />
+                    <input id="pluginIdInput" class="mcp-input" placeholder="Plugin ID (e.g. code-simplifier@claude-plugins-official)">
                     <button id="pluginAddBtn" class="process-action-btn primary">Enable Plugin</button>
                 </div>
                 <!-- MCP Servers section -->
@@ -626,9 +626,9 @@
                 </div>
                 <div class="mcp-add-section">
                     <div class="mcp-add-header" id="mcpFormHeader">Add Server</div>
-                    <input id="mcpNameInput" class="mcp-input" placeholder="Name (e.g. chrome-devtools)" />
-                    <input id="mcpCommandInput" class="mcp-input" placeholder="Command (e.g. npx)" />
-                    <input id="mcpArgsInput" class="mcp-input" placeholder="Args (e.g. -y @anthropic/server-chrome)" />
+                    <input id="mcpNameInput" class="mcp-input" placeholder="Name (e.g. chrome-devtools)">
+                    <input id="mcpCommandInput" class="mcp-input" placeholder="Command (e.g. npx)">
+                    <input id="mcpArgsInput" class="mcp-input" placeholder="Args (e.g. -y @anthropic/server-chrome)">
                     <div class="mcp-form-actions">
                         <button id="mcpAddBtn" class="process-action-btn primary">Add Server</button>
                         <button id="mcpCancelEditBtn" class="process-action-btn hidden">Cancel</button>
@@ -644,8 +644,8 @@
             <div class="status-content">
                 <div class="spinner"></div>
                 <p id="statusText">Connecting...</p>
-                <button id="reconnectBtn" class="reconnect-btn hidden" onclick="manualReconnect()">Reconnect Now</button>
-                <button id="hardRefreshBtn" class="hard-refresh-btn hidden" onclick="hardRefresh()">Hard Refresh</button>
+                <button id="reconnectBtn" class="reconnect-btn hidden">Reconnect Now</button>
+                <button id="hardRefreshBtn" class="hard-refresh-btn hidden">Hard Refresh</button>
             </div>
         </div>
 

@@ -11790,13 +11790,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupVoiceInput();
     setupDesktopLayout();
 
-    // Reconnect badge click handler
+    // Reconnect/refresh button click handlers
     const reconnectBadge = document.getElementById('reconnectBadge');
     if (reconnectBadge) {
         reconnectBadge.addEventListener('click', () => {
             if (typeof manualReconnect === 'function') manualReconnect();
         });
     }
+    const reconnectBtn = document.getElementById('reconnectBtn');
+    reconnectBtn?.addEventListener('click', manualReconnect);
+    const hardRefreshBtn = document.getElementById('hardRefreshBtn');
+    hardRefreshBtn?.addEventListener('click', hardRefresh);
 
     // Dispatch bar handlers
     const dispatchBtn = document.getElementById('dispatchBtn');

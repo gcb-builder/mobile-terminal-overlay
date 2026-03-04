@@ -8,7 +8,6 @@ Provides:
 """
 
 import asyncio
-import atexit
 import fcntl
 import json
 import logging
@@ -26,14 +25,13 @@ import threading
 import time
 import uuid
 import hashlib
-from collections import deque, OrderedDict
+from collections import OrderedDict
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from mobile_terminal.challenge import run_challenge, get_available_models, DEFAULT_MODEL
 from mobile_terminal.drivers import get_driver, ClaudePermissionDetector, ObserveContext, Observation
-from mobile_terminal.drivers.base import find_claude_log_file
 
 
 # ANSI escape sequence pattern for stripping terminal formatting
@@ -87,8 +85,6 @@ async def get_bounded_snapshot(session: str, active_target: str = None, max_byte
     Returns screen content with ANSI (-e) for accurate rendering.
     Auto-reduces line count if output exceeds max_bytes.
     """
-    import subprocess
-
     target = get_tmux_target(session, active_target) if active_target else session
 
     # Start with 50 lines, reduce if too large
@@ -874,7 +870,6 @@ def get_queue_file(session: str, pane_id: Optional[str] = None) -> Path:
 
 def load_queue_from_disk(session: str, pane_id: Optional[str] = None) -> list:
     """Load queue items from JSONL file."""
-    import json
     queue_file = get_queue_file(session, pane_id)
     items = []
     if queue_file.exists():
@@ -891,7 +886,6 @@ def load_queue_from_disk(session: str, pane_id: Optional[str] = None) -> list:
 
 def save_queue_to_disk(session: str, items: list, pane_id: Optional[str] = None):
     """Save queue items to JSONL file."""
-    import json
     queue_file = get_queue_file(session, pane_id)
     try:
         QUEUE_DIR.mkdir(parents=True, exist_ok=True)
@@ -909,7 +903,6 @@ CAPTURE_CACHE_TTL = 0.3  # 300ms TTL
 
 def get_cached_capture(session: str, pane_id: str, lines: int) -> Optional[dict]:
     """Get cached capture-pane result if still valid."""
-    import time
     key = (session, pane_id, lines)
     if key in _capture_cache:
         ts, result = _capture_cache[key]
@@ -920,7 +913,6 @@ def get_cached_capture(session: str, pane_id: str, lines: int) -> Optional[dict]
 
 def set_cached_capture(session: str, pane_id: str, lines: int, result: dict):
     """Cache capture-pane result."""
-    import time
     key = (session, pane_id, lines)
     _capture_cache[key] = (time.time(), result)
     # Clean old entries (keep cache small)
@@ -938,7 +930,6 @@ LOG_CACHE_TTL = 2.0  # 2 second TTL - log content changes slowly
 
 def get_cached_log(project_id: str, pane_id: Optional[str], file_mtime: float) -> Optional[dict]:
     """Get cached log result if still valid and file hasn't changed."""
-    import time
     key = (project_id, pane_id or "")
     if key in _log_cache:
         ts, cached_mtime, result = _log_cache[key]
@@ -950,7 +941,6 @@ def get_cached_log(project_id: str, pane_id: Optional[str], file_mtime: float) -
 
 def set_cached_log(project_id: str, pane_id: Optional[str], file_mtime: float, result: dict):
     """Cache log result."""
-    import time
     key = (project_id, pane_id or "")
     _log_cache[key] = (time.time(), file_mtime, result)
     # Clean old entries
@@ -977,14 +967,10 @@ def get_tmux_target(session_name: str, active_target: str) -> str:
     return session_name
 
 
-    # PermissionDetector moved to mobile_terminal.drivers.claude.ClaudePermissionDetector
-
-
 def get_plan_links() -> dict:
     """Read plan-links.json, return empty dict if not found."""
     if PLAN_LINKS_FILE.exists():
         try:
-            import json
             return json.loads(PLAN_LINKS_FILE.read_text())
         except Exception:
             pass
@@ -993,7 +979,6 @@ def get_plan_links() -> dict:
 
 def save_plan_links(links: dict):
     """Write plan-links.json."""
-    import json
     PLAN_LINKS_FILE.parent.mkdir(parents=True, exist_ok=True)
     PLAN_LINKS_FILE.write_text(json.dumps(links, indent=2))
 
@@ -1087,8 +1072,6 @@ def get_plans_for_repo(repo_path: Path) -> list:
 
 def list_tmux_sessions(prefix: str = "") -> list:
     """List tmux sessions, optionally filtered by prefix."""
-    import subprocess
-
     try:
         result = subprocess.run(
             ["tmux", "list-sessions", "-F", "#{session_name}"],
@@ -1575,15 +1558,6 @@ def create_app(config: Config) -> FastAPI:
             "result": app.state.setup_result,
         }
 
-    @app.post("/restart")
-    async def restart_server(token: Optional[str] = Query(None)):
-        """Restart the server by sending SIGTERM. Systemd will auto-restart it."""
-        if not app.state.no_auth and token != app.state.token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        import os
-        import signal
-        os.kill(os.getpid(), signal.SIGTERM)
-
     @app.get("/api/tmux/sessions")
     async def get_tmux_sessions(
         token: Optional[str] = Query(None),
@@ -1708,8 +1682,7 @@ def create_app(config: Config) -> FastAPI:
         token: Optional[str] = Query(None)
     ):
         """Set the active target pane for repo operations."""
-        import time as _time
-        _start_total = _time.time()
+        _start_total = time.time()
         logger.info(f"[TIMING] /api/target/select START target_id={target_id}")
 
         if not app.state.no_auth and token != app.state.token:
@@ -1719,13 +1692,13 @@ def create_app(config: Config) -> FastAPI:
 
         # Verify target exists
         try:
-            _t1 = _time.time()
+            _t1 = time.time()
             result = subprocess.run(
                 ["tmux", "list-panes", "-s", "-t", session,
                  "-F", "#{window_index}:#{pane_index}"],
                 capture_output=True, text=True, timeout=5
             )
-            logger.info(f"[TIMING] list-panes took {_time.time()-_t1:.3f}s")
+            logger.info(f"[TIMING] list-panes took {time.time()-_t1:.3f}s")
             valid_targets = result.stdout.strip().split("\n") if result.returncode == 0 else []
 
             if target_id not in valid_targets:
@@ -1758,26 +1731,26 @@ def create_app(config: Config) -> FastAPI:
             if len(parts) == 2:
                 window_idx, pane_idx = parts
                 # Switch to the window first
-                _t2 = _time.time()
+                _t2 = time.time()
                 subprocess.run(
                     ["tmux", "select-window", "-t", f"{session}:{window_idx}"],
                     capture_output=True, timeout=2
                 )
-                logger.info(f"[TIMING] select-window took {_time.time()-_t2:.3f}s")
+                logger.info(f"[TIMING] select-window took {time.time()-_t2:.3f}s")
                 # Then select the pane within that window (format: session:window.pane)
-                _t3 = _time.time()
+                _t3 = time.time()
                 subprocess.run(
                     ["tmux", "select-pane", "-t", f"{session}:{window_idx}.{pane_idx}"],
                     capture_output=True, timeout=2
                 )
-                logger.info(f"[TIMING] select-pane took {_time.time()-_t3:.3f}s")
+                logger.info(f"[TIMING] select-pane took {time.time()-_t3:.3f}s")
                 logger.info(f"Switched tmux to pane {target_id}")
 
                 # Verify switch completed (max 1s total, not per-iteration)
-                _t4 = _time.time()
+                _t4 = time.time()
                 _verify_iterations = 0
                 _verify_deadline = _t4 + 1.0  # Hard cap at 1 second total
-                while _time.time() < _verify_deadline:
+                while time.time() < _verify_deadline:
                     _verify_iterations += 1
                     try:
                         verify_result = subprocess.run(
@@ -1790,7 +1763,7 @@ def create_app(config: Config) -> FastAPI:
                     except subprocess.TimeoutExpired:
                         pass  # Continue loop, will exit via deadline
                     await asyncio.sleep(0.05)
-                logger.info(f"[TIMING] verify loop took {_time.time()-_t4:.3f}s ({_verify_iterations} iterations)")
+                logger.info(f"[TIMING] verify loop took {time.time()-_t4:.3f}s ({_verify_iterations} iterations)")
 
                 if not switch_verified:
                     logger.warning(f"Target switch verification failed for {target_id}")
@@ -1804,7 +1777,7 @@ def create_app(config: Config) -> FastAPI:
 
         # Close existing PTY so next WebSocket connection respawns with new target
         # This ensures the PTY attaches to the newly active pane
-        _t5 = _time.time()
+        _t5 = time.time()
         if app.state.master_fd is not None:
             try:
                 os.close(app.state.master_fd)
@@ -1820,10 +1793,10 @@ def create_app(config: Config) -> FastAPI:
             except Exception:
                 pass
             app.state.child_pid = None
-        logger.info(f"[TIMING] PTY/child cleanup took {_time.time()-_t5:.3f}s")
+        logger.info(f"[TIMING] PTY/child cleanup took {time.time()-_t5:.3f}s")
 
         # Close active WebSocket to force client reconnect
-        _t6 = _time.time()
+        _t6 = time.time()
         if app.state.active_websocket is not None:
             try:
                 await app.state.active_websocket.close(code=4003, reason="Target switched")
@@ -1831,12 +1804,12 @@ def create_app(config: Config) -> FastAPI:
             except Exception:
                 pass
             app.state.active_websocket = None
-        logger.info(f"[TIMING] WebSocket close took {_time.time()-_t6:.3f}s")
+        logger.info(f"[TIMING] WebSocket close took {time.time()-_t6:.3f}s")
 
         # Start background file monitor to detect which log file this target uses
         asyncio.create_task(monitor_log_file_for_target(target_id))
 
-        logger.info(f"[TIMING] /api/target/select TOTAL took {_time.time()-_start_total:.3f}s")
+        logger.info(f"[TIMING] /api/target/select TOTAL took {time.time()-_start_total:.3f}s")
         return {
             "success": True,
             "active": target_id,
@@ -2219,8 +2192,6 @@ def create_app(config: Config) -> FastAPI:
             return {"files": []}
 
         try:
-            import subprocess
-
             repo_path = get_current_repo_path()
             cwd = str(repo_path) if repo_path else None
 
@@ -2329,7 +2300,6 @@ def create_app(config: Config) -> FastAPI:
             return cached
 
         try:
-            import subprocess
             result = subprocess.run(
                 ["tmux", "capture-pane", "-p", "-J", "-S", f"-{lines}", "-t", target],
                 capture_output=True,
@@ -2374,7 +2344,6 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         try:
-            import subprocess
             session_name = app.state.current_session
 
             # Use active target pane if set, otherwise fall back to session
@@ -2913,7 +2882,6 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         # Sanitize filename - only allow alphanumeric, dash, underscore, dot
-        import re
         if not re.match(r'^[\w\-\.]+\.md$', filename):
             return JSONResponse({"error": "Invalid filename"}, status_code=400)
 
@@ -3175,8 +3143,6 @@ def create_app(config: Config) -> FastAPI:
 
         Watches for 10 seconds and associates any modified file with the target.
         """
-        import time
-
         # Get project directory for the target
         repo_path = get_current_repo_path()
         if not repo_path:
@@ -3238,10 +3204,6 @@ def create_app(config: Config) -> FastAPI:
         3. Match Claude process start time to log file creation/first-entry time
         4. Fall back to most recently modified if detection fails
         """
-        import subprocess
-        import os
-        import json
-
         jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
         if not jsonl_files:
             return None
@@ -3283,9 +3245,6 @@ def create_app(config: Config) -> FastAPI:
         If session_id is provided, loads that specific session log (read-only view).
         If pane_id is provided, uses that pane's cwd for repo path (avoids multi-tab race condition).
         """
-        import json
-        import re
-
         # Log client ID for debugging duplicate requests
         client_id = request.headers.get('X-Client-ID', 'unknown')[:8]
         logger.debug(f"[{client_id}] GET /api/log pane_id={pane_id}")
@@ -3521,7 +3480,6 @@ def create_app(config: Config) -> FastAPI:
         List available log files for the current project directory.
         Returns metadata for each session log to allow manual selection.
         """
-        import json
         from datetime import datetime
 
         if not app.state.no_auth and token != app.state.token:
@@ -3758,8 +3716,6 @@ def create_app(config: Config) -> FastAPI:
 
         Includes 300ms cache to prevent DoS from rapid polling.
         """
-        import subprocess
-
         # Log client ID for debugging duplicate requests
         client_id = request.headers.get('X-Client-ID', 'unknown')[:8]
         logger.debug(f"[{client_id}] GET /api/terminal/capture lines={lines}")
@@ -3847,8 +3803,6 @@ def create_app(config: Config) -> FastAPI:
         accurate screen reproduction. Limited to 80 lines max.
         Used by client when terminal render queue overflows.
         """
-        import subprocess
-
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
@@ -4836,7 +4790,6 @@ Only the top 1–3 risks worth caring about.
         detail_dict = {}
         if details:
             try:
-                import json
                 detail_dict = json.loads(details)
             except:
                 detail_dict = {"raw": details}
@@ -5985,9 +5938,8 @@ Reply with:
 
         # Load and parse
         try:
-            import json as json_mod
             content = config_file.read_text()
-            config = json_mod.loads(content)
+            config = json.loads(content)
             config["_mtime"] = mtime
             _preview_config_cache[cache_key] = config
             return config
@@ -6258,8 +6210,7 @@ Reply with:
                     cwd=repo_path, capture_output=True, text=True, timeout=5
                 )
                 if pr_result.returncode == 0:
-                    import json as json_mod
-                    pr_data = json_mod.loads(pr_result.stdout)
+                    pr_data = json.loads(pr_result.stdout)
                     pr_info = {
                         "number": pr_data.get("number"),
                         "title": pr_data.get("title"),
@@ -6706,7 +6657,6 @@ Reply with:
             }, status_code=409)
 
         try:
-            import time
             timestamp = int(time.time())
             message = f"mobile-overlay-auto-stash-{timestamp}"
 
@@ -7023,8 +6973,6 @@ Reply with:
         Send a control key using tmux send-keys.
         Supports: C-c, C-d, C-z, C-l, Tab, Escape, Enter, Up, Down, Left, Right, etc.
         """
-        import subprocess
-
         if not app.state.no_auth and token != app.state.token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
@@ -7100,8 +7048,7 @@ Reply with:
     @app.websocket("/ws/terminal")
     async def terminal_websocket(websocket: WebSocket, token: Optional[str] = Query(None)):
         """WebSocket endpoint for terminal I/O."""
-        import time as _time
-        _ws_start = _time.time()
+        _ws_start = time.time()
         logger.info(f"[TIMING] WebSocket /ws/terminal START")
 
         # Validate token (skip if no_auth)
@@ -7135,10 +7082,10 @@ Reply with:
                 app.state.read_task = None
 
             app.state.active_websocket = websocket
-        logger.info(f"[TIMING] WebSocket lock+accept took {_time.time()-_ws_start:.3f}s")
+        logger.info(f"[TIMING] WebSocket lock+accept took {time.time()-_ws_start:.3f}s")
 
         # Spawn tmux if not already running
-        _spawn_start = _time.time()
+        _spawn_start = time.time()
         if app.state.master_fd is None:
             try:
                 session_name = app.state.current_session
@@ -7151,13 +7098,13 @@ Reply with:
                 await websocket.send_json({"type": "error", "message": str(e)})
                 await websocket.close()
                 return
-        logger.info(f"[TIMING] spawn_tmux took {_time.time()-_spawn_start:.3f}s")
+        logger.info(f"[TIMING] spawn_tmux took {time.time()-_spawn_start:.3f}s")
         master_fd = app.state.master_fd
         output_buffer = app.state.output_buffer
 
         # Send hello handshake FIRST - client expects this within 2s
         # Must be sent before capture-pane which can be slow
-        _hello_start = _time.time()
+        _hello_start = time.time()
         try:
             hello_msg = {
                 "type": "hello",
@@ -7171,14 +7118,14 @@ Reply with:
             logger.error(f"Failed to send hello: {e}")
             await websocket.close(code=4500)
             return
-        logger.info(f"[TIMING] hello handshake took {_time.time()-_hello_start:.3f}s")
+        logger.info(f"[TIMING] hello handshake took {time.time()-_hello_start:.3f}s")
 
         # Don't send capture-pane history on initial connect
         # Default mode is "tail" which uses lightweight JSON updates
         # History will be sent as catchup when client switches to "full" mode
         # Just send clear screen to trigger client overlay hide
         await websocket.send_text("\x1b[2J\x1b[H")
-        logger.info(f"[TIMING] WebSocket setup TOTAL took {_time.time()-_ws_start:.3f}s")
+        logger.info(f"[TIMING] WebSocket setup TOTAL took {time.time()-_ws_start:.3f}s")
 
         # Track PTY death for proper close code
         pty_died = False

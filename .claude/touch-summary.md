@@ -4,6 +4,21 @@ Append-only log of implementation batches.
 
 ---
 
+## 2026-03-04: Batch 2C — Server + HTML Dead Code Cleanup
+
+### Files Changed
+- `mobile_terminal/server.py` — Removed 3 unused top-level imports (`atexit`, `deque`, `find_claude_log_file`); removed duplicate `/restart` endpoint; removed dead PermissionDetector comment; removed 33 redundant local imports (`import subprocess`, `import json`, `import time`, `import re`, `import os`, `import signal`, `import time as _time`, `import json as json_mod`); replaced all `_time.time()` with `time.time()` and `json_mod.loads()` with `json.loads()`. Net: 7932 -> 7879 lines (-53 lines).
+- `mobile_terminal/static/index.html` — Removed 4 dead element IDs (`teamViewHeader`, `terminalPanelHeader`, `devPreviewContainer`, `mcpRestartText`); removed 2 inline `onclick` attributes from reconnectBtn/hardRefreshBtn; normalized 4 self-closing `<input ... />` to `<input ...>`.
+- `mobile_terminal/static/terminal.js` — Added `addEventListener('click', ...)` for `reconnectBtn` (-> `manualReconnect`) and `hardRefreshBtn` (-> `hardRefresh`) in DOMContentLoaded block.
+
+### New Files Created
+- None
+
+### Risks / Follow-ups
+- None — all changes are mechanical dead code removal verified by syntax check
+
+---
+
 ## 2026-03-03: Queue Insert-to-Edit + Per-Pane Scoping
 
 ### Files Changed
