@@ -2478,8 +2478,8 @@ html, body {
 
 .attachment-remove {
     position: absolute;
-    top: -6px;
-    right: -6px;
+    top: -16px;
+    right: -16px;
     width: 24px;
     height: 24px;
     background: var(--danger);
@@ -2490,7 +2490,7 @@ html, body {
     line-height: 1;
     cursor: pointer;
     /* Invisible padding for 44px tap area */
-    padding: 0;
+    padding: 10px;
     box-sizing: content-box;
     -webkit-tap-highlight-color: transparent;
     display: flex;

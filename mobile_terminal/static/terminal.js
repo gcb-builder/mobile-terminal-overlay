@@ -452,7 +452,7 @@ let currentInput = '';
 let terminalContainer, controlBarsContainer;
 let collapseToggle, controlBar, roleBar, inputBar, viewBar;
 let statusOverlay, statusText, repoBtn, repoLabel, repoDropdown;
-let targetBtn, targetLabel, targetDropdown, targetLockBtn, targetLockIcon;
+// Target selector variables removed (elements no longer in DOM)
 let agentCrashBanner, agentRespawnBtn, agentCrashDismissBtn;
 // searchBtn removed - search is now in docs modal
 let composeBtn, composeModal;
@@ -548,11 +548,6 @@ function initDOMElements() {
     repoBtn = document.getElementById('repoBtn');
     repoLabel = document.getElementById('repoLabel');
     repoDropdown = document.getElementById('repoDropdown');
-    targetBtn = document.getElementById('targetBtn');
-    targetLabel = document.getElementById('targetLabel');
-    targetDropdown = document.getElementById('targetDropdown');
-    targetLockBtn = document.getElementById('targetLockBtn');
-    targetLockIcon = document.getElementById('targetLockIcon');
     agentCrashBanner = document.getElementById('agentCrashBanner');
     agentRespawnBtn = document.getElementById('agentRespawnBtn');
     agentCrashDismissBtn = document.getElementById('agentCrashDismissBtn');
