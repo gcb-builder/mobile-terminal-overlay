@@ -373,17 +373,11 @@ function enqueueSplitDirect(data, epoch) {
         return;
     }
 
-    // Chunk and enqueue with epoch tag
+    // Chunk and enqueue with epoch tag (through overflow-protected path)
     for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
         if (epoch !== modeEpoch) return;  // Abort if mode changed
         const slice = bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length));
-        writeQueue.push({ data: slice, epoch });
-        queuedBytes += slice.length;
-    }
-
-    if (!draining && writeQueue.length > 0) {
-        draining = true;
-        requestAnimationFrame(drainWriteQueue);
+        queuedWriteInternal(slice, epoch);
     }
 }
 
@@ -3035,6 +3029,7 @@ function setupTargetSelector() {
         agentCrashDismissBtn.addEventListener('click', () => {
             // Dismiss for this pane only
             if (activeTarget) {
+                if (dismissedCrashPanes.size > 500) dismissedCrashPanes.clear();
                 dismissedCrashPanes.add(activeTarget);
             }
             updateAgentCrashBanner(false);
@@ -4148,7 +4143,7 @@ function formatFileSize(bytes) {
 function closeComposeModal() {
     composeModal.classList.add('hidden');
     composeInput.blur();
-    // Note: Don't clear attachments here - user might reopen modal
+    clearAttachments();
 }
 
 /**
@@ -6457,6 +6452,7 @@ function setupPromptBannerHandlers() {
     if (dismissBtn) {
         dismissBtn.onclick = () => {
             if (pendingPrompt) {
+                if (dismissedPrompts.size > 500) dismissedPrompts.clear();
                 dismissedPrompts.add(pendingPrompt.id);
             }
             clearPendingPrompt();
@@ -6805,6 +6801,7 @@ function setupSuperCollapseHandler() {
         if (expandedSuperGroups.has(groupKey)) {
             expandedSuperGroups.delete(groupKey);
         } else {
+            if (expandedSuperGroups.size > 500) expandedSuperGroups.clear();
             expandedSuperGroups.add(groupKey);
         }
 
@@ -6832,6 +6829,7 @@ function setupCollapseHandler() {
         if (expandedGroups.has(groupKey)) {
             expandedGroups.delete(groupKey);
         } else {
+            if (expandedGroups.size > 500) expandedGroups.clear();
             expandedGroups.add(groupKey);
         }
 
@@ -6972,6 +6970,7 @@ function detectAndReplacePlanRefs() {
                 planLink.dataset.filename = filename;
                 planLink.innerHTML = `<span class="plan-file-icon">📋</span> ${filename} <span class="plan-expand-hint">(tap to preview)</span>`;
                 fragment.appendChild(planLink);
+                if (processedPlanRefs.size > 500) processedPlanRefs.clear();
                 processedPlanRefs.add(fullPath);
             } else {
                 // Already processed, just show as text

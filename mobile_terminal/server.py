@@ -284,11 +284,12 @@ class GitOpLock:
 
     async def acquire(self, operation: str) -> bool:
         """Try to acquire lock for an operation. Returns False if already locked."""
-        if self._lock.locked():
+        try:
+            await asyncio.wait_for(self._lock.acquire(), timeout=0)
+            self._current_op = operation
+            return True
+        except asyncio.TimeoutError:
             return False
-        await self._lock.acquire()
-        self._current_op = operation
-        return True
 
     def release(self):
         """Release the lock."""
@@ -5875,6 +5876,8 @@ Reply with:
             content = config_file.read_text()
             config = json.loads(content)
             config["_mtime"] = mtime
+            if len(_preview_config_cache) > 50:
+                _preview_config_cache.clear()
             _preview_config_cache[cache_key] = config
             return config
         except Exception as e:
