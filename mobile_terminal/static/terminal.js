@@ -2181,9 +2181,9 @@ function populateRepoDropdown() {
 
                 opt.innerHTML = `
                     <div class="nav-pane-content">
-                        ${checkMark}<span class="nav-project">${target.project}</span>
-                        <span class="nav-pane-info">${windowName}${hintBadge} • ${target.pane_id}</span>
-                        <span class="nav-path">${shortPath}</span>
+                        ${checkMark}<span class="nav-project">${escapeHtml(target.project)}</span>
+                        <span class="nav-pane-info">${escapeHtml(windowName)}${hintBadge} • ${escapeHtml(target.pane_id)}</span>
+                        <span class="nav-path">${escapeHtml(shortPath)}</span>
                     </div>
                     ${killBtn}
                 `;
@@ -2248,8 +2248,8 @@ function populateRepoDropdown() {
                 opt.className = 'nav-session-option';
                 opt.innerHTML = `
                     <div>
-                        <span class="nav-session-label">${repo.label}</span>
-                        <span class="nav-session-path">${repo.path}</span>
+                        <span class="nav-session-label">${escapeHtml(repo.label)}</span>
+                        <span class="nav-session-path">${escapeHtml(repo.path)}</span>
                     </div>
                     <span class="reconnect-pill">Switch</span>
                 `;
@@ -3892,7 +3892,7 @@ function setupChallenge() {
         challengeRun.disabled = true;
         challengeRun.textContent = 'Running...';
         challengeResult.classList.remove('hidden');
-        challengeResultContent.innerHTML = `<div class="loading">Analyzing with ${modelName}...</div>`;
+        challengeResultContent.innerHTML = `<div class="loading">Analyzing with ${escapeHtml(modelName)}...</div>`;
         challengeResult.classList.add('loading');
         challengeStatus.textContent = '';
 
@@ -5846,7 +5846,7 @@ function createLogCard(msg) {
 
     const header = document.createElement('div');
     header.className = 'log-card-header';
-    header.innerHTML = `<span class="log-role-badge">${msg.role === 'user' ? 'You' : agentName}</span>`;
+    header.innerHTML = `<span class="log-role-badge">${msg.role === 'user' ? 'You' : escapeHtml(agentName)}</span>`;
     card.appendChild(header);
 
     const body = document.createElement('div');
@@ -5880,7 +5880,7 @@ function createLogCard(msg) {
 
                 const summaryEl = document.createElement('summary');
                 summaryEl.className = 'log-tool-summary';
-                summaryEl.innerHTML = `<span class="log-tool-name">${toolName}</span> <span class="log-tool-detail">${escapeHtml(summary)}</span>`;
+                summaryEl.innerHTML = `<span class="log-tool-name">${escapeHtml(toolName)}</span> <span class="log-tool-detail">${escapeHtml(summary)}</span>`;
                 details.appendChild(summaryEl);
 
                 const content = document.createElement('div');
@@ -6970,7 +6970,7 @@ function detectAndReplacePlanRefs() {
                 const planLink = document.createElement('span');
                 planLink.className = 'plan-file-ref';
                 planLink.dataset.filename = filename;
-                planLink.innerHTML = `<span class="plan-file-icon">📋</span> ${filename} <span class="plan-expand-hint">(tap to preview)</span>`;
+                planLink.innerHTML = `<span class="plan-file-icon">📋</span> ${escapeHtml(filename)} <span class="plan-expand-hint">(tap to preview)</span>`;
                 fragment.appendChild(planLink);
                 if (processedPlanRefs.size > 500) processedPlanRefs.clear();
                 processedPlanRefs.add(fullPath);
@@ -7159,10 +7159,10 @@ function setupDocsButton() {
         // Render HTML
         docsModalBody.innerHTML = `
             <div class="docs-search-container">
-                <div class="search-repo-path">${root_name || 'Repository'}</div>
+                <div class="search-repo-path">${escapeHtml(root_name) || 'Repository'}</div>
                 <input type="text" id="docsSearchInput" class="docs-search-input"
                        placeholder="Filter files..." autocomplete="off" autocorrect="off"
-                       autocapitalize="off" spellcheck="false" value="${filter}">
+                       autocapitalize="off" spellcheck="false" value="${escapeHtml(filter)}">
                 <div id="fileTreeContainer" class="file-tree-container">
                     ${renderTreeNode(tree, '', 0, filter)}
                 </div>
@@ -7219,18 +7219,18 @@ function setupDocsButton() {
             const icon = isExpanded ? '&#9660;' : '&#9654;';
             const childNode = node[dir];
 
-            html += `<div class="tree-folder" data-path="${dirPath}" style="padding-left:${indent}px">
+            html += `<div class="tree-folder" data-path="${escapeHtml(dirPath)}" style="padding-left:${indent}px">
                 <span class="tree-icon">${icon}</span>
-                <span class="tree-name">${dir}/</span>
+                <span class="tree-name">${escapeHtml(dir)}/</span>
             </div>`;
 
             if (isExpanded) {
                 html += renderTreeNode(childNode.__dirs || {}, dirPath, depth + 1, filter);
                 // Render files in this directory
                 (childNode.__files || []).sort().forEach(file => {
-                    html += `<div class="tree-file" data-path="${dirPath}/${file}" style="padding-left:${indent + 16}px">
+                    html += `<div class="tree-file" data-path="${escapeHtml(dirPath)}/${escapeHtml(file)}" style="padding-left:${indent + 16}px">
                         <span class="tree-icon">&#128196;</span>
-                        <span class="tree-name">${file}</span>
+                        <span class="tree-name">${escapeHtml(file)}</span>
                     </div>`;
                 });
             }
@@ -7240,9 +7240,9 @@ function setupDocsButton() {
         if (node.__files) {
             node.__files.sort().forEach(file => {
                 const filePath = path ? `${path}/${file}` : file;
-                html += `<div class="tree-file" data-path="${filePath}" style="padding-left:${indent}px">
+                html += `<div class="tree-file" data-path="${escapeHtml(filePath)}" style="padding-left:${indent}px">
                     <span class="tree-icon">&#128196;</span>
-                    <span class="tree-name">${file}</span>
+                    <span class="tree-name">${escapeHtml(file)}</span>
                 </div>`;
             });
         }
@@ -7264,7 +7264,7 @@ function setupDocsButton() {
                 <div class="file-viewer">
                     <div class="file-viewer-header">
                         <button class="file-back-btn" id="fileBackBtn">&larr; Back</button>
-                        <span class="file-viewer-path">${filePath}</span>
+                        <span class="file-viewer-path">${escapeHtml(filePath)}</span>
                     </div>
                     <div class="file-viewer-content ${isMarkdown ? 'markdown-content' : 'code-content'}">
                         ${isMarkdown ? marked.parse(data.content || '') : `<pre>${escapeHtml(data.content || '')}</pre>`}
@@ -7689,11 +7689,12 @@ function extractDynamicSuggestion(content) {
  */
 function escapeHtml(text) {
     if (!text) return '';
-    return text
+    return String(text)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 /**
@@ -8102,21 +8103,22 @@ function renderQueueList() {
         const displayText = item.text.length > 40 ? item.text.slice(0, 40) + '...' : item.text;
         const escapedText = escapeHtml(displayText);
         const isQueued = item.status === 'queued';
+        const escapedId = escapeHtml(String(item.id));
         const reorderHtml = isQueued ? `
                 <div class="queue-item-reorder">
-                    <button class="queue-reorder-btn up" data-id="${item.id}" data-dir="up"${idx === firstQueued ? ' style="visibility:hidden"' : ''}>&#x25B2;</button>
-                    <button class="queue-reorder-btn down" data-id="${item.id}" data-dir="down"${idx === lastQueued ? ' style="visibility:hidden"' : ''}>&#x25BC;</button>
+                    <button class="queue-reorder-btn up" data-id="${escapedId}" data-dir="up"${idx === firstQueued ? ' style="visibility:hidden"' : ''}>&#x25B2;</button>
+                    <button class="queue-reorder-btn down" data-id="${escapedId}" data-dir="down"${idx === lastQueued ? ' style="visibility:hidden"' : ''}>&#x25BC;</button>
                 </div>` : '';
         return `
-            <div class="queue-item" data-id="${item.id}" data-status="${item.status}">
-                <span class="queue-item-status ${item.status}"></span>${reorderHtml}
+            <div class="queue-item" data-id="${escapedId}" data-status="${escapeHtml(item.status)}">
+                <span class="queue-item-status ${escapeHtml(item.status)}"></span>${reorderHtml}
                 <div class="queue-item-content">
                     <div class="queue-item-text">${escapedText || '(Enter)'}</div>
                     <div class="queue-item-meta">
-                        <span class="queue-item-policy ${item.policy}">${item.policy}</span>
+                        <span class="queue-item-policy ${escapeHtml(item.policy)}">${escapeHtml(item.policy)}</span>
                     </div>
                 </div>
-                <button class="queue-item-remove" data-id="${item.id}">&times;</button>
+                <button class="queue-item-remove" data-id="${escapedId}">&times;</button>
             </div>
         `;
     }).join('');
@@ -8728,12 +8730,12 @@ function renderPreviewList() {
         // Friendly label display
         const labelDisplay = getLabelDisplay(snap.label);
         return `
-            <div class="preview-list-item ${isActive ? 'active' : ''} ${isPinned ? 'pinned' : ''}" data-snap-id="${snap.id}">
+            <div class="preview-list-item ${isActive ? 'active' : ''} ${isPinned ? 'pinned' : ''}" data-snap-id="${escapeHtml(String(snap.id))}">
                 <button class="preview-pin-btn ${isPinned ? 'pinned' : ''}" title="${isPinned ? 'Unpin' : 'Pin'}">
                     ${isPinned ? '&#x1F4CC;' : '&#x1F4CD;'}
                 </button>
                 <span class="preview-time">${time}</span>
-                <span class="preview-label-badge ${snap.label}">${labelDisplay}</span>
+                <span class="preview-label-badge ${escapeHtml(snap.label)}">${escapeHtml(labelDisplay)}</span>
                 <button class="preview-export-btn" title="Export JSON">&#x2B07;</button>
                 <button class="preview-load-btn">${isActive ? 'Current' : 'Load'}</button>
             </div>
@@ -9520,19 +9522,19 @@ function renderHistoryList() {
 
         if (item.type === 'commit') {
             return `
-                <div class="history-item history-commit tl-item" data-hash="${item.hash}">
+                <div class="history-item history-commit tl-item" data-hash="${escapeHtml(item.hash)}">
                     <div class="tl-gutter">
                         <span class="tl-dot tl-dot-commit"></span>
                         <span class="${lineClass}"></span>
                     </div>
                     <div class="tl-content">
                         <div class="tl-row">
-                            <span class="history-id">${item.id}</span>
+                            <span class="history-id">${escapeHtml(item.id)}</span>
                             <span class="history-subject">${escapeHtml(item.subject)}</span>
                         </div>
                         <span class="history-time">${timeAgo}</span>
                     </div>
-                    <button class="history-action-btn" data-action="revert" data-hash="${item.hash}" title="Revert">↩</button>
+                    <button class="history-action-btn" data-action="revert" data-hash="${escapeHtml(item.hash)}" title="Revert">↩</button>
                 </div>`;
         } else {
             const rawLabel = item.label || 'snapshot';
@@ -9541,25 +9543,25 @@ function renderHistoryList() {
             const notePreview = item.note ? `<span class="tl-note">${escapeHtml(item.note.substring(0, 50))}</span>` : '';
             const imgIndicator = item.image_path ? '<span class="tl-indicator">IMG</span>' : '';
             const pinIndicator = item.pinned ? '<span class="tl-indicator tl-pin">PIN</span>' : '';
-            const gitHead = item.git_head ? `<span class="tl-git">${item.git_head}</span>` : '';
+            const gitHead = item.git_head ? `<span class="tl-git">${escapeHtml(item.git_head)}</span>` : '';
 
             return `
-                <div class="history-item history-snapshot tl-item" data-id="${item.id}">
+                <div class="history-item history-snapshot tl-item" data-id="${escapeHtml(String(item.id))}">
                     <div class="tl-gutter">
                         <span class="tl-dot" style="background:${badgeColor}"></span>
                         <span class="${lineClass}"></span>
                     </div>
                     <div class="tl-content">
                         <div class="tl-row">
-                            <span class="tl-badge" style="background:${badgeColor}">${labelDisplay}</span>
+                            <span class="tl-badge" style="background:${badgeColor}">${escapeHtml(labelDisplay)}</span>
                             ${gitHead}${pinIndicator}${imgIndicator}
                         </div>
                         ${notePreview}
                     </div>
                     <span class="history-time">${timeAgo}</span>
                     <div class="tl-actions">
-                        <button class="history-action-btn" data-action="note" data-id="${item.id}" title="Note">N</button>
-                        <button class="history-action-btn" data-action="preview" data-id="${item.id}" title="View">V</button>
+                        <button class="history-action-btn" data-action="note" data-id="${escapeHtml(String(item.id))}" title="Note">N</button>
+                        <button class="history-action-btn" data-action="preview" data-id="${escapeHtml(String(item.id))}" title="View">V</button>
                     </div>
                 </div>`;
         }
@@ -9645,12 +9647,12 @@ async function showHistoryCommitDetail(hash) {
         const data = await resp.json();
         content.innerHTML = `
             <div class="commit-subject">${escapeHtml(data.subject)}</div>
-            <div class="commit-meta">${escapeHtml(data.author)} · ${data.date}</div>
+            <div class="commit-meta">${escapeHtml(data.author)} · ${escapeHtml(data.date)}</div>
             ${data.body ? `<pre class="commit-body">${escapeHtml(data.body)}</pre>` : ''}
             <pre class="commit-stat">${escapeHtml(data.stat)}</pre>
         `;
     } catch (e) {
-        content.innerHTML = `<div class="error">Failed to load: ${e.message}</div>`;
+        content.innerHTML = `<div class="error">Failed to load: ${escapeHtml(e.message)}</div>`;
     }
 }
 
@@ -10251,13 +10253,13 @@ async function loadProcessStatus() {
 
         let html = '';
         if (processStatus.is_running) {
-            html = `<span class="process-status-running">Running</span> PID: ${processStatus.pid}`;
+            html = `<span class="process-status-running">Running</span> PID: ${escapeHtml(String(processStatus.pid))}`;
             if (processStatus.session) {
                 html += ` | Session: ${escapeHtml(processStatus.session)}`;
             }
             banner.className = 'process-status-banner running';
         } else if (processStatus.pid) {
-            html = `<span class="process-status-dead">Dead</span> (was PID: ${processStatus.pid})`;
+            html = `<span class="process-status-dead">Dead</span> (was PID: ${escapeHtml(String(processStatus.pid))})`;
             banner.className = 'process-status-banner dead';
         } else {
             html = '<span class="process-status-none">No process</span>';
@@ -10320,7 +10322,7 @@ async function terminateProcess(force = false) {
 
         if (data.success) {
             resultDiv.classList.add('success');
-            resultDiv.innerHTML = `<pre>Process terminated (${data.method})\nPID: ${data.pid}</pre>`;
+            resultDiv.innerHTML = `<pre>Process terminated (${escapeHtml(data.method)})\nPID: ${escapeHtml(String(data.pid))}</pre>`;
             showToast('Process terminated', 'success');
         } else {
             resultDiv.classList.add('error');
@@ -10430,8 +10432,8 @@ function renderRunnerCommands() {
 
     container.innerHTML = Object.entries(runnerCommands).map(([id, cmd]) => {
         return `
-            <button class="runner-cmd-btn" data-cmd-id="${id}" title="${escapeHtml(cmd.description)}">
-                <span class="runner-cmd-icon">${cmd.icon}</span>
+            <button class="runner-cmd-btn" data-cmd-id="${escapeHtml(id)}" title="${escapeHtml(cmd.description)}">
+                <span class="runner-cmd-icon">${escapeHtml(cmd.icon)}</span>
                 <span class="runner-cmd-label">${escapeHtml(cmd.label)}</span>
             </button>
         `;
@@ -10581,10 +10583,10 @@ function renderDevServices() {
             const status = devPreviewStatus[svc.id]?.status || 'unknown';
             const isActive = activeDevService === svc.id;
             return `
-                <button class="dev-service-tab ${isActive ? 'active' : ''}" data-service-id="${svc.id}">
+                <button class="dev-service-tab ${isActive ? 'active' : ''}" data-service-id="${escapeHtml(svc.id)}">
                     <span class="dev-status-dot ${status}"></span>
                     <span class="dev-service-label">${escapeHtml(svc.label)}</span>
-                    <span class="dev-service-port">:${svc.port}</span>
+                    <span class="dev-service-port">:${escapeHtml(String(svc.port))}</span>
                 </button>
             `;
         }).join('');
