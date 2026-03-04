@@ -89,6 +89,22 @@ def find_utf8_boundary(data: bytes, max_len: int) -> int:
     return max_len
 
 
+async def run_subprocess(*args, **kwargs):
+    """Async wrapper for subprocess.run — runs in thread pool to avoid blocking event loop.
+
+    Accepts the same arguments as subprocess.run. Defaults to capture_output=True,
+    text=True, timeout=5 if not specified.
+    """
+    kwargs.setdefault('capture_output', True)
+    kwargs.setdefault('text', True)
+    kwargs.setdefault('timeout', 5)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: await run_subprocess(*args, **kwargs)
+    )
+
+
 async def get_bounded_snapshot(session: str, active_target: str = None, max_bytes: int = 16000) -> str:
     """Get bounded tmux capture-pane snapshot for mode switch catchup.
 
@@ -101,7 +117,7 @@ async def get_bounded_snapshot(session: str, active_target: str = None, max_byte
     content = ""
     for lines in [50, 30, 20, 10]:
         try:
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["tmux", "capture-pane", "-p", "-e", "-S", f"-{lines}", "-t", target],
                 capture_output=True,
                 text=True,
@@ -678,7 +694,7 @@ class CommandQueue:
 
         # Check for prompt via tmux capture-pane
         try:
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["tmux", "capture-pane", "-t", session, "-p", "-S", "-5"],
                 capture_output=True,
                 text=True,
@@ -694,7 +710,7 @@ class CommandQueue:
                     return True
 
             # Check pane title for Claude Code waiting state
-            title_result = subprocess.run(
+            title_result = await run_subprocess(
                 ["tmux", "display-message", "-p", "-t", session, "#{pane_title}"],
                 capture_output=True,
                 text=True,
@@ -1246,11 +1262,11 @@ async def _send_startup_command(pane_id: str, command: str, delay_seconds: float
     try:
         # Clear CLAUDECODE so agent CLIs don't refuse to start
         actual_cmd = f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; {command}"
-        subprocess.run(
+        await run_subprocess(
             ["tmux", "send-keys", "-t", pane_id, "-l", actual_cmd],
             capture_output=True, timeout=5,
         )
-        subprocess.run(
+        await run_subprocess(
             ["tmux", "send-keys", "-t", pane_id, "Enter"],
             capture_output=True, timeout=5,
         )
@@ -1296,7 +1312,7 @@ async def ensure_tmux_setup(config) -> dict:
         try:
             # Sanitize window name
             win_name = re.sub(r'[^a-zA-Z0-9_.-]', '', first_repo.label)[:50] or "window"
-            proc = subprocess.run(
+            proc = await run_subprocess(
                 ["tmux", "new-session", "-d", "-s", session, "-n", win_name, "-c", first_path],
                 capture_output=True, text=True, timeout=10,
             )
@@ -1337,11 +1353,11 @@ async def ensure_tmux_setup(config) -> dict:
     # Session-level -u only removes the session override, so we must also
     # scrub the global environment where tmux inherited these vars.
     for var in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
-        subprocess.run(
+        await run_subprocess(
             ["tmux", "set-environment", "-g", "-u", var],
             capture_output=True, timeout=5,
         )
-        subprocess.run(
+        await run_subprocess(
             ["tmux", "set-environment", "-t", session, "-u", var],
             capture_output=True, timeout=5,
         )
@@ -1636,7 +1652,7 @@ def create_app(config: Config) -> FastAPI:
         try:
             # tmux list-panes -s lists all panes in session
             # Format: window_index:pane_index|pane_current_path|window_name|pane_id|pane_title
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["tmux", "list-panes", "-s", "-t", session,
                  "-F", "#{window_index}:#{pane_index}|#{pane_current_path}|#{window_name}|#{pane_id}|#{pane_title}"],
                 capture_output=True, text=True, timeout=5
@@ -1735,7 +1751,7 @@ def create_app(config: Config) -> FastAPI:
         # Verify target exists
         try:
             _t1 = time.time()
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["tmux", "list-panes", "-s", "-t", session,
                  "-F", "#{window_index}:#{pane_index}"],
                 capture_output=True, text=True, timeout=5
@@ -1774,14 +1790,14 @@ def create_app(config: Config) -> FastAPI:
                 window_idx, pane_idx = parts
                 # Switch to the window first
                 _t2 = time.time()
-                subprocess.run(
+                await run_subprocess(
                     ["tmux", "select-window", "-t", f"{session}:{window_idx}"],
                     capture_output=True, timeout=2
                 )
                 logger.info(f"[TIMING] select-window took {time.time()-_t2:.3f}s")
                 # Then select the pane within that window (format: session:window.pane)
                 _t3 = time.time()
-                subprocess.run(
+                await run_subprocess(
                     ["tmux", "select-pane", "-t", f"{session}:{window_idx}.{pane_idx}"],
                     capture_output=True, timeout=2
                 )
@@ -1795,7 +1811,7 @@ def create_app(config: Config) -> FastAPI:
                 while time.time() < _verify_deadline:
                     _verify_iterations += 1
                     try:
-                        verify_result = subprocess.run(
+                        verify_result = await run_subprocess(
                             ["tmux", "display-message", "-t", session, "-p", "#{window_index}:#{pane_index}"],
                             capture_output=True, text=True, timeout=0.5  # Short timeout per call
                         )
@@ -2061,7 +2077,7 @@ def create_app(config: Config) -> FastAPI:
 
         # Verify the pane exists
         try:
-            check = subprocess.run(
+            check = await run_subprocess(
                 ["tmux", "list-panes", "-t", tmux_target],
                 capture_output=True, text=True, timeout=5
             )
@@ -2072,7 +2088,7 @@ def create_app(config: Config) -> FastAPI:
 
         # Kill the pane
         try:
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["tmux", "kill-pane", "-t", tmux_target],
                 capture_output=True, text=True, timeout=5
             )
@@ -2170,7 +2186,7 @@ def create_app(config: Config) -> FastAPI:
 
         try:
             # Get list of tracked files using git ls-files
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["git", "ls-files"],
                 capture_output=True,
                 text=True,
@@ -2180,7 +2196,7 @@ def create_app(config: Config) -> FastAPI:
 
             if result.returncode != 0:
                 # Fallback: list files excluding .git
-                result = subprocess.run(
+                result = await run_subprocess(
                     ["find", ".", "-type", "f", "-not", "-path", "./.git/*"],
                     capture_output=True,
                     text=True,
@@ -2226,7 +2242,7 @@ def create_app(config: Config) -> FastAPI:
             cwd = str(repo_path) if repo_path else None
 
             # Get list of tracked files using git ls-files
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["git", "ls-files"],
                 capture_output=True,
                 text=True,
@@ -2236,7 +2252,7 @@ def create_app(config: Config) -> FastAPI:
 
             if result.returncode != 0:
                 # Fallback to find if not a git repo
-                result = subprocess.run(
+                result = await run_subprocess(
                     ["find", ".", "-type", "f", "-name", f"*{q}*", "-not", "-path", "./.git/*"],
                     capture_output=True,
                     text=True,
@@ -2326,7 +2342,7 @@ def create_app(config: Config) -> FastAPI:
             return cached
 
         try:
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["tmux", "capture-pane", "-p", "-J", "-S", f"-{lines}", "-t", target],
                 capture_output=True,
                 text=True,
@@ -2376,7 +2392,7 @@ def create_app(config: Config) -> FastAPI:
             # Resize tmux pane if dimensions provided (fixes garbled output)
             resized = False
             if cols and rows:
-                resize_result = subprocess.run(
+                resize_result = await run_subprocess(
                     ["tmux", "resize-pane", "-t", target, "-x", str(cols), "-y", str(rows)],
                     capture_output=True,
                     text=True,
@@ -2389,7 +2405,7 @@ def create_app(config: Config) -> FastAPI:
                     resized = True
 
                     # Send Ctrl+L to force screen redraw after resize
-                    subprocess.run(
+                    await run_subprocess(
                         ["tmux", "send-keys", "-t", target, "C-l"],
                         capture_output=True,
                         timeout=1,
@@ -2399,7 +2415,7 @@ def create_app(config: Config) -> FastAPI:
 
             # Capture visible area only (not scrollback) to avoid stale wrapped content
             # Use -S - to start from visible area, or omit -S for default
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["tmux", "capture-pane", "-p", "-t", target],
                 capture_output=True,
                 text=True,
@@ -2453,7 +2469,7 @@ def create_app(config: Config) -> FastAPI:
 
             # Try systemd first
             try:
-                result = subprocess.run(
+                result = await run_subprocess(
                     ["systemctl", "--user", "is-active", "mobile-terminal.service"],
                     capture_output=True,
                     text=True,
@@ -3234,7 +3250,7 @@ def create_app(config: Config) -> FastAPI:
             try:
                 parts = pane_id.split(":")
                 if len(parts) == 2:
-                    result = subprocess.run(
+                    result = await run_subprocess(
                         ["tmux", "display-message", "-t", f"{app.state.current_session}:{parts[0]}.{parts[1]}", "-p", "#{pane_current_path}"],
                         capture_output=True, text=True, timeout=2
                     )
@@ -3649,7 +3665,7 @@ def create_app(config: Config) -> FastAPI:
 
         try:
             # Capture last N lines from tmux pane
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["tmux", "capture-pane", "-t", target, "-p", "-S", f"-{lines}"],
                 capture_output=True,
                 text=True,
@@ -3660,7 +3676,7 @@ def create_app(config: Config) -> FastAPI:
             # e.g., "✳ Signal Detection Pending" when waiting for input
             pane_title = ""
             try:
-                title_result = subprocess.run(
+                title_result = await run_subprocess(
                     ["tmux", "display-message", "-p", "-t", target, "#{pane_title}"],
                     capture_output=True,
                     text=True,
@@ -3723,7 +3739,7 @@ def create_app(config: Config) -> FastAPI:
         try:
             # Capture with ANSI escape sequences for accurate screen state
             # Limit to 80 lines to keep payload reasonable
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["tmux", "capture-pane", "-p", "-e", "-S", "-80", "-t", tmux_target],
                 capture_output=True,
                 text=True,
@@ -3733,7 +3749,7 @@ def create_app(config: Config) -> FastAPI:
                 content = result.stdout or ""
                 # If still too large, reduce further
                 if len(content) > 50000:  # 50KB max
-                    result = subprocess.run(
+                    result = await run_subprocess(
                         ["tmux", "capture-pane", "-p", "-e", "-S", "-40", "-t", tmux_target],
                         capture_output=True,
                         text=True,
@@ -3811,7 +3827,7 @@ def create_app(config: Config) -> FastAPI:
                 # Use active target pane if set, otherwise fall back to session default
                 target = get_tmux_target(session, app.state.active_target)
                 try:
-                    result = subprocess.run(
+                    result = await run_subprocess(
                         ["tmux", "capture-pane", "-t", target, "-p", "-S", f"-{terminal_lines}"],
                         capture_output=True,
                         text=True,
@@ -3826,7 +3842,7 @@ def create_app(config: Config) -> FastAPI:
         if include_diff:
             try:
                 # Get diff stat first
-                diff_stat = subprocess.run(
+                diff_stat = await run_subprocess(
                     ["git", "diff", "--stat"],
                     cwd=repo_path,
                     capture_output=True,
@@ -3834,7 +3850,7 @@ def create_app(config: Config) -> FastAPI:
                     timeout=5,
                 )
                 # Get actual diff (limited)
-                diff_content = subprocess.run(
+                diff_content = await run_subprocess(
                     ["git", "diff"],
                     cwd=repo_path,
                     capture_output=True,
@@ -3873,7 +3889,7 @@ def create_app(config: Config) -> FastAPI:
 
         # 5. Minimal project context (git status + branch)
         try:
-            status = subprocess.run(
+            status = await run_subprocess(
                 ["git", "status", "-sb"],
                 cwd=repo_path,
                 capture_output=True,
@@ -4389,7 +4405,7 @@ Only the top 1–3 risks worth caring about.
         try:
             # Use active target pane if set, otherwise fall back to session default
             target = get_tmux_target(session, app.state.active_target)
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["tmux", "capture-pane", "-t", target, "-p", "-S", "-50"],
                 capture_output=True, text=True, timeout=5
             )
@@ -4459,7 +4475,7 @@ Only the top 1–3 risks worth caring about.
         if not snapshot.get("terminal_text") and snapshot.get("pane_id"):
             try:
                 tmux_t = get_tmux_target(session, snapshot["pane_id"])
-                cap = subprocess.run(
+                cap = await run_subprocess(
                     ["tmux", "capture-pane", "-p", "-S", "-100", "-t", tmux_t],
                     capture_output=True, text=True, timeout=3,
                 )
@@ -5072,7 +5088,7 @@ Only the top 1–3 risks worth caring about.
         sess = session or app.state.current_session
 
         # Get all panes (include pane_pid and pane_title for driver observe)
-        result = subprocess.run(
+        result = await run_subprocess(
             ["tmux", "list-panes", "-s", "-t", sess,
              "-F", "#{window_index}:#{pane_index}|#{pane_current_path}|#{window_name}|#{pane_pid}|#{pane_title}"],
             capture_output=True, text=True, timeout=5
@@ -5158,7 +5174,7 @@ Only the top 1–3 risks worth caring about.
         lines = max(1, min(lines, 50))  # Clamp 1-50
 
         # Discover team panes (same filter as get_team_state)
-        result = subprocess.run(
+        result = await run_subprocess(
             ["tmux", "list-panes", "-s", "-t", sess,
              "-F", "#{window_index}:#{pane_index}|#{window_name}|#{pane_title}"],
             capture_output=True, text=True, timeout=5
@@ -5187,7 +5203,7 @@ Only the top 1–3 risks worth caring about.
             # Capture pane content
             tmux_target = get_tmux_target(sess, target_id)
             try:
-                cap = subprocess.run(
+                cap = await run_subprocess(
                     ["tmux", "capture-pane", "-t", tmux_target, "-p", f"-S", f"-{lines}"],
                     capture_output=True, text=True, timeout=5
                 )
@@ -5213,7 +5229,7 @@ Only the top 1–3 risks worth caring about.
         sess = session or app.state.current_session
 
         # Validate target_id is a team pane
-        result = subprocess.run(
+        result = await run_subprocess(
             ["tmux", "list-panes", "-s", "-t", sess,
              "-F", "#{window_index}:#{pane_index}|#{window_name}"],
             capture_output=True, text=True, timeout=5
@@ -5237,11 +5253,11 @@ Only the top 1–3 risks worth caring about.
 
         try:
             # Send text literally, then Enter
-            subprocess.run(
+            await run_subprocess(
                 ["tmux", "send-keys", "-t", tmux_target, "-l", text],
                 capture_output=True, text=True, timeout=5
             )
-            subprocess.run(
+            await run_subprocess(
                 ["tmux", "send-keys", "-t", tmux_target, "Enter"],
                 capture_output=True, text=True, timeout=5
             )
@@ -5281,7 +5297,7 @@ Only the top 1–3 risks worth caring about.
             return JSONResponse({"error": f"Cannot read plan: {e}"}, status_code=500)
 
         # Discover team panes
-        result = subprocess.run(
+        result = await run_subprocess(
             ["tmux", "list-panes", "-s", "-t", sess,
              "-F", "#{window_index}:#{pane_index}|#{pane_current_path}|#{window_name}|#{pane_pid}|#{pane_title}"],
             capture_output=True, text=True, timeout=5
@@ -5350,7 +5366,7 @@ Only the top 1–3 risks worth caring about.
         # Get git root (best-effort)
         git_root = ""
         try:
-            gr = subprocess.run(
+            gr = await run_subprocess(
                 ["git", "-C", str(leader_cwd), "rev-parse", "--show-toplevel"],
                 capture_output=True, text=True, timeout=2
             )
@@ -5461,11 +5477,11 @@ Reply with:
         tmux_target = get_tmux_target(sess, leader["target_id"])
         instruction = f"Read .claude/dispatch.md and execute the plan. Dispatch ID: {dispatch_id}"
         try:
-            subprocess.run(
+            await run_subprocess(
                 ["tmux", "send-keys", "-t", tmux_target, "-l", instruction],
                 capture_output=True, text=True, timeout=5
             )
-            subprocess.run(
+            await run_subprocess(
                 ["tmux", "send-keys", "-t", tmux_target, "Enter"],
                 capture_output=True, text=True, timeout=5
             )
@@ -5574,11 +5590,11 @@ Reply with:
         try:
             # Clear CLAUDECODE to prevent nested-session errors, then run command
             actual_cmd = f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; {startup_cmd}"
-            subprocess.run(
+            await run_subprocess(
                 ["tmux", "send-keys", "-t", pane_id, "-l", actual_cmd],
                 capture_output=True, timeout=5
             )
-            subprocess.run(
+            await run_subprocess(
                 ["tmux", "send-keys", "-t", pane_id, "Enter"],
                 capture_output=True, timeout=5
             )
@@ -5984,14 +6000,14 @@ Reply with:
 
         try:
             # Get current branch
-            branch_result = subprocess.run(
+            branch_result = await run_subprocess(
                 ["git", "branch", "--show-current"],
                 cwd=repo_path, capture_output=True, text=True, timeout=5
             )
             branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "unknown"
 
             # Get dirty status
-            status_result = subprocess.run(
+            status_result = await run_subprocess(
                 ["git", "status", "--porcelain"],
                 cwd=repo_path, capture_output=True, text=True, timeout=5
             )
@@ -6006,7 +6022,7 @@ Reply with:
             behind = 0
             has_upstream = False
             try:
-                rev_result = subprocess.run(
+                rev_result = await run_subprocess(
                     ["git", "rev-list", "--left-right", "--count", f"{branch}@{{upstream}}...HEAD"],
                     cwd=repo_path, capture_output=True, text=True, timeout=5
                 )
@@ -6033,7 +6049,7 @@ Reply with:
                 pr_info = cached_pr["data"]
             else:
                 try:
-                    pr_result = subprocess.run(
+                    pr_result = await run_subprocess(
                         ["gh", "pr", "view", "--json", "number,title,url,state"],
                         cwd=repo_path, capture_output=True, text=True, timeout=5
                     )
@@ -6080,7 +6096,7 @@ Reply with:
             return JSONResponse({"error": "No repo found"}, status_code=400)
 
         try:
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["git", "log", f"--max-count={limit}", "--format=%H|%s|%an|%ad", "--date=short"],
                 cwd=repo_path, capture_output=True, text=True, timeout=10
             )
@@ -6118,7 +6134,7 @@ Reply with:
         repo_path = get_current_repo_path()
         if repo_path:
             try:
-                result = subprocess.run(
+                result = await run_subprocess(
                     ["git", "log", f"--max-count={limit}", "--format=%H|%s|%an|%at"],
                     cwd=repo_path, capture_output=True, text=True, timeout=10
                 )
@@ -6181,7 +6197,7 @@ Reply with:
             return JSONResponse({"error": "No repo found"}, status_code=400)
 
         try:
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["git", "show", "--stat", "--format=%H%n%s%n%b%n---AUTHOR---%n%an%n---DATE---%n%ad", commit_hash],
                 cwd=repo_path, capture_output=True, text=True, timeout=10
             )
@@ -6239,7 +6255,7 @@ Reply with:
 
         try:
             # Check for uncommitted changes
-            status = subprocess.run(
+            status = await run_subprocess(
                 ["git", "status", "--porcelain"],
                 cwd=repo_path, capture_output=True, text=True, timeout=5
             )
@@ -6250,14 +6266,14 @@ Reply with:
                 }, status_code=400)
 
             # Try revert with --no-commit to preview
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["git", "revert", "--no-commit", commit_hash],
                 cwd=repo_path, capture_output=True, text=True, timeout=30
             )
 
             if result.returncode != 0:
                 # Reset any partial changes
-                subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path,
+                await run_subprocess(["git", "reset", "--hard", "HEAD"], cwd=repo_path,
                                capture_output=True, timeout=10)
                 return {
                     "success": False,
@@ -6266,13 +6282,13 @@ Reply with:
                 }
 
             # Get what would change
-            diff = subprocess.run(
+            diff = await run_subprocess(
                 ["git", "diff", "--cached", "--stat"],
                 cwd=repo_path, capture_output=True, text=True, timeout=10
             )
 
             # Reset the staged revert
-            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path,
+            await run_subprocess(["git", "reset", "--hard", "HEAD"], cwd=repo_path,
                            capture_output=True, timeout=10)
 
             app.state.audit_log.log("revert_dry_run", {"commit": commit_hash})
@@ -6285,11 +6301,11 @@ Reply with:
             }
         except subprocess.TimeoutExpired:
             # Clean up on timeout
-            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path,
+            await run_subprocess(["git", "reset", "--hard", "HEAD"], cwd=repo_path,
                            capture_output=True, timeout=10)
             return JSONResponse({"error": "Git command timed out"}, status_code=500)
         except Exception as e:
-            subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_path,
+            await run_subprocess(["git", "reset", "--hard", "HEAD"], cwd=repo_path,
                            capture_output=True, timeout=10)
             return JSONResponse({"error": str(e)}, status_code=500)
         finally:
@@ -6331,7 +6347,7 @@ Reply with:
 
         try:
             # Check working directory is clean
-            status = subprocess.run(
+            status = await run_subprocess(
                 ["git", "status", "--porcelain"],
                 cwd=repo_path, capture_output=True, text=True, timeout=5
             )
@@ -6341,13 +6357,13 @@ Reply with:
                 }, status_code=400)
 
             # Get current HEAD for undo
-            head_before = subprocess.run(
+            head_before = await run_subprocess(
                 ["git", "rev-parse", "HEAD"],
                 cwd=repo_path, capture_output=True, text=True, timeout=5
             ).stdout.strip()
 
             # Execute revert
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["git", "revert", "--no-edit", commit_hash],
                 cwd=repo_path, capture_output=True, text=True, timeout=30
             )
@@ -6359,7 +6375,7 @@ Reply with:
                 }, status_code=500)
 
             # Get new HEAD
-            new_head = subprocess.run(
+            new_head = await run_subprocess(
                 ["git", "rev-parse", "HEAD"],
                 cwd=repo_path, capture_output=True, text=True, timeout=5
             ).stdout.strip()
@@ -6407,7 +6423,7 @@ Reply with:
 
         try:
             # Check working directory is clean
-            status = subprocess.run(
+            status = await run_subprocess(
                 ["git", "status", "--porcelain"],
                 cwd=repo_path, capture_output=True, text=True, timeout=5
             )
@@ -6417,7 +6433,7 @@ Reply with:
                 }, status_code=400)
 
             # Revert the revert commit (non-destructive, creates new commit)
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["git", "revert", "--no-edit", revert_commit],
                 cwd=repo_path, capture_output=True, text=True, timeout=30
             )
@@ -6430,7 +6446,7 @@ Reply with:
                 }, status_code=500)
 
             # Get new HEAD (the undo commit)
-            new_head = subprocess.run(
+            new_head = await run_subprocess(
                 ["git", "rev-parse", "HEAD"],
                 cwd=repo_path, capture_output=True, text=True, timeout=5
             ).stdout.strip()
@@ -6476,7 +6492,7 @@ Reply with:
             message = f"mobile-overlay-auto-stash-{timestamp}"
 
             # Stash including untracked files
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["git", "stash", "push", "-u", "-m", message],
                 cwd=repo_path, capture_output=True, text=True, timeout=30
             )
@@ -6518,7 +6534,7 @@ Reply with:
             return JSONResponse({"error": "No repo found"}, status_code=400)
 
         try:
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["git", "stash", "list", "--format=%gd|%s|%ar"],
                 cwd=repo_path, capture_output=True, text=True, timeout=10
             )
@@ -6564,7 +6580,7 @@ Reply with:
             }, status_code=409)
 
         try:
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["git", "stash", "apply", ref],
                 cwd=repo_path, capture_output=True, text=True, timeout=30
             )
@@ -6618,7 +6634,7 @@ Reply with:
             }, status_code=409)
 
         try:
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["git", "stash", "drop", ref],
                 cwd=repo_path, capture_output=True, text=True, timeout=10
             )
@@ -6673,7 +6689,7 @@ Reply with:
 
         try:
             # Get list of files that will be discarded (for logging)
-            status_result = subprocess.run(
+            status_result = await run_subprocess(
                 ["git", "status", "--porcelain"],
                 cwd=repo_path, capture_output=True, text=True, timeout=5
             )
@@ -6687,7 +6703,7 @@ Reply with:
             ]
 
             # Reset tracked files
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["git", "reset", "--hard", "HEAD"],
                 cwd=repo_path, capture_output=True, text=True, timeout=30
             )
@@ -6701,7 +6717,7 @@ Reply with:
             # Optionally clean untracked files
             cleaned_files = []
             if include_untracked and untracked_files:
-                clean_result = subprocess.run(
+                clean_result = await run_subprocess(
                     ["git", "clean", "-fd"],
                     cwd=repo_path, capture_output=True, text=True, timeout=30
                 )
@@ -6820,7 +6836,7 @@ Reply with:
         target = get_tmux_target(session, app.state.active_target)
 
         try:
-            result = subprocess.run(
+            result = await run_subprocess(
                 ["tmux", "send-keys", "-t", target, tmux_key],
                 capture_output=True,
                 text=True,
@@ -7090,7 +7106,7 @@ Reply with:
                                         try:
                                             await loop.run_in_executor(
                                                 None,
-                                                lambda: subprocess.run(
+                                                lambda: await run_subprocess(
                                                     ["tmux", "send-keys", "-t", tmux_t, "-l", text_data],
                                                     timeout=3, check=True,
                                                 ),
@@ -7101,7 +7117,7 @@ Reply with:
                                         try:
                                             await loop.run_in_executor(
                                                 None,
-                                                lambda: subprocess.run(
+                                                lambda: await run_subprocess(
                                                     ["tmux", "send-keys", "-t", tmux_t, "Enter"],
                                                     timeout=3, check=True,
                                                 ),
@@ -7131,7 +7147,7 @@ Reply with:
                                                 target = app.state.active_target
                                                 snapshot = await asyncio.get_event_loop().run_in_executor(
                                                     None,
-                                                    lambda: subprocess.run(
+                                                    lambda: await run_subprocess(
                                                         ["tmux", "capture-pane", "-p", "-e", "-t",
                                                          get_tmux_target(session, target)],
                                                         capture_output=True, text=True, timeout=2,
@@ -7259,7 +7275,7 @@ Reply with:
                         continue
                     tmux_target = get_tmux_target(session, target)
                     def _capture_desktop():
-                        r = subprocess.run(
+                        r = await run_subprocess(
                             ["tmux", "capture-pane", "-t", tmux_target, "-p", "-S", "-5"],
                             capture_output=True, text=True, timeout=1
                         )
