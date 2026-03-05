@@ -5,13 +5,16 @@ FastAPI or server-side state initialization.
 """
 
 import asyncio
+import fcntl
 import json
 import logging
 import os
 import re
 import shutil
 import signal
+import struct
 import subprocess
+import termios
 import time
 from pathlib import Path
 from typing import Optional
@@ -697,6 +700,31 @@ def _resolve_device(request, devices: dict):
     except Exception:
         pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# PTY helpers
+# ---------------------------------------------------------------------------
+
+def set_terminal_size(fd: int, cols: int, rows: int, child_pid: int = None) -> None:
+    """
+    Set terminal size using TIOCSWINSZ ioctl.
+
+    Args:
+        fd: File descriptor of the pty master.
+        cols: Number of columns.
+        rows: Number of rows.
+        child_pid: Optional child process ID to send SIGWINCH for redraw.
+    """
+    winsize = struct.pack("HHHH", rows, cols, 0, 0)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+
+    # Send SIGWINCH to trigger tmux redraw
+    if child_pid:
+        try:
+            os.kill(child_pid, signal.SIGWINCH)
+        except ProcessLookupError:
+            pass
 
 
 # ---------------------------------------------------------------------------
