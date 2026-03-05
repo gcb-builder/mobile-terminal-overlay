@@ -101,7 +101,7 @@ async def run_subprocess(*args, **kwargs):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None,
-        lambda: await run_subprocess(*args, **kwargs)
+        lambda: subprocess.run(*args, **kwargs)
     )
 
 
@@ -7106,7 +7106,7 @@ Reply with:
                                         try:
                                             await loop.run_in_executor(
                                                 None,
-                                                lambda: await run_subprocess(
+                                                lambda: subprocess.run(
                                                     ["tmux", "send-keys", "-t", tmux_t, "-l", text_data],
                                                     timeout=3, check=True,
                                                 ),
@@ -7117,7 +7117,7 @@ Reply with:
                                         try:
                                             await loop.run_in_executor(
                                                 None,
-                                                lambda: await run_subprocess(
+                                                lambda: subprocess.run(
                                                     ["tmux", "send-keys", "-t", tmux_t, "Enter"],
                                                     timeout=3, check=True,
                                                 ),
@@ -7147,7 +7147,7 @@ Reply with:
                                                 target = app.state.active_target
                                                 snapshot = await asyncio.get_event_loop().run_in_executor(
                                                     None,
-                                                    lambda: await run_subprocess(
+                                                    lambda: subprocess.run(
                                                         ["tmux", "capture-pane", "-p", "-e", "-t",
                                                          get_tmux_target(session, target)],
                                                         capture_output=True, text=True, timeout=2,
@@ -7275,7 +7275,7 @@ Reply with:
                         continue
                     tmux_target = get_tmux_target(session, target)
                     def _capture_desktop():
-                        r = await run_subprocess(
+                        r = subprocess.run(
                             ["tmux", "capture-pane", "-t", tmux_target, "-p", "-S", "-5"],
                             capture_output=True, text=True, timeout=1
                         )
