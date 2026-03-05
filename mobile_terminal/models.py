@@ -604,8 +604,7 @@ class CommandQueue:
         1. Output has been quiet for QUIET_MS
         2. Prompt is visible
         """
-        # Lazy import — moves to helpers.py in next commit
-        from mobile_terminal.server import run_subprocess
+        from mobile_terminal.helpers import run_subprocess
 
         if not self._app:
             return False
