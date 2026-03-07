@@ -377,6 +377,7 @@ function triggerTerminalResync() {
 
 // Direct enqueue for resync snapshot (with epoch)
 function enqueueSplitDirect(data, epoch) {
+    if (isResyncing) return;
     if (epoch !== modeEpoch) return;
 
     // Convert to bytes if string
@@ -390,10 +391,15 @@ function enqueueSplitDirect(data, epoch) {
     }
 
     // Chunk and enqueue with epoch tag (through overflow-protected path)
-    for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    let offset = 0;
+    while (offset < bytes.length) {
         if (epoch !== modeEpoch) return;  // Abort if mode changed
-        const slice = bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length));
+        const targetEnd = Math.min(offset + CHUNK_SIZE, bytes.length);
+        const safeEnd = findSafeBoundary(bytes, targetEnd);
+        const actualEnd = safeEnd > offset ? safeEnd : targetEnd;
+        const slice = bytes.subarray(offset, actualEnd);
         queuedWriteInternal(slice, epoch);
+        offset = actualEnd;
     }
 }
 
