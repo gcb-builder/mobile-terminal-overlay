@@ -634,7 +634,7 @@ function initTerminal() {
         cursorBlink: false,
         cursorStyle: 'bar',
         cursorInactiveStyle: 'none',
-        fontSize: Number(paramFontSize) || 14,
+        fontSize: Number(paramFontSize) || 11,
         fontFamily: 'Menlo, Monaco, "Courier New", monospace',
         scrollback: isMobile ? 2000 : 10000,  // Smaller buffer on mobile for faster rendering
         smoothScrollDuration: 0,  // Disable smooth scroll - causes delays on mobile
@@ -4040,6 +4040,15 @@ function extractClarifyingQuestions(content) {
 }
 
 /**
+ * Get a short label for document file icons based on extension.
+ */
+function getDocIcon(filename) {
+    const ext = (filename || '').split('.').pop().toLowerCase();
+    const labels = { pdf: 'PDF', doc: 'DOC', docx: 'DOC', xls: 'XLS', xlsx: 'XLS', csv: 'CSV', txt: 'TXT', md: 'MD' };
+    return labels[ext] || 'FILE';
+}
+
+/**
  * Upload a file attachment
  * @param {File} file - The file to upload
  * @param {HTMLElement} [triggerBtn] - Optional button to show uploading state on
@@ -4072,6 +4081,7 @@ async function uploadAttachment(file, triggerBtn) {
             path: data.path,
             filename: data.filename,
             size: data.size,
+            type: file.type,
             localUrl: URL.createObjectURL(file),
         });
 
@@ -4101,16 +4111,21 @@ function renderAttachments() {
     }
 
     composeAttachments.classList.remove('hidden');
-    composeAttachments.innerHTML = pendingAttachments.map((att, idx) => `
+    composeAttachments.innerHTML = pendingAttachments.map((att, idx) => {
+        const isImage = att.type?.startsWith('image/');
+        const thumbHtml = isImage
+            ? `<img src="${att.localUrl}" alt="" class="attachment-thumb">`
+            : `<div class="attachment-icon">${getDocIcon(att.filename)}</div>`;
+        return `
         <div class="attachment-item">
-            <img src="${att.localUrl}" alt="" class="attachment-thumb">
+            ${thumbHtml}
             <div class="attachment-info">
                 <span class="attachment-path">${escapeHtml(att.path)}</span>
                 <span class="attachment-size">${formatFileSize(att.size)}</span>
             </div>
             <button class="attachment-remove" data-idx="${idx}">&times;</button>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 
     // Add remove handlers
     composeAttachments.querySelectorAll('.attachment-remove').forEach(btn => {
@@ -8512,7 +8527,6 @@ async function loadSnapshotList() {
         console.log('Snapshots response:', data);
         previewSnapshots = data.snapshots || [];
         console.log('Snapshot count:', previewSnapshots.length);
-        renderPreviewList();
     } catch (e) {
         console.error('Failed to load snapshots:', e);
     }
@@ -8685,7 +8699,6 @@ async function toggleSnapshotPin(snapId, pinned) {
             // Update local state and re-render
             const snap = previewSnapshots.find(s => s.id === snapId);
             if (snap) snap.pinned = pinned;
-            renderPreviewList();
         }
     } catch (e) {
         console.error('Failed to toggle pin:', e);
@@ -8708,47 +8721,6 @@ async function exportSnapshot(snapId) {
     } catch (e) {
         console.error('Failed to export snapshot:', e);
     }
-}
-
-/**
- * Render the preview list in the drawer with filtering
- */
-function renderPreviewList() {
-    const list = document.getElementById('previewList');
-    if (!list) return;
-
-    // Apply filter
-    const filteredSnapshots = previewFilter === 'all'
-        ? previewSnapshots
-        : previewSnapshots.filter(snap => snap.label === previewFilter);
-
-    if (filteredSnapshots.length === 0) {
-        const msg = previewFilter === 'all'
-            ? 'No snapshots yet'
-            : `No ${previewFilter} snapshots`;
-        list.innerHTML = `<div class="preview-empty">${msg}</div>`;
-        return;
-    }
-
-    list.innerHTML = filteredSnapshots.map(snap => {
-        const date = new Date(snap.timestamp);
-        const time = date.toLocaleTimeString();
-        const isActive = previewMode === snap.id;
-        const isPinned = snap.pinned;
-        // Friendly label display
-        const labelDisplay = getLabelDisplay(snap.label);
-        return `
-            <div class="preview-list-item ${isActive ? 'active' : ''} ${isPinned ? 'pinned' : ''}" data-snap-id="${escapeHtml(String(snap.id))}">
-                <button class="preview-pin-btn ${isPinned ? 'pinned' : ''}" title="${isPinned ? 'Unpin' : 'Pin'}">
-                    ${isPinned ? '&#x1F4CC;' : '&#x1F4CD;'}
-                </button>
-                <span class="preview-time">${time}</span>
-                <span class="preview-label-badge ${escapeHtml(snap.label)}">${escapeHtml(labelDisplay)}</span>
-                <button class="preview-export-btn" title="Export JSON">&#x2B07;</button>
-                <button class="preview-load-btn">${isActive ? 'Current' : 'Load'}</button>
-            </div>
-        `;
-    }).join('');
 }
 
 /**
@@ -8777,7 +8749,6 @@ function setPreviewFilter(filter) {
         btn.classList.toggle('active', btn.dataset.filter === filter);
     });
 
-    renderPreviewList();
 }
 
 /**
@@ -8813,37 +8784,6 @@ function setupPreviewHandlers() {
             snapBtn.disabled = false;
         }, 300);
     });
-
-    // List item clicks (event delegation)
-    document.getElementById('previewList')?.addEventListener('click', async (e) => {
-        const item = e.target.closest('.preview-list-item');
-        if (!item) return;
-        const snapId = item.dataset.snapId;
-        if (!snapId) return;
-
-        // Handle pin button
-        const pinBtn = e.target.closest('.preview-pin-btn');
-        if (pinBtn) {
-            const isPinned = pinBtn.classList.contains('pinned');
-            await toggleSnapshotPin(snapId, !isPinned);
-            return;
-        }
-
-        // Handle export button
-        const exportBtn = e.target.closest('.preview-export-btn');
-        if (exportBtn) {
-            await exportSnapshot(snapId);
-            return;
-        }
-
-        // Handle load button
-        const loadBtn = e.target.closest('.preview-load-btn');
-        if (loadBtn && snapId !== previewMode) {
-            enterPreviewMode(snapId);
-        }
-    });
-
-    // Periodic snapshot capture disabled - only user_send and manual snapshots now
 
     // Preview filter buttons
     document.querySelectorAll('.preview-filter-btn').forEach(btn => {
@@ -10876,12 +10816,12 @@ function hidePermissionBanner() {
  */
 function setupPermissionBanner() {
     document.getElementById('permissionAllow')?.addEventListener('click', () => {
-        sendInput('y\n');
+        sendTextAtomic('y', true);
         hidePermissionBanner();
     });
 
     document.getElementById('permissionDeny')?.addEventListener('click', () => {
-        sendInput('n\n');
+        sendTextAtomic('n', true);
         hidePermissionBanner();
     });
 
@@ -11844,11 +11784,26 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Handle URL action params (from push notification deep links)
         const urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.get('action') === 'respawn') {
+        const deepAction = urlParams.get('action');
+        if (deepAction === 'respawn') {
             // Delay respawn until connection is established
             setTimeout(() => {
                 respawnAgent();
-                // Clean URL params
+                const cleanUrl = window.location.pathname + (token ? `?token=${token}` : '');
+                window.history.replaceState({}, '', cleanUrl);
+            }, 2000);
+        } else if (deepAction === 'allow' || deepAction === 'deny') {
+            // Permission response from push notification when no client was open
+            const choice = deepAction === 'allow' ? 'y' : 'n';
+            const paneId = urlParams.get('pane_id') || '';
+            // Delay until WebSocket connection is established
+            setTimeout(() => {
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    sendTextAtomic(choice, true);
+                    showToast(`Sent ${deepAction} to ${paneId || 'agent'}`, 'success');
+                } else {
+                    showToast(`Could not send ${deepAction} — not connected`, 'error');
+                }
                 const cleanUrl = window.location.pathname + (token ? `?token=${token}` : '');
                 window.history.replaceState({}, '', cleanUrl);
             }, 2000);
@@ -11858,6 +11813,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // Register service worker for PWA standalone mode
 if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js?v=117', { scope: '/' })
+    navigator.serviceWorker.register('/sw.js?v=118', { scope: '/' })
         .catch(err => console.log('SW registration failed:', err));
 }
