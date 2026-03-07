@@ -43,11 +43,13 @@ def register(app: FastAPI, deps):
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/api/context")
+    @app.get("/api/docs/context")
     async def get_context(_auth=Depends(deps.verify_token)):
         """Get the .claude/CONTEXT.md file from the current repo."""
         return _read_claude_file("CONTEXT.md", "context file")
 
     @app.get("/api/touch")
+    @app.get("/api/docs/touch")
     async def get_touch(_auth=Depends(deps.verify_token)):
         """Get the .claude/touch-summary.md file from the current repo."""
         return _read_claude_file("touch-summary.md", "touch file")
@@ -257,12 +259,3 @@ def register(app: FastAPI, deps):
         else:
             return {"success": False, "error": "No plan linked to this repo"}
 
-    @app.get("/api/docs/context")
-    async def get_context_doc(_auth=Depends(deps.verify_token)):
-        """Read .claude/CONTEXT.md for display in Docs modal."""
-        return _read_claude_file("CONTEXT.md", "CONTEXT.md")
-
-    @app.get("/api/docs/touch")
-    async def get_touch_summary(_auth=Depends(deps.verify_token)):
-        """Read .claude/touch-summary.md for display in Docs modal."""
-        return _read_claude_file("touch-summary.md", "touch-summary.md")
