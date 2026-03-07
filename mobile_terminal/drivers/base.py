@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
+from mobile_terminal.helpers import get_project_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -130,7 +132,7 @@ def tail_jsonl(log_file: Path, read_bytes: int = 8192) -> list:
 
 def find_claude_log_file(repo_path: Path) -> Optional[Path]:
     """Find the most recent Claude JSONL log for a repo path."""
-    project_id = str(repo_path.resolve()).replace("~", "-").replace("/", "-")
+    project_id = get_project_id(repo_path)
     claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
     if not claude_projects_dir.exists():
         return None
