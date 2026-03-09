@@ -481,6 +481,29 @@ export function isQueuePaused() {
     return queuePaused;
 }
 
+/**
+ * Pop the first queued item from the queue.
+ * Removes it, persists, and re-renders. Returns the item or null.
+ */
+export function popNextQueueItem() {
+    const idx = queueItems.findIndex(i => i.status === 'queued');
+    if (idx < 0) return null;
+    const item = queueItems.splice(idx, 1)[0];
+    saveQueueToStorage();
+    renderQueueList();
+    return item;
+}
+
+/**
+ * Re-insert an item at the front of the queue (e.g. after a failed send).
+ */
+export function requeueItem(item) {
+    item.status = 'queued';
+    queueItems.unshift(item);
+    saveQueueToStorage();
+    renderQueueList();
+}
+
 // ── Public API ───────────────────────────────────────────────────────
 
 /**
@@ -496,7 +519,7 @@ export function initQueue() {
     queueFlush = document.getElementById('queueFlush');
 
     if (queuePauseBtn) queuePauseBtn.addEventListener('click', toggleQueuePause);
-    if (queueSendNext) queueSendNext.addEventListener('click', () => insertNextToInput());
+    // queueSendNext ("Run") is wired in terminal.js to call sendNextUnsafe()
     if (queueFlush) queueFlush.addEventListener('click', flushQueue);
 
     refreshQueueList();

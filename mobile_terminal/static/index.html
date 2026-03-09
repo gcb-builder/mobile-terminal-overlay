@@ -211,10 +211,9 @@
             <div id="inputBar" class="input-bar">
                 <button class="quick-btn" data-key="esc">Esc</button>
                 <button class="quick-btn btn-clear" data-key="clear" title="Clear input">X</button>
-                <button class="quick-btn btn-stop" data-key="ctrl-c">^C</button>
                 <span class="bar-separator"></span>
-                <button class="quick-btn" data-key="down" aria-label="Down arrow">&#x2193;</button>
-                <button class="quick-btn" data-key="up" aria-label="Up arrow">&#x2191;</button>
+                <button class="quick-btn btn-arrow" data-key="down" aria-label="Down arrow">&#x25BC;</button>
+                <button class="quick-btn btn-arrow" data-key="up" aria-label="Up arrow">&#x25B2;</button>
                 <button class="quick-btn btn-tmux" data-key="ctrl-b">^B</button>
                 <button class="quick-btn btn-queue" data-key="queue" title="Add to queue">Q</button>
                 <button class="quick-btn" data-key="tab">Tab</button>
@@ -511,7 +510,7 @@
                 </div>
                 <div id="queueList" class="queue-list"></div>
                 <div class="queue-tab-footer">
-                    <button id="queueSendNext" class="queue-action-btn primary">Insert</button>
+                    <button id="queueSendNext" class="queue-action-btn primary">Run</button>
                     <button id="queueFlush" class="queue-action-btn secondary">Clear All</button>
                 </div>
             </div>

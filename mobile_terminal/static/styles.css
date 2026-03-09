@@ -1774,6 +1774,12 @@ html, body {
     background: rgba(241, 76, 76, 0.4) !important;
 }
 
+.btn-arrow {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-primary) !important;
+}
+
 .btn-tmux {
     color: var(--magenta) !important;
     border-color: rgba(188, 140, 255, 0.4) !important;
@@ -1791,6 +1797,12 @@ html, body {
 
 .btn-queue:active {
     background: rgba(55, 148, 255, 0.4) !important;
+}
+
+.btn-queue.agent-ready {
+    color: var(--warning) !important;
+    border-color: rgba(229, 192, 56, 0.6) !important;
+    background: rgba(229, 192, 56, 0.18) !important;
 }
 
 .btn-clear {
@@ -1914,6 +1926,11 @@ html, body {
 
 .action-bar-btn.primary:active {
     background: var(--accent-hover);
+}
+
+.action-bar-stop {
+    color: var(--error);
+    border-color: rgba(241, 76, 76, 0.5);
 }
 
 .approval-banner {
@@ -2045,6 +2062,7 @@ html, body {
     gap: 8px;
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
 }
 
 .queue-tab-header .queue-title {
@@ -2053,11 +2071,19 @@ html, body {
     color: var(--text-primary);
 }
 
+.queue-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
 .queue-tab-footer {
     display: flex;
     gap: 8px;
     padding: 12px 16px;
     border-top: 1px solid var(--border);
+    flex-shrink: 0;
 }
 
 .queue-tab-badge {
@@ -3284,6 +3310,7 @@ html, body {
 .docs-plan-actions {
     display: flex;
     justify-content: flex-end;
+    gap: 8px;
     margin-bottom: 8px;
 }
 
@@ -3301,6 +3328,11 @@ html, body {
 .docs-copy-btn:active {
     background: var(--bg-secondary);
     color: var(--text-primary);
+}
+
+.docs-challenge-btn {
+    color: var(--accent);
+    border-color: rgba(55, 148, 255, 0.4);
 }
 
 .docs-plan-select {

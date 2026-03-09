@@ -302,7 +302,10 @@ export function initDocs() {
 
             if (data.exists && data.content) {
                 lastPlanRawContent = data.content;
-                const copyBtn = '<div class="docs-plan-actions"><button class="docs-copy-btn" id="docsPlanCopyBtn">Copy</button></div>';
+                const copyBtn = '<div class="docs-plan-actions">'
+                    + '<button class="docs-copy-btn" id="docsPlanCopyBtn">Copy</button>'
+                    + '<button class="docs-copy-btn docs-challenge-btn" id="docsPlanChallengeBtn">Challenge</button>'
+                    + '</div>';
                 let rendered;
                 try {
                     rendered = marked.parse(data.content);
@@ -311,6 +314,11 @@ export function initDocs() {
                 }
                 contentDiv.innerHTML = copyBtn + rendered;
                 document.getElementById('docsPlanCopyBtn').addEventListener('click', copyPlanContent);
+                const challBtn = document.getElementById('docsPlanChallengeBtn');
+                if (challBtn) challBtn.addEventListener('click', () => {
+                    const cb = document.getElementById('challengeBtn');
+                    if (cb) cb.click();
+                });
             } else {
                 contentDiv.innerHTML = '<div class="docs-empty">Plan file not found</div>';
             }

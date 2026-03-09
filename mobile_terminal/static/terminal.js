@@ -14,7 +14,8 @@ import { initEnv, loadEnv } from './src/features/env.js';
 import { initCollapse, scheduleCollapse, scheduleSuperCollapse } from './src/features/collapse.js';
 import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          reconcileQueue, reloadQueueForTarget, refreshQueueList,
-         getQueueItems, isQueuePaused, saveQueueToStorage } from './src/features/queue.js';
+         getQueueItems, isQueuePaused, saveQueueToStorage,
+         popNextQueueItem, requeueItem } from './src/features/queue.js';
 import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js';
 import { initDocs } from './src/features/docs.js';
 import { initHistory, loadHistory, loadGitStatus } from './src/features/history.js';
@@ -861,12 +862,13 @@ function extractPromptContent(content) {
     const lines = content.split('\n');
 
     // Prompt patterns in priority order
+    // NOTE: No generic "> " pattern — too many false positives from git log,
+    // quoted text, commit messages, etc.
     const patterns = [
         /^❯\s*(.*)$/,                                                  // Claude Code: ❯ cmd
         /^(?:\([^)]+\)\s*)?[\w.-]+@[\w.-]+[:\s][^$#]*[$#]\s*(.*)$/,   // bash: user@host:~$
         /^[$#]\s*(.*)$/,                                               // Simple: $ or #
         /^>>>\s*(.*)$/,                                                // Python REPL
-        /^>\s+(.*)$/,                                                  // Node REPL
     ];
 
     // Search from bottom (most recent line first)
@@ -947,6 +949,28 @@ function tryDrainQueue() {
 }
 
 /**
+ * Pop the next queued command and send it to the terminal.
+ * If the terminal is busy (race condition), re-queue the item.
+ */
+function sendNextUnsafe() {
+    const item = popNextQueueItem();
+    if (!item) return;
+    if (terminalBusy) {
+        requeueItem(item);
+        showToast('Terminal busy \u2014 command re-queued', 'info', 1500);
+        return;
+    }
+    sendTextAtomic(item.text, true);
+    setTerminalBusy(true);
+    // No scheduleEarlyBusyCheck() here — the early busy-clear is too
+    // aggressive for queued commands and causes rapid-fire drain.
+    // Normal poll cycle will detect the prompt and clear busy state.
+    captureSnapshot('queue_send');
+    lastSentCommand = item.text;
+    if (item.text) addToHistory(item.text);
+}
+
+/**
  * Update send button appearance based on ctx.terminal busy state
  * When idle: blue Enter button (⏎) - sends immediately
  * When busy: yellow Q button - queues for later
@@ -961,6 +985,10 @@ function updateSendButton() {
         logSend.textContent = '⏎';
         logSend.classList.remove('queue-mode');
     }
+
+    // Mirror ready state on shortcut-bar Q button
+    const qBtn = document.querySelector('.btn-queue[data-key="queue"]');
+    if (qBtn) qBtn.classList.toggle('agent-ready', !terminalBusy);
 }
 
 /**
@@ -3079,6 +3107,10 @@ function setupEventListeners() {
         sidebarToggle.addEventListener('click', toggleSidebar);
     }
 
+    // Queue "Run" button — send next queued command immediately
+    const queueRunBtn = document.getElementById('queueSendNext');
+    if (queueRunBtn) queueRunBtn.addEventListener('click', () => sendNextUnsafe());
+
     // Key mapping for control and quick buttons
     const keyMap = {
         'ctrl-b': '\x02',     // tmux prefix
@@ -4608,16 +4640,20 @@ function switchToTerminalView() {
     // CRITICAL ORDER: fit + resize FIRST, then set_mode
     // The resize triggers tmux to redraw at the correct ctx.terminal size.
     // If we set_mode first, tmux redraws at the OLD size → garbled output.
+    // Double-rAF ensures browser has completed layout reflow after
+    // display:none → display:flex, so fitAddon gets correct dimensions.
     requestAnimationFrame(() => {
-        if (fitAddon) fitAddon.fit();
-        sendResize();
-        // Now switch to full mode - server starts forwarding PTY data
-        // The resize we just sent will trigger a clean tmux redraw
-        setOutputMode('full');
-        // Auto-focus ctx.terminal to enable keyboard input
-        if (ctx.terminal && isControlUnlocked) {
-            ctx.terminal.focus();
-        }
+        requestAnimationFrame(() => {
+            if (fitAddon) fitAddon.fit();
+            sendResize();
+            // Now switch to full mode - server starts forwarding PTY data
+            // The resize we just sent will trigger a clean tmux redraw
+            setOutputMode('full');
+            // Auto-focus ctx.terminal to enable keyboard input
+            if (ctx.terminal && isControlUnlocked) {
+                ctx.terminal.focus();
+            }
+        });
     });
 }
 
@@ -4645,7 +4681,7 @@ function switchToTeamView() {
 }
 
 /**
- * Append standard action buttons (Drawer, Select, Challenge, Compose) to a bar element.
+ * Append standard action buttons (Drawer, Select, Stop, Compose) to a bar element.
  */
 function appendStandardActionButtons(bar) {
     const btn1 = document.createElement('button');
@@ -4661,9 +4697,12 @@ function appendStandardActionButtons(bar) {
     bar.appendChild(btn2);
 
     const btn3 = document.createElement('button');
-    btn3.className = 'action-bar-btn';
-    btn3.textContent = 'Challenge';
-    btn3.addEventListener('click', () => { if (challengeBtn) challengeBtn.click(); });
+    btn3.className = 'action-bar-btn action-bar-stop';
+    btn3.textContent = 'Stop';
+    btn3.addEventListener('click', () => {
+        sendKeyDebounced('\x03', true);
+        showToast('Interrupt sent', 'success');
+    });
     bar.appendChild(btn3);
 
     const btn4 = document.createElement('button');
