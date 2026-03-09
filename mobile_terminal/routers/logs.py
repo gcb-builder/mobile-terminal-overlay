@@ -11,13 +11,75 @@ from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 from mobile_terminal.helpers import (
-    get_project_id, run_subprocess,
+    get_project_id, run_subprocess, strip_ansi,
     get_cached_capture, set_cached_capture,
     get_cached_log, set_cached_log,
+    get_cached_tool_output, set_cached_tool_output,
+    TOOL_OUTPUT_MAX_CHARS,
     LOG_CACHE_DIR,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _summarize_tool_result(tool_name: str, content, is_error: bool) -> str:
+    """Summarize a tool_result into a short badge string."""
+    # Normalize content to string
+    if isinstance(content, list):
+        # tool_result content can be a list of {type: "text", text: "..."}
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                parts.append(block.get('text', ''))
+            elif isinstance(block, str):
+                parts.append(block)
+        text = '\n'.join(parts)
+    elif isinstance(content, str):
+        text = content
+    else:
+        text = str(content) if content else ''
+
+    if is_error:
+        # First non-empty line, stripped of ANSI escapes
+        first_line = ''
+        for ln in text.strip().split('\n'):
+            stripped = strip_ansi(ln).strip()
+            if stripped:
+                first_line = stripped[:60]
+                break
+        return f"ERR: {first_line}" if first_line else 'ERR'
+
+    line_count = len(text.split('\n')) if text.strip() else 0
+
+    if tool_name == 'Bash':
+        if line_count == 0:
+            return 'OK'
+        return f"OK {line_count}L"
+    elif tool_name == 'Read':
+        if line_count == 0:
+            return '0L'
+        return f"{line_count}L"
+    elif tool_name == 'Grep':
+        # Count "files with matches" style: lines that look like file paths
+        file_count = 0
+        for ln in text.strip().split('\n'):
+            if ln.strip() and not ln.startswith(' '):
+                file_count += 1
+        if line_count == 0:
+            return '0 matches'
+        return f"{file_count}F {line_count}L"
+    elif tool_name in ('Edit', 'Write'):
+        return 'OK'
+    elif tool_name == 'Glob':
+        file_count = len([ln for ln in text.strip().split('\n') if ln.strip()]) if text.strip() else 0
+        if file_count == 1:
+            return '1 file'
+        return f"{file_count} files"
+    else:
+        # Generic: show line count or short text inline
+        if line_count == 0:
+            return 'OK'
+        return f"{line_count}L"
 
 
 def register(app: FastAPI, deps):
@@ -309,6 +371,9 @@ def register(app: FastAPI, deps):
 
             # Parse JSONL and extract conversation
             conversation = []
+            # Forward-index: tool_use.id -> (conversation_index, tool_name)
+            pending_tool_uses = {}
+
             for line in lines_list:
                 if not line.strip():
                     continue
@@ -319,7 +384,30 @@ def register(app: FastAPI, deps):
 
                     if msg_type == 'user':
                         content = message.get('content', '')
-                        if isinstance(content, str) and content.strip():
+                        # Handle tool_result entries (content is a list)
+                        if isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get('type') == 'tool_result':
+                                    tool_use_id = block.get('tool_use_id', '')
+                                    if tool_use_id and tool_use_id in pending_tool_uses:
+                                        conv_idx, tool_name, tool_detail = pending_tool_uses.pop(tool_use_id)
+                                        result_content = block.get('content', '')
+                                        is_error = block.get('is_error', False)
+                                        summary = _summarize_tool_result(tool_name, result_content, is_error)
+                                        # Upgrade plain string to structured entry
+                                        orig = conversation[conv_idx]
+                                        text = orig["text"] if isinstance(orig, dict) else orig
+                                        conversation[conv_idx] = {
+                                            "text": text,
+                                            "tool": {
+                                                "name": tool_name,
+                                                "detail": tool_detail,
+                                                "tool_use_id": tool_use_id,
+                                                "result_summary": summary,
+                                                "result_status": "error" if is_error else "ok",
+                                            },
+                                        }
+                        elif isinstance(content, str) and content.strip():
                             # Strip system-injected tags from user messages
                             cleaned = re.sub(r'<(?:system-reminder|task-notification)[^>]*>[\s\S]*?</(?:system-reminder|task-notification)>', '', content).strip()
                             if cleaned:
@@ -338,14 +426,16 @@ def register(app: FastAPI, deps):
                                             conversation.append(text)
                                     elif block.get('type') == 'tool_use':
                                         tool_name = block.get('name', 'tool')
+                                        tool_id = block.get('id', '')
                                         tool_input = block.get('input', {})
                                         # Format tool call nicely
+                                        tool_detail = ''
                                         if tool_name == 'Bash':
-                                            cmd = tool_input.get('command', '')
-                                            conversation.append(f"• Bash: {cmd[:200]}")
+                                            tool_detail = tool_input.get('command', '')[:200]
+                                            conversation.append(f"• Bash: {tool_detail}")
                                         elif tool_name in ('Read', 'Edit', 'Write', 'Glob', 'Grep'):
-                                            path = tool_input.get('file_path') or tool_input.get('path') or tool_input.get('pattern', '')
-                                            conversation.append(f"• {tool_name}: {path[:100]}")
+                                            tool_detail = (tool_input.get('file_path') or tool_input.get('path') or tool_input.get('pattern', ''))[:100]
+                                            conversation.append(f"• {tool_name}: {tool_detail}")
                                         elif tool_name == 'AskUserQuestion':
                                             # Show questions with options for user to respond
                                             questions = tool_input.get('questions', [])
@@ -377,6 +467,9 @@ def register(app: FastAPI, deps):
                                                 conversation.append(f"📝 {in_progress[0].get('activeForm', 'Working...')}")
                                         else:
                                             conversation.append(f"• {tool_name}")
+                                        # Track tool_use for result pairing (only tool pills, not special entries)
+                                        if tool_name not in ('AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Task', 'TodoWrite') and tool_id:
+                                            pending_tool_uses[tool_id] = (len(conversation) - 1, tool_name, tool_detail)
                 except json.JSONDecodeError:
                     continue
 
@@ -397,8 +490,21 @@ def register(app: FastAPI, deps):
                 text = re.sub(r'(ghp_[a-zA-Z0-9]{36,})', '[REDACTED_GITHUB_TOKEN]', text)
                 return text
 
-            messages = [redact_secrets(msg) for msg in conversation]
-            content = '\n\n'.join(messages)
+            def _msg_text(m):
+                return m["text"] if isinstance(m, dict) else m
+
+            # Build structured messages: str for plain, {text, tool} for tool entries
+            messages = []
+            for m in conversation:
+                text = redact_secrets(_msg_text(m))
+                if isinstance(m, dict) and "tool" in m:
+                    messages.append({"text": text, "tool": m["tool"]})
+                else:
+                    messages.append(text)
+
+            content = '\n\n'.join(
+                m["text"] if isinstance(m, dict) else m for m in messages
+            )
 
             # Cache the content for persistence across /clear
             write_log_cache(project_id, content)
@@ -531,6 +637,114 @@ def register(app: FastAPI, deps):
             "current": current_id,
             "detection_method": detection_method,
         }
+
+    def _resolve_log_file(pane_id: Optional[str] = None, session_id: Optional[str] = None) -> Optional[Path]:
+        """Resolve the active JSONL log file path.
+
+        Used by /api/log and /api/log/tool-output to avoid duplicating
+        the repo-path -> project-id -> log-file resolution logic.
+        Returns None if no log file can be found.
+        """
+        target_id = pane_id or app.state.active_target
+        repo_path = deps.get_current_repo_path()
+        if not repo_path:
+            return None
+        project_id = get_project_id(repo_path)
+        claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
+        if not claude_projects_dir.exists():
+            return None
+        if session_id:
+            log_file = claude_projects_dir / f"{session_id}.jsonl"
+            return log_file if log_file.exists() else None
+        return detect_target_log_file(target_id, app.state.current_session, claude_projects_dir)
+
+    @app.get("/api/log/tool-output")
+    async def get_tool_output(
+        _auth=Depends(deps.verify_token),
+        tool_use_id: str = Query(..., description="tool_use_id to fetch result for"),
+        pane_id: Optional[str] = Query(None),
+        session_id: Optional[str] = Query(None),
+    ):
+        """
+        Return the full tool_result content for a specific tool_use_id.
+        Reverse-scans JSONL for fast lookup (recent results found first).
+        """
+        if not tool_use_id:
+            return JSONResponse({"error": "tool_use_id required"}, status_code=400)
+
+        log_file = _resolve_log_file(pane_id=pane_id, session_id=session_id)
+        if not log_file:
+            return JSONResponse({"error": "No log file found"}, status_code=404)
+
+        try:
+            file_mtime = log_file.stat().st_mtime
+        except Exception:
+            return JSONResponse({"error": "Cannot stat log file"}, status_code=500)
+
+        # Check cache
+        cached = get_cached_tool_output(str(log_file), file_mtime, tool_use_id)
+        if cached:
+            return cached
+
+        # Reverse-scan JSONL lines for the matching tool_result
+        try:
+            raw = log_file.read_text(errors="replace")
+            lines_list = raw.strip().split('\n')
+
+            for line in reversed(lines_list):
+                if not line.strip() or tool_use_id not in line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get('type') != 'user':
+                    continue
+                content = entry.get('message', {}).get('content', '')
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get('type') != 'tool_result':
+                        continue
+                    if block.get('tool_use_id') != tool_use_id:
+                        continue
+                    # Found it
+                    result_content = block.get('content', '')
+                    # Normalize list content to string
+                    if isinstance(result_content, list):
+                        parts = []
+                        for b in result_content:
+                            if isinstance(b, dict):
+                                parts.append(b.get('text', ''))
+                            elif isinstance(b, str):
+                                parts.append(b)
+                        result_content = '\n'.join(parts)
+                    elif not isinstance(result_content, str):
+                        result_content = str(result_content) if result_content else ''
+
+                    is_error = block.get('is_error', False)
+                    truncated = len(result_content) > TOOL_OUTPUT_MAX_CHARS
+                    if truncated:
+                        result_content = result_content[:TOOL_OUTPUT_MAX_CHARS]
+
+                    result = {
+                        "tool_use_id": tool_use_id,
+                        "content": result_content,
+                        "is_error": is_error,
+                        "line_count": len(result_content.split('\n')) if result_content.strip() else 0,
+                        "char_count": len(result_content),
+                        "truncated": truncated,
+                    }
+                    set_cached_tool_output(str(log_file), file_mtime, tool_use_id, result)
+                    return result
+
+            return JSONResponse({"error": f"tool_use_id not found: {tool_use_id}"}, status_code=404)
+
+        except Exception as e:
+            logger.error(f"Error reading tool output: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.post("/api/log/select")
     async def select_log_session(

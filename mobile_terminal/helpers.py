@@ -217,6 +217,46 @@ def set_cached_log(project_id: str, pane_id: Optional[str], file_mtime: float, r
 
 
 # ---------------------------------------------------------------------------
+# Tool output cache (for on-demand expand)
+# ---------------------------------------------------------------------------
+
+# LRU cache: keyed on (log_path, mtime, tool_use_id)
+# Value: dict with content, is_error, line_count, char_count, truncated
+_tool_output_cache: dict = {}
+_tool_output_order: list = []  # Track insertion order for LRU eviction
+TOOL_OUTPUT_CACHE_MAX = 100
+TOOL_OUTPUT_CACHE_TTL = 60.0  # seconds
+TOOL_OUTPUT_MAX_CHARS = 100_000  # 100KB truncation limit
+
+
+def get_cached_tool_output(log_path: str, mtime: float, tool_use_id: str) -> Optional[dict]:
+    """Get cached tool output if still valid."""
+    key = (log_path, mtime, tool_use_id)
+    if key in _tool_output_cache:
+        ts, result = _tool_output_cache[key]
+        if time.time() - ts < TOOL_OUTPUT_CACHE_TTL:
+            return result
+        # Expired
+        del _tool_output_cache[key]
+        if key in _tool_output_order:
+            _tool_output_order.remove(key)
+    return None
+
+
+def set_cached_tool_output(log_path: str, mtime: float, tool_use_id: str, result: dict):
+    """Cache tool output with LRU eviction."""
+    key = (log_path, mtime, tool_use_id)
+    _tool_output_cache[key] = (time.time(), result)
+    if key in _tool_output_order:
+        _tool_output_order.remove(key)
+    _tool_output_order.append(key)
+    # Evict oldest if over limit
+    while len(_tool_output_order) > TOOL_OUTPUT_CACHE_MAX:
+        old_key = _tool_output_order.pop(0)
+        _tool_output_cache.pop(old_key, None)
+
+
+# ---------------------------------------------------------------------------
 # Plan links
 # ---------------------------------------------------------------------------
 

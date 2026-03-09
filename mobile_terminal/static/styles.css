@@ -268,20 +268,42 @@ html, body {
 /* Kill pane button */
 .nav-kill-btn {
     font-size: 9px;
-    padding: 2px 6px;
+    /* Visible pill stays small, but touch target is 44×44 via padding */
+    padding: 14px 16px;
+    margin: -12px -8px -12px 0;
     background: transparent;
-    border: 1px solid rgba(241, 76, 76, 0.4);
-    border-radius: 10px;
+    border: none;
     color: var(--danger);
     flex-shrink: 0;
-    margin-left: 8px;
     cursor: pointer;
     line-height: 1;
+    position: relative;
 }
-.nav-kill-btn:hover,
-.nav-kill-btn:active {
+/* Visible pill drawn as pseudo-element inside the large touch target */
+.nav-kill-btn::after {
+    content: '×';
+    display: inline-block;
+    padding: 2px 6px;
+    border: 1px solid rgba(241, 76, 76, 0.4);
+    border-radius: 10px;
+    font-size: 9px;
+    line-height: 1;
+}
+.nav-kill-btn:hover::after,
+.nav-kill-btn:active::after {
     background: rgba(241, 76, 76, 0.15);
     border-color: var(--danger);
+}
+/* Confirm state: pill turns red with "Kill?" text */
+.nav-kill-btn.confirm {
+    color: #fff;
+}
+.nav-kill-btn.confirm::after {
+    content: 'Kill?';
+    background: var(--danger);
+    border-color: var(--danger);
+    color: #fff;
+    padding: 2px 8px;
 }
 
 /* Action option (+ New Window) */
@@ -1372,6 +1394,26 @@ html, body {
     flex: 1;
 }
 
+.log-tool-result {
+    margin-left: auto;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.log-tool-result.ok {
+    color: var(--success);
+    background: rgba(46, 160, 67, 0.1);
+}
+
+.log-tool-result.error {
+    color: var(--error);
+    background: rgba(248, 81, 73, 0.1);
+}
+
 .log-tool-content {
     padding: 8px;
     border-top: 1px solid var(--border);
@@ -1381,6 +1423,23 @@ html, body {
     color: var(--text-primary);
     max-height: 200px;
     overflow-y: auto;
+}
+
+.log-tool-content.loading {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.log-tool-content.error {
+    color: var(--error);
+}
+
+.log-tool-truncated {
+    font-size: 10px;
+    color: var(--text-secondary);
+    font-style: italic;
+    border-top: 1px dashed var(--border);
+    padding: 4px 8px;
 }
 
 .log-tool-inline {
@@ -1931,6 +1990,74 @@ html, body {
 .action-bar-stop {
     color: var(--error);
     border-color: rgba(241, 76, 76, 0.5);
+}
+
+/* FAB menu — vertical floating menu anchored bottom-left */
+.fab-menu {
+    position: fixed;
+    bottom: calc(env(safe-area-inset-bottom) + 56px);
+    left: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    z-index: 400;
+    animation: fabSlideUp 0.15s ease-out;
+}
+
+.fab-menu.hidden {
+    display: none;
+}
+
+@keyframes fabSlideUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.fab-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 18px 10px 14px;
+    min-height: 44px;
+    border: none;
+    border-radius: 24px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    -webkit-tap-highlight-color: transparent;
+}
+
+.fab-menu-item:active {
+    background: var(--bg-secondary);
+    transform: scale(0.97);
+}
+
+.fab-icon {
+    font-size: 16px;
+    width: 22px;
+    text-align: center;
+}
+
+.fab-menu-close {
+    align-self: flex-start;
+    width: 44px;
+    height: 44px;
+    border: none;
+    border-radius: 50%;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 22px;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    -webkit-tap-highlight-color: transparent;
+}
+
+.fab-menu-close:active {
+    background: var(--bg-secondary);
 }
 
 .approval-banner {
@@ -5107,6 +5234,19 @@ html, body {
 /* ============================================================================
    ENV TAB STYLES
    ============================================================================ */
+
+#envTabContent,
+#mcpTabContent {
+    padding: 12px 16px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Neutralize horizontal padding on headers inside padded tabs */
+#envTabContent .process-tab-header,
+#mcpTabContent .process-tab-header {
+    margin: 0 -16px;
+}
 
 .env-scope-selector {
     padding: 0 0 12px 0;

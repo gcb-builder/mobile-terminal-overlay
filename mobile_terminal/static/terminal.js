@@ -18,6 +18,7 @@ import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          popNextQueueItem, requeueItem } from './src/features/queue.js';
 import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js';
 import { initDocs } from './src/features/docs.js';
+import { initToolOutput } from './src/features/tool-output.js';
 import { initHistory, loadHistory, loadGitStatus } from './src/features/history.js';
 import { initTeam, activateTeamView, startTeamCardRefresh, stopTeamCardRefresh,
          refreshTeamCards, renderTeamCards, updateTerminalAgentSelector,
@@ -2051,7 +2052,8 @@ function populateRepoDropdown() {
     const hasRepos = ctx.config && ((ctx.config.repos && ctx.config.repos.length > 0) || (ctx.config.workspace_dirs && ctx.config.workspace_dirs.length > 0));
     const hasMultiplePanes = ctx.targets.length > 1;
     const hasTeam = ctx.teamState && ctx.teamState.has_team && ctx.teamState.team;
-    const hasContent = hasRepos || hasMultiplePanes || hasTeam;
+    const hasNewWindow = hasRepos || hasMultiplePanes;  // Always allow new window if there are panes
+    const hasContent = hasNewWindow || hasTeam;
 
     // Update nav label
     updateNavLabel();
@@ -2174,7 +2176,7 @@ function populateRepoDropdown() {
                 const hintBadge = (!nameMatches && windowName && dirName) ? '<span class="target-name-hint" title="Window name differs from directory">?</span>' : '';
 
                 const checkMark = isActive ? '<span class="nav-check">✓</span>' : '';
-                const killBtn = isActive ? '' : '<span class="nav-kill-btn">×</span>';
+                const killBtn = isActive ? '' : '<span class="nav-kill-btn" aria-label="Kill pane"></span>';
 
                 opt.innerHTML = `
                     <div class="nav-pane-content">
@@ -2186,12 +2188,24 @@ function populateRepoDropdown() {
                 `;
                 opt.addEventListener('click', () => selectTarget(target.id));
 
-                // Attach kill handler to the x button (non-active panes only)
+                // Attach kill handler with two-tap confirmation
                 const killEl = opt.querySelector('.nav-kill-btn');
                 if (killEl) {
+                    let confirmTimer = null;
                     killEl.addEventListener('click', (e) => {
                         e.stopPropagation();
-                        killPane(target.id);
+                        if (killEl.classList.contains('confirm')) {
+                            // Second tap — actually kill
+                            clearTimeout(confirmTimer);
+                            killPane(target.id);
+                        } else {
+                            // First tap — enter confirm state
+                            killEl.classList.add('confirm');
+                            // Revert after 3s if no second tap
+                            confirmTimer = setTimeout(() => {
+                                killEl.classList.remove('confirm');
+                            }, 3000);
+                        }
                     });
                 }
 
@@ -2201,7 +2215,7 @@ function populateRepoDropdown() {
     }
 
     // Section 2: Actions (+ New Window)
-    if (hasRepos) {
+    if (hasNewWindow) {
         if (ctx.targets.length > 0) {
             const divider = document.createElement('div');
             divider.className = 'nav-section-divider';
@@ -3262,6 +3276,11 @@ function setupViewportHandler() {
 
     // Reconnect immediately when returning to app (visibility change)
     document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            // Close dropdown when backgrounded so returning taps can't
+            // hit destructive buttons (e.g. kill-pane ×) via passthrough
+            repoDropdown.classList.add('hidden');
+        }
         if (document.visibilityState === 'visible') {
             // Start Claude health polling when visible
             startAgentHealthPolling();
@@ -4580,6 +4599,7 @@ function hideAllContainers() {
     const dispatchBar = document.getElementById('teamDispatchBar');
     if (dispatchBar) dispatchBar.classList.add('hidden');
     if (terminalView) terminalView.classList.add('hidden');
+    closeFabMenu();
     // Stop auto-refresh when leaving log view
     stopLogAutoRefresh();
     stopTailViewport();
@@ -4687,7 +4707,7 @@ function appendStandardActionButtons(bar) {
     const btn1 = document.createElement('button');
     btn1.className = 'action-bar-btn';
     btn1.innerHTML = '&bull;&bull;&bull;';
-    btn1.addEventListener('click', () => { if (typeof openDrawer === 'function') openDrawer(); });
+    btn1.addEventListener('click', () => toggleFabMenu());
     bar.appendChild(btn1);
 
     const btn2 = document.createElement('button');
@@ -4925,14 +4945,19 @@ function renderLogEntries(contentOrMessages, cached = false) {
     const signal = logRenderAbort.signal;
 
     // Handle both array (new API) and string (legacy/cache) input
+    // Each entry is either a string or {text: string, tool: {...}}
     let blocks;
     if (Array.isArray(contentOrMessages)) {
-        // New format: array of messages (preserves code blocks with empty lines)
-        blocks = contentOrMessages.map(msg => stripAnsi(msg).trim()).filter(b => b);
+        blocks = contentOrMessages.map(msg => {
+            if (typeof msg === 'object' && msg !== null && msg.text) {
+                return { text: stripAnsi(msg.text).trim(), tool: msg.tool || null };
+            }
+            return { text: stripAnsi(String(msg)).trim(), tool: null };
+        }).filter(b => b.text);
     } else {
         // Legacy format: string split by double newline
         const content = stripAnsi(contentOrMessages);
-        blocks = content.split('\n\n').filter(b => b.trim());
+        blocks = content.split('\n\n').filter(b => b.trim()).map(t => ({ text: t.trim(), tool: null }));
     }
 
     if (blocks.length === 0) {
@@ -4945,7 +4970,7 @@ function renderLogEntries(contentOrMessages, cached = false) {
     let currentGroup = null;
 
     for (const block of blocks) {
-        const trimmed = block.trim();
+        const trimmed = block.text;
         if (!trimmed) continue;
 
         let role, text;
@@ -4966,12 +4991,12 @@ function renderLogEntries(contentOrMessages, cached = false) {
             (currentGroup.role === 'assistant' && role === 'tool') ||
             (currentGroup.role === 'tool' && role === 'tool')
         )) {
-            currentGroup.blocks.push({ role, text });
+            currentGroup.blocks.push({ role, text, tool: block.tool });
         } else {
             if (currentGroup) messages.push(currentGroup);
             currentGroup = {
                 role: role === 'tool' ? 'assistant' : role,
-                blocks: [{ role, text }]
+                blocks: [{ role, text, tool: block.tool }]
             };
         }
     }
@@ -5077,6 +5102,8 @@ function createLogCard(msg) {
             if (toolMatch) {
                 const toolName = toolMatch[1];
                 const toolDetail = toolMatch[2] || '';
+                const toolMeta = block.tool || null;
+
                 const summary = toolDetail.length > 60 ? toolDetail.slice(0, 60) + '...' : toolDetail;
                 const summaryKey = (summary || toolName).slice(0, 40).replace(/[^a-zA-Z0-9]/g, '_');
 
@@ -5084,10 +5111,22 @@ function createLogCard(msg) {
                 details.className = 'log-tool';
                 details.dataset.tool = toolName;
                 details.dataset.toolKey = `${toolName}:${summaryKey}`;
+                if (toolMeta && toolMeta.tool_use_id) {
+                    details.dataset.toolUseId = toolMeta.tool_use_id;
+                }
 
                 const summaryEl = document.createElement('summary');
                 summaryEl.className = 'log-tool-summary';
-                summaryEl.innerHTML = `<span class="log-tool-name">${escapeHtml(toolName)}</span> <span class="log-tool-detail">${escapeHtml(summary)}</span>`;
+
+                let summaryHtml = `<span class="log-tool-name">${escapeHtml(toolName)}</span> <span class="log-tool-detail">${escapeHtml(summary)}</span>`;
+
+                // Add result badge from structured metadata
+                if (toolMeta && toolMeta.result_summary) {
+                    const badgeClass = toolMeta.result_status === 'error' ? 'error' : 'ok';
+                    summaryHtml += ` <span class="log-tool-result ${badgeClass}">${escapeHtml(toolMeta.result_summary)}</span>`;
+                }
+
+                summaryEl.innerHTML = summaryHtml;
                 details.appendChild(summaryEl);
 
                 const content = document.createElement('div');
@@ -6353,6 +6392,20 @@ function isPreviewMode() {
 }
 
 /**
+ * Toggle the FAB menu (vertical list that opens drawer tabs)
+ */
+function toggleFabMenu() {
+    const menu = document.getElementById('fabMenu');
+    if (!menu) return;
+    menu.classList.toggle('hidden');
+}
+
+function closeFabMenu() {
+    const menu = document.getElementById('fabMenu');
+    if (menu) menu.classList.add('hidden');
+}
+
+/**
  * Open unified drawer (defaults to queue tab)
  */
 function openDrawer() {
@@ -6452,8 +6505,22 @@ function setupPreviewHandlers() {
     // Drawer close
     document.getElementById('previewDrawerClose')?.addEventListener('click', closePreviewDrawer);
 
-    // Backdrop tap to close drawer
-    document.getElementById('drawerBackdrop')?.addEventListener('click', closePreviewDrawer);
+    // Backdrop tap to close drawer + FAB menu
+    document.getElementById('drawerBackdrop')?.addEventListener('click', () => {
+        closePreviewDrawer();
+        closeFabMenu();
+    });
+
+    // FAB menu items — open drawer at selected tab
+    document.querySelectorAll('.fab-menu-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const tab = item.dataset.tab;
+            closeFabMenu();
+            openDrawer();
+            if (tab) switchRollbackTab(tab);
+        });
+    });
+    document.getElementById('fabMenuClose')?.addEventListener('click', closeFabMenu);
 
     // Drawer open (from view bar)
     drawersBtn?.addEventListener('click', openDrawer);
@@ -7852,6 +7919,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupScrollTracking();
     setupLogFilterBar();
     initMarkdown(logContent);
+    initToolOutput(logContent);
     initDocs();
     initHistory({ captureSnapshot, enterPreviewMode });
     initTeam({ selectTarget, switchToView, fetchWithTimeout, updateActionBar });

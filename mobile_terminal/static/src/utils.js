@@ -155,6 +155,18 @@ export function cleanTerminalOutput(text) {
             continue;
         }
 
+        // Skip Claude Code promotional/UI chrome lines
+        if (/^Tip:\s/i.test(trimmed) || /\/passes\s*$/.test(trimmed)) {
+            continue;
+        }
+        if (/Resume this session with:\s*claude\s+--resume/i.test(trimmed)) {
+            continue;
+        }
+        // Skip status-bar fragments: "▪▪▪", "esc to interrupt", isolated dots
+        if (/^[▪•·\s─]+$/.test(trimmed) || /^esc to interrupt$/i.test(trimmed)) {
+            continue;
+        }
+
         // Collapse multiple blank lines
         const isBlank = trimmed === '';
         if (isBlank && prevWasBlank) {
