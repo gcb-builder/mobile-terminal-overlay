@@ -648,7 +648,7 @@ def register(app: FastAPI, deps):
             and sends as JSON for lightweight Log view rendering.
             Also checks for pending permission requests (v2 messages).
             """
-            nonlocal tail_seq
+            nonlocal tail_seq, connection_closed
             perm_check_counter = 0
             while app.state.active_websocket == websocket and not connection_closed:
                 try:
@@ -668,7 +668,8 @@ def register(app: FastAPI, deps):
                                 "seq": tail_seq
                             })
                         except Exception as e:
-                            if "websocket.close" in str(e) or "after sending" in str(e):
+                            if "close" in str(e).lower() or "after sending" in str(e):
+                                connection_closed = True
                                 break
                             logger.debug(f"Tail extraction error: {e}")
 

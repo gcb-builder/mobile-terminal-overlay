@@ -92,3 +92,18 @@ After every implementation batch, output:
 - **Include file:line references** when discussing code
 - **No emojis** unless explicitly requested
 - Keep mobile UX in mind - touch targets should be >= 44px
+
+## Global Tools
+
+Tools installed server-wide and available to all Claude Code agents via skills.
+Registry: `~/.claude/GLOBAL-TOOLS.md`
+
+### Active Tools
+
+- **chub** (Context Hub) -- Fetch curated API/SDK docs. Skill: `~/.claude/skills/fetch-docs/SKILL.md`
+
+### Pattern
+
+Global tools are installed on PATH (npm/pip/binary), governed by skill files in
+`~/.claude/skills/`, and documented in `~/.claude/GLOBAL-TOOLS.md`. No MTO code
+changes needed -- the skill system handles discovery and usage.

@@ -87,7 +87,7 @@ class Config:
 
     # UI settings
     theme: str = "dark"  # dark | light | auto
-    font_size: int = 16
+    font_size: int = 11
     scrollback: int = 20000
 
     # Per-device overrides (keyed by Tailscale hostname)
