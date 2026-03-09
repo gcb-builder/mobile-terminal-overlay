@@ -611,6 +611,30 @@ function initTerminal() {
     // Fit to container after opening
     fitAddon.fit();
 
+    // ResizeObserver: re-fit terminal whenever container dimensions actually change.
+    // This catches layout changes that single rAF misses (e.g., view switching from
+    // display:none, keyboard appearing, orientation change).
+    if (typeof ResizeObserver !== 'undefined') {
+        let prevW = 0, prevH = 0, resizeTimer = 0;
+        const ro = new ResizeObserver((entries) => {
+            const entry = entries[0];
+            if (!entry) return;
+            const { width, height } = entry.contentRect;
+            // Only re-fit if dimensions actually changed and are non-zero
+            if (width > 0 && height > 0 && (width !== prevW || height !== prevH)) {
+                prevW = width;
+                prevH = height;
+                // Debounce to avoid spamming during drag resizes
+                clearTimeout(resizeTimer);
+                resizeTimer = setTimeout(() => {
+                    if (fitAddon) fitAddon.fit();
+                    sendResize();
+                }, 50);
+            }
+        });
+        ro.observe(terminalContainer);
+    }
+
     // Handle ctx.terminal input (only when unlocked)
     // Send as binary for faster processing (bypasses JSON parsing on server)
     const encoder = new TextEncoder();
@@ -2319,11 +2343,11 @@ function setupRepoDropdown() {
  */
 async function loadTargets() {
     try {
-        const response = await fetchWithTimeout(`/api/ctx.targets?token=${ctx.token}`, {}, 5000);
+        const response = await fetchWithTimeout(`/api/targets?token=${ctx.token}`, {}, 5000);
         if (!response.ok) return;
 
         const data = await response.json();
-        ctx.targets = data.ctx.targets || [];
+        ctx.targets = data.targets || [];
         ctx.activeTarget = data.active;
 
         // Get expected repo path from current repo ctx.config
@@ -2648,6 +2672,7 @@ async function updateTeamState() {
     if (hadTeam !== hasTeam) {
         updateTabIndicator();
         updateLogFilterBarVisibility();
+        updateSidebarCollapse();
         // If team disappeared while viewing team, switch to log
         if (!hasTeam && ctx.currentView === 'team') {
             switchToView('log');
@@ -3041,6 +3066,12 @@ function setupEventListeners() {
         };
         collapseToggle.addEventListener('touchstart', handleCollapseToggle, { passive: false });
         collapseToggle.addEventListener('click', handleCollapseToggle);
+    }
+
+    // Sidebar toggle (desktop)
+    const sidebarToggle = document.getElementById('sidebarToggle');
+    if (sidebarToggle) {
+        sidebarToggle.addEventListener('click', toggleSidebar);
     }
 
     // Key mapping for control and quick buttons
@@ -7429,6 +7460,47 @@ function checkDesktopLayout() {
 }
 
 /**
+ * Update sidebar collapse state based on team presence and user preference.
+ * has_team === false  → force collapsed
+ * has_team === true   → restore user preference from localStorage
+ */
+function updateSidebarCollapse() {
+    if (ctx.uiMode !== 'desktop-multipane') return;
+    const app = document.querySelector('.app');
+    if (!app) return;
+    const hasTeam = ctx.teamState?.has_team;
+
+    if (!hasTeam) {
+        app.classList.add('sidebar-collapsed');
+    } else {
+        const userCollapsed = localStorage.getItem('mto_sidebar_collapsed') === 'true';
+        app.classList.toggle('sidebar-collapsed', userCollapsed);
+    }
+
+    // Re-fit terminal if open (grid columns changed)
+    if (fitAddon) requestAnimationFrame(() => fitAddon.fit());
+
+    // Update toggle button state
+    const toggle = document.getElementById('sidebarToggle');
+    if (toggle) {
+        toggle.disabled = !hasTeam;
+    }
+}
+
+/**
+ * Toggle sidebar manually. Only effective when team is present.
+ */
+function toggleSidebar() {
+    const hasTeam = ctx.teamState?.has_team;
+    if (!hasTeam) return;  // Can't toggle when no team
+    const app = document.querySelector('.app');
+    if (!app) return;
+    const isCollapsed = app.classList.toggle('sidebar-collapsed');
+    localStorage.setItem('mto_sidebar_collapsed', isCollapsed);
+    if (fitAddon) requestAnimationFrame(() => fitAddon.fit());
+}
+
+/**
  * Enter desktop multi-pane mode
  */
 function enterDesktopLayout() {
@@ -7440,15 +7512,8 @@ function enterDesktopLayout() {
     const teamViewEl = document.getElementById('teamView');
     if (teamViewEl) teamViewEl.classList.remove('hidden');
     if (logView) logView.classList.remove('hidden');
-    if (terminalView) terminalView.classList.add('hidden');
 
-    // Restore active prompt (in case we were in ctx.terminal view)
-    if (activePromptContent) activePromptContent.style.display = '';
-
-    // Set output mode to tail (no xterm rendering unless ctx.terminal panel opened)
-    setOutputMode('tail');
-
-    // Start both refresh timers
+    // Start refresh timers
     startLogAutoRefresh();
     startTailViewport();
     startTeamCardRefresh();
@@ -7460,8 +7525,13 @@ function enterDesktopLayout() {
     // Apply density
     applyDensity(getTeamDensity());
 
-    // Set default focus
-    switchDesktopFocus('log');
+    // Collapse sidebar if no team
+    updateSidebarCollapse();
+
+    // Open xterm terminal by default — rAF ensures container has dimensions
+    requestAnimationFrame(() => {
+        openDesktopTerminal();
+    });
 
     console.debug('[Desktop] Entered multi-pane layout');
 }
@@ -7473,7 +7543,7 @@ function exitDesktopLayout() {
     ctx.uiMode = 'mobile-single';
     const app = document.querySelector('.app');
     if (app) {
-        app.classList.remove('desktop-multipane');
+        app.classList.remove('desktop-multipane', 'sidebar-collapsed');
         app.classList.remove('density-comfortable', 'density-compact', 'density-ultra');
     }
 
@@ -7505,6 +7575,7 @@ function switchDesktopFocus(viewName) {
     document.querySelectorAll('.pane-focused').forEach(el => el.classList.remove('pane-focused'));
     if (viewName === 'team' && teamViewEl) teamViewEl.classList.add('pane-focused');
     if (viewName === 'log' && logViewEl) logViewEl.classList.add('pane-focused');
+    if (viewName === 'terminal' && terminalView) terminalView.classList.add('pane-focused');
 }
 
 /**
@@ -7517,8 +7588,7 @@ function openDesktopTerminal() {
     container.classList.add('terminal-open');
     terminalView.classList.add('desktop-panel');
     terminalView.classList.remove('hidden');
-    desktopFocusedPane = 'terminal';
-    ctx.currentView = 'terminal';
+    switchDesktopFocus('terminal');
 
     updateTerminalAgentSelector();
 
@@ -7682,6 +7752,10 @@ function setupDesktopShortcuts() {
             case 'Enter':
                 e.preventDefault();
                 openSelectedAgentTerminal();
+                break;
+            case 't':
+                e.preventDefault();
+                toggleSidebar();
                 break;
             case '/':
                 e.preventDefault();

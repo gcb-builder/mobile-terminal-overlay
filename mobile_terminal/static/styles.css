@@ -61,6 +61,7 @@ html, body {
     height: 100dvh;
     width: 100%;
     overflow: hidden;
+    position: relative;
 }
 
 /* Header - fixed at top */
@@ -790,6 +791,9 @@ html, body {
     flex-shrink: 0;
     max-height: 60vh;
     overflow-y: auto;
+    /* Overlay the terminal tail below when banner needs more room */
+    position: relative;
+    z-index: 15;
 }
 
 .prompt-banner.visible {
@@ -1013,10 +1017,12 @@ html, body {
 
 .terminal-block {
     background: var(--bg-primary);
-    flex-shrink: 0;
+    flex-shrink: 1;
+    min-height: 44px;
     display: flex;
     flex-direction: column;
     position: relative;
+    overflow: hidden;
 }
 
 /* Gradient fade moved to .tail-resize-handle::before */
@@ -1037,6 +1043,8 @@ html, body {
     word-break: break-word;
     overflow-y: auto;
     height: 120px;
+    flex: 1 1 auto;
+    min-height: 0;
     box-sizing: border-box;
 }
 
@@ -2898,6 +2906,28 @@ html, body {
 }
 
 /* Docs button */
+/* Sidebar toggle — hidden on mobile, visible in desktop mode */
+.sidebar-toggle {
+    display: none;
+    padding: 6px 10px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    min-height: 32px;
+    line-height: 1;
+}
+.sidebar-toggle:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+.sidebar-toggle:disabled {
+    opacity: 0.3;
+    cursor: default;
+}
+
 .docs-btn {
     padding: 6px 12px;
     background: var(--accent);
@@ -4863,6 +4893,73 @@ html, body {
 }
 
 /* ============================================================================
+   ENV TAB STYLES
+   ============================================================================ */
+
+.env-scope-selector {
+    padding: 0 0 12px 0;
+}
+
+.env-scope-selector select {
+    width: 100%;
+}
+
+.env-reload-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: rgba(204, 153, 0, 0.15);
+    border: 1px solid rgba(204, 153, 0, 0.4);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.env-reload-banner.hidden {
+    display: none;
+}
+
+.env-value-wrapper {
+    display: flex;
+    gap: 6px;
+    align-items: stretch;
+}
+
+.env-value-wrapper .mcp-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.env-value-toggle {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 0 12px;
+    font-size: 12px;
+    cursor: pointer;
+    min-height: 44px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.env-var-value {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    font-family: var(--font-mono);
+}
+
+.env-var-value.masked {
+    letter-spacing: 2px;
+}
+
+/* ============================================================================
    DEV PREVIEW TAB STYLES
    ============================================================================ */
 
@@ -6330,6 +6427,23 @@ html, body {
         grid-template-rows: 1fr var(--terminal-panel-height);
     }
 
+    /* Sidebar collapsed: single-column layout, hide team view */
+    .app.desktop-multipane.sidebar-collapsed .views-container {
+        grid-template-columns: 1fr;
+    }
+    .app.desktop-multipane.sidebar-collapsed .team-view {
+        display: none !important;
+    }
+
+    /* Sidebar toggle: visible in desktop mode */
+    .app.desktop-multipane .sidebar-toggle {
+        display: inline-flex;
+        align-items: center;
+    }
+    .app.desktop-multipane.sidebar-collapsed .sidebar-toggle {
+        opacity: 0.5;
+    }
+
     /* Team sidebar: always visible in desktop mode */
     .app.desktop-multipane .team-view {
         display: flex !important;
@@ -6386,6 +6500,39 @@ html, body {
         grid-row: 2;
         border-top: 2px solid var(--border);
         min-height: 0;
+        position: relative;
+    }
+
+    /* Resize grip: visible drag zone at top of terminal panel */
+    .app.desktop-multipane .terminal-view.desktop-panel::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 8px;
+        cursor: ns-resize;
+        z-index: 5;
+        background: var(--bg-secondary);
+    }
+    .app.desktop-multipane .terminal-view.desktop-panel::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 40px;
+        height: 3px;
+        background: var(--text-tertiary);
+        border-radius: 2px;
+        opacity: 0.4;
+        z-index: 6;
+        pointer-events: none;
+        transition: opacity 0.15s, background-color 0.15s;
+    }
+    .app.desktop-multipane .terminal-view.desktop-panel:hover::after {
+        opacity: 1;
+        background: var(--accent);
     }
 
     /* Terminal panel header: visible on desktop */
@@ -6452,9 +6599,39 @@ html, body {
         display: none !important;
     }
 
+    /* Context banner: compact floating pill on desktop, overlays content */
+    .app.desktop-multipane .context-banner {
+        position: absolute;
+        top: 46px;
+        right: 12px;
+        left: auto;
+        max-width: 350px;
+        padding: 3px 10px;
+        border-bottom: none;
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        font-size: 11px;
+        z-index: 20;
+        background: var(--bg-primary);
+    }
+    .app.desktop-multipane .context-banner .context-banner-body {
+        position: absolute;
+        top: 100%;
+        right: 0;
+        min-width: 300px;
+        max-width: 450px;
+        background: var(--bg-primary);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        margin-top: 4px;
+        padding: 8px;
+        max-height: 250px;
+    }
+
     /* Pane focus indicator */
     .app.desktop-multipane .pane-focused {
-        box-shadow: inset 0 0 0 1px var(--accent);
+        box-shadow: inset 0 0 0 2px var(--accent);
     }
 
     /* ===== Density toggle (desktop) ===== */

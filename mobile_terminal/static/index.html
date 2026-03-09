@@ -40,6 +40,7 @@
                     <span id="headerPhaseDot" class="status-dot idle"></span>
                     <span id="headerPhaseLabel" class="header-phase-label">Idle</span>
                 </span>
+                <button id="sidebarToggle" class="sidebar-toggle" title="Toggle team sidebar (T)">&#x25e8;</button>
                 <button id="docsBtn" class="docs-btn" title="View project docs">Docs</button>
                 <span id="lastActivity" class="last-activity" title="Last activity">--</span>
                 <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh">
@@ -146,7 +147,7 @@
                                placeholder="Search agents..." autocomplete="off" aria-label="Search agents">
                         <div class="team-filter-chips">
                             <button class="team-filter-chip active" data-filter="all">All</button>
-                            <button class="team-filter-chip" data-filter="attention">Blocked</button>
+                            <button class="team-filter-chip" data-filter="attention">Attention</button>
                             <button class="team-filter-chip" data-filter="working">Working</button>
                             <button class="team-filter-chip" data-filter="idle">Idle</button>
                         </div>
@@ -498,6 +499,7 @@
                     <button class="rollback-tab" data-tab="history">History</button>
                     <button class="rollback-tab" data-tab="process">Process</button>
                     <button class="rollback-tab" data-tab="mcp">MCP</button>
+                    <button class="rollback-tab" data-tab="env">Env</button>
                 </div>
                 <button id="previewDrawerClose" class="preview-drawer-close" aria-label="Close drawer">&times;</button>
             </div>
@@ -631,6 +633,34 @@
                 </div>
                 <div id="mcpResult" class="process-result hidden"></div>
                 <div id="mcpError" class="mcp-error hidden"></div>
+            </div>
+            <!-- Env tab content -->
+            <div id="envTabContent" class="rollback-tab-content hidden">
+                <div id="envReloadBanner" class="env-reload-banner hidden">
+                    <span>Env changed — reload to apply</span>
+                    <button id="envReloadBtn" class="mcp-restart-btn">Reload Env</button>
+                </div>
+                <div class="env-scope-selector">
+                    <select id="envScopeSelect" class="mcp-input" aria-label="Env scope">
+                        <option value="repo">Current Repo (.env)</option>
+                        <option value="server">Server (.env)</option>
+                    </select>
+                </div>
+                <div id="envVarList" class="mcp-server-list">
+                    <p class="process-description">Loading...</p>
+                </div>
+                <div class="mcp-add-section">
+                    <div class="mcp-add-header" id="envFormHeader">Add Variable</div>
+                    <input id="envKeyInput" class="mcp-input" placeholder="KEY (e.g. API_KEY)" aria-label="Variable name" autocapitalize="characters" autocomplete="off">
+                    <div class="env-value-wrapper">
+                        <input id="envValueInput" class="mcp-input" type="password" placeholder="Value" aria-label="Variable value" autocomplete="off">
+                        <button id="envValueToggle" class="env-value-toggle" type="button">Show</button>
+                    </div>
+                    <div class="mcp-form-actions">
+                        <button id="envAddBtn" class="process-action-btn primary">Set</button>
+                        <button id="envCancelEditBtn" class="process-action-btn hidden">Cancel</button>
+                    </div>
+                </div>
             </div>
         </div>
 
