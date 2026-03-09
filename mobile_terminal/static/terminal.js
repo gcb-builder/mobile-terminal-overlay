@@ -785,6 +785,7 @@ function stopActivePrompt() {
  * Extract suggestion from ctx.terminal output and pre-fill input box
  */
 let lastSuggestion = '';
+let lastSentCommand = '';  // Track last sent command to avoid re-suggesting it
 
 function extractAndSuggestCommand(content) {
     if (!logInput) return;
@@ -831,6 +832,9 @@ function extractAndSuggestCommand(content) {
             break;
         }
     }
+
+    // Never re-suggest the command the user just sent
+    if (suggestion && suggestion === lastSentCommand) return;
 
     // Only update if suggestion changed and input is empty
     if (suggestion && suggestion !== lastSuggestion && !logInput.value) {
@@ -897,7 +901,7 @@ async function syncPromptToInput() {
 
         if (extracted !== null) {
             // Don't re-fill with the same text we just sent
-            if (extracted && extracted === lastSuggestion) {
+            if (extracted && (extracted === lastSuggestion || extracted === lastSentCommand)) {
                 setTerminalBusy(false);
                 return;
             }
@@ -2415,6 +2419,7 @@ async function selectTarget(targetId, isInitialSync = false) {
     // Clear input box — stale content from previous target is irrelevant
     if (logInput) { logInput.value = ''; logInput.dataset.autoSuggestion = 'false'; }
     lastSuggestion = '';
+    lastSentCommand = '';
 
     // Reset Claude health state for new target
     lastAgentHealth = null;
@@ -6095,10 +6100,11 @@ function sendLogCommand() {
     scheduleEarlyBusyCheck();
     captureSnapshot('user_send');
 
-    // Clear input — set lastSuggestion to sent command so it won't be re-suggested
+    // Clear input — track sent command so it won't be re-suggested
     logInput.value = '';
     logInput.dataset.autoSuggestion = 'false';
     lastSuggestion = command;
+    lastSentCommand = command;
 
     // Add to command history
     if (command && commandHistory[commandHistory.length - 1] !== command) {
