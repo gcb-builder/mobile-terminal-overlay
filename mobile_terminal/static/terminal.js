@@ -11,6 +11,7 @@ import { deriveUIState, deriveSystemSummary } from './src/ui-state.js';
 import ctx from './src/context.js';
 import { initMcp, loadMcp } from './src/features/mcp.js';
 import { initEnv, loadEnv } from './src/features/env.js';
+import { initCollapse, scheduleCollapse, scheduleSuperCollapse } from './src/features/collapse.js';
 
 // Init order (runtime-sensitive):
 // 1. DOM refs available (DOMContentLoaded)
@@ -434,19 +435,12 @@ let drawerOpen = false;
 // Terminal busy state - when busy, input box shows Q instead of Enter
 let terminalBusy = false;
 
-// Tool collapse state for log view
-let lastCollapseHash = '';
-let expandedGroups = new Set();  // Stores group keys that user expanded
+// Tool collapse — moved to src/features/collapse.js
 const scheduleIdle = window.requestIdleCallback || ((cb) => setTimeout(cb, 100));
 
 // Scroll tracking for log view - only auto-scroll if user is at bottom
 let userAtBottom = true;
 let newContentIndicator = null;
-
-// Super-collapse state for grouping many tool calls into single row
-const SUPER_COLLAPSE_THRESHOLD = 6;  // Minimum tools to trigger super-collapse
-let lastSuperCollapseHash = '';
-let expandedSuperGroups = new Set();  // Stores group keys for expanded super-groups
 
 // Preview mode state
 let previewMode = null;          // null = live, string = snapshot_id
@@ -6309,256 +6303,6 @@ function sendOtherFeedback(choiceNum, text) {
     }, 1500);
 }
 
-/**
- * Schedule tool collapse for idle time
- * Computes hash to skip if content unchanged
- */
-function scheduleCollapse() {
-    if (!logContent) return;
-
-    const tools = logContent.querySelectorAll('.log-tool');
-    if (tools.length < 2) return;  // Nothing to collapse
-
-    // Hash: count + last tool key + html length
-    const lastTool = tools[tools.length - 1];
-    const hash = `${tools.length}:${lastTool?.dataset.toolKey || ''}:${logContent.innerHTML.length}`;
-
-    if (hash === lastCollapseHash) return;  // Content unchanged
-
-    scheduleIdle(() => {
-        try {
-            collapseRepeatedTools(hash);
-        } catch (e) {
-            console.warn('Collapse failed:', e);
-            // Graceful degradation - log still visible
-        }
-    }, { timeout: 500 });
-}
-
-/**
- * Single-pass collapse of consecutive duplicate tools
- * Adds badge to first, hides rest unless expanded
- */
-function collapseRepeatedTools(hash) {
-    const tools = logContent.querySelectorAll('.log-tool');
-    if (tools.length < 2) return;
-
-    // Clean previous collapse state
-    logContent.querySelectorAll('.collapse-count').forEach(b => b.remove());
-    logContent.querySelectorAll('.collapsed-duplicate').forEach(t =>
-        t.classList.remove('collapsed-duplicate'));
-
-    let i = 0;
-    while (i < tools.length) {
-        const toolName = tools[i].dataset.tool;
-        const groupKey = tools[i].dataset.toolKey;
-
-        // Count consecutive same-tool entries
-        let count = 1;
-        let j = i + 1;
-        while (j < tools.length && tools[j].dataset.tool === toolName) {
-            count++;
-            j++;
-        }
-
-        if (count > 1) {
-            // Add/update badge on first tool
-            const summary = tools[i].querySelector('.log-tool-summary');
-            if (summary) {
-                const badge = document.createElement('span');
-                badge.className = 'collapse-count';
-                badge.dataset.groupKey = groupKey;
-                badge.textContent = `×${count}`;
-                summary.appendChild(badge);
-            }
-
-            // Hide duplicates unless group is expanded
-            if (!expandedGroups.has(groupKey)) {
-                for (let k = i + 1; k < j; k++) {
-                    tools[k].classList.add('collapsed-duplicate');
-                }
-            }
-        }
-
-        i = j;  // Skip to next group
-    }
-
-    // Verify hash still valid (content didn't change during execution)
-    const tools2 = logContent.querySelectorAll('.log-tool');
-    const lastTool = tools2[tools2.length - 1];
-    const currentHash = `${tools2.length}:${lastTool?.dataset.toolKey || ''}:${logContent.innerHTML.length}`;
-
-    if (currentHash === hash) {
-        lastCollapseHash = hash;
-    }
-    // If hash changed, next render will re-trigger collapse
-}
-
-/**
- * Schedule super-collapse for idle time
- * Groups runs of many tool calls into single summary row
- */
-function scheduleSuperCollapse() {
-    if (!logContent) return;
-
-    // Delay slightly to let regular collapse complete first
-    setTimeout(() => {
-        const tools = logContent.querySelectorAll('.log-tool');
-        if (tools.length < SUPER_COLLAPSE_THRESHOLD) return;
-
-        // Hash based on tool count and innerHTML length
-        const hash = `super:${tools.length}:${logContent.innerHTML.length}`;
-        if (hash === lastSuperCollapseHash) return;
-
-        scheduleIdle(() => {
-            try {
-                applySuperCollapse(hash);
-            } catch (e) {
-                console.warn('Super-collapse failed:', e);
-            }
-        }, { timeout: 700 });
-    }, 150);  // Wait for regular collapse to finish
-}
-
-/**
- * Apply super-collapse to runs of consecutive tool blocks
- * Creates summary header and hides individual tools
- */
-function applySuperCollapse(hash) {
-    if (!logContent) return;
-
-    // Remove existing super-group headers
-    logContent.querySelectorAll('.tool-supergroup').forEach(g => g.remove());
-    // Unhide all tools first
-    logContent.querySelectorAll('.super-collapsed').forEach(t =>
-        t.classList.remove('super-collapsed'));
-
-    // Find all log cards (message groups)
-    const cards = logContent.querySelectorAll('.log-card');
-
-    for (const card of cards) {
-        const cardBody = card.querySelector('.log-card-body');
-        if (!cardBody) continue;
-
-        // Find runs of consecutive tool elements within this card
-        const children = Array.from(cardBody.children);
-        let runStart = -1;
-        let runTools = [];
-
-        for (let i = 0; i <= children.length; i++) {
-            const child = children[i];
-            const isTool = child?.classList?.contains('log-tool');
-
-            if (isTool) {
-                if (runStart === -1) runStart = i;
-                runTools.push(child);
-            } else {
-                // End of run (or end of children)
-                if (runTools.length >= SUPER_COLLAPSE_THRESHOLD) {
-                    createSuperGroup(cardBody, runTools, runStart);
-                }
-                runStart = -1;
-                runTools = [];
-            }
-        }
-    }
-
-    // Update hash
-    const tools = logContent.querySelectorAll('.log-tool');
-    const currentHash = `super:${tools.length}:${logContent.innerHTML.length}`;
-    if (currentHash === hash) {
-        lastSuperCollapseHash = hash;
-    }
-}
-
-/**
- * Create a super-group header for a run of tool elements
- */
-function createSuperGroup(container, tools, insertIndex) {
-    // Generate stable group key from first tool
-    const firstTool = tools[0];
-    const firstKey = firstTool.dataset.toolKey || firstTool.dataset.tool || 'tools';
-    const groupKey = `supergroup:${firstKey}:${tools.length}`;
-
-    // Create header element
-    const header = document.createElement('div');
-    header.className = 'tool-supergroup';
-    header.dataset.groupKey = groupKey;
-
-    const isExpanded = expandedSuperGroups.has(groupKey);
-    const arrow = isExpanded ? '▼' : '▶';
-
-    header.innerHTML = `<button class="tool-supergroup-toggle">🔧 ${tools.length} tool operations ${arrow}</button>`;
-
-    // Insert header before the run
-    const firstChild = tools[0];
-    container.insertBefore(header, firstChild);
-
-    // Hide tools if not expanded
-    if (!isExpanded) {
-        for (const tool of tools) {
-            tool.classList.add('super-collapsed');
-        }
-    }
-}
-
-/**
- * Setup super-collapse toggle via event delegation
- */
-function setupSuperCollapseHandler() {
-    if (!logContent) return;
-
-    logContent.addEventListener('click', (e) => {
-        const toggle = e.target.closest('.tool-supergroup-toggle');
-        if (!toggle) return;
-
-        const header = toggle.closest('.tool-supergroup');
-        if (!header) return;
-
-        const groupKey = header.dataset.groupKey;
-        if (!groupKey) return;
-
-        // Toggle expanded state
-        if (expandedSuperGroups.has(groupKey)) {
-            expandedSuperGroups.delete(groupKey);
-        } else {
-            if (expandedSuperGroups.size > 500) expandedSuperGroups.clear();
-            expandedSuperGroups.add(groupKey);
-        }
-
-        // Force re-apply super-collapse
-        lastSuperCollapseHash = '';
-        scheduleSuperCollapse();
-    });
-}
-
-/**
- * Setup collapse toggle via event delegation
- * Click on collapse badge toggles expanded state
- */
-function setupCollapseHandler() {
-    if (!logContent) return;
-
-    logContent.addEventListener('click', (e) => {
-        const badge = e.target.closest('.collapse-count');
-        if (!badge) return;
-
-        const groupKey = badge.dataset.groupKey;
-        if (!groupKey) return;
-
-        // Toggle expanded state
-        if (expandedGroups.has(groupKey)) {
-            expandedGroups.delete(groupKey);
-        } else {
-            if (expandedGroups.size > 500) expandedGroups.clear();
-            expandedGroups.add(groupKey);
-        }
-
-        // Re-run collapse to show/hide
-        lastCollapseHash = '';  // Force re-collapse
-        scheduleCollapse();
-    });
-}
 
 /**
  * Setup scroll tracking for log view
@@ -10873,8 +10617,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateViewSwitcher();  // Set initial view switcher state
     startActivityUpdates();
     setupQueue();
-    setupCollapseHandler();
-    setupSuperCollapseHandler();
+    initCollapse(logContent);
     setupScrollTracking();
     setupLogFilterBar();
     setupPlanPreviewHandler();
