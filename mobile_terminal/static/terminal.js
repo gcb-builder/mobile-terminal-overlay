@@ -3420,7 +3420,7 @@ function setupJumpToBottom() {
 }
 
 /**
- * Setup compose mode (predictive text + speech-to-text + image upload)
+ * Setup compose mode (predictive text + file upload)
  */
 function setupComposeMode() {
     // Open compose modal
@@ -7232,73 +7232,6 @@ function createQuestionCard(text) {
 /**
  * Voice input via SpeechRecognition API
  */
-let recognition = null;
-let isRecording = false;
-let interimStart = -1;
-
-function setupVoiceInput() {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const micBtn = document.getElementById('composeMic');
-    if (!SR || !micBtn) {
-        if (micBtn) micBtn.style.display = 'none';
-        return;
-    }
-
-    recognition = new SR();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = (event) => {
-        const input = document.getElementById('composeInput');
-        if (!input) return;
-        let interim = '', final = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-            if (event.results[i].isFinal) {
-                final += event.results[i][0].transcript;
-            } else {
-                interim += event.results[i][0].transcript;
-            }
-        }
-        if (interimStart < 0) {
-            interimStart = input.selectionStart || input.value.length;
-        }
-        if (final) {
-            input.value = input.value.substring(0, interimStart) + final;
-            interimStart = -1;
-        } else {
-            input.value = input.value.substring(0, interimStart) + interim;
-        }
-    };
-
-    recognition.onerror = (event) => {
-        if (event.error === 'not-allowed') showToast('Microphone denied', 'error');
-        else if (event.error !== 'no-speech') showToast('Voice: ' + event.error, 'error');
-        stopRecording();
-    };
-
-    recognition.onend = () => { if (isRecording) stopRecording(); };
-
-    micBtn.addEventListener('click', () => {
-        isRecording ? stopRecording() : startRecording();
-    });
-}
-
-function startRecording() {
-    isRecording = true;
-    interimStart = -1;
-    recognition.start();
-    document.getElementById('composeMic')?.classList.add('recording');
-    showToast('Listening...', 'info', 2000);
-}
-
-function stopRecording() {
-    isRecording = false;
-    interimStart = -1;
-    try { recognition.stop(); } catch(e) {}
-    document.getElementById('composeMic')?.classList.remove('recording');
-}
-
 /**
  * Push notification subscription
  */
@@ -7887,7 +7820,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupRunnerHandlers();
     setupDevPreview();
     setupPermissionBanner();
-    setupVoiceInput();
     setupDesktopLayout();
 
     // Reconnect/refresh button click handlers

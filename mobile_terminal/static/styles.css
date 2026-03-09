@@ -5998,14 +5998,6 @@ html, body {
 }
 
 /* ===== Voice Input (Mic Button) ===== */
-.mic-btn.recording {
-    color: var(--error);
-    animation: micPulse 1s ease-in-out infinite;
-}
-@keyframes micPulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-}
 
 /* ===== Push Notification Toggle ===== */
 .push-toggle-btn {

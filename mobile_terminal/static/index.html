@@ -252,7 +252,7 @@
             <button id="composeBtn" class="view-btn compose-btn">Compose</button>
         </div>
 
-        <!-- Compose modal (predictive text + speech enabled) -->
+        <!-- Compose modal (predictive text + file upload) -->
         <div id="composeModal" class="compose-modal hidden">
             <div class="compose-modal-content">
                 <div class="compose-header">
@@ -270,7 +270,7 @@
                     id="composeInput"
                     class="compose-input"
                     aria-label="Compose message"
-                    placeholder="Type with predictive text or use voice input..."
+                    placeholder="Type with predictive text..."
                     autocomplete="on"
                     autocorrect="on"
                     autocapitalize="sentences"
@@ -283,7 +283,6 @@
                     <input type="file" id="composeFileInput" accept="*/*" hidden>
                     <button id="composeAttach" class="compose-action attach-icon" title="Attach file" aria-label="Attach file">&#x1F4CE;</button>
                     <button id="composePaste" class="compose-action secondary" title="Paste from clipboard">Paste</button>
-                    <button id="composeMic" class="compose-action mic-btn" title="Voice input">Mic</button>
                     <button id="composeClear" class="compose-action secondary">Clear</button>
                     <button id="composeInsert" class="compose-action secondary">Insert</button>
                 </div>
