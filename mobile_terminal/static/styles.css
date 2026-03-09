@@ -92,21 +92,22 @@ html, body {
     font-size: 16px;
 }
 
-/* Unified nav button (repurposed from repo-btn) */
+/* Unified nav button (in collapse row) */
 .repo-btn {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
+    gap: 4px;
+    padding: 2px 8px;
     background: var(--bg-tertiary);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 4px;
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 600;
     cursor: pointer;
     min-width: 0;
     overflow: hidden;
+    max-width: 50%;
 }
 
 .repo-btn #repoLabel {
@@ -125,12 +126,12 @@ html, body {
     flex-shrink: 0;
 }
 
-/* Unified nav dropdown (repurposed from repo-dropdown) */
+/* Unified nav dropdown (opens upward from collapse row) */
 .repo-dropdown {
     position: absolute;
-    top: 100%;
+    bottom: 100%;
     left: 0;
-    margin-top: 4px;
+    margin-bottom: 4px;
     min-width: 260px;
     max-width: 340px;
     max-height: 70vh;
@@ -1626,7 +1627,7 @@ html, body {
     color: var(--text-secondary);
 }
 
-/* Collapse row: dots + toggle button */
+/* Collapse row: repo switcher + dots + toggle button */
 .collapse-row {
     display: flex;
     align-items: center;
@@ -1636,6 +1637,7 @@ html, body {
     height: 28px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     overflow: visible;
+    position: relative;
 }
 
 /* Collapse toggle button (inside collapse row) */
@@ -1992,13 +1994,14 @@ html, body {
     border-color: rgba(241, 76, 76, 0.5);
 }
 
-/* FAB menu — vertical floating menu anchored bottom-left */
+/* FAB menu — vertical floating menu anchored bottom-right above ••• button */
 .fab-menu {
     position: fixed;
     bottom: calc(env(safe-area-inset-bottom) + 56px);
-    left: 8px;
+    right: 8px;
     display: flex;
     flex-direction: column;
+    align-items: flex-end;
     gap: 6px;
     z-index: 400;
     animation: fabSlideUp 0.15s ease-out;
@@ -2043,7 +2046,7 @@ html, body {
 }
 
 .fab-menu-close {
-    align-self: flex-start;
+    align-self: flex-end;
     width: 44px;
     height: 44px;
     border: none;
@@ -3271,6 +3274,11 @@ html, body {
     font-weight: 500;
     cursor: pointer;
     min-height: 32px;
+    display: none;
+}
+
+.app.desktop-multipane .docs-btn {
+    display: inline-flex;
 }
 
 .docs-btn:active {
@@ -6939,8 +6947,43 @@ html, body {
         display: none !important;
     }
 
+    /* Push header-right to the far right on desktop (no header-left to balance) */
+    .app.desktop-multipane .header {
+        justify-content: flex-end;
+    }
+
+    /* On desktop, reposition the collapse-row into the header area (top-left)
+       instead of hiding it entirely, so the repo switcher remains accessible. */
     .app.desktop-multipane .collapse-row {
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 40px;
+        display: flex !important;
+        align-items: center;
+        padding-left: 12px;
+        z-index: 101;
+        background: transparent;
+        border: none;
+    }
+
+    .app.desktop-multipane .collapse-row .collapse-toggle-btn {
         display: none !important;
+    }
+
+    /* On desktop, repo button gets more room */
+    .app.desktop-multipane .repo-btn {
+        font-size: 14px;
+        max-width: none;
+        padding: 4px 10px;
+    }
+
+    /* On desktop, dropdown opens downward from header */
+    .app.desktop-multipane .repo-dropdown {
+        bottom: auto;
+        top: 100%;
+        margin-bottom: 0;
+        margin-top: 4px;
     }
 
     /* Context banner: compact floating pill on desktop, overlays content */

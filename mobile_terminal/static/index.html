@@ -27,14 +27,6 @@
     <div class="app">
         <!-- Header with control toggle -->
         <header class="header">
-            <div class="header-left">
-                <button id="repoBtn" class="repo-btn">
-                    <span id="repoLabel">Terminal</span>
-                    <span class="repo-arrow">&#x25BC;</span>
-                </button>
-                <!-- Repo dropdown (hidden by default) -->
-                <div id="repoDropdown" class="repo-dropdown hidden"></div>
-            </div>
             <div class="header-right">
                 <span id="headerPhaseIndicator" class="header-phase hidden">
                     <span id="headerPhaseDot" class="status-dot idle"></span>
@@ -199,6 +191,11 @@
         <!-- Shortcut bar (Control mode only) -->
         <div id="controlBarsContainer" class="control-bars-container hidden">
             <div class="collapse-row">
+                <button id="repoBtn" class="repo-btn">
+                    <span id="repoLabel">Terminal</span>
+                    <span class="repo-arrow">&#x25BC;</span>
+                </button>
+                <div id="repoDropdown" class="repo-dropdown hidden"></div>
                 <div id="viewSwitcher" class="view-dots hidden">
                     <button class="view-dot active" data-view="team"></button>
                     <button class="view-dot" data-view="log"></button>
@@ -482,6 +479,19 @@
                     <button id="stashResultClose" class="dirty-choice-cancel">Close</button>
                 </div>
             </div>
+        </div>
+
+        <!-- FAB menu (vertical list, opens drawer tabs) -->
+        <div id="fabMenu" class="fab-menu hidden">
+            <button class="fab-menu-item" data-tab="queue"><span class="fab-icon">&#x23F3;</span>Queue</button>
+            <button class="fab-menu-item" data-tab="runner"><span class="fab-icon">&#x25B6;</span>Runner</button>
+            <button class="fab-menu-item" data-tab="dev"><span class="fab-icon">&#x2699;</span>Dev</button>
+            <button class="fab-menu-item" data-tab="history"><span class="fab-icon">&#x231A;</span>History</button>
+            <button class="fab-menu-item" data-tab="process"><span class="fab-icon">&#x2630;</span>Process</button>
+            <button class="fab-menu-item" data-tab="mcp"><span class="fab-icon">&#x26A1;</span>MCP</button>
+            <button class="fab-menu-item" data-tab="env"><span class="fab-icon">&#x1F511;</span>Env</button>
+            <button class="fab-menu-item" data-action="docs"><span class="fab-icon">&#x1F4C4;</span>Docs</button>
+            <button class="fab-menu-close" id="fabMenuClose" aria-label="Close">&times;</button>
         </div>
 
         <!-- Drawer backdrop (tap to close) -->

@@ -33,7 +33,8 @@ def register(app: FastAPI, deps):
                 pass
 
         dirs = []
-        for ws_dir in config.workspace_dirs:
+        ws_dirs = config.workspace_dirs or [str(Path.home() / "dev")]
+        for ws_dir in ws_dirs:
             ws_path = Path(ws_dir).expanduser()
             if not ws_path.is_dir():
                 continue

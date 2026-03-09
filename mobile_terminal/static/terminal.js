@@ -4669,8 +4669,9 @@ function switchToTerminalView() {
             // Now switch to full mode - server starts forwarding PTY data
             // The resize we just sent will trigger a clean tmux redraw
             setOutputMode('full');
-            // Auto-focus ctx.terminal to enable keyboard input
-            if (ctx.terminal && isControlUnlocked) {
+            // Auto-focus ctx.terminal to enable keyboard input (desktop only)
+            // On touch devices, focusing opens the soft keyboard which is disruptive
+            if (ctx.terminal && isControlUnlocked && !('ontouchstart' in window)) {
                 ctx.terminal.focus();
             }
         });
@@ -4704,12 +4705,6 @@ function switchToTeamView() {
  * Append standard action buttons (Drawer, Select, Stop, Compose) to a bar element.
  */
 function appendStandardActionButtons(bar) {
-    const btn1 = document.createElement('button');
-    btn1.className = 'action-bar-btn';
-    btn1.innerHTML = '&bull;&bull;&bull;';
-    btn1.addEventListener('click', () => toggleFabMenu());
-    bar.appendChild(btn1);
-
     const btn2 = document.createElement('button');
     btn2.className = 'action-bar-btn';
     btn2.textContent = 'Select';
@@ -4730,6 +4725,12 @@ function appendStandardActionButtons(bar) {
     btn4.textContent = 'Compose';
     btn4.addEventListener('click', () => { if (composeBtn) composeBtn.click(); });
     bar.appendChild(btn4);
+
+    const btn1 = document.createElement('button');
+    btn1.className = 'action-bar-btn';
+    btn1.innerHTML = '&bull;&bull;&bull;';
+    btn1.addEventListener('click', () => toggleFabMenu());
+    bar.appendChild(btn1);
 }
 
 /**
@@ -6511,11 +6512,16 @@ function setupPreviewHandlers() {
         closeFabMenu();
     });
 
-    // FAB menu items — open drawer at selected tab
+    // FAB menu items — open drawer at selected tab (or special actions)
     document.querySelectorAll('.fab-menu-item').forEach(item => {
         item.addEventListener('click', () => {
             const tab = item.dataset.tab;
+            const action = item.dataset.action;
             closeFabMenu();
+            if (action === 'docs') {
+                document.getElementById('docsModal')?.classList.remove('hidden');
+                return;
+            }
             openDrawer();
             if (tab) switchRollbackTab(tab);
         });

@@ -403,7 +403,8 @@ export function initDocs() {
                 const isCurrent = s.is_current;
                 const shortId = s.id.substring(0, 8) + '...';
                 const preview = s.preview || '(empty)';
-                const modified = s.modified ? formatTimeAgo(s.modified * 1000) : '';
+                const modifiedTs = s.modified ? new Date(s.modified).getTime() : 0;
+                const modified = modifiedTs ? formatTimeAgo(modifiedTs) : '';
                 const size = s.size ? formatFileSize(s.size) : '';
 
                 html += `

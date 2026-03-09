@@ -551,7 +551,8 @@ def create_app(config: Config) -> FastAPI:
             # Validate path is under one of the configured workspace_dirs
             target = Path(dir_path).resolve()
             allowed = False
-            for ws_dir in config.workspace_dirs:
+            ws_dirs = config.workspace_dirs or [str(Path.home() / "dev")]
+            for ws_dir in ws_dirs:
                 ws_resolved = Path(ws_dir).expanduser().resolve()
                 try:
                     target.relative_to(ws_resolved)
