@@ -4,6 +4,21 @@
  * Connects xterm.js to the WebSocket backend for tmux relay.
  */
 
+import { abortableSleep, findSafeBoundary, formatFileSize, cleanTerminalOutput,
+         stripAnsi, escapeRegExp, classifyLogEntry, yieldToMain, escapeHtml,
+         shellSplit, formatTimeAgo } from './src/utils.js';
+import { deriveUIState, deriveSystemSummary } from './src/ui-state.js';
+import ctx from './src/context.js';
+import { initMcp, loadMcp } from './src/features/mcp.js';
+import { initEnv, loadEnv } from './src/features/env.js';
+
+// Init order (runtime-sensitive):
+// 1. DOM refs available (DOMContentLoaded)
+// 2. ctx fields populated (token, config, session, etc.)
+// 3. Feature init functions bind listeners (initMcp, initEnv, etc.)
+// 4. Core terminal/socket init (connect, setupCommandHistory)
+// 5. Initial load of active tab/view
+
 // VERSION DIAGNOSTIC - if you see this in console, browser has v247 code
 console.log('=== TERMINAL.JS v257 UISTATE + VIEW SWITCHER + TEAM SECTIONS ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
@@ -16,24 +31,24 @@ window.addEventListener('unhandledrejection', (e) => {
     console.error('Unhandled rejection:', e.reason);
 });
 
-// Get token from URL (may be null if --no-auth)
+// Get ctx.token from URL (may be null if --no-auth)
 const urlParams = new URLSearchParams(window.location.search);
-const token = urlParams.get('token') || '';
+ctx.token = urlParams.get('token') || '';
 const paramFontSize = urlParams.get('font_size');
 const paramPhysicalKb = urlParams.get('physical_kb');
-// Physical keyboard flag: URL param is immediate, server config updates after load
+// Physical keyboard flag: URL param is immediate, server ctx.config updates after load
 let isPhysicalKb = paramPhysicalKb === '1';
 
 // Persistent client ID for request tracking (helps debug duplicate requests)
-const clientId = sessionStorage.getItem('mto_client_id') || crypto.randomUUID();
-sessionStorage.setItem('mto_client_id', clientId);
-console.log('Client ID:', clientId.slice(0, 8));
+ctx.clientId = sessionStorage.getItem('mto_client_id') || crypto.randomUUID();
+sessionStorage.setItem('mto_client_id', ctx.clientId);
+console.log('Client ID:', ctx.clientId.slice(0, 8));
 
 // Standard headers for all API requests
 // Token sent via header (preferred) in addition to query string (backward compat)
 function apiHeaders(extra = {}) {
-    const h = { 'X-Client-ID': clientId, ...extra };
-    if (token) h['X-MTO-Token'] = token;
+    const h = { 'X-Client-ID': ctx.clientId, ...extra };
+    if (ctx.token) h['X-MTO-Token'] = ctx.token;
     return h;
 }
 
@@ -42,6 +57,7 @@ function apiFetch(url, options = {}) {
     const headers = apiHeaders(options.headers);
     return fetch(url, { ...options, headers });
 }
+ctx.apiFetch = apiFetch;
 
 // Fetch with timeout using AbortController
 // Prevents indefinite hangs on slow/unresponsive endpoints
@@ -63,37 +79,25 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
 
 // Singleflight polling infrastructure
 // AbortController-based async loops that can be cancelled on view switch
-function abortableSleep(ms, signal) {
-    return new Promise((resolve, reject) => {
-        if (signal?.aborted) {
-            reject(new DOMException('Aborted', 'AbortError'));
-            return;
-        }
-        const timeout = setTimeout(resolve, ms);
-        signal?.addEventListener('abort', () => {
-            clearTimeout(timeout);
-            reject(new DOMException('Aborted', 'AbortError'));
-        }, { once: true });
-    });
-}
+// abortableSleep — moved to src/utils.js
 
 // State
-let terminal = null;
-let socket = null;
+// ctx.terminal initialized by context.js (null)
+// ctx.socket initialized by context.js (null)
 let isControlUnlocked = true;  // Controls always enabled (no lock)
 let interactiveMode = false;   // Terminal keyboard passthrough (off by default)
 let interactiveIdleTimer = null;  // Auto-disable after inactivity
-let config = null;
-let currentSession = null;
+// ctx.config initialized by context.js (null)
+// ctx.currentSession initialized by context.js (null)
 
 // Output mode: 'tail' (default) or 'full'
 // In tail mode: server sends rate-limited text snapshots (no xterm rendering)
 // In full mode: server sends raw PTY bytes (xterm renders everything)
-let outputMode = 'tail';
+// ctx.outputMode initialized by context.js ('tail')
 
 // Mode epoch: incremented on every mode change to invalidate in-flight operations
 // This prevents stale data from being written after mode switches
-let modeEpoch = 0;
+// ctx.modeEpoch initialized by context.js (0)
 
 // Buffered xterm writes with hard backlog cap and chunk splitting
 let writeQueue = [];  // Array of {data: Uint8Array, epoch: number}
@@ -107,89 +111,21 @@ const RESYNC_COOLDOWN = 5000;  // Don't resync more than once per 5 seconds
 const MAX_QUEUE_BYTES = 200000;  // 200KB max backlog
 const MAX_QUEUE_ITEMS = 500;     // 500 chunks max
 const MAX_PER_FRAME_MS = 8;      // 8ms max per frame
-const CHUNK_SIZE = 8192;         // 8KB max per terminal.write() call (larger to avoid ANSI splits)
+const CHUNK_SIZE = 8192;         // 8KB max per ctx.terminal.write() call (larger to avoid ANSI splits)
 
 // Encoder for converting strings to bytes (used once, reused)
 const _textEncoder = new TextEncoder();
 
-/**
- * Find a safe boundary for splitting binary data.
- * Avoids splitting in the middle of ANSI escape sequences or UTF-8 characters.
- * Returns the safe cut position <= maxPos.
- */
-function findSafeBoundary(data, maxPos) {
-    if (maxPos >= data.length) return data.length;
-
-    let pos = maxPos;
-
-    // Scan backwards to find a safe position (max 64 bytes back)
-    // Safe position: not inside an ANSI sequence and not inside UTF-8
-    const scanLimit = Math.max(0, pos - 64);
-
-    while (pos > scanLimit) {
-        const byte = data[pos];
-
-        // UTF-8 continuation byte (10xxxxxx) - not safe
-        if ((byte & 0xC0) === 0x80) {
-            pos--;
-            continue;
-        }
-
-        // Check if we're inside an ANSI escape sequence
-        // Scan backwards for ESC (0x1B) and see if sequence is incomplete
-        let foundEsc = false;
-        let escPos = pos - 1;
-        const escLimit = Math.max(0, pos - 32);  // ANSI sequences rarely > 32 bytes
-
-        while (escPos >= escLimit) {
-            if (data[escPos] === 0x1B) {
-                foundEsc = true;
-                break;
-            }
-            // Stop if we hit a sequence terminator (letter 0x40-0x7E)
-            const b = data[escPos];
-            if (b >= 0x40 && b <= 0x7E) break;
-            escPos--;
-        }
-
-        if (foundEsc) {
-            // Check if sequence is complete before pos
-            // Sequence ends with letter (0x40-0x7E)
-            let seqComplete = false;
-            for (let i = escPos + 1; i < pos; i++) {
-                const b = data[i];
-                // '[' starts CSI sequence, continue looking
-                if (b === 0x5B && i === escPos + 1) continue;
-                // Terminator found before pos - sequence complete
-                if (b >= 0x40 && b <= 0x7E) {
-                    seqComplete = true;
-                    break;
-                }
-            }
-
-            if (!seqComplete) {
-                // We're inside an incomplete ANSI sequence - move before it
-                pos = escPos;
-                continue;
-            }
-        }
-
-        // Position is safe
-        return pos;
-    }
-
-    // Couldn't find safe position - fall back to maxPos
-    return maxPos;
-}
+// findSafeBoundary — moved to src/utils.js
 
 /**
- * Enqueue binary data for terminal rendering.
+ * Enqueue binary data for ctx.terminal rendering.
  * BYTES ONLY - all data must be Uint8Array.
  * Tagged with epoch to allow cancellation on mode change.
  */
 function enqueueSplit(data, epoch) {
     if (isResyncing) return;
-    if (epoch !== modeEpoch) return;  // Stale data from old mode
+    if (epoch !== ctx.modeEpoch) return;  // Stale data from old mode
 
     // Only accept Uint8Array - bytes all the way
     if (!(data instanceof Uint8Array)) {
@@ -200,7 +136,7 @@ function enqueueSplit(data, epoch) {
     // Split into chunks at safe boundaries
     let offset = 0;
     while (offset < data.length) {
-        if (epoch !== modeEpoch) return;  // Mode changed during split
+        if (epoch !== ctx.modeEpoch) return;  // Mode changed during split
 
         const remaining = data.length - offset;
         const targetEnd = Math.min(offset + CHUNK_SIZE, data.length);
@@ -219,7 +155,7 @@ function enqueueSplit(data, epoch) {
  * Internal: add chunk to queue with epoch tag
  */
 function queuedWriteInternal(data, epoch) {
-    if (epoch !== modeEpoch) return;  // Stale
+    if (epoch !== ctx.modeEpoch) return;  // Stale
 
     const size = data.byteLength || 0;
     writeQueue.push({ data, epoch });
@@ -241,17 +177,17 @@ function queuedWriteInternal(data, epoch) {
 }
 
 /**
- * Public API: queue data for terminal write.
- * Gates all writes behind outputMode === 'full'.
+ * Public API: queue data for ctx.terminal write.
+ * Gates all writes behind ctx.outputMode === 'full'.
  * Converts strings to bytes.
  */
 function queuedWrite(data) {
-    // CRITICAL: Only write to terminal in full mode
-    if (outputMode !== 'full') {
+    // CRITICAL: Only write to ctx.terminal in full mode
+    if (ctx.outputMode !== 'full') {
         return;
     }
 
-    const epoch = modeEpoch;
+    const epoch = ctx.modeEpoch;
 
     if (data instanceof Uint8Array) {
         enqueueSplit(data, epoch);
@@ -266,14 +202,14 @@ function queuedWrite(data) {
 }
 
 /**
- * Drain write queue to terminal.
+ * Drain write queue to ctx.terminal.
  * Checks epoch before each write to abort if mode changed.
  */
 function drainWriteQueue() {
-    const drainEpoch = modeEpoch;
+    const drainEpoch = ctx.modeEpoch;
 
     // Abort if resyncing or not in full mode
-    if (isResyncing || outputMode !== 'full') {
+    if (isResyncing || ctx.outputMode !== 'full') {
         writeQueue = [];
         queuedBytes = 0;
         draining = false;
@@ -292,7 +228,7 @@ function drainWriteQueue() {
         }
 
         // Check if mode changed - abort immediately
-        if (modeEpoch !== drainEpoch || outputMode !== 'full') {
+        if (ctx.modeEpoch !== drainEpoch || ctx.outputMode !== 'full') {
             writeQueue = [];
             queuedBytes = 0;
             draining = false;
@@ -314,11 +250,11 @@ function drainWriteQueue() {
         if (chunksThisFrame === 1 && writeQueue.length === 0) {
             console.log(`[TERMINAL] v245 Writing ${size} bytes (epoch=${drainEpoch}, first chunk)`);
         }
-        terminal.write(item.data);
+        ctx.terminal.write(item.data);
     }
 
     // Continue draining if more items and still in correct mode
-    if (writeQueue.length && outputMode === 'full' && modeEpoch === drainEpoch) {
+    if (writeQueue.length && ctx.outputMode === 'full' && ctx.modeEpoch === drainEpoch) {
         requestAnimationFrame(drainWriteQueue);
     } else {
         draining = false;
@@ -328,7 +264,7 @@ function drainWriteQueue() {
 
 function triggerTerminalResync() {
     if (isResyncing) return;
-    if (outputMode !== 'full') return;  // Only resync in full mode
+    if (ctx.outputMode !== 'full') return;  // Only resync in full mode
 
     // Enforce cooldown to prevent resync loops
     const now = Date.now();
@@ -341,7 +277,7 @@ function triggerTerminalResync() {
 
     isResyncing = true;
     lastResyncTime = now;
-    modeEpoch++;  // Invalidate any in-flight data
+    ctx.modeEpoch++;  // Invalidate any in-flight data
 
     // Clear queue
     writeQueue = [];
@@ -350,19 +286,19 @@ function triggerTerminalResync() {
 
     showToast('Resyncing terminal...', 1000);
 
-    if (terminal) {
-        terminal.reset();
+    if (ctx.terminal) {
+        ctx.terminal.reset();
     }
 
-    const resyncEpoch = modeEpoch;
+    const resyncEpoch = ctx.modeEpoch;
     fetchTerminalSnapshot().then(snapshot => {
         // Check epoch hasn't changed during fetch
-        if (modeEpoch !== resyncEpoch || outputMode !== 'full') {
+        if (ctx.modeEpoch !== resyncEpoch || ctx.outputMode !== 'full') {
             console.log('Resync cancelled - mode changed');
             isResyncing = false;
             return;
         }
-        if (snapshot && terminal) {
+        if (snapshot && ctx.terminal) {
             enqueueSplitDirect(snapshot, resyncEpoch);
         }
         setTimeout(() => {
@@ -378,7 +314,7 @@ function triggerTerminalResync() {
 // Direct enqueue for resync snapshot (with epoch)
 function enqueueSplitDirect(data, epoch) {
     if (isResyncing) return;
-    if (epoch !== modeEpoch) return;
+    if (epoch !== ctx.modeEpoch) return;
 
     // Convert to bytes if string
     let bytes;
@@ -393,7 +329,7 @@ function enqueueSplitDirect(data, epoch) {
     // Chunk and enqueue with epoch tag (through overflow-protected path)
     let offset = 0;
     while (offset < bytes.length) {
-        if (epoch !== modeEpoch) return;  // Abort if mode changed
+        if (epoch !== ctx.modeEpoch) return;  // Abort if mode changed
         const targetEnd = Math.min(offset + CHUNK_SIZE, bytes.length);
         const safeEnd = findSafeBoundary(bytes, targetEnd);
         const actualEnd = safeEnd > offset ? safeEnd : targetEnd;
@@ -405,8 +341,8 @@ function enqueueSplitDirect(data, epoch) {
 
 async function fetchTerminalSnapshot() {
     try {
-        const params = new URLSearchParams({ token });
-        if (activeTarget) params.set('target', activeTarget);
+        const params = new URLSearchParams({ token: ctx.token });
+        if (ctx.activeTarget) params.set('target', ctx.activeTarget);
         const resp = await fetch(`/api/terminal/snapshot?${params}`);
         if (!resp.ok) throw new Error(`Snapshot failed: ${resp.status}`);
         const data = await resp.json();
@@ -519,9 +455,9 @@ let previewSnapshots = [];       // Cached list of snapshots
 let previewFilter = 'all';       // Current filter: all, user_send, tool_call, agent_done, error
 
 // Target selector state (for multi-pane sessions)
-let targets = [];                // List of panes in current session
-let activeTarget = null;         // Currently selected target pane ID (e.g., "0:0")
-let expectedRepoPath = null;     // Expected repo path from config
+// ctx.targets initialized by context.js ([])
+// ctx.activeTarget initialized by context.js (null)
+let expectedRepoPath = null;     // Expected repo path from ctx.config
 let targetLocked = true;         // Lock mode (true = locked, false = follow active pane)
 
 // Pending prompt state (for questions/confirmations)
@@ -543,7 +479,7 @@ let lastPhase = null;               // Last phase result from /api/status/phase
 let phaseIdleShowHistoryTimer = null; // Timer for showing "Open History" after idle transition
 
 // Team state
-let teamState = null;  // {has_team, session, team: {leader, agents[]}}
+// ctx.teamState initialized by context.js (null)
 
 // Dispatch state
 let dispatchPlansCache = null;
@@ -627,7 +563,7 @@ let availableRepos = [];
 let availableWorkspaceDirs = [];
 
 /**
- * Initialize the terminal
+ * Initialize the ctx.terminal
  * Uses fit addon to auto-size based on container width
  */
 let fitAddon = null;
@@ -636,7 +572,7 @@ let fitAddon = null;
 const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || window.innerWidth < 768;
 
 function initTerminal() {
-    terminal = new Terminal({
+    ctx.terminal = new Terminal({
         cursorBlink: false,
         cursorStyle: 'bar',
         cursorInactiveStyle: 'none',
@@ -671,51 +607,51 @@ function initTerminal() {
         allowProposedApi: true,
     });
 
-    // Fit addon to auto-size terminal to container
+    // Fit addon to auto-size ctx.terminal to container
     fitAddon = new FitAddon.FitAddon();
-    terminal.loadAddon(fitAddon);
+    ctx.terminal.loadAddon(fitAddon);
 
     // Web links addon for clickable URLs
     const webLinksAddon = new WebLinksAddon.WebLinksAddon();
-    terminal.loadAddon(webLinksAddon);
+    ctx.terminal.loadAddon(webLinksAddon);
 
-    terminal.open(terminalContainer);
+    ctx.terminal.open(terminalContainer);
 
     // Fit to container after opening
     fitAddon.fit();
 
-    // Handle terminal input (only when unlocked)
+    // Handle ctx.terminal input (only when unlocked)
     // Send as binary for faster processing (bypasses JSON parsing on server)
     const encoder = new TextEncoder();
 
     // Simple composition handling - no incremental sending to avoid doubles
     let isComposing = false;
 
-    terminal.textarea.addEventListener('compositionstart', () => {
+    ctx.terminal.textarea.addEventListener('compositionstart', () => {
         isComposing = true;
     });
 
-    terminal.textarea.addEventListener('compositionend', () => {
+    ctx.terminal.textarea.addEventListener('compositionend', () => {
         isComposing = false;
     });
 
     // Reset composition state on blur (prevents stuck state after focus changes)
-    terminal.textarea.addEventListener('blur', () => {
+    ctx.terminal.textarea.addEventListener('blur', () => {
         isComposing = false;
     });
 
     // Also reset on focus to ensure clean state
-    terminal.textarea.addEventListener('focus', () => {
+    ctx.terminal.textarea.addEventListener('focus', () => {
         isComposing = false;
     });
 
-    terminal.onData((data) => {
-        if (isControlUnlocked && !isPreviewMode() && socket && socket.readyState === WebSocket.OPEN) {
+    ctx.terminal.onData((data) => {
+        if (isControlUnlocked && !isPreviewMode() && ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
             // Skip during active composition - wait for compositionend then onData fires
             if (isComposing) {
                 return;
             }
-            socket.send(encoder.encode(data));
+            ctx.socket.send(encoder.encode(data));
             // Reset interactive idle timer on each keystroke (if active)
             if (interactiveMode) resetInteractiveIdleTimer();
         }
@@ -745,7 +681,7 @@ function scheduleEarlyBusyCheck(attempt = 0) {
     setTimeout(async () => {
         if (!terminalBusy) return;  // Already cleared by normal poll
         try {
-            const resp = await apiFetch(`/api/terminal/capture?token=${token}&lines=${ACTIVE_PROMPT_LINES}`);
+            const resp = await apiFetch(`/api/terminal/capture?token=${ctx.token}&lines=${ACTIVE_PROMPT_LINES}`);
             if (!resp.ok) return;
             const data = await resp.json();
             if (!data.content) return;
@@ -773,7 +709,7 @@ async function refreshActivePrompt(signal) {
 
     try {
         // Use capture endpoint with small line count (current screen, not scrollback)
-        const response = await apiFetch(`/api/terminal/capture?token=${token}&lines=${ACTIVE_PROMPT_LINES}`, { signal });
+        const response = await apiFetch(`/api/terminal/capture?token=${ctx.token}&lines=${ACTIVE_PROMPT_LINES}`, { signal });
         if (!response.ok) return;
 
         const data = await response.json();
@@ -789,13 +725,13 @@ async function refreshActivePrompt(signal) {
         // Try to extract and suggest command
         extractAndSuggestCommand(content);
 
-        // Check if prompt is visible - if so, terminal is ready
+        // Check if prompt is visible - if so, ctx.terminal is ready
         const extracted = extractPromptContent(content);
         if (extracted !== null) {
             setTerminalBusy(false);
         }
 
-        // Detect permission prompts from terminal capture
+        // Detect permission prompts from ctx.terminal capture
         extractPermissionPrompt(content);
 
     } catch (error) {
@@ -831,13 +767,13 @@ function stopActivePrompt() {
 }
 
 /**
- * Extract suggestion from terminal output and pre-fill input box
+ * Extract suggestion from ctx.terminal output and pre-fill input box
  */
 let lastSuggestion = '';
 
 function extractAndSuggestCommand(content) {
     if (!logInput) return;
-    if (terminalBusy) return;  // Don't pre-fill while terminal is processing
+    if (terminalBusy) return;  // Don't pre-fill while ctx.terminal is processing
 
     // Don't overwrite if user is typing
     if (document.activeElement === logInput && logInput.value.length > 0) {
@@ -897,7 +833,7 @@ function extractAndSuggestCommand(content) {
 }
 
 /**
- * Extract editable content from terminal prompt line.
+ * Extract editable content from ctx.terminal prompt line.
  * Supports multiple prompt patterns: Claude Code, bash, zsh, python, node.
  * @param {string} content - Terminal capture (ANSI stripped)
  * @returns {string|null} - Content after prompt marker, or null if no prompt found
@@ -931,13 +867,13 @@ function extractPromptContent(content) {
 }
 
 /**
- * Sync terminal prompt content to input box
+ * Sync ctx.terminal prompt content to input box
  */
 async function syncPromptToInput() {
     if (!logInput) return;
 
     try {
-        const response = await fetch(`/api/terminal/capture?token=${token}&lines=5`);
+        const response = await fetch(`/api/terminal/capture?token=${ctx.token}&lines=5`);
         if (!response.ok) return;
 
         const data = await response.json();
@@ -954,7 +890,7 @@ async function syncPromptToInput() {
             logInput.dataset.autoSuggestion = 'false';
             logInput.focus();
             logInput.setSelectionRange(logInput.value.length, logInput.value.length);
-            // Prompt detected - terminal is ready
+            // Prompt detected - ctx.terminal is ready
             setTerminalBusy(false);
         }
     } catch (e) {
@@ -963,14 +899,14 @@ async function syncPromptToInput() {
 }
 
 /**
- * Set terminal busy state and update send button accordingly
+ * Set ctx.terminal busy state and update send button accordingly
  */
 let queueDrainTimer = null;
 function setTerminalBusy(busy) {
     terminalBusy = busy;
     updateSendButton();
 
-    // Auto-drain queue when terminal becomes idle
+    // Auto-drain queue when ctx.terminal becomes idle
     if (!busy) {
         if (queueDrainTimer) clearTimeout(queueDrainTimer);
         queueDrainTimer = setTimeout(tryDrainQueue, 1200);
@@ -992,7 +928,7 @@ function tryDrainQueue() {
 }
 
 /**
- * Update send button appearance based on terminal busy state
+ * Update send button appearance based on ctx.terminal busy state
  * When idle: blue Enter button (⏎) - sends immediately
  * When busy: yellow Q button - queues for later
  */
@@ -1009,12 +945,12 @@ function updateSendButton() {
 }
 
 /**
- * Send key to terminal and sync result to input box
+ * Send key to ctx.terminal and sync result to input box
  * @param {string} key - ANSI key code to send
  * @param {number} delay - ms to wait before capture (default 100)
  */
 async function sendKeyWithSync(key, delay = 100) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    if (!ctx.socket || ctx.socket.readyState !== WebSocket.OPEN) return;
 
     sendInput(key);
     await new Promise(r => setTimeout(r, delay));
@@ -1070,16 +1006,16 @@ function startHeartbeat() {
     lastPongTime = Date.now();
 
     heartbeatTimer = setInterval(() => {
-        if (socket && socket.readyState === WebSocket.OPEN) {
+        if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
             // Send ping
-            socket.send(JSON.stringify({ type: 'ping' }));
+            ctx.socket.send(JSON.stringify({ type: 'ping' }));
 
             // Set timeout for pong response
             heartbeatTimeoutTimer = setTimeout(() => {
                 console.log('Heartbeat timeout - no pong received, reconnecting');
                 // Connection is dead, force reconnect
-                if (socket) {
-                    socket.close();
+                if (ctx.socket) {
+                    ctx.socket.close();
                 }
             }, HEARTBEAT_TIMEOUT);
         }
@@ -1113,13 +1049,13 @@ function startIdleCheck() {
     lastDataReceived = Date.now();
 
     idleCheckTimer = setInterval(() => {
-        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        if (!ctx.socket || ctx.socket.readyState !== WebSocket.OPEN) return;
 
         const idle = Date.now() - lastDataReceived;
         if (idle > IDLE_THRESHOLD) {
             // No data for a while - send a ping to verify connection is alive
             console.log(`Connection idle for ${idle}ms, sending keepalive ping`);
-            socket.send(JSON.stringify({ type: 'ping' }));
+            ctx.socket.send(JSON.stringify({ type: 'ping' }));
 
             // If we don't get a pong soon, heartbeat timeout will catch it
             // But also set a shorter timeout for this specific check
@@ -1127,7 +1063,7 @@ function startIdleCheck() {
                 const stillIdle = Date.now() - lastDataReceived;
                 if (stillIdle > IDLE_THRESHOLD + HEARTBEAT_TIMEOUT) {
                     console.log('Connection appears stale, forcing reconnect');
-                    if (socket) socket.close();
+                    if (ctx.socket) ctx.socket.close();
                 }
             }, HEARTBEAT_TIMEOUT);
         }
@@ -1163,7 +1099,7 @@ function startConnectionWatchdog() {
         // - Overlay is hidden (user thinks they're connected)
         const isStuck = (
             !isConnecting &&
-            (!socket || socket.readyState !== WebSocket.OPEN) &&
+            (!ctx.socket || ctx.socket.readyState !== WebSocket.OPEN) &&
             !reconnectTimer &&
             statusOverlay.classList.contains('hidden')
         );
@@ -1177,10 +1113,10 @@ function startConnectionWatchdog() {
             }
             isConnecting = false;
             intentionalClose = false;
-            if (socket && socket.readyState !== WebSocket.CLOSED) {
-                try { socket.close(); } catch (e) {}
+            if (ctx.socket && ctx.socket.readyState !== WebSocket.CLOSED) {
+                try { ctx.socket.close(); } catch (e) {}
             }
-            socket = null;
+            ctx.socket = null;
             reconnectDelay = INITIAL_RECONNECT_DELAY;
             connect();
         }
@@ -1188,7 +1124,7 @@ function startConnectionWatchdog() {
 }
 
 /**
- * Update last activity timestamp when terminal receives data
+ * Update last activity timestamp when ctx.terminal receives data
  */
 function updateLastActivity() {
     lastActivityTime = Date.now();
@@ -1357,16 +1293,16 @@ function connect() {
         reconnectTimer = null;
     }
 
-    // Close existing socket if any (any state except CLOSED)
-    if (socket && socket.readyState !== WebSocket.CLOSED) {
+    // Close existing ctx.socket if any (any state except CLOSED)
+    if (ctx.socket && ctx.socket.readyState !== WebSocket.CLOSED) {
         intentionalClose = true;
-        socket.close();
-        socket = null;
+        ctx.socket.close();
+        ctx.socket = null;
     }
 
     isConnecting = true;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/terminal?token=${token}`;
+    const wsUrl = `${protocol}//${window.location.host}/ws/terminal?token=${ctx.token}`;
 
     statusText.textContent = 'Connecting...';
     statusOverlay.classList.remove('hidden');
@@ -1375,13 +1311,13 @@ function connect() {
     const reconnectBtn = document.getElementById('reconnectBtn');
     if (reconnectBtn) reconnectBtn.classList.add('hidden');
 
-    socket = new WebSocket(wsUrl);
+    ctx.socket = new WebSocket(wsUrl);
 
-    socket.onopen = () => {
-        console.log(`[v245] WebSocket connected (mode=${outputMode}, epoch=${modeEpoch})`);
+    ctx.socket.onopen = () => {
+        console.log(`[v245] WebSocket connected (mode=${ctx.outputMode}, epoch=${ctx.modeEpoch})`);
         isConnecting = false;
 
-        // Cancel overlay timer (but don't hide overlay yet - wait for terminal data)
+        // Cancel overlay timer (but don't hide overlay yet - wait for ctx.terminal data)
         if (reconnectOverlayTimer) {
             clearTimeout(reconnectOverlayTimer);
             reconnectOverlayTimer = null;
@@ -1403,20 +1339,20 @@ function connect() {
         helloTimer = setTimeout(() => {
             if (!helloReceived) {
                 console.warn('Hello timeout - server did not send hello, forcing reconnect');
-                if (socket) socket.close();
+                if (ctx.socket) ctx.socket.close();
             }
         }, HELLO_TIMEOUT);
 
-        // Fit terminal to container (don't clear buffer - server will replay history)
-        if (terminal && fitAddon) {
+        // Fit ctx.terminal to container (don't clear buffer - server will replay history)
+        if (ctx.terminal && fitAddon) {
             fitAddon.fit();
         }
 
         sendResize();
 
-        // Sync output mode with server (in case setOutputMode was called before socket opened)
-        if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: 'set_mode', mode: outputMode }));
+        // Sync output mode with server (in case setOutputMode was called before ctx.socket opened)
+        if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
+            ctx.socket.send(JSON.stringify({ type: 'set_mode', mode: ctx.outputMode }));
         }
 
         startHeartbeat();
@@ -1445,34 +1381,34 @@ function connect() {
     };
 
     let _firstDataReceived = false;
-    socket.onmessage = (event) => {
+    ctx.socket.onmessage = (event) => {
         // Track all incoming data for idle detection
         lastDataReceived = Date.now();
 
         if (event.data instanceof Blob) {
             // Binary PTY data - only process in full mode
-            if (outputMode !== 'full') {
+            if (ctx.outputMode !== 'full') {
                 console.debug('Ignoring binary data in tail mode');
                 return;
             }
             // Capture epoch BEFORE async operation to detect mode changes
-            const captureEpoch = modeEpoch;
+            const captureEpoch = ctx.modeEpoch;
             const blobSize = event.data.size;
             console.log(`[WS] Binary: ${blobSize} bytes (epoch=${captureEpoch})`);
 
             event.data.arrayBuffer().then((buffer) => {
                 // Check if mode changed during async blob read
-                if (modeEpoch !== captureEpoch || outputMode !== 'full') {
-                    console.debug(`[WS] Discarding stale binary (epoch ${captureEpoch} vs ${modeEpoch})`);
+                if (ctx.modeEpoch !== captureEpoch || ctx.outputMode !== 'full') {
+                    console.debug(`[WS] Discarding stale binary (epoch ${captureEpoch} vs ${ctx.modeEpoch})`);
                     return;
                 }
                 queuedWrite(new Uint8Array(buffer));
-                // Force terminal refresh on first data
+                // Force ctx.terminal refresh on first data
                 if (!_firstDataReceived) {
                     _firstDataReceived = true;
                     setTimeout(() => {
                         if (fitAddon) fitAddon.fit();
-                        terminal.refresh(0, terminal.rows - 1);
+                        ctx.terminal.refresh(0, ctx.terminal.rows - 1);
                     }, 50);
                 }
                 updateLastActivity();
@@ -1501,7 +1437,7 @@ function connect() {
                             helloTimer = null;
                         }
                         // Hide overlay immediately on hello - connection is established
-                        // Don't wait for terminal data (which may not arrive in tail mode)
+                        // Don't wait for ctx.terminal data (which may not arrive in tail mode)
                         if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
                             statusOverlay.classList.add('hidden');
                         }
@@ -1522,7 +1458,7 @@ function connect() {
                     }
                     // Server-initiated ping - respond with pong to keep connection alive
                     if (msg.type === 'server_ping') {
-                        socket.send(JSON.stringify({ type: 'pong' }));
+                        ctx.socket.send(JSON.stringify({ type: 'pong' }));
                         return;
                     }
                     // Handle queue messages
@@ -1531,24 +1467,24 @@ function connect() {
                         return;
                     }
                 } catch (e) {
-                    // Not JSON, treat as terminal data
+                    // Not JSON, treat as ctx.terminal data
                 }
             }
-            // Text terminal data - only process in full mode (same as binary)
-            if (outputMode !== 'full') {
+            // Text ctx.terminal data - only process in full mode (same as binary)
+            if (ctx.outputMode !== 'full') {
                 console.debug('Ignoring text data in tail mode');
                 return;
             }
             queuedWrite(event.data);
             updateLastActivity();
-            // Hide loading overlay when terminal data arrives
+            // Hide loading overlay when ctx.terminal data arrives
             if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
                 statusOverlay.classList.add('hidden');
             }
         }
     };
 
-    socket.onclose = (event) => {
+    ctx.socket.onclose = (event) => {
         console.log('WebSocket closed:', event.code, event.reason);
         isConnecting = false;
         stopHeartbeat();
@@ -1598,7 +1534,7 @@ function connect() {
             reconnectDelay = Math.max(reconnectDelay, 2000);
         }
 
-        // PTY died (4500) - terminal process died, will be recreated on reconnect
+        // PTY died (4500) - ctx.terminal process died, will be recreated on reconnect
         if (event.code === 4500) {
             console.warn('PTY died - terminal process ended');
             statusText.textContent = 'Terminal process ended. Reconnecting...';
@@ -1620,7 +1556,7 @@ function connect() {
         // This prevents flicker during background/foreground transitions
         reconnectOverlayTimer = setTimeout(() => {
             // Guard: only show if still disconnected
-            if (!socket || socket.readyState !== WebSocket.OPEN) {
+            if (!ctx.socket || ctx.socket.readyState !== WebSocket.OPEN) {
                 statusText.textContent = `Reconnecting...`;
                 statusOverlay.classList.remove('hidden');
                 if (reconnectBtn) reconnectBtn.classList.remove('hidden');
@@ -1642,7 +1578,7 @@ function connect() {
         reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
     };
 
-    socket.onerror = (error) => {
+    ctx.socket.onerror = (error) => {
         console.error('WebSocket error:', error);
         isConnecting = false;
         statusText.textContent = 'Connection error';
@@ -1650,17 +1586,17 @@ function connect() {
 }
 
 /**
- * Send terminal dimensions to server
+ * Send ctx.terminal dimensions to server
  */
 function sendResize() {
-    if (terminal && fitAddon) {
+    if (ctx.terminal && fitAddon) {
         fitAddon.fit();
     }
-    if (socket && socket.readyState === WebSocket.OPEN && terminal) {
-        socket.send(JSON.stringify({
+    if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN && ctx.terminal) {
+        ctx.socket.send(JSON.stringify({
             type: 'resize',
-            cols: terminal.cols,
-            rows: terminal.rows,
+            cols: ctx.terminal.cols,
+            rows: ctx.terminal.rows,
         }));
     }
 }
@@ -1672,42 +1608,42 @@ function sendResize() {
  */
 function setOutputMode(mode) {
     if (mode !== 'tail' && mode !== 'full') return;
-    if (mode === outputMode) return;
+    if (mode === ctx.outputMode) return;
 
-    const oldMode = outputMode;
-    outputMode = mode;
-    modeEpoch++;  // Invalidate ALL in-flight operations from previous mode
+    const oldMode = ctx.outputMode;
+    ctx.outputMode = mode;
+    ctx.modeEpoch++;  // Invalidate ALL in-flight operations from previous mode
 
-    console.log(`[MODE] v245 Switching ${oldMode} -> ${mode} (epoch=${modeEpoch})`);
+    console.log(`[MODE] v245 Switching ${oldMode} -> ${mode} (epoch=${ctx.modeEpoch})`);
 
     // Clear queue on ANY mode change - prevents stale data from leaking
     writeQueue = [];
     queuedBytes = 0;
     draining = false;
 
-    // No terminal.reset() — SIGWINCH redraw from server will overwrite
+    // No ctx.terminal.reset() — SIGWINCH redraw from server will overwrite
     // the screen with fresh content. Keeping old content visible avoids
     // a blank flash during the round-trip.
 
-    if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
+    if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
+        ctx.socket.send(JSON.stringify({
             type: 'set_mode',
             mode: mode
         }));
     } else {
-        console.warn(`[MODE] Cannot send set_mode - socket not open (state: ${socket?.readyState})`);
+        console.warn(`[MODE] Cannot send set_mode - ctx.socket not open (state: ${ctx.socket?.readyState})`);
     }
 }
 
 /**
- * Send input to terminal (binary format, same as main terminal)
+ * Send input to ctx.terminal (binary format, same as main ctx.terminal)
  */
 const inputEncoder = new TextEncoder();
 
 function sendInput(data) {
     if (isPreviewMode()) return;  // No input in preview mode
-    if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(inputEncoder.encode(data));
+    if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
+        ctx.socket.send(inputEncoder.encode(data));
     }
 }
 
@@ -1720,8 +1656,8 @@ function sendInput(data) {
  */
 function sendTextAtomic(text, enter = true) {
     if (isPreviewMode()) return;
-    if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: 'text', text: text, enter: enter }));
+    if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
+        ctx.socket.send(JSON.stringify({ type: 'text', text: text, enter: enter }));
     }
 }
 
@@ -1750,24 +1686,24 @@ function toggleControlBarsCollapse() {
         dispatchBar.classList.toggle('collapsed', isCollapsed);
     }
 
-    // When expanding in log or terminal view, also remove 'hidden' to ensure visibility
-    if (!isCollapsed && (currentView === 'log' || currentView === 'terminal')) {
+    // When expanding in log or ctx.terminal view, also remove 'hidden' to ensure visibility
+    if (!isCollapsed && (ctx.currentView === 'log' || ctx.currentView === 'terminal')) {
         controlBarsContainer.classList.remove('hidden');
     }
 
-    // Don't resize - keeps terminal stable, prevents tmux reflow/corruption
+    // Don't resize - keeps ctx.terminal stable, prevents tmux reflow/corruption
 }
 
 /**
- * Toggle interactive mode (terminal keyboard passthrough)
+ * Toggle interactive mode (ctx.terminal keyboard passthrough)
  */
 function toggleInteractiveMode() {
     interactiveMode = !interactiveMode;
     updateInteractiveBadge();
 
     if (interactiveMode) {
-        // Focus terminal for keyboard input
-        if (terminal) terminal.focus();
+        // Focus ctx.terminal for keyboard input
+        if (ctx.terminal) ctx.terminal.focus();
         resetInteractiveIdleTimer();
         showToast('Interactive mode ON — raw keyboard enabled', 'info', 2000);
     } else {
@@ -1816,24 +1752,24 @@ function clearInteractiveIdleTimer() {
 }
 
 /**
- * Setup terminal focus handling
+ * Setup ctx.terminal focus handling
  */
 function setupTerminalFocus() {
     // Disable mobile IME composition - send characters directly without preview
-    terminal.textarea.setAttribute('autocomplete', 'off');
-    terminal.textarea.setAttribute('autocorrect', 'off');
-    terminal.textarea.setAttribute('autocapitalize', 'off');
-    terminal.textarea.setAttribute('spellcheck', 'false');
+    ctx.terminal.textarea.setAttribute('autocomplete', 'off');
+    ctx.terminal.textarea.setAttribute('autocorrect', 'off');
+    ctx.terminal.textarea.setAttribute('autocapitalize', 'off');
+    ctx.terminal.textarea.setAttribute('spellcheck', 'false');
     // Only set inputmode='text' for soft keyboard devices
     // Physical keyboard devices (Titan 2) skip this to avoid soft keyboard popup
     if (!isPhysicalKb) {
-        terminal.textarea.setAttribute('inputmode', 'text');
+        ctx.terminal.textarea.setAttribute('inputmode', 'text');
     }
 
-    // Tap terminal to focus and show keyboard
+    // Tap ctx.terminal to focus and show keyboard
     terminalContainer.addEventListener('click', () => {
         if (isControlUnlocked) {
-            terminal.focus();
+            ctx.terminal.focus();
         }
     });
 }
@@ -1843,28 +1779,28 @@ function setupTerminalFocus() {
  */
 async function loadConfig() {
     try {
-        const response = await fetchWithTimeout(`/config?token=${token}`, {}, 5000);
+        const response = await fetchWithTimeout(`/config?token=${ctx.token}`, {}, 5000);
         if (!response.ok) {
             console.error('Failed to load config');
             return;
         }
-        config = await response.json();
-        // Set agent display name from server config
-        if (config.agent_name) {
-            agentName = config.agent_name;
+        ctx.config = await response.json();
+        // Set agent display name from server ctx.config
+        if (ctx.config.agent_name) {
+            agentName = ctx.config.agent_name;
         }
-        if (!paramFontSize && config.font_size && terminal) {
-            terminal.options.fontSize = config.font_size;
+        if (!paramFontSize && ctx.config.font_size && ctx.terminal) {
+            ctx.terminal.options.fontSize = ctx.config.font_size;
             fitAddon.fit();
         }
         // Apply server-detected physical keyboard (Tailscale device detection)
-        if (config.physical_kb && !isPhysicalKb) {
+        if (ctx.config.physical_kb && !isPhysicalKb) {
             isPhysicalKb = true;
-            if (terminal?.textarea) {
-                terminal.textarea.removeAttribute('inputmode');
+            if (ctx.terminal?.textarea) {
+                ctx.terminal.textarea.removeAttribute('inputmode');
             }
         }
-        await populateUI();  // await to ensure targets are loaded before log view
+        await populateUI();  // await to ensure ctx.targets are loaded before log view
     } catch (error) {
         if (error.name === 'AbortError') {
             console.warn('loadConfig timed out');
@@ -1879,10 +1815,10 @@ async function loadConfig() {
  */
 async function loadCurrentSession() {
     try {
-        const response = await fetchWithTimeout(`/current-session?token=${token}`, {}, 3000);
+        const response = await fetchWithTimeout(`/current-session?token=${ctx.token}`, {}, 3000);
         if (response.ok) {
             const data = await response.json();
-            currentSession = data.session;
+            ctx.currentSession = data.session;
         }
     } catch (error) {
         if (error.name === 'AbortError') {
@@ -1907,7 +1843,7 @@ async function loadContextBanner() {
     if (!banner || !preview || !body) return;
 
     // Check per-repo dismiss flag
-    const dismissKey = `mto_context_dismissed_${currentSession || ''}`;
+    const dismissKey = `mto_context_dismissed_${ctx.currentSession || ''}`;
     if (sessionStorage.getItem(dismissKey)) {
         banner.classList.add('hidden');
         return;
@@ -1916,7 +1852,7 @@ async function loadContextBanner() {
     try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 3000);
-        const response = await fetch(`/api/docs/context?token=${token}`, {
+        const response = await fetch(`/api/docs/context?token=${ctx.token}`, {
             signal: controller.signal,
         });
         clearTimeout(timeout);
@@ -1951,22 +1887,22 @@ async function loadContextBanner() {
 }
 
 /**
- * Populate UI from config
+ * Populate UI from ctx.config
  */
 async function populateUI() {
-    if (!config) return;
+    if (!ctx.config) return;
 
-    // Populate role buttons - send directly to terminal
-    if (config.role_prefixes && config.role_prefixes.length > 0) {
+    // Populate role buttons - send directly to ctx.terminal
+    if (ctx.config.role_prefixes && ctx.config.role_prefixes.length > 0) {
         roleBar.innerHTML = '';
-        config.role_prefixes.forEach((role) => {
+        ctx.config.role_prefixes.forEach((role) => {
             const btn = document.createElement('button');
             btn.className = 'role-btn';
             btn.textContent = role.label;
             btn.addEventListener('click', () => {
                 if (isControlUnlocked) {
-                    // Ensure terminal is focused/active before sending input
-                    if (terminal) terminal.focus();
+                    // Ensure ctx.terminal is focused/active before sending input
+                    if (ctx.terminal) ctx.terminal.focus();
                     sendInput(role.insert);
                 }
             });
@@ -1978,7 +1914,7 @@ async function populateUI() {
     populateRepoDropdown();
 
     // Load target selector (for multi-pane sessions)
-    // IMPORTANT: await to ensure activeTarget is set before log view loads
+    // IMPORTANT: await to ensure ctx.activeTarget is set before log view loads
     await loadTargets();
 
     // Start Claude health polling if document is visible
@@ -1995,23 +1931,23 @@ function updateNavLabel() {
     let currentTarget = null;
     let paneInfo = '';
 
-    if (activeTarget && targets.length > 0) {
-        currentTarget = targets.find(t => t.id === activeTarget);
+    if (ctx.activeTarget && ctx.targets.length > 0) {
+        currentTarget = ctx.targets.find(t => t.id === ctx.activeTarget);
         if (currentTarget) {
-            paneInfo = currentTarget.window_name || activeTarget;
+            paneInfo = currentTarget.window_name || ctx.activeTarget;
         } else {
-            paneInfo = activeTarget;
+            paneInfo = ctx.activeTarget;
         }
-    } else if (targets.length === 1) {
-        currentTarget = targets[0];
+    } else if (ctx.targets.length === 1) {
+        currentTarget = ctx.targets[0];
         paneInfo = currentTarget.window_name || currentTarget.id;
     }
 
     // Get repo label - match based on target's cwd, not just session
-    let repoName = config?.session_name || 'Terminal';
-    if (config && config.repos && currentTarget) {
+    let repoName = ctx.config?.session_name || 'Terminal';
+    if (ctx.config && ctx.config.repos && currentTarget) {
         // Find repo whose path matches the target's cwd
-        const matchingRepo = config.repos.find(r =>
+        const matchingRepo = ctx.config.repos.find(r =>
             currentTarget.cwd && currentTarget.cwd.startsWith(r.path)
         );
         if (matchingRepo) {
@@ -2020,16 +1956,16 @@ function updateNavLabel() {
             // No matching repo - use the directory name from cwd
             repoName = currentTarget.project || currentTarget.cwd?.split('/').pop() || repoName;
         }
-    } else if (config && config.repos) {
+    } else if (ctx.config && ctx.config.repos) {
         // Fallback: use first repo matching session
-        const currentRepo = config.repos.find(r => r.session === currentSession);
+        const currentRepo = ctx.config.repos.find(r => r.session === ctx.currentSession);
         if (currentRepo) {
             repoName = currentRepo.label;
         }
     }
 
     // Combine: "repo • pane" or just "repo" if single pane with matching name
-    if (paneInfo && (targets.length > 1 || paneInfo !== repoName)) {
+    if (paneInfo && (ctx.targets.length > 1 || paneInfo !== repoName)) {
         repoLabel.textContent = `${repoName} • ${paneInfo}`;
     } else {
         repoLabel.textContent = repoName;
@@ -2041,7 +1977,7 @@ function updateNavLabel() {
  */
 async function killPane(targetId) {
     try {
-        const resp = await apiFetch(`/api/pane/kill?token=${token}`, {
+        const resp = await apiFetch(`/api/pane/kill?token=${ctx.token}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ target_id: targetId })
@@ -2065,9 +2001,9 @@ async function killPane(targetId) {
  * Sections: Current Session panes, Actions, Other Sessions
  */
 function populateRepoDropdown() {
-    const hasRepos = config && ((config.repos && config.repos.length > 0) || (config.workspace_dirs && config.workspace_dirs.length > 0));
-    const hasMultiplePanes = targets.length > 1;
-    const hasTeam = teamState && teamState.has_team && teamState.team;
+    const hasRepos = ctx.config && ((ctx.config.repos && ctx.config.repos.length > 0) || (ctx.config.workspace_dirs && ctx.config.workspace_dirs.length > 0));
+    const hasMultiplePanes = ctx.targets.length > 1;
+    const hasTeam = ctx.teamState && ctx.teamState.has_team && ctx.teamState.team;
     const hasContent = hasRepos || hasMultiplePanes || hasTeam;
 
     // Update nav label
@@ -2093,14 +2029,14 @@ function populateRepoDropdown() {
         repoDropdown.appendChild(header);
 
         const teamList = [];
-        if (teamState.team.leader) teamList.push(teamState.team.leader);
-        teamList.push(...teamState.team.agents);
+        if (ctx.teamState.team.leader) teamList.push(ctx.teamState.team.leader);
+        teamList.push(...ctx.teamState.team.agents);
 
         teamTargetIds = new Set(teamList.map(a => a.target_id));
 
         for (const agent of teamList) {
             const opt = document.createElement('button');
-            const isActive = agent.target_id === activeTarget;
+            const isActive = agent.target_id === ctx.activeTarget;
             opt.className = 'nav-pane-option team-agent' + (isActive ? ' active' : '');
 
             const content = document.createElement('div');
@@ -2166,8 +2102,8 @@ function populateRepoDropdown() {
     }
 
     // Section 1: Current Session panes (skip team panes)
-    if (targets.length > 0) {
-        const nonTeamTargets = targets.filter(t => !teamTargetIds.has(t.id));
+    if (ctx.targets.length > 0) {
+        const nonTeamTargets = ctx.targets.filter(t => !teamTargetIds.has(t.id));
 
         if (nonTeamTargets.length > 0) {
             const header = document.createElement('div');
@@ -2177,7 +2113,7 @@ function populateRepoDropdown() {
 
             nonTeamTargets.forEach((target) => {
                 const opt = document.createElement('button');
-                const isActive = target.id === activeTarget;
+                const isActive = target.id === ctx.activeTarget;
                 opt.className = 'nav-pane-option' + (isActive ? ' active' : '');
 
                 const shortPath = target.cwd.replace(/^\/home\/[^/]+/, '~');
@@ -2219,7 +2155,7 @@ function populateRepoDropdown() {
 
     // Section 2: Actions (+ New Window)
     if (hasRepos) {
-        if (targets.length > 0) {
+        if (ctx.targets.length > 0) {
             const divider = document.createElement('div');
             divider.className = 'nav-section-divider';
             repoDropdown.appendChild(divider);
@@ -2238,13 +2174,13 @@ function populateRepoDropdown() {
     // Section 3: Other Sessions
     if (hasRepos) {
         // Get sessions that are not current
-        const otherRepos = config.repos.filter(r => r.session !== currentSession);
+        const otherRepos = ctx.config.repos.filter(r => r.session !== ctx.currentSession);
 
         // Also add default session if not in repos and not current
-        const defaultInRepos = config.repos.some(r => r.session === config.session_name);
+        const defaultInRepos = ctx.config.repos.some(r => r.session === ctx.config.session_name);
         const otherSessions = [...otherRepos];
-        if (!defaultInRepos && config.session_name !== currentSession) {
-            otherSessions.unshift({ label: config.session_name, path: 'Default', session: config.session_name });
+        if (!defaultInRepos && ctx.config.session_name !== ctx.currentSession) {
+            otherSessions.unshift({ label: ctx.config.session_name, path: 'Default', session: ctx.config.session_name });
         }
 
         if (otherSessions.length > 0) {
@@ -2278,7 +2214,7 @@ function populateRepoDropdown() {
  * Switch to a different repo/session
  */
 async function switchRepo(session) {
-    if (session === currentSession) {
+    if (session === ctx.currentSession) {
         repoDropdown.classList.add('hidden');
         return;
     }
@@ -2296,7 +2232,7 @@ async function switchRepo(session) {
     reconnectDelay = INITIAL_RECONNECT_DELAY;
 
     try {
-        const response = await fetch(`/switch-repo?session=${encodeURIComponent(session)}&token=${token}`, {
+        const response = await fetch(`/switch-repo?session=${encodeURIComponent(session)}&token=${ctx.token}`, {
             method: 'POST',
         });
 
@@ -2304,18 +2240,18 @@ async function switchRepo(session) {
             throw new Error('Failed to switch repo');
         }
 
-        currentSession = session;
+        ctx.currentSession = session;
 
         // Clear target selection (pane IDs are session-specific)
-        activeTarget = null;
+        ctx.activeTarget = null;
         localStorage.removeItem('mto_active_target');
 
         // Update unified nav label
         updateNavLabel();
 
-        // Clear terminal and log content immediately (don't show old session's output)
-        if (terminal) {
-            terminal.clear();
+        // Clear ctx.terminal and log content immediately (don't show old session's output)
+        if (ctx.terminal) {
+            ctx.terminal.clear();
         }
         if (logContent) {
             logContent.innerHTML = '<div class="loading">Switching session...</div>';
@@ -2328,7 +2264,7 @@ async function switchRepo(session) {
         // Server already closed WebSocket, reconnect after cleanup delay
         setTimeout(() => {
             connect();
-            // Refresh log, targets, and queue after connection established
+            // Refresh log, ctx.targets, and queue after connection established
             setTimeout(async () => {
                 await loadTargets();
                 refreshLogContent();
@@ -2353,8 +2289,8 @@ async function switchRepo(session) {
  * Toggle unified nav dropdown visibility
  */
 function toggleRepoDropdown() {
-    const hasRepos = config && ((config.repos && config.repos.length > 0) || (config.workspace_dirs && config.workspace_dirs.length > 0));
-    const hasMultiplePanes = targets.length > 1;
+    const hasRepos = ctx.config && ((ctx.config.repos && ctx.config.repos.length > 0) || (ctx.config.workspace_dirs && ctx.config.workspace_dirs.length > 0));
+    const hasMultiplePanes = ctx.targets.length > 1;
 
     // Only show dropdown if there's content
     if (!hasRepos && !hasMultiplePanes) {
@@ -2388,20 +2324,20 @@ function setupRepoDropdown() {
  */
 
 /**
- * Load available targets (panes) in current session
+ * Load available ctx.targets (panes) in current session
  */
 async function loadTargets() {
     try {
-        const response = await fetchWithTimeout(`/api/targets?token=${token}`, {}, 5000);
+        const response = await fetchWithTimeout(`/api/ctx.targets?token=${ctx.token}`, {}, 5000);
         if (!response.ok) return;
 
         const data = await response.json();
-        targets = data.targets || [];
-        activeTarget = data.active;
+        ctx.targets = data.ctx.targets || [];
+        ctx.activeTarget = data.active;
 
-        // Get expected repo path from current repo config
-        if (config && config.repos) {
-            const currentRepo = config.repos.find(r => r.session === currentSession);
+        // Get expected repo path from current repo ctx.config
+        if (ctx.config && ctx.config.repos) {
+            const currentRepo = ctx.config.repos.find(r => r.session === ctx.currentSession);
             expectedRepoPath = currentRepo ? currentRepo.path : null;
         }
 
@@ -2409,7 +2345,7 @@ async function loadTargets() {
         updateNavLabel();
 
         // Check if locked target still exists
-        if (targetLocked && activeTarget && !data.active_exists) {
+        if (targetLocked && ctx.activeTarget && !data.active_exists) {
             showTargetMissingWarning();
         }
 
@@ -2426,7 +2362,7 @@ async function loadTargets() {
  * Show warning when locked target pane no longer exists (clears invalid target)
  */
 function showTargetMissingWarning() {
-    activeTarget = null;
+    ctx.activeTarget = null;
     localStorage.removeItem('mto_active_target');
     showToast('Target pane no longer exists. Select a new target.', 'warning');
 }
@@ -2438,13 +2374,13 @@ let targetSelectController = null;
 async function selectTarget(targetId, isInitialSync = false) {
     repoDropdown.classList.add('hidden');
 
-    if (targetId === activeTarget && !isInitialSync) return;
+    if (targetId === ctx.activeTarget && !isInitialSync) return;
 
     // Cancel any in-flight target select request
     if (targetSelectController) targetSelectController.abort();
     targetSelectController = new AbortController();
 
-    const previousTarget = activeTarget;
+    const previousTarget = ctx.activeTarget;
 
     // Save current pane's queue before switching
     if (!isInitialSync) {
@@ -2452,7 +2388,7 @@ async function selectTarget(targetId, isInitialSync = false) {
     }
 
     // === OPTIMISTIC: Apply target locally immediately ===
-    activeTarget = targetId;
+    ctx.activeTarget = targetId;
     localStorage.setItem('mto_active_target', targetId);
     updateNavLabel();
 
@@ -2480,7 +2416,7 @@ async function selectTarget(targetId, isInitialSync = false) {
     // === BACKGROUND: Sync with server (don't block on this) ===
     try {
         const response = await fetchWithTimeout(
-            `/api/target/select?target_id=${encodeURIComponent(targetId)}&token=${token}`,
+            `/api/target/select?target_id=${encodeURIComponent(targetId)}&token=${ctx.token}`,
             { method: 'POST', signal: targetSelectController.signal },
             8000  // 8s timeout for target select
         );
@@ -2488,7 +2424,7 @@ async function selectTarget(targetId, isInitialSync = false) {
         if (response.status === 409) {
             // Target no longer exists - revert and show error
             console.warn(`Target ${targetId} not found on server`);
-            activeTarget = previousTarget;
+            ctx.activeTarget = previousTarget;
             localStorage.setItem('mto_active_target', previousTarget || '');
             updateNavLabel();
             showToast('Target pane not found', 'error');
@@ -2503,17 +2439,17 @@ async function selectTarget(targetId, isInitialSync = false) {
         const data = await response.json();
         console.log(`Target sync success: ${targetId} (epoch=${data.epoch})`);
 
-        // === Hard context switch: clear terminal and force WebSocket reconnect ===
-        if (terminal && !isInitialSync) {
-            terminal.clear();
-            terminal.reset();
+        // === Hard context switch: clear ctx.terminal and force WebSocket reconnect ===
+        if (ctx.terminal && !isInitialSync) {
+            ctx.terminal.clear();
+            ctx.terminal.reset();
         }
 
         // Force WebSocket reconnect to get fresh capture-pane from new target
-        if (socket && socket.readyState === WebSocket.OPEN && !isInitialSync) {
+        if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN && !isInitialSync) {
             console.log(`Target switch to ${targetId}, forcing reconnect`);
             intentionalClose = false;  // Allow auto-reconnect
-            socket.close();
+            ctx.socket.close();
             // Reconnect will happen automatically via onclose handler
         }
 
@@ -2522,7 +2458,7 @@ async function selectTarget(targetId, isInitialSync = false) {
             startAgentHealthPolling();
         }
 
-        // Reload targets to check cwd mismatch (background, don't await)
+        // Reload ctx.targets to check cwd mismatch (background, don't await)
         loadTargets();
 
         // Reset log state so the new pane gets a fresh load
@@ -2563,13 +2499,13 @@ async function selectTarget(targetId, isInitialSync = false) {
  * Check Claude health for the active pane
  */
 async function checkAgentHealth() {
-    if (!activeTarget) return;
+    if (!ctx.activeTarget) return;
 
     // Don't poll when document is hidden
     if (document.visibilityState !== 'visible') return;
 
     try {
-        const response = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
+        const response = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(ctx.activeTarget)}&token=${ctx.token}`);
         if (!response.ok) return;
 
         const health = await response.json();
@@ -2614,16 +2550,16 @@ async function checkAgentHealth() {
  * Re-check health and show crash banner if Claude is still not running
  */
 async function checkAgentHealthAndShowBanner() {
-    if (!activeTarget) return;
+    if (!ctx.activeTarget) return;
 
     try {
-        const response = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
+        const response = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(ctx.activeTarget)}&token=${ctx.token}`);
         if (!response.ok) return;
 
         const health = await response.json();
         lastAgentHealth = health;
 
-        if (!health.running && !dismissedCrashPanes.has(activeTarget)) {
+        if (!health.running && !dismissedCrashPanes.has(ctx.activeTarget)) {
             updateAgentCrashBanner(true);
         }
     } catch (error) {
@@ -2650,16 +2586,16 @@ function updateAgentCrashBanner(show) {
  * Respawn agent in the active pane
  */
 async function respawnAgent() {
-    if (!activeTarget) return;
+    if (!ctx.activeTarget) return;
 
     updateAgentCrashBanner(false);
 
     try {
         // Find repo for current target to get startup command
-        const targetInfo = targets.find(t => t.id === activeTarget);
+        const targetInfo = ctx.targets.find(t => t.id === ctx.activeTarget);
         let repoLabel = null;
-        if (targetInfo && config?.repos) {
-            const matchingRepo = config.repos.find(r =>
+        if (targetInfo && ctx.config?.repos) {
+            const matchingRepo = ctx.config.repos.find(r =>
                 targetInfo.cwd && targetInfo.cwd.startsWith(r.path)
             );
             if (matchingRepo) {
@@ -2669,7 +2605,7 @@ async function respawnAgent() {
 
         const body = repoLabel ? JSON.stringify({ repo_label: repoLabel }) : '{}';
 
-        const response = await fetch(`/api/agent/start?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`, {
+        const response = await fetch(`/api/agent/start?pane_id=${encodeURIComponent(ctx.activeTarget)}&token=${ctx.token}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: body,
@@ -2702,28 +2638,28 @@ async function respawnAgent() {
  * Fetch team state (phase + git info for all team panes)
  */
 async function updateTeamState() {
-    const hadTeam = teamState && teamState.has_team;
+    const hadTeam = ctx.teamState && ctx.teamState.has_team;
     try {
-        const sessParam = currentSession ? `&session=${encodeURIComponent(currentSession)}` : '';
+        const sessParam = ctx.currentSession ? `&session=${encodeURIComponent(ctx.currentSession)}` : '';
         const resp = await fetchWithTimeout(
-            `/api/team/state?token=${token}${sessParam}`, {}, 5000
+            `/api/team/state?token=${ctx.token}${sessParam}`, {}, 5000
         );
-        if (!resp.ok) { teamState = null; return; }
-        teamState = await resp.json();
+        if (!resp.ok) { ctx.teamState = null; return; }
+        ctx.teamState = await resp.json();
         // Re-render dropdown if it's visible
         if (!repoDropdown.classList.contains('hidden')) {
             populateRepoDropdown();
         }
     } catch {
-        teamState = null;
+        ctx.teamState = null;
     }
-    const hasTeam = teamState && teamState.has_team;
+    const hasTeam = ctx.teamState && ctx.teamState.has_team;
     // Detect team presence transitions
     if (hadTeam !== hasTeam) {
         updateTabIndicator();
         updateLogFilterBarVisibility();
         // If team disappeared while viewing team, switch to log
-        if (!hasTeam && currentView === 'team') {
+        if (!hasTeam && ctx.currentView === 'team') {
             switchToView('log');
         }
         // Hide system strip when team disappears
@@ -2785,8 +2721,8 @@ async function updateAgentPhase() {
     if (!indicator) return;
 
     try {
-        const paneParam = activeTarget ? `&pane_id=${encodeURIComponent(activeTarget)}` : '';
-        const response = await apiFetch(`/api/status/phase?token=${token}${paneParam}`);
+        const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
+        const response = await apiFetch(`/api/status/phase?token=${ctx.token}${paneParam}`);
         if (!response.ok) return;
 
         const data = await response.json();
@@ -2831,8 +2767,8 @@ async function updateAgentPhase() {
 async function loadRepos() {
     try {
         const [reposResp, wsDirsResp] = await Promise.all([
-            fetch(`/api/repos?token=${token}`),
-            fetch(`/api/workspace/dirs?token=${token}`)
+            fetch(`/api/repos?token=${ctx.token}`),
+            fetch(`/api/workspace/dirs?token=${ctx.token}`)
         ]);
         if (reposResp.ok) {
             const data = await reposResp.json();
@@ -2951,7 +2887,7 @@ async function createNewWindow() {
     newWindowCreate.textContent = 'Creating...';
 
     try {
-        const response = await fetch(`/api/window/new?token=${token}`, {
+        const response = await fetch(`/api/window/new?token=${ctx.token}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(bodyObj)
@@ -2977,7 +2913,7 @@ async function createNewWindow() {
             await loadTargets();
 
             // Check if the new target exists in the list
-            const found = targets.find(t => t.id === newTargetId || t.pane_id === newPaneId);
+            const found = ctx.targets.find(t => t.id === newTargetId || t.pane_id === newPaneId);
             if (found) {
                 await selectTarget(found.id);
                 return true;
@@ -3044,9 +2980,9 @@ function setupTargetSelector() {
     if (agentCrashDismissBtn) {
         agentCrashDismissBtn.addEventListener('click', () => {
             // Dismiss for this pane only
-            if (activeTarget) {
+            if (ctx.activeTarget) {
                 if (dismissedCrashPanes.size > 500) dismissedCrashPanes.clear();
-                dismissedCrashPanes.add(activeTarget);
+                dismissedCrashPanes.add(ctx.activeTarget);
             }
             updateAgentCrashBanner(false);
         });
@@ -3062,7 +2998,7 @@ function setupTargetSelector() {
     // Apply saved target OPTIMISTICALLY (locally only, don't block)
     // Server sync happens in background - connect() proceeds immediately
     if (savedTarget) {
-        activeTarget = savedTarget;
+        ctx.activeTarget = savedTarget;
         updateNavLabel();
         // Fire and forget - sync with server in background
         selectTarget(savedTarget, true).catch(err => {
@@ -3078,8 +3014,8 @@ function setupTargetSelector() {
  */
 function getTargetParams() {
     const params = new URLSearchParams();
-    if (currentSession) params.append('session', currentSession);
-    if (activeTarget) params.append('pane_id', activeTarget);
+    if (ctx.currentSession) params.append('session', ctx.currentSession);
+    if (ctx.activeTarget) params.append('pane_id', ctx.activeTarget);
     return params.toString();
 }
 
@@ -3111,7 +3047,7 @@ async function performSearchInDocs(query, resultsDiv, docsModal) {
     resultsDiv.innerHTML = '<div class="search-empty">Searching...</div>';
 
     try {
-        const response = await fetch(`/api/files/search?q=${encodeURIComponent(query)}&token=${token}`);
+        const response = await fetch(`/api/files/search?q=${encodeURIComponent(query)}&token=${ctx.token}`);
         if (!response.ok) {
             throw new Error('Search failed');
         }
@@ -3139,9 +3075,9 @@ async function performSearchInDocs(query, resultsDiv, docsModal) {
             btn.addEventListener('click', () => {
                 // Close docs modal and insert path
                 docsModal.classList.add('hidden');
-                if (isControlUnlocked && socket && socket.readyState === WebSocket.OPEN) {
+                if (isControlUnlocked && ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
                     sendInput(filePath);
-                    terminal.focus();
+                    ctx.terminal.focus();
                 }
             });
 
@@ -3210,8 +3146,8 @@ function setupEventListeners() {
             e.preventDefault();
             e.stopPropagation();
             if (isControlUnlocked) {
-                // Ensure terminal is focused/active before sending input
-                if (terminal) terminal.focus();
+                // Ensure ctx.terminal is focused/active before sending input
+                if (ctx.terminal) ctx.terminal.focus();
                 const keyName = btn.dataset.key;
                 const key = keyMap[keyName] || keyName;
                 sendInput(key);
@@ -3226,19 +3162,19 @@ function setupEventListeners() {
             e.stopPropagation();
             if (!isControlUnlocked) return;
 
-            // Ensure terminal is focused/active before sending input
-            if (terminal) terminal.focus();
+            // Ensure ctx.terminal is focused/active before sending input
+            if (ctx.terminal) ctx.terminal.focus();
             const keyName = btn.dataset.key;
             const key = keyMap[keyName] || keyName;
 
-            // Clear: clear input box and terminal command line
+            // Clear: clear input box and ctx.terminal command line
             if (keyName === 'clear') {
                 // Clear input box
                 if (logInput) {
                     logInput.value = '';
                     logInput.dataset.autoSuggestion = 'false';
                 }
-                // Send Ctrl+U to clear terminal command line
+                // Send Ctrl+U to clear ctx.terminal command line
                 sendInput('\x15');
                 return;
             }
@@ -3309,16 +3245,16 @@ function setupViewportHandler() {
         setTimeout(sendResize, 100);
     });
 
-    // Scroll terminal into view when keyboard opens (only if already at bottom)
+    // Scroll ctx.terminal into view when keyboard opens (only if already at bottom)
     // Skip on physical keyboard devices where no soft keyboard resize occurs
     if (!isPhysicalKb && window.visualViewport) {
         window.visualViewport.addEventListener('resize', () => {
             // Only auto-scroll if user was already at bottom (don't interrupt reading)
-            const viewport = terminal.element?.querySelector('.xterm-viewport');
+            const viewport = ctx.terminal.element?.querySelector('.xterm-viewport');
             if (viewport) {
                 const nearBottom = (viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight) < 50;
                 if (nearBottom) {
-                    terminal.scrollToBottom();
+                    ctx.terminal.scrollToBottom();
                 }
             }
         });
@@ -3337,7 +3273,7 @@ function setupViewportHandler() {
 
             // If obviously disconnected, reconnect immediately
             // (but not if already connecting — avoids double-connect on page load)
-            if (!socket || (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING)) {
+            if (!ctx.socket || (ctx.socket.readyState !== WebSocket.OPEN && ctx.socket.readyState !== WebSocket.CONNECTING)) {
                 console.log('Page visible, reconnecting immediately');
 
                 // Clear any pending timers to avoid races
@@ -3361,11 +3297,11 @@ function setupViewportHandler() {
                 const prevPongTime = lastPongTime;
 
                 try {
-                    socket.send(JSON.stringify({ type: 'ping' }));
+                    ctx.socket.send(JSON.stringify({ type: 'ping' }));
                 } catch (e) {
                     // Send failed — connection is dead
                     console.log('Probe send failed, forcing reconnect');
-                    socket.close();
+                    ctx.socket.close();
                     probeResolved = true;
                 }
 
@@ -3374,14 +3310,14 @@ function setupViewportHandler() {
                         // If lastPongTime didn't update, connection is dead
                         if (lastPongTime <= prevPongTime) {
                             console.log('Probe timeout — no pong after visibility change, forcing reconnect');
-                            if (socket) socket.close();
+                            if (ctx.socket) ctx.socket.close();
                         }
                     }, 3000);
                 }
 
                 // If still not connected after timeout, try server restart
                 setTimeout(async () => {
-                    if (socket && socket.readyState === WebSocket.OPEN) {
+                    if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
                         return; // Connected successfully, no restart needed
                     }
 
@@ -3402,7 +3338,7 @@ function setupViewportHandler() {
                     lastRestartAttempt = now;
 
                     try {
-                        const response = await fetch(`/api/restart?token=${token}`, {
+                        const response = await fetch(`/api/restart?token=${ctx.token}`, {
                             method: 'POST',
                         });
                         const data = await response.json();
@@ -3439,7 +3375,7 @@ function setupViewportHandler() {
     // Handle network state changes (mobile networks are flaky)
     window.addEventListener('online', () => {
         console.log('Network online - checking connection');
-        if (!socket || (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING)) {
+        if (!ctx.socket || (ctx.socket.readyState !== WebSocket.OPEN && ctx.socket.readyState !== WebSocket.CONNECTING)) {
             console.log('Network back, reconnecting immediately');
 
             // Clear any pending timers
@@ -3474,7 +3410,7 @@ function setupClipboard() {
         if (text) {
             e.preventDefault();
             sendInput(text);
-            terminal.focus();
+            ctx.terminal.focus();
         }
     });
 }
@@ -3490,24 +3426,24 @@ function setupJumpToBottom() {
     let isAtBottom = true;
 
     // Track scroll position using xterm's onScroll event
-    terminal.onScroll((scrollPos) => {
-        const maxScroll = terminal.buffer.active.length - terminal.rows;
+    ctx.terminal.onScroll((scrollPos) => {
+        const maxScroll = ctx.terminal.buffer.active.length - ctx.terminal.rows;
         isAtBottom = scrollPos >= maxScroll - 1;
     });
 
     // Auto-scroll on new output
     // Use requestAnimationFrame to debounce rapid writes during resize
-    const originalWrite = terminal.write.bind(terminal);
+    const originalWrite = ctx.terminal.write.bind(ctx.terminal);
     let scrollPending = false;
 
-    terminal.write = (data) => {
+    ctx.terminal.write = (data) => {
         const shouldScroll = isAtBottom || forceScrollToBottom;
 
         originalWrite(data, () => {
             if (shouldScroll && !scrollPending) {
                 scrollPending = true;
                 requestAnimationFrame(() => {
-                    terminal.scrollToBottom();
+                    ctx.terminal.scrollToBottom();
                     scrollPending = false;
                 });
             }
@@ -3569,7 +3505,7 @@ function setupComposeMode() {
         });
     }
 
-    // Send to terminal (text + attachment paths)
+    // Send to ctx.terminal (text + attachment paths)
     // Insert: insert text only (no Enter)
     // Run: insert text + Enter (execute command)
     function sendComposedText(withEnter = false) {
@@ -3581,7 +3517,7 @@ function setupComposeMode() {
             text = text ? `${text} ${paths}` : paths;
         }
 
-        if (text && socket && socket.readyState === WebSocket.OPEN) {
+        if (text && ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
             // Atomic send via tmux send-keys
             sendTextAtomic(text, withEnter);
             closeComposeModal();
@@ -3724,7 +3660,7 @@ function setupChallenge() {
         if (modelsLoaded) return;
 
         try {
-            const response = await fetch(`/api/challenge/models?token=${token}`);
+            const response = await fetch(`/api/challenge/models?token=${ctx.token}`);
             if (!response.ok) {
                 throw new Error('Failed to load models');
             }
@@ -3756,7 +3692,7 @@ function setupChallenge() {
         if (!challengePlanSelect) return;
 
         try {
-            const response = await fetch(`/api/plans?token=${token}`);
+            const response = await fetch(`/api/plans?token=${ctx.token}`);
             if (!response.ok) throw new Error('Failed to load plans');
             const data = await response.json();
 
@@ -3793,7 +3729,7 @@ function setupChallenge() {
         // Terminal content
         if (challengeIncludeTerminal?.checked) {
             try {
-                const response = await fetch(`/api/terminal/capture?token=${token}&lines=50`);
+                const response = await fetch(`/api/terminal/capture?token=${ctx.token}&lines=50`);
                 const data = await response.json();
                 if (data.content) {
                     preview += `## Terminal (last 50 lines)\n${data.content.slice(-2000)}\n\n`;
@@ -3812,7 +3748,7 @@ function setupChallenge() {
         const selectedPlan = challengePlanSelect?.value;
         if (selectedPlan) {
             try {
-                const response = await fetch(`/api/plan?token=${token}&filename=${encodeURIComponent(selectedPlan)}`);
+                const response = await fetch(`/api/plan?token=${ctx.token}&filename=${encodeURIComponent(selectedPlan)}`);
                 const data = await response.json();
                 if (data.content) {
                     const planTitle = plansCache.find(p => p.filename === selectedPlan)?.title || selectedPlan;
@@ -3912,7 +3848,7 @@ function setupChallenge() {
 
         try {
             const params = new URLSearchParams({
-                token: token,
+                token: ctx.token,
                 model: selectedModel,
                 problem: problem,
                 include_terminal: includeTerminal,
@@ -4070,7 +4006,7 @@ async function uploadAttachment(file, triggerBtn) {
         const formData = new FormData();
         formData.append('file', file);
 
-        const response = await fetch(`/api/upload?token=${token}`, {
+        const response = await fetch(`/api/upload?token=${ctx.token}`, {
             method: 'POST',
             body: formData,
         });
@@ -4165,11 +4101,7 @@ function clearAttachments() {
 /**
  * Format file size for display
  */
-function formatFileSize(bytes) {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+// formatFileSize — moved to src/utils.js
 
 function closeComposeModal() {
     composeModal.classList.add('hidden');
@@ -4178,7 +4110,7 @@ function closeComposeModal() {
 }
 
 /**
- * Setup select mode and copy buttons for terminal
+ * Setup select mode and copy buttons for ctx.terminal
  * Select mode: tap start point, tap end point to select text
  */
 let isSelectMode = false;
@@ -4196,7 +4128,7 @@ function setupCopyButton() {
             selectCopyBtn.classList.remove('active');
             selectCopyBtn.textContent = 'Select';
         }
-        setTimeout(() => terminal.focus(), 100);
+        setTimeout(() => ctx.terminal.focus(), 100);
     };
 
     const fallbackCopy = (text) => {
@@ -4217,7 +4149,7 @@ function setupCopyButton() {
     };
 
     const handleCopy = () => {
-        const selection = terminal.getSelection();
+        const selection = ctx.terminal.getSelection();
         if (!selection) {
             resetState();
             return;
@@ -4232,12 +4164,12 @@ function setupCopyButton() {
                 selectCopyBtn.textContent = success ? 'Copied!' : 'Failed';
                 setTimeout(resetState, 1000);
             }).finally(() => {
-                terminal.clearSelection();
+                ctx.terminal.clearSelection();
             });
         } else {
             const success = fallbackCopy(selection);
             selectCopyBtn.textContent = success ? 'Copied!' : 'Failed';
-            terminal.clearSelection();
+            ctx.terminal.clearSelection();
             setTimeout(resetState, 1000);
         }
     };
@@ -4255,7 +4187,7 @@ function setupCopyButton() {
                 selectStart = null;
                 selectCopyBtn.classList.add('active');
                 selectCopyBtn.textContent = 'Tap start';
-                terminal.clearSelection();
+                ctx.terminal.clearSelection();
             } else if (buttonState === 'tap-start' || buttonState === 'tap-end') {
                 // Cancel selection
                 resetState();
@@ -4266,7 +4198,7 @@ function setupCopyButton() {
         });
     }
 
-    // Handle taps on terminal for selection
+    // Handle taps on ctx.terminal for selection
     let lastSelectionTap = 0;
     terminalContainer.addEventListener('click', (e) => {
         if (!isSelectMode) return;
@@ -4280,11 +4212,11 @@ function setupCopyButton() {
             const clientX = e.clientX;
             const clientY = e.clientY;
 
-            // Get terminal cell dimensions
-            const cellWidth = terminal._core._renderService.dimensions.css.cell.width;
-            const cellHeight = terminal._core._renderService.dimensions.css.cell.height;
+            // Get ctx.terminal cell dimensions
+            const cellWidth = ctx.terminal._core._renderService.dimensions.css.cell.width;
+            const cellHeight = ctx.terminal._core._renderService.dimensions.css.cell.height;
 
-            // Get position relative to terminal viewport
+            // Get position relative to ctx.terminal viewport
             const screen = terminalContainer.querySelector('.xterm-screen');
             if (!screen) return;
             const rect = screen.getBoundingClientRect();
@@ -4293,7 +4225,7 @@ function setupCopyButton() {
 
             // Convert to row/col
             const col = Math.floor(x / cellWidth);
-            const row = Math.floor(y / cellHeight) + terminal.buffer.active.viewportY;
+            const row = Math.floor(y / cellHeight) + ctx.terminal.buffer.active.viewportY;
 
             if (!selectStart) {
                 // First tap - set start point
@@ -4308,9 +4240,9 @@ function setupCopyButton() {
                 if (startRow === endRow) {
                     const startCol = Math.min(selectStart.col, col);
                     const length = Math.abs(col - selectStart.col) + 1;
-                    terminal.select(startCol, startRow, length);
+                    ctx.terminal.select(startCol, startRow, length);
                 } else {
-                    terminal.selectLines(startRow, endRow);
+                    ctx.terminal.selectLines(startRow, endRow);
                 }
 
                 // Transition to copy state
@@ -4336,7 +4268,7 @@ function setupCommandHistory() {
     // Track input for history
     let inputBuffer = '';
 
-    terminal.onKey(({ key, domEvent }) => {
+    ctx.terminal.onKey(({ key, domEvent }) => {
         if (!isControlUnlocked) return;
 
         // Enter key - save to history
@@ -4371,132 +4303,15 @@ function setupCommandHistory() {
 }
 
 // ===== UIState Mapping Layer =====
-// Pure functions that derive UI rendering state from server observations.
-// Every rendering decision reads from UIState, not raw server data.
-
-/**
- * Derive UI rendering state from a single agent's server data.
- * Pure function — no side effects, no DOM access.
- * @param {Object} agent - Agent data from /api/team/state
- * @returns {Object} UIState with section, urgency, badge, subtitle, etc.
- */
-function deriveUIState(agent) {
-    const ui = {
-        section: 'active',
-        urgency: 5,
-        badgeText: '',
-        badgeColor: '',
-        subtitle: '',
-        showPermissionActions: false,
-        permissionInfo: null,
-        needsAttention: false,
-        isRunning: false,
-    };
-
-    // SACRED RULE: "Needs Attention" is for actionable-by-human states ONLY.
-    if (agent.waiting_reason === 'permission') {
-        ui.section = 'attention';
-        ui.urgency = 10;
-        ui.badgeText = 'Permission Required';
-        ui.badgeColor = 'danger';
-        ui.subtitle = (
-            (agent.permission?.tool || 'Tool') + ': ' +
-            (agent.permission?.target || '')
-        ).slice(0, 60);
-        ui.showPermissionActions = true;
-        ui.permissionInfo = agent.permission || null;
-        ui.needsAttention = true;
-    } else if (agent.waiting_reason === 'question') {
-        ui.section = 'attention';
-        ui.urgency = 8;
-        ui.badgeText = 'Needs Input';
-        ui.badgeColor = 'warning';
-        ui.subtitle = agent.detail || 'Waiting for answer';
-        ui.needsAttention = true;
-    } else if (agent.phase === 'working' || agent.phase === 'running_task') {
-        ui.section = 'active';
-        ui.urgency = 6;
-        ui.badgeText = agent.phase === 'running_task' ? 'Running Task' : 'Working';
-        ui.badgeColor = agent.phase === 'running_task' ? 'purple' : 'blue';
-        ui.subtitle = agent.detail || 'Working...';
-        ui.isRunning = true;
-    } else if (agent.phase === 'planning') {
-        ui.section = 'active';
-        ui.urgency = 5;
-        ui.badgeText = 'Planning';
-        ui.badgeColor = 'amber';
-        ui.subtitle = agent.detail || 'Planning...';
-        ui.isRunning = true;
-    } else if (agent.phase === 'waiting' && !agent.waiting_reason) {
-        // Generic "waiting" WITHOUT a specific reason = NOT attention.
-        // Could be inter-agent wait, rate limit — NOT human-actionable.
-        ui.section = 'active';
-        ui.urgency = 4;
-        ui.badgeText = 'Waiting';
-        ui.badgeColor = 'gray';
-        ui.subtitle = agent.detail || 'Waiting...';
-        ui.isRunning = true;
-    } else {
-        ui.section = 'idle';
-        ui.urgency = 3;
-        ui.badgeText = 'Idle';
-        ui.badgeColor = 'gray';
-        ui.subtitle = '';
-        ui.isRunning = false;
-    }
-
-    // Role microcopy
-    if (agent.team_role === 'leader' && ui.isRunning) {
-        ui.subtitle = ui.subtitle || 'Orchestrating';
-    } else if (agent.team_role === 'agent' && ui.isRunning) {
-        ui.subtitle = ui.subtitle || 'Executing task';
-    }
-
-    return ui;
-}
-
-/**
- * Derive system-level summary from all agents' UIStates.
- * @param {Array} agents - Raw agent data array
- * @param {Array} uiStates - Corresponding UIState array
- * @returns {Object} { icon, text, level, attentionCount, runningCount }
- */
-function deriveSystemSummary(agents, uiStates) {
-    const attentionCount = uiStates.filter(u => u.needsAttention).length;
-    const runningCount = uiStates.filter(u => u.isRunning).length;
-    const idleCount = uiStates.filter(u => u.section === 'idle').length;
-
-    let icon, text, level;
-
-    if (attentionCount > 0) {
-        icon = '\u{1F7E1}';
-        level = 'warning';
-        const parts = [];
-        if (runningCount > 0) parts.push(runningCount + ' running');
-        parts.push(attentionCount + ' needs approval');
-        text = parts.join(' \u00B7 ');
-    } else if (runningCount > 0) {
-        icon = '\u{1F7E2}';
-        level = 'ok';
-        text = runningCount + ' running';
-        if (idleCount > 0) text += ' \u00B7 ' + idleCount + ' idle';
-    } else {
-        icon = '\u26AA';
-        level = 'idle';
-        const names = agents.map(a => a.agent_name || a.agent_type || '?');
-        text = 'Idle \u00B7 ' + names.join(', ');
-    }
-
-    return { icon, text, level, attentionCount, runningCount };
-}
+// deriveUIState, deriveSystemSummary — moved to src/ui-state.js
 
 /**
  * View toggle: Log | Terminal | Context | Touch
  */
-let currentView = 'log';  // 'log', 'terminal', 'context', 'touch'
+// ctx.currentView initialized by context.js ('log')
 
 // ===== Desktop multi-pane state =====
-let uiMode = 'mobile-single'; // 'mobile-single' | 'desktop-multipane'
+// ctx.uiMode initialized by context.js ('mobile-single')
 const DESKTOP_BREAKPOINT = 1024;
 let desktopFocusedPane = 'log'; // 'team' | 'log' | 'terminal'
 let desktopResizeTimer = null;
@@ -4508,11 +4323,11 @@ let lastRenderedAgentNames = []; // Track agent order for keyboard nav
 
 function shouldLogRefreshRun() {
     return document.visibilityState === 'visible' &&
-           (uiMode === 'desktop-multipane' || currentView === 'log');
+           (ctx.uiMode === 'desktop-multipane' || ctx.currentView === 'log');
 }
 function shouldTeamRefreshRun() {
     return document.visibilityState === 'visible' &&
-           (uiMode === 'desktop-multipane' || currentView === 'team');
+           (ctx.uiMode === 'desktop-multipane' || ctx.currentView === 'team');
 }
 
 // Auto-refresh for log view - singleflight async loop
@@ -4525,7 +4340,7 @@ function stopTailViewport() { stopActivePrompt(); }
 function updateTailViewport() { refreshActivePrompt(); }
 
 function setupViewToggle() {
-    // Views are now: log (primary), terminal
+    // Views are now: log (primary), ctx.terminal
     // Context and touch moved to Docs modal
     // Tab buttons removed - using swipe and dots now
 
@@ -4551,7 +4366,7 @@ function setupViewToggle() {
 }
 
 /**
- * Populate terminal agent selector dropdown from team state.
+ * Populate ctx.terminal agent selector dropdown from team state.
  * Only shown when team is detected.
  */
 function updateTerminalAgentSelector() {
@@ -4559,7 +4374,7 @@ function updateTerminalAgentSelector() {
     const select = document.getElementById('terminalAgentSelect');
     if (!wrapper || !select) return;
 
-    const hasTeam = teamState && teamState.has_team && teamState.team;
+    const hasTeam = ctx.teamState && ctx.teamState.has_team && ctx.teamState.team;
     if (!hasTeam) {
         wrapper.classList.add('hidden');
         return;
@@ -4569,11 +4384,11 @@ function updateTerminalAgentSelector() {
 
     // Collect agents
     const agents = [];
-    if (teamState.team.leader) agents.push(teamState.team.leader);
-    if (teamState.team.agents) agents.push(...teamState.team.agents);
+    if (ctx.teamState.team.leader) agents.push(ctx.teamState.team.leader);
+    if (ctx.teamState.team.agents) agents.push(...ctx.teamState.team.agents);
 
     // Preserve current selection
-    const current = select.value || activeTarget;
+    const current = select.value || ctx.activeTarget;
 
     select.innerHTML = '';
     agents.forEach(agent => {
@@ -4589,7 +4404,7 @@ function updateTerminalAgentSelector() {
 
 // Dynamic tab order based on team presence
 function getTabOrder() {
-    if (teamState && teamState.has_team) return ['team', 'log', 'terminal'];
+    if (ctx.teamState && ctx.teamState.has_team) return ['team', 'log', 'terminal'];
     return ['log', 'terminal'];
 }
 
@@ -4614,7 +4429,7 @@ function updateViewSwitcher() {
     // Update active state on all dots, hide those not in current order
     switcher.querySelectorAll('.view-dot').forEach(dot => {
         const view = dot.dataset.view;
-        dot.classList.toggle('active', view === currentView);
+        dot.classList.toggle('active', view === ctx.currentView);
         dot.style.display = order.includes(view) ? '' : 'none';
     });
 }
@@ -4637,7 +4452,7 @@ function setupViewSwitcher() {
         if (!dot || switchHandled) return;
         switchHandled = true;
         const view = dot.dataset.view;
-        if (view && view !== currentView) {
+        if (view && view !== ctx.currentView) {
             switchToView(view);
         }
         setTimeout(() => { switchHandled = false; }, 300);
@@ -4649,7 +4464,7 @@ function setupViewSwitcher() {
  */
 function switchToNextTab() {
     const order = getTabOrder();
-    const currentIndex = order.indexOf(currentView);
+    const currentIndex = order.indexOf(ctx.currentView);
     if (currentIndex < order.length - 1) {
         const nextView = order[currentIndex + 1];
         switchToView(nextView);
@@ -4661,7 +4476,7 @@ function switchToNextTab() {
  */
 function switchToPrevTab() {
     const order = getTabOrder();
-    const currentIndex = order.indexOf(currentView);
+    const currentIndex = order.indexOf(ctx.currentView);
     if (currentIndex > 0) {
         const prevView = order[currentIndex - 1];
         switchToView(prevView);
@@ -4672,7 +4487,7 @@ function switchToPrevTab() {
  * Switch to a specific view by name
  */
 function switchToView(viewName) {
-    if (uiMode === 'desktop-multipane') {
+    if (ctx.uiMode === 'desktop-multipane') {
         if (viewName === 'terminal') {
             openDesktopTerminal();
         } else {
@@ -4767,7 +4582,7 @@ function setupSwipeNavigation() {
     let touchStartTime = 0;
 
     const handleTouchStart = (e) => {
-        if (uiMode === 'desktop-multipane') return;
+        if (ctx.uiMode === 'desktop-multipane') return;
         touchStartX = e.touches[0].clientX;
         touchStartY = e.touches[0].clientY;
         touchStartTime = Date.now();
@@ -4803,7 +4618,7 @@ function setupSwipeNavigation() {
 }
 
 function hideAllContainers() {
-    if (uiMode === 'desktop-multipane') return;
+    if (ctx.uiMode === 'desktop-multipane') return;
     if (logView) logView.classList.add('hidden');
     const teamViewEl = document.getElementById('teamView');
     if (teamViewEl) teamViewEl.classList.add('hidden');
@@ -4817,8 +4632,8 @@ function hideAllContainers() {
 }
 
 function switchToLogView() {
-    currentView = 'log';
-    // Auto-disable interactive mode when leaving terminal view
+    ctx.currentView = 'log';
+    // Auto-disable interactive mode when leaving ctx.terminal view
     if (interactiveMode) {
         interactiveMode = false;
         clearInteractiveIdleTimer();
@@ -4826,13 +4641,13 @@ function switchToLogView() {
     }
     hideAllContainers();
     if (logView) logView.classList.remove('hidden');
-    // Show control bars if unlocked (same as terminal view)
+    // Show control bars if unlocked (same as ctx.terminal view)
     if (isControlUnlocked) {
         controlBarsContainer.classList.remove('hidden');
     }
     updateViewSwitcher();
     updateActionBar();
-    // Restore active prompt pre (hidden in terminal view)
+    // Restore active prompt pre (hidden in ctx.terminal view)
     if (activePromptContent) activePromptContent.style.display = '';
     // Switch to tail mode - no xterm rendering, lightweight updates
     setOutputMode('tail');
@@ -4850,11 +4665,11 @@ function switchToLogView() {
 }
 
 function switchToTerminalView() {
-    if (uiMode === 'desktop-multipane') {
+    if (ctx.uiMode === 'desktop-multipane') {
         openDesktopTerminal();
         return;
     }
-    currentView = 'terminal';
+    ctx.currentView = 'terminal';
     hideAllContainers();
     if (terminalView) terminalView.classList.remove('hidden');
     // Only show control bars if unlocked
@@ -4864,11 +4679,11 @@ function switchToTerminalView() {
     updateViewSwitcher();
     updateActionBar();
     updateTerminalAgentSelector();
-    // Hide active prompt pre — live xterm already shows terminal content
+    // Hide active prompt pre — live xterm already shows ctx.terminal content
     if (activePromptContent) activePromptContent.style.display = 'none';
 
     // CRITICAL ORDER: fit + resize FIRST, then set_mode
-    // The resize triggers tmux to redraw at the correct terminal size.
+    // The resize triggers tmux to redraw at the correct ctx.terminal size.
     // If we set_mode first, tmux redraws at the OLD size → garbled output.
     requestAnimationFrame(() => {
         if (fitAddon) fitAddon.fit();
@@ -4876,15 +4691,15 @@ function switchToTerminalView() {
         // Now switch to full mode - server starts forwarding PTY data
         // The resize we just sent will trigger a clean tmux redraw
         setOutputMode('full');
-        // Auto-focus terminal to enable keyboard input
-        if (terminal && isControlUnlocked) {
-            terminal.focus();
+        // Auto-focus ctx.terminal to enable keyboard input
+        if (ctx.terminal && isControlUnlocked) {
+            ctx.terminal.focus();
         }
     });
 }
 
 function switchToTeamView() {
-    currentView = 'team';
+    ctx.currentView = 'team';
     // Auto-disable interactive mode
     if (interactiveMode) {
         interactiveMode = false;
@@ -4928,27 +4743,27 @@ function stopTeamCardRefresh() {
 }
 
 async function refreshTeamCards() {
-    if (!shouldTeamRefreshRun() || !teamState || !teamState.has_team) return;
+    if (!shouldTeamRefreshRun() || !ctx.teamState || !ctx.teamState.has_team) return;
     if (teamRefreshInFlight) return;
     teamRefreshInFlight = true;
 
-    const sessParam = currentSession ? `&session=${encodeURIComponent(currentSession)}` : '';
+    const sessParam = ctx.currentSession ? `&session=${encodeURIComponent(ctx.currentSession)}` : '';
     try {
         const resp = await fetchWithTimeout(
-            `/api/team/capture?lines=8&token=${token}${sessParam}`, {}, 5000
+            `/api/team/capture?lines=8&token=${ctx.token}${sessParam}`, {}, 5000
         );
         if (!resp.ok) return;
         const data = await resp.json();
 
         // Also refresh team state for latest phase/permission info
         const stateResp = await fetchWithTimeout(
-            `/api/team/state?token=${token}${sessParam}`, {}, 5000
+            `/api/team/state?token=${ctx.token}${sessParam}`, {}, 5000
         );
         if (stateResp.ok) {
-            teamState = await stateResp.json();
+            ctx.teamState = await stateResp.json();
         }
 
-        renderTeamCards(teamState, data.captures || {});
+        renderTeamCards(ctx.teamState, data.captures || {});
     } catch (e) {
         console.warn('Team card refresh failed:', e);
     } finally {
@@ -5012,12 +4827,12 @@ function renderTeamCards(state, captures) {
     }
 
     // Restore selected agent highlight after re-render
-    if (uiMode === 'desktop-multipane' && selectedAgentIndex >= 0) {
+    if (ctx.uiMode === 'desktop-multipane' && selectedAgentIndex >= 0) {
         restoreAgentSelection();
     }
 
     // Apply filters if active
-    if (uiMode === 'desktop-multipane') {
+    if (ctx.uiMode === 'desktop-multipane') {
         applyTeamFilters();
     }
 
@@ -5083,7 +4898,7 @@ function renderTeamSection(title, uiPairs, captures, sectionType, collapsed = fa
 
 /**
  * Update the system status strip from summary data.
- * Only called on team state updates, not terminal output.
+ * Only called on team state updates, not ctx.terminal output.
  * Uses dedicated systemStatusStrip (hides single-agent strip when team present).
  */
 function updateSystemStatus(summary) {
@@ -5107,8 +4922,8 @@ function updateSystemStatus(summary) {
     // Leader state pill
     const leaderEl = document.getElementById('leaderState');
     if (leaderEl) {
-        if (teamState && teamState.team && teamState.team.leader) {
-            const leader = teamState.team.leader;
+        if (ctx.teamState && ctx.teamState.team && ctx.teamState.team.leader) {
+            const leader = ctx.teamState.team.leader;
             const leaderPhase = leader.phase || 'idle';
             const labels = {
                 working: 'Orchestrating',
@@ -5174,9 +4989,9 @@ function updateActionBar() {
     if (!bar) return;
 
     bar.innerHTML = '';
-    const hasTeam = teamState && teamState.has_team;
+    const hasTeam = ctx.teamState && ctx.teamState.has_team;
 
-    if (currentView === 'team' && hasTeam) {
+    if (ctx.currentView === 'team' && hasTeam) {
         const summary = lastSystemSummary;
         if (summary && summary.attentionCount > 0) {
             // Show approval banner above standard buttons
@@ -5203,7 +5018,7 @@ function updateActionBar() {
         // Show dispatch bar inline
         const dispatchBar = document.getElementById('teamDispatchBar');
         if (dispatchBar) dispatchBar.classList.remove('hidden');
-    } else if (currentView === 'terminal' || currentView === 'log') {
+    } else if (ctx.currentView === 'terminal' || ctx.currentView === 'log') {
         // Terminal + Log view: same button bar
         appendStandardActionButtons(bar);
         bar.classList.remove('hidden');
@@ -5231,7 +5046,7 @@ async function populateDispatchPlans() {
     if (!select) return;
 
     try {
-        const resp = await fetch(`/api/plans?token=${token}`);
+        const resp = await fetch(`/api/plans?token=${ctx.token}`);
         if (!resp.ok) throw new Error('Failed to load plans');
         const data = await resp.json();
         dispatchPlansCache = data.plans || [];
@@ -5256,7 +5071,7 @@ function updateDispatchButtonState() {
     const dispatchBtn = document.getElementById('dispatchBtn');
     const msgInput = document.getElementById('leaderMessageInput');
     const msgBtn = document.getElementById('leaderMessageBtn');
-    const hasLeader = teamState && teamState.team && teamState.team.leader;
+    const hasLeader = ctx.teamState && ctx.teamState.team && ctx.teamState.team.leader;
 
     if (dispatchBtn) {
         dispatchBtn.disabled = !select || !select.value || !hasLeader || dispatchInFlight;
@@ -5277,11 +5092,11 @@ async function dispatchToLeader() {
     btn.disabled = true;
 
     const plan = select.value;
-    const sessParam = currentSession ? `&session=${encodeURIComponent(currentSession)}` : '';
+    const sessParam = ctx.currentSession ? `&session=${encodeURIComponent(ctx.currentSession)}` : '';
 
     try {
         const resp = await fetchWithTimeout(
-            `/api/team/dispatch?plan_filename=${encodeURIComponent(plan)}&include_context=true&token=${token}${sessParam}`,
+            `/api/team/dispatch?plan_filename=${encodeURIComponent(plan)}&include_context=true&token=${ctx.token}${sessParam}`,
             { method: 'POST' },
             15000
         );
@@ -5309,10 +5124,10 @@ async function dispatchToLeader() {
 async function sendLeaderMessage() {
     const input = document.getElementById('leaderMessageInput');
     if (!input || !input.value.trim()) return;
-    if (!teamState || !teamState.team || !teamState.team.leader) return;
+    if (!ctx.teamState || !ctx.teamState.team || !ctx.teamState.team.leader) return;
 
     const text = input.value.trim();
-    const targetId = teamState.team.leader.target_id;
+    const targetId = ctx.teamState.team.leader.target_id;
 
     await sendTeamInput(targetId, text);
     input.value = '';
@@ -5380,7 +5195,7 @@ function createTeamCard(agent, capture, ui) {
 
     card.appendChild(info);
 
-    // Body: last 1-2 log lines (tap to switch to terminal)
+    // Body: last 1-2 log lines (tap to switch to ctx.terminal)
     const content = (capture.content || '').trim();
     const lines = content.split('\n').filter(l => l.trim());
     if (lines.length > 0) {
@@ -5440,7 +5255,7 @@ function createTeamCard(agent, capture, ui) {
     }
 
     // Desktop hover actions
-    if (uiMode === 'desktop-multipane') {
+    if (ctx.uiMode === 'desktop-multipane') {
         addDesktopHoverActions(card, agent, ui);
     }
 
@@ -5448,10 +5263,10 @@ function createTeamCard(agent, capture, ui) {
 }
 
 async function sendTeamInput(targetId, text) {
-    const sessParam = currentSession ? `&session=${encodeURIComponent(currentSession)}` : '';
+    const sessParam = ctx.currentSession ? `&session=${encodeURIComponent(ctx.currentSession)}` : '';
     try {
         const resp = await fetchWithTimeout(
-            `/api/team/send?target_id=${encodeURIComponent(targetId)}&text=${encodeURIComponent(text)}&token=${token}${sessParam}`,
+            `/api/team/send?target_id=${encodeURIComponent(targetId)}&text=${encodeURIComponent(text)}&token=${ctx.token}${sessParam}`,
             { method: 'POST' },
             5000
         );
@@ -5469,109 +5284,17 @@ async function sendTeamInput(targetId, text) {
 }
 
 /**
- * Clean terminal output by removing clutter
+ * Clean ctx.terminal output by removing clutter
  * - Collapse multiple blank lines
  * - Remove spinner lines (Braille spinners, etc.)
  * - Remove progress-only lines
  * - Clean up carriage return artifacts
  */
-function cleanTerminalOutput(text) {
-    // Split into lines
-    let lines = text.split('\n');
+// cleanTerminalOutput — moved to src/utils.js
 
-    // Spinner characters (Braille pattern used by Claude)
-    const spinnerChars = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷]/;
+// stripAnsi — moved to src/utils.js
 
-    // Box drawing characters
-    const boxDrawing = /^[─│┌┐└┘├┤┬┴┼━┃╭╮╯╰═║╔╗╚╝╠╣╦╩╬\s]+$/;
-
-    // Filter and clean lines
-    const cleanedLines = [];
-    let prevWasBlank = false;
-
-    for (let line of lines) {
-        // Handle carriage return (keep only last segment)
-        if (line.includes('\r')) {
-            const parts = line.split('\r');
-            line = parts[parts.length - 1];
-        }
-
-        const trimmed = line.trim();
-
-        // Skip lines that are just spinners
-        if (trimmed.length <= 3 && spinnerChars.test(trimmed)) {
-            continue;
-        }
-
-        // Skip lines that are just box drawing (borders)
-        if (trimmed.length > 0 && boxDrawing.test(trimmed)) {
-            continue;
-        }
-
-        // Skip lines that are mostly progress bar
-        if (trimmed.length > 0 && trimmed.replace(/[█▓▒░▏▎▍▌▋▊▉\s\[\]%0-9\/]/g, '').length < 3) {
-            continue;
-        }
-
-        // Skip "working..." type status lines that repeat
-        if (/^(working|thinking|processing|loading)\.{0,3}$/i.test(trimmed)) {
-            continue;
-        }
-
-        // Skip specific Claude Code status hints (not questions/options)
-        // Only filter "accept edits", "shift+tab to cycle" - NOT interactive prompts
-        if (/^[⏵▶►→]{1,2}\s*(accept|shift\+tab|tab to|esc to|ctrl\+)/i.test(trimmed)) {
-            continue;
-        }
-
-        // Skip "Context left until auto-compact" lines
-        if (/context left|auto-compact/i.test(trimmed)) {
-            continue;
-        }
-
-        // Collapse multiple blank lines
-        const isBlank = trimmed === '';
-        if (isBlank && prevWasBlank) {
-            continue;
-        }
-        prevWasBlank = isBlank;
-
-        cleanedLines.push(line);
-    }
-
-    return cleanedLines.join('\n');
-}
-
-// Strip ANSI escape codes from text
-function stripAnsi(text) {
-    return text
-        // Full ANSI CSI sequences: ESC [ (optional ?) ... letter
-        .replace(/\x1b\[\??[0-9;]*[a-zA-Z]/g, '')
-        // Orphaned CSI sequences (missing ESC): [?2026l, [0m, etc.
-        .replace(/\[\??[0-9;]*[a-zA-Z]/g, '')
-        // Standalone DEC sequences: ?2026l, ?2026h, etc.
-        .replace(/\?[0-9]+[a-zA-Z]/g, '')
-        // RGB color codes that got split: 38;2;R;G;Bm or 48;2;R;G;Bm
-        .replace(/\b[34]8;2;[0-9;]+m/g, '')
-        // Simple color codes: 0m, 1m, 32m, etc.
-        .replace(/\b[0-9;]+m\b/g, '')
-        // OSC sequences (ESC ] ... BEL)
-        .replace(/\x1b\][^\x07]*\x07/g, '')
-        // OSC sequences with ST terminator
-        .replace(/\x1b\][^\x1b]*\x1b\\/g, '')
-        // Other escape sequences
-        .replace(/\x1b[PX^_][^\x1b]*\x1b\\/g, '')
-        .replace(/\x1b[\x40-\x5F]/g, '')
-        // Control characters (except tab, newline, carriage return)
-        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
-        // Normalize line endings
-        .replace(/\r\n/g, '\n')
-        .replace(/\r/g, '\n');
-}
-
-function escapeRegExp(string) {
-    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+// escapeRegExp — moved to src/utils.js
 
 /**
  * Load log content for the hybrid view
@@ -5583,29 +5306,7 @@ let activeLogFilter = 'all';  // Current filter type
  * Classify a log message group for filtering.
  * Returns: 'error' | 'permission' | 'output' | 'system'
  */
-function classifyLogEntry(msg) {
-    const allText = msg.blocks.map(b => b.text).join('\n').toLowerCase();
-
-    // Permission-related entries
-    if (allText.includes('permission') || allText.includes('allow') ||
-        allText.includes('deny') || allText.includes('\u{1F512}')) {
-        return 'permission';
-    }
-
-    // Error entries
-    if (allText.includes('error') || allText.includes('failed') ||
-        allText.includes('exception') || allText.includes('traceback') ||
-        allText.includes('fatal')) {
-        return 'error';
-    }
-
-    // Tool output
-    if (msg.blocks.some(b => b.role === 'tool')) {
-        return 'output';
-    }
-
-    return 'system';
-}
+// classifyLogEntry — moved to src/utils.js
 
 /**
  * Apply current filter to all log cards in the DOM.
@@ -5667,7 +5368,7 @@ function setupLogFilterBar() {
 function updateLogFilterBarVisibility() {
     const filterBar = document.getElementById('logFilterBar');
     if (!filterBar) return;
-    if (teamState && teamState.has_team) {
+    if (ctx.teamState && ctx.teamState.has_team) {
         filterBar.classList.remove('hidden');
     } else {
         filterBar.classList.add('hidden');
@@ -5692,8 +5393,8 @@ async function loadLogContent() {
 
     try {
         // Include pane_id to avoid race condition with other tabs
-        const paneParam = activeTarget ? `&pane_id=${encodeURIComponent(activeTarget)}` : '';
-        const response = await apiFetch(`/api/log?token=${token}${paneParam}`);
+        const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
+        const response = await apiFetch(`/api/log?token=${ctx.token}${paneParam}`);
         if (!response.ok) {
             throw new Error('Failed to fetch log');
         }
@@ -5947,18 +5648,7 @@ function createLogCard(msg) {
     return card;
 }
 
-/**
- * Yield to main thread - allows browser to handle events/paint
- */
-function yieldToMain() {
-    return new Promise(resolve => {
-        if ('requestIdleCallback' in window) {
-            requestIdleCallback(resolve, { timeout: 50 });
-        } else {
-            setTimeout(resolve, 0);
-        }
-    });
-}
+// yieldToMain — moved to src/utils.js
 
 /**
  * Schedule markdown parsing for idle time
@@ -6254,7 +5944,7 @@ function extractPendingPrompt(content) {
     }
 
     // No pending prompt detected in log
-    // But don't clear if we have a permission prompt from terminal capture
+    // But don't clear if we have a permission prompt from ctx.terminal capture
     if (!pendingPrompt || pendingPrompt.kind !== 'permission') {
         clearPendingPrompt();
     }
@@ -6269,7 +5959,7 @@ function clearPendingPrompt() {
 }
 
 /**
- * Extract permission prompts from terminal capture
+ * Extract permission prompts from ctx.terminal capture
  * Detects Claude Code's built-in permission prompts like:
  * "Do you want to proceed?"
  * "❯ 1. Yes"
@@ -6356,7 +6046,7 @@ function extractPermissionPrompt(terminalContent) {
 
     // Need a question and at least one choice
     if (!questionLine || choices.length === 0) {
-        // No permission prompt in terminal - clear if we had one
+        // No permission prompt in ctx.terminal - clear if we had one
         if (pendingPrompt && pendingPrompt.kind === 'permission') {
             clearPendingPrompt();
         }
@@ -6492,7 +6182,7 @@ function setupPromptBannerHandlers() {
 }
 
 /**
- * Send user's choice to terminal (idempotent)
+ * Send user's choice to ctx.terminal (idempotent)
  */
 function sendPromptChoice(choice) {
     console.log('[sendPromptChoice] called with:', choice, 'pendingPrompt:', pendingPrompt);
@@ -6521,9 +6211,9 @@ function sendPromptChoice(choice) {
         });
     }
 
-    // Send to terminal atomically via tmux send-keys
-    console.log('[sendPromptChoice] Socket state:', socket?.readyState, 'WebSocket.OPEN:', WebSocket.OPEN);
-    if (socket && socket.readyState === WebSocket.OPEN) {
+    // Send to ctx.terminal atomically via tmux send-keys
+    console.log('[sendPromptChoice] Socket state:', ctx.socket?.readyState, 'WebSocket.OPEN:', WebSocket.OPEN);
+    if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
         const choiceStr = String(choice).trim();
         console.log('[sendPromptChoice] Sending choice:', choiceStr);
         sendTextAtomic(choiceStr, true);
@@ -6540,7 +6230,7 @@ function sendPromptChoice(choice) {
 }
 
 /**
- * Show textarea for "Other" option — no terminal I/O until Send
+ * Show textarea for "Other" option — no ctx.terminal I/O until Send
  */
 function showOtherInput(choiceNum) {
     const choicesDiv = promptBanner.querySelector('.prompt-banner-choices');
@@ -6592,7 +6282,7 @@ function restorePromptChoices() {
 }
 
 /**
- * Send "Other" choice + user feedback text to terminal
+ * Send "Other" choice + user feedback text to ctx.terminal
  * Sequence: choice number → Ctrl+U (clear prefill) → feedback text
  */
 function sendOtherFeedback(choiceNum, text) {
@@ -7044,7 +6734,7 @@ function setupPlanPreviewHandler() {
         // Fetch and show preview
         planRef.classList.add('loading');
         try {
-            const response = await fetch(`/api/plan?token=${token}&filename=${encodeURIComponent(filename)}&preview=true`);
+            const response = await fetch(`/api/plan?token=${ctx.token}&filename=${encodeURIComponent(filename)}&preview=true`);
             const data = await response.json();
 
             if (data.exists && data.content) {
@@ -7133,7 +6823,7 @@ function setupDocsButton() {
 
         // Fetch file tree
         try {
-            const resp = await fetch(`/api/files/tree?token=${token}`);
+            const resp = await fetch(`/api/files/tree?token=${ctx.token}`);
             if (!resp.ok) throw new Error('Failed to load files');
             fileTreeCache = await resp.json();
         } catch (e) {
@@ -7282,7 +6972,7 @@ function setupDocsButton() {
     async function openFileInModal(filePath) {
         docsModalBody.innerHTML = '<div class="docs-loading">Loading file...</div>';
         try {
-            const resp = await fetch(`/api/file?path=${encodeURIComponent(filePath)}&token=${token}`);
+            const resp = await fetch(`/api/file?path=${encodeURIComponent(filePath)}&token=${ctx.token}`);
             if (!resp.ok) throw new Error('Failed to load file');
             const data = await resp.json();
 
@@ -7314,7 +7004,7 @@ function setupDocsButton() {
         try {
             // Load plans list if not cached
             if (!plansCache) {
-                const response = await fetch(`/api/plans?token=${token}`);
+                const response = await fetch(`/api/plans?token=${ctx.token}`);
                 const data = await response.json();
                 plansCache = data.plans || [];
             }
@@ -7367,7 +7057,7 @@ function setupDocsButton() {
         lastPlanRawContent = '';
 
         try {
-            const response = await fetch(`/api/plan?token=${token}&filename=${encodeURIComponent(filename)}&preview=false`);
+            const response = await fetch(`/api/plan?token=${ctx.token}&filename=${encodeURIComponent(filename)}&preview=false`);
             const data = await response.json();
 
             if (data.exists && data.content) {
@@ -7404,7 +7094,7 @@ function setupDocsButton() {
     // Context tab
     async function loadContextTab() {
         try {
-            const response = await fetch(`/api/docs/context?token=${token}`);
+            const response = await fetch(`/api/docs/context?token=${ctx.token}`);
             const data = await response.json();
 
             if (data.exists && data.content) {
@@ -7425,7 +7115,7 @@ function setupDocsButton() {
     // Touch summary tab
     async function loadTouchTab() {
         try {
-            const response = await fetch(`/api/docs/touch?token=${token}`);
+            const response = await fetch(`/api/docs/touch?token=${ctx.token}`);
             const data = await response.json();
 
             if (data.exists && data.content) {
@@ -7452,7 +7142,7 @@ function setupDocsButton() {
         }
 
         try {
-            const response = await fetch(`/api/log/sessions?token=${token}`);
+            const response = await fetch(`/api/log/sessions?token=${ctx.token}`);
             const data = await response.json();
             sessionsCache = data.sessions || [];
 
@@ -7502,7 +7192,7 @@ function setupDocsButton() {
         docsModalBody.innerHTML = '<div class="docs-loading">Loading session...</div>';
 
         try {
-            const response = await fetch(`/api/log?token=${token}&session_id=${encodeURIComponent(sessionId)}`);
+            const response = await fetch(`/api/log?token=${ctx.token}&session_id=${encodeURIComponent(sessionId)}`);
             const data = await response.json();
 
             const shortId = sessionId.substring(0, 8) + '...';
@@ -7555,7 +7245,7 @@ function setupDocsButton() {
 }
 
 /**
- * Extract last complete Claude message from terminal output
+ * Extract last complete Claude message from ctx.terminal output
  * Detects message boundaries via prompt (❯) reappearance
  */
 function extractLastAgentMessage(content) {
@@ -7716,15 +7406,7 @@ function extractDynamicSuggestion(content) {
 /**
  * Escape HTML entities
  */
-function escapeHtml(text) {
-    if (!text) return '';
-    return String(text)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
+// escapeHtml — moved to src/utils.js
 
 /**
  * Start auto-refresh for log view - singleflight async loop
@@ -7786,8 +7468,8 @@ async function refreshLogContent(signal) {
 
     try {
         // Include pane_id to avoid race condition with other tabs
-        const paneParam = activeTarget ? `&pane_id=${encodeURIComponent(activeTarget)}` : '';
-        const response = await apiFetch(`/api/log?token=${token}${paneParam}`, { signal });
+        const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
+        const response = await apiFetch(`/api/log?token=${ctx.token}${paneParam}`, { signal });
         if (!response.ok) return;
 
         const data = await response.json();
@@ -7866,12 +7548,12 @@ function setupLogInput() {
 }
 
 /**
- * Send command from log input to terminal
+ * Send command from log input to ctx.terminal
  * Atomic send: command + carriage return as single write
  */
 function sendLogCommand() {
     if (isPreviewMode()) return;  // No input in preview mode
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
+    if (!ctx.socket || ctx.socket.readyState !== WebSocket.OPEN) {
         showToast('Not connected yet', 'error');
         return;
     }
@@ -7890,7 +7572,7 @@ function sendLogCommand() {
     // Atomic send via tmux send-keys (no PTY interleaving)
     sendTextAtomic(command, true);
 
-    // Mark terminal as busy after sending
+    // Mark ctx.terminal as busy after sending
     setTerminalBusy(true);
     scheduleEarlyBusyCheck();
     captureSnapshot('user_send');
@@ -7962,7 +7644,7 @@ function makeQueueId() {
  * Get localStorage key for queue (scoped to session + pane)
  */
 function getQueueStorageKey(session) {
-    const pane = activeTarget || 'default';
+    const pane = ctx.activeTarget || 'default';
     return QUEUE_STORAGE_PREFIX + (session || 'default') + ':' + pane;
 }
 
@@ -7970,9 +7652,9 @@ function getQueueStorageKey(session) {
  * Save queue to localStorage
  */
 function saveQueueToStorage() {
-    if (!currentSession) return;
+    if (!ctx.currentSession) return;
     try {
-        const key = getQueueStorageKey(currentSession);
+        const key = getQueueStorageKey(ctx.currentSession);
         const data = {
             items: queueItems,
             savedAt: Date.now()
@@ -7988,9 +7670,9 @@ function saveQueueToStorage() {
  * Converts stale "sending" items back to "queued"
  */
 function loadQueueFromStorage() {
-    if (!currentSession) return [];
+    if (!ctx.currentSession) return [];
     try {
-        const key = getQueueStorageKey(currentSession);
+        const key = getQueueStorageKey(ctx.currentSession);
         const raw = localStorage.getItem(key);
         if (!raw) return [];
 
@@ -8024,7 +7706,7 @@ function loadQueueFromStorage() {
  * - Server items not local get added
  */
 async function reconcileQueue() {
-    if (!currentSession) return;
+    if (!ctx.currentSession) return;
 
     // Load local state first
     const localItems = loadQueueFromStorage();
@@ -8032,8 +7714,8 @@ async function reconcileQueue() {
     // Fetch server state
     let serverItems = [];
     try {
-        const listParams = new URLSearchParams({ session: currentSession, token: token });
-        if (activeTarget) listParams.set('pane_id', activeTarget);
+        const listParams = new URLSearchParams({ session: ctx.currentSession, token: ctx.token });
+        if (ctx.activeTarget) listParams.set('pane_id', ctx.activeTarget);
         const resp = await fetch(`/api/queue/list?${listParams}`);
         if (resp.ok) {
             const data = await resp.json();
@@ -8065,13 +7747,13 @@ async function reconcileQueue() {
     for (const item of toEnqueue) {
         try {
             const params = new URLSearchParams({
-                session: currentSession,
+                session: ctx.currentSession,
                 text: item.text,
                 policy: item.policy || 'auto',
                 id: item.id,  // Pass our ID for idempotency
-                token: token
+                token: ctx.token
             });
-            if (activeTarget) params.set('pane_id', activeTarget);
+            if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
             const resp = await fetch(`/api/queue/enqueue?${params}`, { method: 'POST' });
             if (resp.ok) {
                 const data = await resp.json();
@@ -8208,11 +7890,11 @@ function updateQueueBadge(count) {
  * Refresh queue list from server
  */
 async function refreshQueueList() {
-    if (!currentSession) return;
+    if (!ctx.currentSession) return;
 
     try {
-        const listParams = new URLSearchParams({ session: currentSession, token: token });
-        if (activeTarget) listParams.set('pane_id', activeTarget);
+        const listParams = new URLSearchParams({ session: ctx.currentSession, token: ctx.token });
+        if (ctx.activeTarget) listParams.set('pane_id', ctx.activeTarget);
         const resp = await fetch(`/api/queue/list?${listParams}`);
         if (resp.ok) {
             const data = await resp.json();
@@ -8231,7 +7913,7 @@ async function refreshQueueList() {
  * Generates client-side ID for idempotency and persists to localStorage
  */
 async function enqueueCommand(text, policy = 'auto') {
-    if (!currentSession) return false;
+    if (!ctx.currentSession) return false;
 
     // Generate client-side ID for idempotency
     const itemId = makeQueueId();
@@ -8260,13 +7942,13 @@ async function enqueueCommand(text, policy = 'auto') {
     // Send to server (idempotent)
     try {
         const params = new URLSearchParams({
-            session: currentSession,
+            session: ctx.currentSession,
             text: text,
             policy: policy,
             id: itemId,  // Client-generated ID for idempotency
-            token: token
+            token: ctx.token
         });
-        if (activeTarget) params.set('pane_id', activeTarget);
+        if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
         const resp = await fetch(`/api/queue/enqueue?${params}`, {
             method: 'POST'
         });
@@ -8294,7 +7976,7 @@ async function enqueueCommand(text, policy = 'auto') {
  * Removes from local storage immediately, then syncs with server
  */
 async function removeQueueItem(itemId) {
-    if (!currentSession) return;
+    if (!ctx.currentSession) return;
 
     // Remove from local state immediately
     queueItems = queueItems.filter(item => item.id !== itemId);
@@ -8304,11 +7986,11 @@ async function removeQueueItem(itemId) {
     // Sync with server
     try {
         const params = new URLSearchParams({
-            session: currentSession,
+            session: ctx.currentSession,
             item_id: itemId,
-            token: token
+            token: ctx.token
         });
-        if (activeTarget) params.set('pane_id', activeTarget);
+        if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
         await fetch(`/api/queue/remove?${params}`, {
             method: 'POST'
         });
@@ -8322,14 +8004,14 @@ async function removeQueueItem(itemId) {
  * Toggle pause state
  */
 async function toggleQueuePause() {
-    if (!currentSession) return;
+    if (!ctx.currentSession) return;
 
     const endpoint = queuePaused ? '/api/queue/resume' : '/api/queue/pause';
     const params = new URLSearchParams({
-        session: currentSession,
-        token: token
+        session: ctx.currentSession,
+        token: ctx.token
     });
-    if (activeTarget) params.set('pane_id', activeTarget);
+    if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
 
     try {
         const resp = await fetch(`${endpoint}?${params}`, {
@@ -8395,12 +8077,12 @@ async function reorderQueueItem(itemId, direction) {
     // Sync with server
     try {
         const params = new URLSearchParams({
-            session: currentSession,
+            session: ctx.currentSession,
             item_id: itemId,
             new_index: newIdx.toString(),
-            token: token
+            token: ctx.token
         });
-        if (activeTarget) params.set('pane_id', activeTarget);
+        if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
         await fetch(`/api/queue/reorder?${params}`, { method: 'POST' });
     } catch (e) {
         console.error('Failed to reorder queue item:', e);
@@ -8417,17 +8099,17 @@ async function reorderQueueItem(itemId, direction) {
  * Flush all queue items
  */
 async function flushQueue() {
-    if (!currentSession) return;
+    if (!ctx.currentSession) return;
 
     if (!confirm('Clear all queued commands?')) return;
 
     try {
         const params = new URLSearchParams({
-            session: currentSession,
+            session: ctx.currentSession,
             confirm: 'true',
-            token: token
+            token: ctx.token
         });
-        if (activeTarget) params.set('pane_id', activeTarget);
+        if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
         const resp = await fetch(`/api/queue/flush?${params}`, {
             method: 'POST'
         });
@@ -8510,7 +8192,7 @@ async function captureSnapshot(label = 'manual') {
     if (previewMode) return;  // Don't capture while previewing
 
     try {
-        const resp = await fetch(`/api/rollback/preview/capture?label=${label}&token=${token}`, {
+        const resp = await fetch(`/api/rollback/preview/capture?label=${label}&token=${ctx.token}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -8528,7 +8210,7 @@ async function captureSnapshot(label = 'manual') {
 async function loadSnapshotList() {
     try {
         console.log('Loading snapshot list...');
-        const resp = await fetch(`/api/rollback/previews?token=${token}`);
+        const resp = await fetch(`/api/rollback/previews?token=${ctx.token}`);
         const data = await resp.json();
         console.log('Snapshots response:', data);
         previewSnapshots = data.snapshots || [];
@@ -8544,14 +8226,14 @@ async function loadSnapshotList() {
 async function enterPreviewMode(snapId) {
     try {
         // Fetch full snapshot
-        const resp = await fetch(`/api/rollback/preview/${snapId}?token=${token}`);
+        const resp = await fetch(`/api/rollback/preview/${snapId}?token=${ctx.token}`);
         if (!resp.ok) throw new Error('Snapshot not found');
 
         previewSnapshot = await resp.json();
         previewMode = snapId;
 
         // Notify server
-        await fetch(`/api/rollback/preview/select?snap_id=${snapId}&token=${token}`, {
+        await fetch(`/api/rollback/preview/select?snap_id=${snapId}&token=${ctx.token}`, {
             method: 'POST'
         });
 
@@ -8581,7 +8263,7 @@ async function exitPreviewMode() {
     previewSnapshot = null;
 
     // Notify server
-    await fetch(`/api/rollback/preview/select?token=${token}`, { method: 'POST' });
+    await fetch(`/api/rollback/preview/select?token=${ctx.token}`, { method: 'POST' });
 
     // Hide banner, re-enable inputs
     hidePreviewBanner();
@@ -8605,7 +8287,7 @@ function renderPreviewLog() {
 }
 
 /**
- * Render terminal from snapshot
+ * Render ctx.terminal from snapshot
  */
 function renderPreviewTerminal() {
     if (!previewSnapshot) return;
@@ -8698,7 +8380,7 @@ function closePreviewDrawer() {
  */
 async function toggleSnapshotPin(snapId, pinned) {
     try {
-        const resp = await fetch(`/api/rollback/preview/${snapId}/pin?pinned=${pinned}&token=${token}`, {
+        const resp = await fetch(`/api/rollback/preview/${snapId}/pin?pinned=${pinned}&token=${ctx.token}`, {
             method: 'POST'
         });
         if (resp.ok) {
@@ -8716,7 +8398,7 @@ async function toggleSnapshotPin(snapId, pinned) {
  */
 async function exportSnapshot(snapId) {
     try {
-        const url = `/api/rollback/preview/${snapId}/export?token=${token}`;
+        const url = `/api/rollback/preview/${snapId}/export?token=${ctx.token}`;
         // Trigger download by opening in new window or using anchor
         const a = document.createElement('a');
         a.href = url;
@@ -8868,519 +8550,13 @@ function setupPreviewHandlers() {
     document.getElementById('processKillBtn')?.addEventListener('click', () => terminateProcess(true));
     document.getElementById('processRespawnBtn')?.addEventListener('click', respawnProcess);
 
-    // MCP tab handlers
-    document.getElementById('mcpRefreshBtn')?.addEventListener('click', () => { loadPlugins(); loadMcpServers(); });
-    document.getElementById('mcpAddBtn')?.addEventListener('click', addMcpServer);
-    document.getElementById('pluginAddBtn')?.addEventListener('click', addPlugin);
-    document.getElementById('mcpCancelEditBtn')?.addEventListener('click', cancelMcpEdit);
-    document.getElementById('mcpRestartOneBtn')?.addEventListener('click', () => mcpRestartAgents('one'));
-    document.getElementById('mcpRestartAllBtn')?.addEventListener('click', () => mcpRestartAgents('all'));
+    // MCP tab — initialized via initMcp() in DOMContentLoaded
 
-    // MCP server list event delegation (edit/remove buttons)
-    document.getElementById('mcpServerList')?.addEventListener('click', (e) => {
-        const editBtn = e.target.closest('.mcp-server-edit');
-        const removeBtn = e.target.closest('.mcp-server-remove');
-        if (editBtn) {
-            const name = editBtn.dataset.name;
-            if (name && mcpServersCache[name]) {
-                editMcpServer(name, mcpServersCache[name]);
-            }
-        } else if (removeBtn) {
-            const name = removeBtn.dataset.name;
-            if (name) removeMcpServer(name);
-        }
-    });
+    // Env tab — initialized via initEnv() in DOMContentLoaded
 }
 
-// ============================================================================
-// MCP TAB FUNCTIONS
-// ============================================================================
-
-let mcpEditingName = null;
-let mcpDirty = false;
-let mcpServersCache = {};
-
-/**
- * Split a string into args respecting single and double quotes.
- */
-function shellSplit(str) {
-    const args = [];
-    let current = '';
-    let inSingle = false, inDouble = false;
-    for (const ch of str) {
-        if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
-        if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
-        if (ch === ' ' && !inSingle && !inDouble) {
-            if (current) args.push(current);
-            current = '';
-            continue;
-        }
-        current += ch;
-    }
-    if (current) args.push(current);
-    return args;
-}
-
-/**
- * Load and render plugin list.
- */
-async function loadPlugins() {
-    const list = document.getElementById('pluginList');
-    if (!list) return;
-
-    try {
-        const response = await apiFetch(`/api/plugins?token=${token}`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-
-        const enabled = data.enabled || {};
-        const installed = data.installed || [];
-
-        // Merge: show all installed + all enabled (union)
-        const allIds = new Set([...Object.keys(enabled), ...installed]);
-
-        if (allIds.size === 0) {
-            list.innerHTML = '<p class="process-description">No plugins found.</p>';
-            return;
-        }
-
-        let html = '';
-        for (const id of allIds) {
-            const isEnabled = !!enabled[id];
-            const shortName = id.split('@')[0];
-            html += `<div class="mcp-plugin-item">
-                <span class="mcp-plugin-name" title="${escapeHtml(id)}">${escapeHtml(shortName)}</span>
-                <label class="mcp-toggle">
-                    <input type="checkbox" data-plugin="${escapeHtml(id)}" ${isEnabled ? 'checked' : ''}>
-                    <span class="mcp-toggle-slider"></span>
-                </label>
-            </div>`;
-        }
-        list.innerHTML = html;
-
-        // Wire toggle events
-        list.querySelectorAll('input[data-plugin]').forEach(input => {
-            input.addEventListener('change', () => {
-                togglePlugin(input.dataset.plugin, input.checked);
-            });
-        });
-
-    } catch (error) {
-        console.error('Failed to load plugins:', error);
-        list.innerHTML = '<p class="process-description">Failed to load plugins.</p>';
-    }
-}
-
-/**
- * Toggle a plugin on/off.
- */
-async function togglePlugin(name, enabled) {
-    try {
-        const response = await apiFetch(`/api/plugins/toggle?token=${token}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, enabled }),
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-            showToast(data.error || 'Failed to toggle plugin', 'error');
-            await loadPlugins(); // revert checkbox
-            return false;
-        }
-
-        const action = enabled ? 'Enabled' : 'Disabled';
-        showToast(`${action} ${name.split('@')[0]}`, 'success');
-        mcpSetDirty();
-        return true;
-
-    } catch (error) {
-        console.error('Failed to toggle plugin:', error);
-        showToast('Failed to toggle plugin', 'error');
-        await loadPlugins();
-        return false;
-    }
-}
-
-/**
- * Add (enable) a new plugin by ID.
- */
-async function addPlugin() {
-    const input = document.getElementById('pluginIdInput');
-    const name = (input?.value || '').trim();
-    if (!name) {
-        showToast('Plugin ID is required', 'error');
-        return;
-    }
-
-    const ok = await togglePlugin(name, true);
-    if (ok) {
-        if (input) input.value = '';
-        await loadPlugins();
-    }
-}
-
-/**
- * Load and render MCP server list.
- */
-async function loadMcpServers() {
-    const list = document.getElementById('mcpServerList');
-    const errorDiv = document.getElementById('mcpError');
-    if (!list) return;
-
-    list.innerHTML = '<p class="process-description">Loading...</p>';
-    if (errorDiv) {
-        errorDiv.classList.add('hidden');
-        errorDiv.textContent = '';
-    }
-
-    try {
-        const response = await apiFetch(`/api/mcp-servers?token=${token}`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-
-        // Show file-level error (corrupt JSON)
-        if (data.error && errorDiv) {
-            errorDiv.textContent = data.error;
-            errorDiv.classList.remove('hidden');
-        }
-
-        mcpServersCache = data.servers || {};
-        const names = Object.keys(mcpServersCache);
-
-        if (names.length === 0) {
-            list.innerHTML = '<p class="process-description">No MCP servers configured.</p>';
-            return;
-        }
-
-        let html = '';
-        for (const name of names) {
-            html += renderMcpServerCard(name, mcpServersCache[name]);
-        }
-        list.innerHTML = html;
-
-    } catch (error) {
-        console.error('Failed to load MCP servers:', error);
-        list.innerHTML = '<p class="process-description">Failed to load MCP servers.</p>';
-    }
-}
-
-/**
- * Render a single MCP server card.
- */
-function renderMcpServerCard(name, config) {
-    const cmd = config.command || '';
-    const args = (config.args || []).join(' ');
-    const cmdDisplay = args ? `${cmd} ${args}` : cmd;
-    return `<div class="mcp-server-item">
-        <div class="mcp-server-info">
-            <span class="mcp-server-name">${escapeHtml(name)}</span>
-            <span class="mcp-server-cmd">${escapeHtml(cmdDisplay)}</span>
-        </div>
-        <div class="mcp-server-actions">
-            <button class="mcp-server-edit" data-name="${escapeHtml(name)}">Edit</button>
-            <button class="mcp-server-remove" data-name="${escapeHtml(name)}">Remove</button>
-        </div>
-    </div>`;
-}
-
-/**
- * Enter edit mode for an existing MCP server.
- */
-function editMcpServer(name, config) {
-    mcpEditingName = name;
-
-    const nameInput = document.getElementById('mcpNameInput');
-    const cmdInput = document.getElementById('mcpCommandInput');
-    const argsInput = document.getElementById('mcpArgsInput');
-    const header = document.getElementById('mcpFormHeader');
-    const addBtn = document.getElementById('mcpAddBtn');
-    const cancelBtn = document.getElementById('mcpCancelEditBtn');
-
-    if (nameInput) { nameInput.value = name; nameInput.disabled = true; }
-    if (cmdInput) cmdInput.value = config.command || '';
-    if (argsInput) argsInput.value = (config.args || []).join(' ');
-    if (header) header.textContent = 'Edit Server';
-    if (addBtn) addBtn.textContent = 'Save Changes';
-    if (cancelBtn) cancelBtn.classList.remove('hidden');
-}
-
-/**
- * Cancel edit mode, reset form.
- */
-function cancelMcpEdit() {
-    mcpEditingName = null;
-
-    const nameInput = document.getElementById('mcpNameInput');
-    const cmdInput = document.getElementById('mcpCommandInput');
-    const argsInput = document.getElementById('mcpArgsInput');
-    const header = document.getElementById('mcpFormHeader');
-    const addBtn = document.getElementById('mcpAddBtn');
-    const cancelBtn = document.getElementById('mcpCancelEditBtn');
-
-    if (nameInput) { nameInput.value = ''; nameInput.disabled = false; }
-    if (cmdInput) cmdInput.value = '';
-    if (argsInput) argsInput.value = '';
-    if (header) header.textContent = 'Add Server';
-    if (addBtn) addBtn.textContent = 'Add Server';
-    if (cancelBtn) cancelBtn.classList.add('hidden');
-}
-
-/**
- * Add or update an MCP server (upsert).
- */
-async function addMcpServer() {
-    const nameInput = document.getElementById('mcpNameInput');
-    const cmdInput = document.getElementById('mcpCommandInput');
-    const argsInput = document.getElementById('mcpArgsInput');
-    const resultDiv = document.getElementById('mcpResult');
-
-    const name = mcpEditingName || (nameInput?.value || '').trim();
-    const command = (cmdInput?.value || '').trim();
-    const argsStr = (argsInput?.value || '').trim();
-    const args = argsStr ? shellSplit(argsStr) : [];
-
-    if (!name) {
-        showToast('Server name is required', 'error');
-        return;
-    }
-    if (!command) {
-        showToast('Command is required', 'error');
-        return;
-    }
-
-    try {
-        const response = await apiFetch(`/api/mcp-servers?token=${token}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, command, args }),
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-            showToast(data.error || 'Failed to add server', 'error');
-            if (resultDiv) {
-                resultDiv.textContent = data.error || 'Error';
-                resultDiv.className = 'process-result error';
-            }
-            return;
-        }
-
-        const action = data.updated ? 'Updated' : 'Added';
-        showToast(`${action} ${name}`, 'success');
-        cancelMcpEdit();
-        await loadMcpServers();
-        mcpSetDirty();
-
-    } catch (error) {
-        console.error('Failed to add MCP server:', error);
-        showToast('Failed to add server', 'error');
-    }
-}
-
-/**
- * Remove an MCP server.
- */
-async function removeMcpServer(name) {
-    if (!confirm(`Remove MCP server "${name}"?`)) return;
-
-    try {
-        const response = await apiFetch(
-            `/api/mcp-servers/${encodeURIComponent(name)}?token=${token}`,
-            { method: 'DELETE' }
-        );
-
-        const data = await response.json();
-
-        if (!response.ok) {
-            showToast(data.error || 'Failed to remove server', 'error');
-            return;
-        }
-
-        showToast(`Removed ${name}`, 'success');
-        await loadMcpServers();
-        mcpSetDirty();
-
-    } catch (error) {
-        console.error('Failed to remove MCP server:', error);
-        showToast('Failed to remove server', 'error');
-    }
-}
-
-/**
- * Mark MCP config as dirty and update restart banner based on agent state.
- */
-async function mcpSetDirty() {
-    mcpDirty = true;
-    const banner = document.getElementById('mcpRestartBanner');
-    const span = banner?.querySelector('span');
-    if (!banner) return;
-
-    // Check if agent is running
-    let agentRunning = false;
-    if (activeTarget) {
-        try {
-            const resp = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(activeTarget)}&token=${token}`);
-            if (resp.ok) {
-                const data = await resp.json();
-                agentRunning = !!data.running;
-            }
-        } catch (e) { /* ignore */ }
-    }
-
-    const oneBtn = document.getElementById('mcpRestartOneBtn');
-    const allBtn = document.getElementById('mcpRestartAllBtn');
-
-    if (agentRunning) {
-        if (span) span.textContent = 'Restart to apply';
-        if (oneBtn) oneBtn.classList.remove('hidden');
-        if (allBtn) allBtn.classList.remove('hidden');
-    } else {
-        if (span) span.textContent = 'Applies on next start';
-        if (oneBtn) oneBtn.classList.add('hidden');
-        if (allBtn) allBtn.classList.add('hidden');
-    }
-    banner.classList.remove('hidden');
-}
-
-/**
- * Stop an agent in a pane and wait for it to exit.
- * @param {string} paneId - pane identifier
- * @param {string} session - tmux session name
- * Returns true if agent stopped, false if timed out.
- */
-async function stopAgentInPane(paneId, session) {
-    await apiFetch(`/api/sendkey?key=ctrl-c&session=${encodeURIComponent(session)}&msg_id=mcp-stop-${paneId}&token=${token}`, {
-        method: 'POST',
-    });
-
-    for (let i = 0; i < 20; i++) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-        try {
-            const resp = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(paneId)}&token=${token}`);
-            if (resp.ok) {
-                const data = await resp.json();
-                if (!data.running) return true;
-            }
-        } catch (e) { /* ignore */ }
-    }
-
-    // Second Ctrl-C attempt
-    await apiFetch(`/api/sendkey?key=ctrl-c&session=${encodeURIComponent(session)}&msg_id=mcp-stop2-${paneId}&token=${token}`, {
-        method: 'POST',
-    });
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    return false;
-}
-
-/**
- * Start an agent in a pane with --resume flag.
- */
-async function startAgentWithResume(paneId) {
-    return apiFetch(`/api/agent/start?pane_id=${encodeURIComponent(paneId)}&token=${token}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startup_command: 'claude --resume' }),
-    });
-}
-
-/**
- * Restart agents to apply config changes.
- * @param {'one'|'all'} mode - 'one' restarts active pane, 'all' restarts all running agents
- */
-async function mcpRestartAgents(mode) {
-    const oneBtn = document.getElementById('mcpRestartOneBtn');
-    const allBtn = document.getElementById('mcpRestartAllBtn');
-    const clickedBtn = mode === 'one' ? oneBtn : allBtn;
-
-    const msg = mode === 'one'
-        ? 'Restart the active agent? It will resume with --resume.'
-        : 'Restart ALL running agents across all sessions? They will resume with --resume.';
-    if (!confirm(msg)) return;
-
-    if (oneBtn) oneBtn.disabled = true;
-    if (allBtn) allBtn.disabled = true;
-    if (clickedBtn) clickedBtn.textContent = 'Stopping...';
-
-    try {
-        let panesToRestart = [];
-
-        if (mode === 'one') {
-            // Just the active pane
-            if (!activeTarget) {
-                showToast('No active target selected', 'info');
-                return;
-            }
-            panesToRestart = [{ paneId: activeTarget, session: currentSession }];
-        } else {
-            // Discover all running agents across all sessions
-            let sessions = [currentSession];
-            try {
-                const sessResp = await apiFetch(`/api/tmux/sessions?token=${token}`);
-                if (sessResp.ok) {
-                    const sessData = await sessResp.json();
-                    sessions = sessData.sessions || [currentSession];
-                }
-            } catch (e) { /* use current session */ }
-
-            // Fetch all session states in parallel
-            const stateResults = await Promise.all(
-                sessions.map(sess =>
-                    apiFetch(`/api/team/state?token=${token}&session=${encodeURIComponent(sess)}`)
-                        .then(r => r.ok ? r.json() : null)
-                        .catch(() => null)
-                )
-            );
-            stateResults.forEach((team, i) => {
-                if (!team) return;
-                for (const p of (team.panes || [])) {
-                    if (p.running) {
-                        panesToRestart.push({ paneId: p.pane_id, session: sessions[i] });
-                    }
-                }
-            });
-        }
-
-        if (panesToRestart.length === 0) {
-            showToast('No running agents found', 'info');
-            return;
-        }
-
-        // Stop all agents in parallel
-        await Promise.all(panesToRestart.map(p => stopAgentInPane(p.paneId, p.session)));
-
-        if (clickedBtn) clickedBtn.textContent = `Starting ${panesToRestart.length}...`;
-
-        // Start all agents with --resume (in parallel)
-        const startResults = await Promise.allSettled(
-            panesToRestart.map(p => startAgentWithResume(p.paneId))
-        );
-        const started = startResults.filter(r => r.status === 'fulfilled' && r.value.ok).length;
-
-        const label = panesToRestart.length === 1 ? 'agent' : 'agents';
-        showToast(`Restarted ${started}/${panesToRestart.length} ${label} with --resume`, 'success');
-
-        // Clear dirty state
-        mcpDirty = false;
-        const banner = document.getElementById('mcpRestartBanner');
-        if (banner) banner.classList.add('hidden');
-
-        // Only reset health tracking if active pane was among those restarted
-        if (panesToRestart.some(p => p.paneId === activeTarget)) {
-            agentStartedAt = Date.now();
-            lastAgentHealth = null;
-        }
-
-    } catch (error) {
-        console.error('Failed to restart agents:', error);
-        showToast('Failed to restart agents', 'error');
-    } finally {
-        if (oneBtn) { oneBtn.disabled = false; oneBtn.textContent = 'Restart Pane'; }
-        if (allBtn) { allBtn.disabled = false; allBtn.textContent = 'Restart All'; }
-    }
-}
+// MCP tab functions — moved to src/features/mcp.js
+// Env tab functions — moved to src/features/env.js
 
 // ============================================================================
 // HISTORY TAB FUNCTIONS (unified commits + snapshots)
@@ -9397,7 +8573,7 @@ let historyDryRunValidatedHash = null;  // Commit hash that passed dry-run
  */
 async function clearSnapshots() {
     try {
-        await fetch(`/api/rollback/preview/clear?token=${token}`, { method: 'POST' });
+        await fetch(`/api/rollback/preview/clear?token=${ctx.token}`, { method: 'POST' });
     } catch (e) {
         console.error('Failed to clear snapshots:', e);
     }
@@ -9413,7 +8589,7 @@ async function loadHistory() {
     list.innerHTML = '<div class="history-empty">Loading...</div>';
 
     try {
-        const resp = await fetch(`/api/history?token=${token}&limit=40`);
+        const resp = await fetch(`/api/history?token=${ctx.token}&limit=40`);
         if (!resp.ok) throw new Error('Failed to load history');
 
         const data = await resp.json();
@@ -9427,7 +8603,7 @@ async function loadHistory() {
                 await clearSnapshots();
                 showToast('Snapshots cleared (new commit)', 'info', 2000);
                 // Reload to get updated list
-                const resp2 = await fetch(`/api/history?token=${token}&limit=40`);
+                const resp2 = await fetch(`/api/history?token=${ctx.token}&limit=40`);
                 const data2 = await resp2.json();
                 historyItems = data2.items || [];
             }
@@ -9529,7 +8705,7 @@ function renderHistoryList() {
             const existing = historyItems.find(i => i.id === snapId)?.note || '';
             const note = prompt('Add note (max 500 chars):', existing);
             if (note !== null) {
-                fetch(`/api/rollback/preview/${snapId}/annotate?token=${token}`, {
+                fetch(`/api/rollback/preview/${snapId}/annotate?token=${ctx.token}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ note: note.substring(0, 500) }),
@@ -9549,19 +8725,7 @@ function renderHistoryList() {
 /**
  * Format timestamp as relative time
  */
-function formatTimeAgo(timestamp) {
-    const now = Date.now();
-    const diff = now - timestamp;
-    const seconds = Math.floor(diff / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-    const days = Math.floor(hours / 24);
-
-    if (days > 0) return `${days}d`;
-    if (hours > 0) return `${hours}h`;
-    if (minutes > 0) return `${minutes}m`;
-    return `${seconds}s`;
-}
+// formatTimeAgo — moved to src/utils.js
 
 /**
  * Show commit detail in history tab
@@ -9595,7 +8759,7 @@ async function showHistoryCommitDetail(hash) {
     }
 
     try {
-        const resp = await fetch(`/api/rollback/git/commit/${hash}?token=${token}`);
+        const resp = await fetch(`/api/rollback/git/commit/${hash}?token=${ctx.token}`);
         if (!resp.ok) throw new Error('Failed to load commit');
 
         const data = await resp.json();
@@ -9647,7 +8811,7 @@ async function historyDryRunRevert() {
     }
 
     try {
-        const resp = await fetch(`/api/rollback/git/revert/dry-run?commit_hash=${selectedHistoryCommit}&token=${token}`, {
+        const resp = await fetch(`/api/rollback/git/revert/dry-run?commit_hash=${selectedHistoryCommit}&token=${ctx.token}`, {
             method: 'POST'
         });
         if (!resp.ok) {
@@ -9703,7 +8867,7 @@ async function historyExecuteRevert() {
     }
 
     try {
-        const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedHistoryCommit}&token=${token}&${getTargetParams()}`, {
+        const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedHistoryCommit}&token=${ctx.token}&${getTargetParams()}`, {
             method: 'POST'
         });
         if (!resp.ok) {
@@ -9741,7 +8905,7 @@ let dryRunValidatedHash = null;  // Commit hash that passed dry-run (safer rever
  */
 async function loadGitStatus() {
     try {
-        const resp = await fetch(`/api/rollback/git/status?token=${token}`);
+        const resp = await fetch(`/api/rollback/git/status?token=${ctx.token}`);
         gitStatus = await resp.json();
 
         // Update DOM if elements exist
@@ -9867,7 +9031,7 @@ async function handleStashChoice() {
     showToast('Stashing changes...', 'info');
 
     try {
-        const resp = await fetch(`/api/git/stash/push?token=${token}`, { method: 'POST' });
+        const resp = await fetch(`/api/git/stash/push?token=${ctx.token}`, { method: 'POST' });
         const data = await resp.json();
 
         if (!resp.ok || data.error) {
@@ -9947,7 +9111,7 @@ async function handleDiscardConfirm() {
 
     try {
         const resp = await fetch(
-            `/api/git/discard?include_untracked=${includeUntracked}&token=${token}&${getTargetParams()}`,
+            `/api/git/discard?include_untracked=${includeUntracked}&token=${ctx.token}&${getTargetParams()}`,
             { method: 'POST' }
         );
         const data = await resp.json();
@@ -9991,7 +9155,7 @@ async function historyExecuteRevertWithStash() {
     }
 
     try {
-        const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedHistoryCommit}&token=${token}&${getTargetParams()}`, {
+        const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedHistoryCommit}&token=${ctx.token}&${getTargetParams()}`, {
             method: 'POST'
         });
         if (!resp.ok) {
@@ -10045,7 +9209,7 @@ async function applyStash() {
     showToast('Applying stash...', 'info');
 
     try {
-        const resp = await fetch(`/api/git/stash/apply?ref=${encodeURIComponent(ref)}&token=${token}`, {
+        const resp = await fetch(`/api/git/stash/apply?ref=${encodeURIComponent(ref)}&token=${ctx.token}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -10077,7 +9241,7 @@ async function dropStash() {
     const ref = lastStashRef || 'stash@{0}';
 
     try {
-        const resp = await fetch(`/api/git/stash/drop?ref=${encodeURIComponent(ref)}&token=${token}`, {
+        const resp = await fetch(`/api/git/stash/drop?ref=${encodeURIComponent(ref)}&token=${ctx.token}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -10141,6 +9305,7 @@ function switchRollbackTab(tabName) {
     const historyContent = document.getElementById('historyTabContent');
     const processContent = document.getElementById('processTabContent');
     const mcpContent = document.getElementById('mcpTabContent');
+    const envContent = document.getElementById('envTabContent');
 
     // Hide all tabs
     queueContent?.classList.add('hidden');
@@ -10155,6 +9320,8 @@ function switchRollbackTab(tabName) {
     processContent?.classList.remove('active');
     mcpContent?.classList.add('hidden');
     mcpContent?.classList.remove('active');
+    envContent?.classList.add('hidden');
+    envContent?.classList.remove('active');
 
     // Show selected tab
     if (tabName === 'queue') {
@@ -10181,8 +9348,11 @@ function switchRollbackTab(tabName) {
     } else if (tabName === 'mcp') {
         mcpContent?.classList.remove('hidden');
         mcpContent?.classList.add('active');
-        loadPlugins();
-        loadMcpServers();
+        loadMcp();
+    } else if (tabName === 'env') {
+        envContent?.classList.remove('hidden');
+        envContent?.classList.add('active');
+        loadEnv();
     }
 }
 
@@ -10202,7 +9372,7 @@ async function loadProcessStatus() {
     if (!banner || !statusText) return;
 
     try {
-        const resp = await fetch(`/api/process/status?token=${token}`);
+        const resp = await fetch(`/api/process/status?token=${ctx.token}`);
         processStatus = await resp.json();
 
         let html = '';
@@ -10269,7 +9439,7 @@ async function terminateProcess(force = false) {
     resultDiv.innerHTML = `<pre>${force ? 'Force killing' : 'Terminating'}...</pre>`;
 
     try {
-        const resp = await fetch(`/api/process/terminate?token=${token}&force=${force}&${getTargetParams()}`, {
+        const resp = await fetch(`/api/process/terminate?token=${ctx.token}&force=${force}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -10307,7 +9477,7 @@ async function respawnProcess() {
     resultDiv.innerHTML = '<pre>Respawning...</pre>';
 
     try {
-        const resp = await fetch(`/api/process/respawn?token=${token}&${getTargetParams()}`, {
+        const resp = await fetch(`/api/process/respawn?token=${ctx.token}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -10323,8 +9493,8 @@ async function respawnProcess() {
 
             // Trigger reconnect to pick up new process
             setTimeout(() => {
-                if (socket) {
-                    socket.close();
+                if (ctx.socket) {
+                    ctx.socket.close();
                 }
             }, 500);
         } else {
@@ -10367,7 +9537,7 @@ async function loadRunnerCommands() {
     container.innerHTML = '<div class="runner-loading">Loading commands...</div>';
 
     try {
-        const resp = await fetch(`/api/runner/commands?token=${token}`);
+        const resp = await fetch(`/api/runner/commands?token=${ctx.token}`);
         const data = await resp.json();
         runnerCommands = data.commands;
         renderRunnerCommands();
@@ -10407,16 +9577,16 @@ function renderRunnerCommands() {
  */
 async function executeRunnerCommand(commandId) {
     try {
-        const resp = await fetch(`/api/runner/execute?command_id=${commandId}&token=${token}&${getTargetParams()}`, {
+        const resp = await fetch(`/api/runner/execute?command_id=${commandId}&token=${ctx.token}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
 
         if (data.success) {
             showToast(`Running: ${data.label}`, 'success');
-            // Close drawer and switch to terminal view to see output
+            // Close drawer and switch to ctx.terminal view to see output
             closePreviewDrawer();
-            if (currentView !== 'terminal') {
+            if (ctx.currentView !== 'terminal') {
                 switchToTerminalView();
             }
         } else {
@@ -10439,7 +9609,7 @@ async function executeCustomCommand() {
     if (!command) return;
 
     try {
-        const resp = await fetch(`/api/runner/custom?command=${encodeURIComponent(command)}&token=${token}&${getTargetParams()}`, {
+        const resp = await fetch(`/api/runner/custom?command=${encodeURIComponent(command)}&token=${ctx.token}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -10447,9 +9617,9 @@ async function executeCustomCommand() {
         if (data.success) {
             showToast('Command sent', 'success');
             input.value = '';
-            // Close drawer and switch to terminal view
+            // Close drawer and switch to ctx.terminal view
             closePreviewDrawer();
-            if (currentView !== 'terminal') {
+            if (ctx.currentView !== 'terminal') {
                 switchToTerminalView();
             }
         } else {
@@ -10496,7 +9666,7 @@ const DEV_STATUS_POLL_INTERVAL = 5000;
  */
 async function loadDevPreviewConfig() {
     try {
-        const resp = await fetch(`/api/preview/config?token=${token}`);
+        const resp = await fetch(`/api/preview/config?token=${ctx.token}`);
         const data = await resp.json();
         devPreviewConfig = data.exists ? data : null;
         renderDevServices();
@@ -10605,7 +9775,7 @@ function selectDevService(serviceId) {
 }
 
 /**
- * Build preview URL for service (using Tailscale config or localhost fallback)
+ * Build preview URL for service (using Tailscale ctx.config or localhost fallback)
  */
 function buildDevPreviewUrl(service) {
     if (devPreviewConfig?.tailscaleServe?.urlPattern) {
@@ -10639,7 +9809,7 @@ async function refreshDevStatus() {
     if (document.visibilityState !== 'visible') return;
 
     try {
-        const resp = await apiFetch(`/api/preview/status?token=${token}`);
+        const resp = await apiFetch(`/api/preview/status?token=${ctx.token}`);
         const data = await resp.json();
         devPreviewStatus = {};
         data.services?.forEach(s => {
@@ -10675,7 +9845,7 @@ async function startDevService() {
     }
 
     try {
-        const resp = await fetch(`/api/preview/start?service_id=${activeDevService}&token=${token}&${getTargetParams()}`, {
+        const resp = await fetch(`/api/preview/start?service_id=${activeDevService}&token=${ctx.token}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -10701,7 +9871,7 @@ async function stopDevService() {
     }
 
     try {
-        const resp = await fetch(`/api/preview/stop?service_id=${activeDevService}&token=${token}&${getTargetParams()}`, {
+        const resp = await fetch(`/api/preview/stop?service_id=${activeDevService}&token=${ctx.token}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -10967,7 +10137,7 @@ function urlBase64ToUint8Array(base64String) {
 async function setupPushNotifications() {
     if (!('PushManager' in window) || !('serviceWorker' in navigator)) return;
     try {
-        const resp = await fetch('/api/push/vapid-key?token=' + token);
+        const resp = await fetch('/api/push/vapid-key?token=' + ctx.token);
         if (!resp.ok) return;
         const data = await resp.json();
         vapidPublicKey = data.key;
@@ -10996,7 +10166,7 @@ async function togglePushSubscription() {
         const sub = await reg.pushManager.getSubscription();
         if (sub) {
             await sub.unsubscribe();
-            await fetch('/api/push/subscribe?token=' + token, {
+            await fetch('/api/push/subscribe?token=' + ctx.token, {
                 method: 'DELETE',
                 body: JSON.stringify(sub.toJSON()),
                 headers: {'Content-Type': 'application/json'}
@@ -11007,7 +10177,7 @@ async function togglePushSubscription() {
                 userVisibleOnly: true,
                 applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
             });
-            await fetch('/api/push/subscribe?token=' + token, {
+            await fetch('/api/push/subscribe?token=' + ctx.token, {
                 method: 'POST',
                 body: JSON.stringify(newSub.toJSON()),
                 headers: {'Content-Type': 'application/json'}
@@ -11056,6 +10226,7 @@ function showToast(message, type = 'success', duration = 3000) {
         setTimeout(() => toast.remove(), 300);
     }, duration);
 }
+ctx.showToast = showToast;
 
 
 // ===== Desktop Multi-Pane Layout =====
@@ -11075,12 +10246,12 @@ function setupDesktopLayout() {
     const logViewEl = document.getElementById('logView');
     if (teamViewEl) {
         teamViewEl.addEventListener('click', () => {
-            if (uiMode === 'desktop-multipane') switchDesktopFocus('team');
+            if (ctx.uiMode === 'desktop-multipane') switchDesktopFocus('team');
         });
     }
     if (logViewEl) {
         logViewEl.addEventListener('click', () => {
-            if (uiMode === 'desktop-multipane') switchDesktopFocus('log');
+            if (ctx.uiMode === 'desktop-multipane') switchDesktopFocus('log');
         });
     }
 
@@ -11088,7 +10259,7 @@ function setupDesktopLayout() {
     const closeBtn = document.getElementById('terminalCloseBtn');
     if (closeBtn) {
         closeBtn.addEventListener('click', () => {
-            if (uiMode === 'desktop-multipane') closeDesktopTerminal();
+            if (ctx.uiMode === 'desktop-multipane') closeDesktopTerminal();
         });
     }
 
@@ -11107,7 +10278,7 @@ function setupDesktopLayout() {
  */
 function checkDesktopLayout() {
     const shouldBeDesktop = window.innerWidth >= DESKTOP_BREAKPOINT;
-    const wasDesktop = uiMode === 'desktop-multipane';
+    const wasDesktop = ctx.uiMode === 'desktop-multipane';
 
     if (shouldBeDesktop && !wasDesktop) {
         enterDesktopLayout();
@@ -11120,7 +10291,7 @@ function checkDesktopLayout() {
  * Enter desktop multi-pane mode
  */
 function enterDesktopLayout() {
-    uiMode = 'desktop-multipane';
+    ctx.uiMode = 'desktop-multipane';
     const app = document.querySelector('.app');
     if (app) app.classList.add('desktop-multipane');
 
@@ -11130,10 +10301,10 @@ function enterDesktopLayout() {
     if (logView) logView.classList.remove('hidden');
     if (terminalView) terminalView.classList.add('hidden');
 
-    // Restore active prompt (in case we were in terminal view)
+    // Restore active prompt (in case we were in ctx.terminal view)
     if (activePromptContent) activePromptContent.style.display = '';
 
-    // Set output mode to tail (no xterm rendering unless terminal panel opened)
+    // Set output mode to tail (no xterm rendering unless ctx.terminal panel opened)
     setOutputMode('tail');
 
     // Start both refresh timers
@@ -11158,7 +10329,7 @@ function enterDesktopLayout() {
  * Exit desktop mode, restore mobile single-view
  */
 function exitDesktopLayout() {
-    uiMode = 'mobile-single';
+    ctx.uiMode = 'mobile-single';
     const app = document.querySelector('.app');
     if (app) {
         app.classList.remove('desktop-multipane');
@@ -11174,7 +10345,7 @@ function exitDesktopLayout() {
     document.querySelectorAll('.pane-focused').forEach(el => el.classList.remove('pane-focused'));
 
     // Restore mobile view
-    switchToView(currentView === 'terminal' ? 'terminal' : currentView === 'team' ? 'team' : 'log');
+    switchToView(ctx.currentView === 'terminal' ? 'terminal' : ctx.currentView === 'team' ? 'team' : 'log');
 
     console.debug('[Desktop] Exited to mobile layout');
 }
@@ -11184,7 +10355,7 @@ function exitDesktopLayout() {
  */
 function switchDesktopFocus(viewName) {
     desktopFocusedPane = viewName;
-    currentView = viewName; // Keep currentView in sync for API compat
+    ctx.currentView = viewName; // Keep ctx.currentView in sync for API compat
 
     // Update pane focus indicators
     const teamViewEl = document.getElementById('teamView');
@@ -11206,7 +10377,7 @@ function openDesktopTerminal() {
     terminalView.classList.add('desktop-panel');
     terminalView.classList.remove('hidden');
     desktopFocusedPane = 'terminal';
-    currentView = 'terminal';
+    ctx.currentView = 'terminal';
 
     updateTerminalAgentSelector();
 
@@ -11215,10 +10386,10 @@ function openDesktopTerminal() {
         if (fitAddon) fitAddon.fit();
         sendResize();
         setOutputMode('full');
-        if (terminal) terminal.focus();
+        if (ctx.terminal) ctx.terminal.focus();
     });
 
-    // Setup resize handle for terminal panel
+    // Setup resize handle for ctx.terminal panel
     setupDesktopTerminalResize();
 }
 
@@ -11244,7 +10415,7 @@ function closeDesktopTerminal() {
 }
 
 /**
- * Setup resize handle for desktop terminal panel
+ * Setup resize handle for desktop ctx.terminal panel
  */
 let desktopTerminalResizeCleanup = null;
 function setupDesktopTerminalResize() {
@@ -11261,7 +10432,7 @@ function setupDesktopTerminalResize() {
     const MAX_HEIGHT = Math.round(window.innerHeight * 0.7);
 
     function onPointerDown(e) {
-        // Only start drag from the border area (top 6px of terminal panel)
+        // Only start drag from the border area (top 6px of ctx.terminal panel)
         const termRect = terminalView.getBoundingClientRect();
         if (Math.abs(e.clientY - termRect.top) > 8) return;
 
@@ -11278,7 +10449,7 @@ function setupDesktopTerminalResize() {
         const delta = startY - e.clientY;
         const newHeight = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, startHeight + delta));
         container.style.setProperty('--terminal-panel-height', newHeight + 'px');
-        // Re-fit terminal
+        // Re-fit ctx.terminal
         if (fitAddon) requestAnimationFrame(() => fitAddon.fit());
     }
 
@@ -11435,7 +10606,7 @@ function applyTeamFilters() {
  */
 function setupDesktopShortcuts() {
     document.addEventListener('keydown', (e) => {
-        if (uiMode !== 'desktop-multipane') return;
+        if (ctx.uiMode !== 'desktop-multipane') return;
 
         // Skip if input/textarea/select focused
         const tag = document.activeElement?.tagName;
@@ -11664,7 +10835,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initDOMElements();
 
     // Configure marked.js to not convert single newlines to <br>
-    // This prevents garbled output when terminal content has hard line breaks
+    // This prevents garbled output when ctx.terminal content has hard line breaks
     if (typeof marked !== 'undefined') {
         marked.setOptions({
             breaks: false,  // Don't convert \n to <br>
@@ -11672,13 +10843,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // Initialize terminal (but it starts hidden in terminal tab)
+    // Initialize ctx.terminal (but it starts hidden in ctx.terminal tab)
     initTerminal();
 
     // Hide control bars initially (view mode)
     controlBarsContainer.classList.add('hidden');
 
     setupEventListeners();
+    initMcp({
+        onAgentRestarted: () => { agentStartedAt = Date.now(); lastAgentHealth = null; },
+    });
+    initEnv();
     setupTerminalFocus();
     setupViewportHandler();
     setupClipboard();
@@ -11756,7 +10931,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             e.stopPropagation();
             const banner = document.getElementById('contextBanner');
             if (banner) banner.classList.add('hidden');
-            const dismissKey = `mto_context_dismissed_${currentSession || ''}`;
+            const dismissKey = `mto_context_dismissed_${ctx.currentSession || ''}`;
             sessionStorage.setItem(dismissKey, '1');
         });
     }
@@ -11767,21 +10942,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // CRITICAL: Connect IMMEDIATELY - don't block on any API calls
-    // WebSocket connection is independent of config/session/queue
+    // WebSocket connection is independent of ctx.config/session/queue
     connect();
 
     // Start with log view as primary (desktop layout already handled in setupDesktopLayout)
-    if (uiMode !== 'desktop-multipane') {
+    if (ctx.uiMode !== 'desktop-multipane') {
         switchToLogView();
     }
 
-    // Background init: Load session, config, queue in parallel (non-blocking)
-    // These enhance the UI but are not required for basic terminal operation
+    // Background init: Load session, ctx.config, queue in parallel (non-blocking)
+    // These enhance the UI but are not required for basic ctx.terminal operation
     Promise.all([
         loadCurrentSession().catch(e => console.warn('loadCurrentSession failed:', e)),
         loadConfig().catch(e => console.warn('loadConfig failed:', e)),
     ]).then(() => {
-        // Reconcile queue after session is known (needs currentSession)
+        // Reconcile queue after session is known (needs ctx.currentSession)
         reconcileQueue().catch(e => console.warn('reconcileQueue failed:', e));
         // Fire-and-forget: context banner load must never block
         loadContextBanner().catch(() => {});
@@ -11795,7 +10970,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Delay respawn until connection is established
             setTimeout(() => {
                 respawnAgent();
-                const cleanUrl = window.location.pathname + (token ? `?token=${token}` : '');
+                const cleanUrl = window.location.pathname + (ctx.token ? `?token=${ctx.token}` : '');
                 window.history.replaceState({}, '', cleanUrl);
             }, 2000);
         } else if (deepAction === 'allow' || deepAction === 'deny') {
@@ -11804,13 +10979,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             const paneId = urlParams.get('pane_id') || '';
             // Delay until WebSocket connection is established
             setTimeout(() => {
-                if (socket && socket.readyState === WebSocket.OPEN) {
+                if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
                     sendTextAtomic(choice, true);
                     showToast(`Sent ${deepAction} to ${paneId || 'agent'}`, 'success');
                 } else {
                     showToast(`Could not send ${deepAction} — not connected`, 'error');
                 }
-                const cleanUrl = window.location.pathname + (token ? `?token=${token}` : '');
+                const cleanUrl = window.location.pathname + (ctx.token ? `?token=${ctx.token}` : '');
                 window.history.replaceState({}, '', cleanUrl);
             }, 2000);
         }
