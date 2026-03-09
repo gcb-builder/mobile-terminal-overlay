@@ -1,5 +1,5 @@
 // Service Worker for Mobile Terminal PWA
-const CACHE_NAME = 'terminal-v117';
+const CACHE_NAME = 'terminal-v118';
 
 // Install event - cache essential assets
 self.addEventListener('install', (event) => {
@@ -41,13 +41,11 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Network first strategy for static assets only
-  event.respondWith(
-    fetch(event.request).catch(() => {
-      // Offline fallback for static assets only
-      return caches.match(event.request);
-    })
-  );
+  // Don't intercept static assets - server sets Cache-Control headers,
+  // SW interception causes stale responses in PWA standalone mode
+  if (url.pathname.startsWith('/static/')) {
+    return;
+  }
 });
 
 // Push notification handler - per-type actions
@@ -103,7 +101,13 @@ self.addEventListener('notificationclick', (event) => {
           });
           cls[0].focus();
         } else {
-          clients.openWindow('/');
+          // No client window — pass action via URL params so startup handler can send it
+          const params = new URLSearchParams({
+            action: event.action,
+            pane_id: notifData.pane_id || '',
+            session: notifData.session || '',
+          });
+          clients.openWindow('/?' + params.toString());
         }
       })
     );

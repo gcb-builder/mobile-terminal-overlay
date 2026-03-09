@@ -158,6 +158,9 @@ def create_app(config: Config) -> FastAPI:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # Prevent aggressive caching of static assets in PWA standalone mode
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response
 
     # Mount static files
@@ -181,11 +184,29 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/")
     async def index(_auth=Depends(verify_token)):
-        """Serve the main HTML page."""
-        return FileResponse(
-            STATIC_DIR / "index.html",
-            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
-        )
+        """Serve the main HTML page.
+
+        When a built bundle exists (dist/terminal.min.js), rewrite the
+        script tag to load it.  Otherwise switch to type="module" so raw
+        ES imports in terminal.js work without a build step.
+        """
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        dist_js = STATIC_DIR / "dist" / "terminal.min.js"
+        if dist_js.exists():
+            html = re.sub(
+                r'<script\s+defer\s+src="/static/terminal\.js\?v=\d+"',
+                '<script defer src="/static/dist/terminal.min.js"',
+                html,
+                count=1,
+            )
+        else:
+            html = re.sub(
+                r'<script\s+defer\s+src="/static/terminal\.js\?v=\d+"',
+                '<script type="module" src="/static/terminal.js"',
+                html,
+                count=1,
+            )
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
     @app.get("/config")
     async def get_config(request: Request, _auth=Depends(verify_token)):
@@ -369,6 +390,17 @@ def create_app(config: Config) -> FastAPI:
             old_mapping = app.state.target_log_mapping[old_target]
             if not (isinstance(old_mapping, dict) and old_mapping.get("pinned")):
                 del app.state.target_log_mapping[old_target]
+
+        # Skip full switch if already on this target (avoids WS disconnect on initial sync)
+        if app.state.active_target == target_id and app.state.master_fd is not None:
+            logger.info(f"Target {target_id} already active, skipping switch")
+            return {
+                "success": True,
+                "active": target_id,
+                "pane_id": target_id,
+                "epoch": app.state.target_epoch,
+                "verified": True
+            }
 
         app.state.active_target = target_id
         app.state.audit_log.log("target_select", {"target": target_id})
@@ -1236,6 +1268,7 @@ def create_app(config: Config) -> FastAPI:
     from mobile_terminal.routers import queue as queue_router
     from mobile_terminal.routers import git as git_router
     from mobile_terminal.routers import mcp as mcp_router
+    from mobile_terminal.routers import env as env_router
     from mobile_terminal.routers import logs as logs_router
     from mobile_terminal.routers import process as process_router
     from mobile_terminal.routers import team as team_router
@@ -1263,6 +1296,7 @@ def create_app(config: Config) -> FastAPI:
     queue_router.register(app, deps)
     git_router.register(app, deps)
     mcp_router.register(app, deps)
+    env_router.register(app, deps)
     logs_router.register(app, deps)
     process_router.register(app, deps)
     team_router.register(app, deps)
