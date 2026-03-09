@@ -320,7 +320,10 @@ def register(app: FastAPI, deps):
                     if msg_type == 'user':
                         content = message.get('content', '')
                         if isinstance(content, str) and content.strip():
-                            conversation.append(f"$ {content}")
+                            # Strip system-injected tags from user messages
+                            cleaned = re.sub(r'<(?:system-reminder|task-notification)[^>]*>[\s\S]*?</(?:system-reminder|task-notification)>', '', content).strip()
+                            if cleaned:
+                                conversation.append(f"$ {cleaned}")
 
                     elif msg_type == 'assistant':
                         content = message.get('content', [])

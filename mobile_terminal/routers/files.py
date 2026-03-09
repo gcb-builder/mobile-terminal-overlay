@@ -224,27 +224,36 @@ def register(app: FastAPI, deps):
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.post("/api/upload")
-    async def upload_image(
+    async def upload_file(
         file: UploadFile = File(...),
         _auth=Depends(deps.verify_token),
     ):
         """
-        Upload an image file for use in terminal prompts.
+        Upload an image or document file for use in terminal prompts.
 
         Saves to .claude/uploads/ directory (git-ignored).
         Returns the relative path for insertion into terminal.
         """
 
         # Validate content type
-        allowed_types = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
+        IMAGE_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
+        DOC_TYPES = {
+            "application/pdf",
+            "text/plain", "text/csv", "text/markdown",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+        allowed_types = IMAGE_TYPES | DOC_TYPES
         if file.content_type not in allowed_types:
             return JSONResponse(
-                {"error": f"Invalid file type: {file.content_type}. Allowed: png, jpeg, webp, gif"},
+                {"error": f"Invalid file type: {file.content_type}. Allowed: images (png, jpeg, webp, gif), documents (pdf, doc, docx, xls, xlsx, txt, csv, md)"},
                 status_code=400,
             )
 
-        # Read file content and check size (max 5MB)
-        max_size = 5 * 1024 * 1024  # 5MB
+        # Read file content and check size (max 10MB)
+        max_size = 10 * 1024 * 1024  # 10MB
         content = await file.read()
         if len(content) > max_size:
             return JSONResponse(
@@ -252,22 +261,33 @@ def register(app: FastAPI, deps):
                 status_code=400,
             )
 
-        # Create uploads directory
-        uploads_dir = Path(".claude/uploads")
+        # Create uploads directory inside the active repo so the path
+        # resolves relative to Claude's CWD in that repo.
+        repo_path = deps.get_current_repo_path()
+        if repo_path:
+            uploads_dir = repo_path / ".claude" / "uploads"
+        else:
+            uploads_dir = Path(".claude/uploads")
         uploads_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate filename with timestamp
-        ext = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "png"
+        ext = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "bin"
         timestamp = int(time.time() * 1000)
-        filename = f"img-{timestamp}.{ext}"
+        filename = f"upload-{timestamp}.{ext}"
         filepath = uploads_dir / filename
+
+        # Return path relative to repo root so it resolves from Claude's CWD
+        if repo_path:
+            rel_path = filepath.relative_to(repo_path)
+        else:
+            rel_path = filepath
 
         # Write file
         try:
             with open(filepath, "wb") as f:
                 f.write(content)
-            logger.info(f"Uploaded image: {filepath}")
-            return {"path": str(filepath), "filename": filename, "size": len(content)}
+            logger.info(f"Uploaded file: {filepath}")
+            return {"path": str(rel_path), "filename": filename, "size": len(content)}
         except Exception as e:
             logger.error(f"Failed to save upload: {e}")
             return JSONResponse({"error": "Failed to save file"}, status_code=500)
