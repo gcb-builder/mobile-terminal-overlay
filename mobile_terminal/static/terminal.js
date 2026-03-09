@@ -12,6 +12,9 @@ import ctx from './src/context.js';
 import { initMcp, loadMcp } from './src/features/mcp.js';
 import { initEnv, loadEnv } from './src/features/env.js';
 import { initCollapse, scheduleCollapse, scheduleSuperCollapse } from './src/features/collapse.js';
+import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
+         reconcileQueue, reloadQueueForTarget, refreshQueueList,
+         getQueueItems, isQueuePaused, saveQueueToStorage } from './src/features/queue.js';
 
 // Init order (runtime-sensitive):
 // 1. DOM refs available (DOMContentLoaded)
@@ -425,9 +428,7 @@ let activityUpdateTimer = null;
 // Force scroll to bottom flag (used during resize)
 let forceScrollToBottom = false;
 
-// Queue state
-let queueItems = [];
-let queuePaused = false;
+// Queue — moved to src/features/queue.js
 
 // Unified drawer state
 let drawerOpen = false;
@@ -525,14 +526,7 @@ function initDOMElements() {
     terminalView = document.getElementById('terminalView');
     terminalBlock = document.getElementById('terminalBlock');
     activePromptContent = document.getElementById('activePromptContent');
-    // Queue elements (now inside unified drawer)
-    queueList = document.getElementById('queueList');
-    queueCount = document.getElementById('queueCount');
-    queueBadge = document.getElementById('queueBadge');
-    queueTabBadge = document.getElementById('queueTabBadge');
-    queuePauseBtn = document.getElementById('queuePauseBtn');
-    queueSendNext = document.getElementById('queueSendNext');
-    queueFlush = document.getElementById('queueFlush');
+    // Queue elements — initialized via initQueue() in DOMContentLoaded
     // New window modal elements
     newWindowModal = document.getElementById('newWindowModal');
     newWindowClose = document.getElementById('newWindowClose');
@@ -547,8 +541,6 @@ function initDOMElements() {
 
 // Additional DOM elements
 let terminalBlock, activePromptContent;
-let queueList, queueCount, queueBadge, queueTabBadge;
-let queuePauseBtn, queueSendNext, queueFlush;
 let newWindowModal, newWindowClose, newWindowRepo, newWindowName;
 let newWindowAutoStart, newWindowCancel, newWindowCreate;
 
@@ -914,8 +906,8 @@ function setTerminalBusy(busy) {
  */
 function tryDrainQueue() {
     queueDrainTimer = null;
-    if (terminalBusy || queuePaused) return;
-    const pending = queueItems.filter(i => i.status === 'queued');
+    if (terminalBusy || isQueuePaused()) return;
+    const pending = getQueueItems().filter(i => i.status === 'queued');
     if (pending.length === 0) return;
     showToast(`Sending queued command (${pending.length} left)`, 'info', 1500);
     sendNextUnsafe();
@@ -2387,8 +2379,7 @@ async function selectTarget(targetId, isInitialSync = false) {
     updateNavLabel();
 
     // Load new target's queue from localStorage
-    queueItems = loadQueueFromStorage();
-    renderQueueList();
+    reloadQueueForTarget();
     // Background reconcile with server for the new pane
     reconcileQueue();
 
@@ -7364,566 +7355,6 @@ function queueLogCommand() {
     });
 }
 
-// ================== Queue Functions ==================
-
-// Queue persistence constants
-const QUEUE_STORAGE_PREFIX = 'mto_queue_';
-const QUEUE_SENDING_TIMEOUT_MS = 30000;  // 30s - stale "sending" becomes "queued"
-
-/**
- * Generate a unique ID for queue items (client-side)
- */
-function makeQueueId() {
-    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-        return crypto.randomUUID();
-    }
-    // Fallback for older browsers
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-        const r = Math.random() * 16 | 0;
-        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-    });
-}
-
-/**
- * Get localStorage key for queue (scoped to session + pane)
- */
-function getQueueStorageKey(session) {
-    const pane = ctx.activeTarget || 'default';
-    return QUEUE_STORAGE_PREFIX + (session || 'default') + ':' + pane;
-}
-
-/**
- * Save queue to localStorage
- */
-function saveQueueToStorage() {
-    if (!ctx.currentSession) return;
-    try {
-        const key = getQueueStorageKey(ctx.currentSession);
-        const data = {
-            items: queueItems,
-            savedAt: Date.now()
-        };
-        localStorage.setItem(key, JSON.stringify(data));
-    } catch (e) {
-        console.warn('Failed to save queue to storage:', e);
-    }
-}
-
-/**
- * Load queue from localStorage
- * Converts stale "sending" items back to "queued"
- */
-function loadQueueFromStorage() {
-    if (!ctx.currentSession) return [];
-    try {
-        const key = getQueueStorageKey(ctx.currentSession);
-        const raw = localStorage.getItem(key);
-        if (!raw) return [];
-
-        const data = JSON.parse(raw);
-        const items = data.items || [];
-        const now = Date.now();
-
-        // Convert stale "sending" items back to "queued"
-        for (const item of items) {
-            if (item.status === 'sending') {
-                const age = now - (item.lastAttemptAt || item.createdAt || 0);
-                if (age > QUEUE_SENDING_TIMEOUT_MS) {
-                    item.status = 'queued';
-                    item.attempts = (item.attempts || 0);
-                }
-            }
-        }
-
-        // Filter out sent/failed items (they don't need to persist)
-        return items.filter(i => i.status === 'queued' || i.status === 'sending');
-    } catch (e) {
-        console.warn('Failed to load queue from storage:', e);
-        return [];
-    }
-}
-
-/**
- * Reconcile local queue with server state
- * - Server status wins for items on both sides
- * - Local items not on server get re-enqueued (idempotent)
- * - Server items not local get added
- */
-async function reconcileQueue() {
-    if (!ctx.currentSession) return;
-
-    // Load local state first
-    const localItems = loadQueueFromStorage();
-
-    // Fetch server state
-    let serverItems = [];
-    try {
-        const listParams = new URLSearchParams({ session: ctx.currentSession, token: ctx.token });
-        if (ctx.activeTarget) listParams.set('pane_id', ctx.activeTarget);
-        const resp = await fetch(`/api/queue/list?${listParams}`);
-        if (resp.ok) {
-            const data = await resp.json();
-            serverItems = data.items || [];
-            queuePaused = data.paused || false;
-            updatePauseButton();
-        }
-    } catch (e) {
-        console.warn('Failed to fetch server queue for reconciliation:', e);
-    }
-
-    // Build ID maps
-    const serverMap = new Map(serverItems.map(i => [i.id, i]));
-    const localMap = new Map(localItems.map(i => [i.id, i]));
-
-    // Merge: start with server items (authoritative for status)
-    const merged = [...serverItems];
-
-    // Add local items not on server (re-enqueue them)
-    const toEnqueue = [];
-    for (const local of localItems) {
-        if (!serverMap.has(local.id)) {
-            // Local item missing from server - need to re-enqueue
-            toEnqueue.push(local);
-        }
-    }
-
-    // Re-enqueue missing items (idempotent - server will dedupe by ID)
-    for (const item of toEnqueue) {
-        try {
-            const params = new URLSearchParams({
-                session: ctx.currentSession,
-                text: item.text,
-                policy: item.policy || 'auto',
-                id: item.id,  // Pass our ID for idempotency
-                token: ctx.token
-            });
-            if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-            const resp = await fetch(`/api/queue/enqueue?${params}`, { method: 'POST' });
-            if (resp.ok) {
-                const data = await resp.json();
-                if (data.is_new) {
-                    merged.push(data.item);
-                }
-            }
-        } catch (e) {
-            console.warn('Failed to re-enqueue item:', item.id, e);
-            // Keep in local state anyway
-            merged.push(item);
-        }
-    }
-
-    // Update global state
-    queueItems = merged;
-    saveQueueToStorage();
-    renderQueueList();
-
-    console.log(`Queue reconciled: ${serverItems.length} server, ${localItems.length} local, ${toEnqueue.length} re-enqueued`);
-}
-
-/**
- * Open unified drawer with Queue tab selected
- */
-function openDrawerWithQueueTab() {
-    const drawer = document.getElementById('previewDrawer');
-    const backdrop = document.getElementById('drawerBackdrop');
-    if (drawer) {
-        drawer.classList.remove('hidden');
-        if (backdrop) backdrop.classList.remove('hidden');
-        drawerOpen = true;
-        switchRollbackTab('queue');
-        refreshQueueList();
-    }
-}
-
-/**
- * Render queue items in the drawer
- */
-function renderQueueList() {
-    if (!queueList) return;
-
-    if (queueItems.length === 0) {
-        queueList.innerHTML = '<div class="queue-empty">Queue is empty</div>';
-        queueCount.textContent = '0';
-        updateQueueBadge(0);
-        return;
-    }
-
-    // Build list of queued-status indices for hiding first/last arrows
-    const queuedIndices = [];
-    queueItems.forEach((item, i) => { if (item.status === 'queued') queuedIndices.push(i); });
-    const firstQueued = queuedIndices[0];
-    const lastQueued = queuedIndices[queuedIndices.length - 1];
-
-    queueList.innerHTML = queueItems.map((item, idx) => {
-        const displayText = item.text.length > 40 ? item.text.slice(0, 40) + '...' : item.text;
-        const escapedText = escapeHtml(displayText);
-        const isQueued = item.status === 'queued';
-        const escapedId = escapeHtml(String(item.id));
-        const reorderHtml = isQueued ? `
-                <div class="queue-item-reorder">
-                    <button class="queue-reorder-btn up" data-id="${escapedId}" data-dir="up"${idx === firstQueued ? ' style="visibility:hidden"' : ''}>&#x25B2;</button>
-                    <button class="queue-reorder-btn down" data-id="${escapedId}" data-dir="down"${idx === lastQueued ? ' style="visibility:hidden"' : ''}>&#x25BC;</button>
-                </div>` : '';
-        return `
-            <div class="queue-item" data-id="${escapedId}" data-status="${escapeHtml(item.status)}">
-                <span class="queue-item-status ${escapeHtml(item.status)}"></span>${reorderHtml}
-                <div class="queue-item-content">
-                    <div class="queue-item-text">${escapedText || '(Enter)'}</div>
-                    <div class="queue-item-meta">
-                        <span class="queue-item-policy ${escapeHtml(item.policy)}">${escapeHtml(item.policy)}</span>
-                    </div>
-                </div>
-                <button class="queue-item-remove" data-id="${escapedId}">&times;</button>
-            </div>
-        `;
-    }).join('');
-
-    queueCount.textContent = queueItems.length.toString();
-    updateQueueBadge(queueItems.length);
-
-    // Add remove handlers
-    queueList.querySelectorAll('.queue-item-remove').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const id = btn.dataset.id;
-            removeQueueItem(id);
-        });
-    });
-
-    // Tap-to-insert on queued items
-    queueList.querySelectorAll('.queue-item[data-status="queued"]').forEach(el => {
-        el.addEventListener('click', () => {
-            insertNextToInput(el.dataset.id);
-        });
-    });
-
-    // Reorder button handlers
-    queueList.querySelectorAll('.queue-reorder-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation(); // Don't trigger tap-to-insert
-            reorderQueueItem(btn.dataset.id, btn.dataset.dir);
-        });
-    });
-}
-
-/**
- * Update queue badge visibility and count (both view bar and tab)
- */
-function updateQueueBadge(count) {
-    // Update view bar badge
-    if (queueBadge) {
-        if (count > 0) {
-            queueBadge.textContent = count.toString();
-            queueBadge.classList.remove('hidden');
-        } else {
-            queueBadge.classList.add('hidden');
-        }
-    }
-    // Update tab badge
-    if (queueTabBadge) {
-        if (count > 0) {
-            queueTabBadge.textContent = count.toString();
-            queueTabBadge.classList.remove('hidden');
-        } else {
-            queueTabBadge.classList.add('hidden');
-        }
-    }
-}
-
-/**
- * Refresh queue list from server
- */
-async function refreshQueueList() {
-    if (!ctx.currentSession) return;
-
-    try {
-        const listParams = new URLSearchParams({ session: ctx.currentSession, token: ctx.token });
-        if (ctx.activeTarget) listParams.set('pane_id', ctx.activeTarget);
-        const resp = await fetch(`/api/queue/list?${listParams}`);
-        if (resp.ok) {
-            const data = await resp.json();
-            queueItems = data.items || [];
-            queuePaused = data.paused || false;
-            updatePauseButton();
-            renderQueueList();
-        }
-    } catch (e) {
-        console.error('Failed to refresh queue:', e);
-    }
-}
-
-/**
- * Enqueue a command
- * Generates client-side ID for idempotency and persists to localStorage
- */
-async function enqueueCommand(text, policy = 'auto') {
-    if (!ctx.currentSession) return false;
-
-    // Generate client-side ID for idempotency
-    const itemId = makeQueueId();
-
-    // Create local item immediately (optimistic)
-    const localItem = {
-        id: itemId,
-        text: text,
-        policy: policy,
-        status: 'queued',
-        createdAt: Date.now(),
-        attempts: 0
-    };
-
-    // Check for duplicate (shouldn't happen, but be safe)
-    if (queueItems.some(i => i.id === itemId)) {
-        console.warn('Duplicate queue item ID:', itemId);
-        return false;
-    }
-
-    // Add to local state and persist
-    queueItems.push(localItem);
-    saveQueueToStorage();
-    renderQueueList();
-
-    // Send to server (idempotent)
-    try {
-        const params = new URLSearchParams({
-            session: ctx.currentSession,
-            text: text,
-            policy: policy,
-            id: itemId,  // Client-generated ID for idempotency
-            token: ctx.token
-        });
-        if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-        const resp = await fetch(`/api/queue/enqueue?${params}`, {
-            method: 'POST'
-        });
-
-        if (resp.ok) {
-            const data = await resp.json();
-            // Update local item with server response (policy may have been auto-classified)
-            const idx = queueItems.findIndex(i => i.id === itemId);
-            if (idx >= 0) {
-                queueItems[idx] = { ...queueItems[idx], ...data.item };
-                saveQueueToStorage();
-                renderQueueList();
-            }
-            return true;
-        }
-    } catch (e) {
-        console.error('Failed to enqueue to server:', e);
-        // Item is still in local storage, will be re-synced on reconnect
-    }
-    return true;  // Return true since item is queued locally
-}
-
-/**
- * Remove item from queue
- * Removes from local storage immediately, then syncs with server
- */
-async function removeQueueItem(itemId) {
-    if (!ctx.currentSession) return;
-
-    // Remove from local state immediately
-    queueItems = queueItems.filter(item => item.id !== itemId);
-    saveQueueToStorage();
-    renderQueueList();
-
-    // Sync with server
-    try {
-        const params = new URLSearchParams({
-            session: ctx.currentSession,
-            item_id: itemId,
-            token: ctx.token
-        });
-        if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-        await fetch(`/api/queue/remove?${params}`, {
-            method: 'POST'
-        });
-    } catch (e) {
-        console.error('Failed to remove queue item from server:', e);
-        // Item already removed locally, server will sync on next reconcile
-    }
-}
-
-/**
- * Toggle pause state
- */
-async function toggleQueuePause() {
-    if (!ctx.currentSession) return;
-
-    const endpoint = queuePaused ? '/api/queue/resume' : '/api/queue/pause';
-    const params = new URLSearchParams({
-        session: ctx.currentSession,
-        token: ctx.token
-    });
-    if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-
-    try {
-        const resp = await fetch(`${endpoint}?${params}`, {
-            method: 'POST'
-        });
-
-        if (resp.ok) {
-            queuePaused = !queuePaused;
-            updatePauseButton();
-        }
-    } catch (e) {
-        console.error('Failed to toggle pause:', e);
-    }
-}
-
-/**
- * Update pause button text and style
- */
-function updatePauseButton() {
-    if (!queuePauseBtn) return;
-    queuePauseBtn.textContent = queuePaused ? 'Resume' : 'Pause';
-    queuePauseBtn.classList.toggle('paused', queuePaused);
-}
-
-/**
- * Insert next queued item (or specific item) into the input box for editing.
- * Removes the item from the queue — user sends manually after optional edit.
- */
-function insertNextToInput(specificId) {
-    const item = specificId
-        ? queueItems.find(i => i.id === specificId && i.status === 'queued')
-        : queueItems.find(i => i.status === 'queued');
-    if (!item) return;
-
-    // Put text into input box
-    const logInput = document.getElementById('logInput');
-    if (logInput) {
-        logInput.value = item.text;
-        logInput.focus();
-    }
-
-    // Remove from queue (local + server)
-    removeQueueItem(item.id);
-}
-
-/**
- * Reorder a queue item up or down.
- */
-async function reorderQueueItem(itemId, direction) {
-    const idx = queueItems.findIndex(i => i.id === itemId);
-    if (idx < 0) return;
-
-    const newIdx = direction === 'up' ? idx - 1 : idx + 1;
-    if (newIdx < 0 || newIdx >= queueItems.length) return;
-
-    // Swap locally
-    const tmp = queueItems[idx];
-    queueItems[idx] = queueItems[newIdx];
-    queueItems[newIdx] = tmp;
-    saveQueueToStorage();
-    renderQueueList();
-
-    // Sync with server
-    try {
-        const params = new URLSearchParams({
-            session: ctx.currentSession,
-            item_id: itemId,
-            new_index: newIdx.toString(),
-            token: ctx.token
-        });
-        if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-        await fetch(`/api/queue/reorder?${params}`, { method: 'POST' });
-    } catch (e) {
-        console.error('Failed to reorder queue item:', e);
-        // Revert on error
-        const tmp2 = queueItems[idx];
-        queueItems[idx] = queueItems[newIdx];
-        queueItems[newIdx] = tmp2;
-        saveQueueToStorage();
-        renderQueueList();
-    }
-}
-
-/**
- * Flush all queue items
- */
-async function flushQueue() {
-    if (!ctx.currentSession) return;
-
-    if (!confirm('Clear all queued commands?')) return;
-
-    try {
-        const params = new URLSearchParams({
-            session: ctx.currentSession,
-            confirm: 'true',
-            token: ctx.token
-        });
-        if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-        const resp = await fetch(`/api/queue/flush?${params}`, {
-            method: 'POST'
-        });
-
-        if (resp.ok) {
-            queueItems = [];
-            renderQueueList();
-        }
-    } catch (e) {
-        console.error('Failed to flush queue:', e);
-    }
-}
-
-/**
- * Handle queue WebSocket messages
- * Persists changes to localStorage
- */
-function handleQueueMessage(msg) {
-    switch (msg.type) {
-        case 'queue_update':
-            if (msg.action === 'add') {
-                // Idempotent: don't add if already exists
-                if (!queueItems.some(i => i.id === msg.item.id)) {
-                    queueItems.push(msg.item);
-                }
-            } else if (msg.action === 'update') {
-                const idx = queueItems.findIndex(i => i.id === msg.item.id);
-                if (idx >= 0) queueItems[idx] = msg.item;
-            } else if (msg.action === 'remove') {
-                queueItems = queueItems.filter(i => i.id !== msg.item.id);
-            }
-            saveQueueToStorage();
-            renderQueueList();
-            break;
-
-        case 'queue_sent':
-            // Item was sent, remove from local state
-            queueItems = queueItems.filter(i => i.id !== msg.id);
-            saveQueueToStorage();
-            renderQueueList();
-            break;
-
-        case 'queue_state':
-            queuePaused = msg.paused;
-            updatePauseButton();
-            updateQueueBadge(msg.count);
-            break;
-    }
-}
-
-/**
- * Setup queue event listeners
- */
-function setupQueue() {
-    if (queuePauseBtn) {
-        queuePauseBtn.addEventListener('click', toggleQueuePause);
-    }
-
-    if (queueSendNext) {
-        queueSendNext.addEventListener('click', () => insertNextToInput());
-    }
-
-    if (queueFlush) {
-        queueFlush.addEventListener('click', flushQueue);
-    }
-
-    // Initial load
-    refreshQueueList();
-}
-
 
 // ============================================================================
 // PREVIEW MODE FUNCTIONS
@@ -10616,7 +10047,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupViewSwitcher();
     updateViewSwitcher();  // Set initial view switcher state
     startActivityUpdates();
-    setupQueue();
+    initQueue();
     initCollapse(logContent);
     setupScrollTracking();
     setupLogFilterBar();
