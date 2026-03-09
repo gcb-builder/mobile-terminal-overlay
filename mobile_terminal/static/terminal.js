@@ -15,6 +15,7 @@ import { initCollapse, scheduleCollapse, scheduleSuperCollapse } from './src/fea
 import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          reconcileQueue, reloadQueueForTarget, refreshQueueList,
          getQueueItems, isQueuePaused, saveQueueToStorage } from './src/features/queue.js';
+import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js';
 
 // Init order (runtime-sensitive):
 // 1. DOM refs available (DOMContentLoaded)
@@ -5635,50 +5636,6 @@ function createLogCard(msg) {
 
 // yieldToMain — moved to src/utils.js
 
-/**
- * Schedule markdown parsing for idle time
- */
-let markdownParseQueue = [];
-let markdownParseScheduled = false;
-
-function scheduleMarkdownParse(element) {
-    markdownParseQueue.push(element);
-    if (!markdownParseScheduled) {
-        markdownParseScheduled = true;
-        if ('requestIdleCallback' in window) {
-            requestIdleCallback(processMarkdownQueue, { timeout: 100 });
-        } else {
-            setTimeout(processMarkdownQueue, 16);
-        }
-    }
-}
-
-function processMarkdownQueue(deadline) {
-    const timeLimit = deadline?.timeRemaining ? deadline.timeRemaining() : 8;
-    const start = performance.now();
-
-    while (markdownParseQueue.length > 0 && (performance.now() - start) < timeLimit) {
-        const el = markdownParseQueue.shift();
-        if (el.dataset.markdown && el.isConnected) {
-            try {
-                el.innerHTML = marked.parse(el.dataset.markdown);
-                delete el.dataset.markdown;
-            } catch (e) {
-                // Keep plain text on parse error
-            }
-        }
-    }
-
-    if (markdownParseQueue.length > 0) {
-        if ('requestIdleCallback' in window) {
-            requestIdleCallback(processMarkdownQueue, { timeout: 100 });
-        } else {
-            setTimeout(processMarkdownQueue, 16);
-        }
-    } else {
-        markdownParseScheduled = false;
-    }
-}
 
 /**
  * Extract pending prompt from log content
@@ -6356,141 +6313,6 @@ function hideNewContentIndicator() {
     }
 }
 
-// Track which plan files have been processed
-let processedPlanRefs = new Set();
-
-/**
- * Schedule plan file preview detection for idle time
- */
-function schedulePlanPreviews() {
-    if (!logContent) return;
-
-    scheduleIdle(() => {
-        try {
-            detectAndReplacePlanRefs();
-        } catch (e) {
-            console.warn('Plan preview detection failed:', e);
-        }
-    }, { timeout: 600 });
-}
-
-/**
- * Detect plan file references in log and replace with expandable previews
- * Looks for paths like ~/.claude/plans/foo.md or /home/user/.claude/plans/foo.md
- */
-function detectAndReplacePlanRefs() {
-    if (!logContent) return;
-
-    // Find all text nodes that might contain plan file references
-    const walker = document.createTreeWalker(
-        logContent,
-        NodeFilter.SHOW_TEXT,
-        null,
-        false
-    );
-
-    const planPathRegex = /(?:~|\/home\/\w+)\/\.claude\/plans\/([\w\-\.]+\.md)/g;
-    const nodesToReplace = [];
-
-    let node;
-    while (node = walker.nextNode()) {
-        const text = node.textContent;
-        if (planPathRegex.test(text)) {
-            planPathRegex.lastIndex = 0;  // Reset regex
-            nodesToReplace.push(node);
-        }
-    }
-
-    // Replace each text node with plan link elements
-    for (const textNode of nodesToReplace) {
-        const text = textNode.textContent;
-        const fragment = document.createDocumentFragment();
-        let lastIndex = 0;
-        let match;
-
-        planPathRegex.lastIndex = 0;
-        while ((match = planPathRegex.exec(text)) !== null) {
-            // Add text before match
-            if (match.index > lastIndex) {
-                fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
-            }
-
-            // Create plan preview link
-            const filename = match[1];
-            const fullPath = match[0];
-
-            // Check if already processed
-            if (!processedPlanRefs.has(fullPath)) {
-                const planLink = document.createElement('span');
-                planLink.className = 'plan-file-ref';
-                planLink.dataset.filename = filename;
-                planLink.innerHTML = `<span class="plan-file-icon">📋</span> ${escapeHtml(filename)} <span class="plan-expand-hint">(tap to preview)</span>`;
-                fragment.appendChild(planLink);
-                if (processedPlanRefs.size > 500) processedPlanRefs.clear();
-                processedPlanRefs.add(fullPath);
-            } else {
-                // Already processed, just show as text
-                fragment.appendChild(document.createTextNode(fullPath));
-            }
-
-            lastIndex = match.index + match[0].length;
-        }
-
-        // Add remaining text
-        if (lastIndex < text.length) {
-            fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
-        }
-
-        textNode.parentNode.replaceChild(fragment, textNode);
-    }
-}
-
-/**
- * Setup event delegation for plan file preview clicks
- */
-function setupPlanPreviewHandler() {
-    if (!logContent) return;
-
-    logContent.addEventListener('click', async (e) => {
-        const planRef = e.target.closest('.plan-file-ref');
-        if (!planRef) return;
-
-        const filename = planRef.dataset.filename;
-        if (!filename) return;
-
-        // Toggle preview
-        const existingPreview = planRef.querySelector('.plan-preview');
-        if (existingPreview) {
-            existingPreview.remove();
-            planRef.classList.remove('expanded');
-            return;
-        }
-
-        // Fetch and show preview
-        planRef.classList.add('loading');
-        try {
-            const response = await fetch(`/api/plan?token=${ctx.token}&filename=${encodeURIComponent(filename)}&preview=true`);
-            const data = await response.json();
-
-            if (data.exists && data.content) {
-                const preview = document.createElement('div');
-                preview.className = 'plan-preview';
-                preview.innerHTML = `<pre>${escapeHtml(data.content)}</pre>`;
-                planRef.appendChild(preview);
-                planRef.classList.add('expanded');
-            } else {
-                const preview = document.createElement('div');
-                preview.className = 'plan-preview error';
-                preview.textContent = 'Plan file not found';
-                planRef.appendChild(preview);
-            }
-        } catch (err) {
-            console.error('Failed to fetch plan preview:', err);
-        } finally {
-            planRef.classList.remove('loading');
-        }
-    });
-}
 
 /**
  * Setup docs button and modal handlers
@@ -10051,7 +9873,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initCollapse(logContent);
     setupScrollTracking();
     setupLogFilterBar();
-    setupPlanPreviewHandler();
+    initMarkdown(logContent);
     setupDocsButton();
     setupPreviewHandlers();
     setupRunnerHandlers();
