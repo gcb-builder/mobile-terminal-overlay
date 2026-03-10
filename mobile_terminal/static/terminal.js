@@ -749,8 +749,7 @@ async function refreshActivePrompt(signal) {
         // Update content (no auto-scroll - let user control scroll position)
         activePromptContent.textContent = content;
 
-        // Try to extract and suggest command
-        extractAndSuggestCommand(content);
+        // Suggestion auto-fill disabled — was injecting stale content into input
 
         // Check if prompt is visible - if so, ctx.terminal is ready
         const extracted = extractPromptContent(content);
