@@ -452,6 +452,7 @@ const scheduleIdle = window.requestIdleCallback || ((cb) => setTimeout(cb, 100))
 
 // Scroll tracking for log view - only auto-scroll if user is at bottom
 let userAtBottom = true;
+let scrollLockUntil = 0;  // Timestamp: ignore scroll events until this time
 let newContentIndicator = null;
 
 // Preview mode state
@@ -787,7 +788,7 @@ function stopActivePrompt() {
  * Extract suggestion from ctx.terminal output and pre-fill input box
  */
 let lastSuggestion = '';
-let lastSentCommand = '';  // Track last sent command to avoid re-suggesting it
+let recentSentCommands = new Set();  // Track recent commands to avoid re-suggesting
 
 function extractAndSuggestCommand(content) {
     if (!logInput) return;
@@ -818,12 +819,13 @@ function extractAndSuggestCommand(content) {
             }
         }
 
-        // Numbered options: [1] Do something or 1) Do something
-        if (/^\[?[1-3]\]?\)?\.?\s+(.+)/.test(trimmed)) {
-            // Just show "1" for numbered options
-            const numMatch = trimmed.match(/^\[?([1-3])/);
-            if (numMatch) {
-                suggestion = numMatch[1];
+        // Numbered options in an interactive choice dialog (? prefix)
+        // Only suggest when there's a question prompt, not plain numbered lists
+        if (/^\?\s/.test(trimmed) || /^\[?\d\]?\)\s/.test(trimmed)) {
+            // Look for numbered options in surrounding lines
+            const hasQuestion = lines.some(l => /^\?\s/.test(l.trim()));
+            if (hasQuestion && /^\[?[1-3]\]?\)?\.?\s+/.test(trimmed)) {
+                suggestion = '1';
                 break;
             }
         }
@@ -835,8 +837,8 @@ function extractAndSuggestCommand(content) {
         }
     }
 
-    // Never re-suggest the command the user just sent
-    if (suggestion && suggestion === lastSentCommand) return;
+    // Never re-suggest a recently sent command
+    if (suggestion && recentSentCommands.has(suggestion)) return;
 
     // Only update if suggestion changed and input is empty
     if (suggestion && suggestion !== lastSuggestion && !logInput.value) {
@@ -904,7 +906,7 @@ async function syncPromptToInput() {
 
         if (extracted !== null) {
             // Don't re-fill with the same text we just sent
-            if (extracted && (extracted === lastSuggestion || extracted === lastSentCommand)) {
+            if (extracted && (extracted === lastSuggestion || recentSentCommands.has(extracted))) {
                 setTerminalBusy(false);
                 return;
             }
@@ -929,9 +931,11 @@ function setTerminalBusy(busy) {
     updateSendButton();
 
     // Auto-drain queue when ctx.terminal becomes idle
+    // Use 3s delay to avoid firing during transient prompt appearances
     if (!busy) {
-        if (queueDrainTimer) clearTimeout(queueDrainTimer);
-        queueDrainTimer = setTimeout(tryDrainQueue, 1200);
+        if (!queueDrainTimer) {
+            queueDrainTimer = setTimeout(tryDrainQueue, 3000);
+        }
     } else {
         if (queueDrainTimer) { clearTimeout(queueDrainTimer); queueDrainTimer = null; }
     }
@@ -943,6 +947,13 @@ function setTerminalBusy(busy) {
 function tryDrainQueue() {
     queueDrainTimer = null;
     if (terminalBusy || isQueuePaused()) return;
+
+    // Don't auto-send if agent is actively working/planning — prompt may be
+    // transiently visible but the agent hasn't truly finished yet
+    const phase = lastPhase?.phase;
+    const agentRunning = lastPhase?.claude_running;
+    if (agentRunning && phase && phase !== 'idle' && phase !== 'waiting') return;
+
     const pending = getQueueItems().filter(i => i.status === 'queued');
     if (pending.length === 0) return;
     showToast(`Sending queued command (${pending.length} left)`, 'info', 1500);
@@ -967,7 +978,10 @@ function sendNextUnsafe() {
     // aggressive for queued commands and causes rapid-fire drain.
     // Normal poll cycle will detect the prompt and clear busy state.
     captureSnapshot('queue_send');
-    lastSentCommand = item.text;
+    recentSentCommands.add(item.text);
+    if (recentSentCommands.size > 20) {
+        recentSentCommands.delete(recentSentCommands.values().next().value);
+    }
     if (item.text) addToHistory(item.text);
 }
 
@@ -2461,7 +2475,7 @@ async function selectTarget(targetId, isInitialSync = false) {
     // Clear input box — stale content from previous target is irrelevant
     if (logInput) { logInput.value = ''; logInput.dataset.autoSuggestion = 'false'; }
     lastSuggestion = '';
-    lastSentCommand = '';
+    recentSentCommands.clear();
 
     // Reset Claude health state for new target
     lastAgentHealth = null;
@@ -5791,6 +5805,9 @@ function setupScrollTracking() {
     if (!logContent) return;
 
     logContent.addEventListener('scroll', () => {
+        // After a programmatic scroll-to-bottom, ignore events briefly
+        if (Date.now() < scrollLockUntil) return;
+
         // Consider "at bottom" if within 50px of bottom
         const scrollBottom = logContent.scrollHeight - logContent.scrollTop - logContent.clientHeight;
         userAtBottom = scrollBottom < 50;
@@ -5827,6 +5844,8 @@ function showNewContentIndicator() {
             }
             logContent.scrollTop = logContent.scrollHeight;
             userAtBottom = true;
+            // Lock scroll tracking briefly so render reflows don't reset userAtBottom
+            scrollLockUntil = Date.now() + 500;
             hideNewContentIndicator();
         });
         logContent.parentElement.appendChild(newContentIndicator);
@@ -6183,7 +6202,11 @@ function sendLogCommand() {
     logInput.value = '';
     logInput.dataset.autoSuggestion = 'false';
     lastSuggestion = command;
-    lastSentCommand = command;
+    recentSentCommands.add(command);
+    // Cap set size at 20
+    if (recentSentCommands.size > 20) {
+        recentSentCommands.delete(recentSentCommands.values().next().value);
+    }
 
     // Add to command history
     if (command && commandHistory[commandHistory.length - 1] !== command) {
