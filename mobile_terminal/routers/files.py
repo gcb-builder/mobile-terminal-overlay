@@ -240,16 +240,29 @@ def register(app: FastAPI, deps):
         IMAGE_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
         DOC_TYPES = {
             "application/pdf",
-            "text/plain", "text/csv", "text/markdown",
             "application/msword",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/vnd.ms-excel",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/json",
+            "application/xml",
+            "application/zip",
+            "application/gzip",
+            "application/x-tar",
+            "application/x-yaml",
+            "application/toml",
         }
-        allowed_types = IMAGE_TYPES | DOC_TYPES
-        if file.content_type not in allowed_types:
+        BLOCKED_TYPES = {"application/x-executable", "application/x-sharedlib"}
+        ct = file.content_type or "application/octet-stream"
+        allowed = (
+            ct in IMAGE_TYPES
+            or ct in DOC_TYPES
+            or ct.startswith("text/")  # text/plain, text/html, text/css, text/javascript, text/yaml, etc.
+            or ct == "application/octet-stream"  # generic fallback for unknown extensions
+        )
+        if not allowed or ct in BLOCKED_TYPES:
             return JSONResponse(
-                {"error": f"Invalid file type: {file.content_type}. Allowed: images (png, jpeg, webp, gif), documents (pdf, doc, docx, xls, xlsx, txt, csv, md)"},
+                {"error": f"Invalid file type: {ct}"},
                 status_code=400,
             )
 

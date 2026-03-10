@@ -5823,11 +5823,6 @@ function sendPromptChoice(choice) {
         setTerminalBusy(true);
         captureSnapshot('user_send');
 
-        // Clear input box and prevent re-suggestion of the answer
-        if (logInput) {
-            logInput.value = '';
-            logInput.dataset.autoSuggestion = 'false';
-        }
         recentSentCommands.add(choiceStr);
         lastSuggestion = '';
         // Clear terminal tail so the question text doesn't linger
@@ -7437,7 +7432,6 @@ function setupPermissionBanner() {
         sendTextAtomic('y', true);
         setTerminalBusy(true);
         recentSentCommands.add('y');
-        if (logInput) { logInput.value = ''; logInput.dataset.autoSuggestion = 'false'; }
         lastSuggestion = '';
         if (activePromptContent) activePromptContent.textContent = '';
         hidePermissionBanner();
@@ -7447,7 +7441,6 @@ function setupPermissionBanner() {
         sendTextAtomic('n', true);
         setTerminalBusy(true);
         recentSentCommands.add('n');
-        if (logInput) { logInput.value = ''; logInput.dataset.autoSuggestion = 'false'; }
         lastSuggestion = '';
         if (activePromptContent) activePromptContent.textContent = '';
         hidePermissionBanner();
