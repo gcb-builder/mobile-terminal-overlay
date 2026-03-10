@@ -639,7 +639,7 @@ html, body {
 /* Project context banner */
 .context-banner {
     padding: 6px 12px;
-    background: rgba(55, 148, 255, 0.1);
+    background: var(--bg-secondary);
     border-bottom: 1px solid var(--accent);
     font-size: 12px;
     flex-shrink: 0;
@@ -5717,7 +5717,7 @@ html, body {
 
 .toast-container {
     position: fixed;
-    bottom: 100px;
+    bottom: 200px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 500;
@@ -5750,6 +5750,11 @@ html, body {
 .toast.info {
     background: var(--accent);
     color: white;
+}
+
+.toast.warning {
+    background: var(--warning);
+    color: #1e1e1e;
 }
 
 @keyframes toastSlideUp {
