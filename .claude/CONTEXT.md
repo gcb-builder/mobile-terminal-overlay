@@ -3,10 +3,39 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Architecture Review Phase 1 (Security) complete
-- **Last Updated:** 2026-03-04
-- **Server Version:** v276 (terminal.js), v116 (sw.js cache), v170 (styles.css)
+- **Stage:** Wave 2 (ScratchStore) complete, UI reorganization complete
+- **Last Updated:** 2026-03-10
+- **Server Version:** v276 (terminal.js), v116 (sw.js cache), v172 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --no-auth --host 0.0.0.0 --verbose > /tmp/mto-server.log 2>&1 &`
+
+## Recent: Header Reorganization + Pane Quick-Switcher + Context Pill (2026-03-10)
+
+### Header Layout
+- **header-left:** Connection indicator (green dot), context pill (% context remaining), phase indicator (dot + label)
+- **header-right:** Sidebar toggle, Docs, last activity, refresh, push, repo switcher (button + dropdown)
+- Repo dropdown now opens downward from header (was upward from collapse row)
+
+### Pane Quick-Switcher (Collapse Row)
+- Collapse row replaced repo switcher with pane quick-switcher buttons
+- Shows all panes in current session as compact buttons, active pane highlighted
+- Tapping a pane calls `selectTarget()` for instant switching
+- Refreshes after `loadTargets()` and `selectTarget()`
+- On desktop: collapse row shown via CSS override even when control bars hidden
+
+### Context Usage Pill
+- `extractContextUsage()` parses "XX% context left" from raw terminal capture (before `cleanTerminalOutput` strips it)
+- Context pill in header-left with color coding: green (>40%), yellow (20-40%), red (<20%)
+
+### Desktop CSS
+- `.app.desktop-multipane .control-bars-container.hidden` overridden to `display: flex` so collapse row visible
+- Input/control/role bars force-hidden on desktop (only collapse row shows)
+- Collapse toggle hidden on desktop (not needed)
+
+### Files Changed
+- `mobile_terminal/static/index.html` — Header restructured with header-left/header-right divs, repo btn moved to header, collapse row uses `recentRepos` div
+- `mobile_terminal/static/styles.css` — header-right position relative, repo-dropdown opens downward, recent-repos styles, desktop overrides for control bars, context pill styles
+- `mobile_terminal/static/terminal.js` — `extractContextUsage()`, `populateRecentRepos()` (pane-based), context pill update in poll cycle
+- `mobile_terminal/static/dist/terminal.min.js` — Rebuilt bundle
 
 ## Recent: Codebase Cleanup Batches 1-4 (2026-03-04)
 

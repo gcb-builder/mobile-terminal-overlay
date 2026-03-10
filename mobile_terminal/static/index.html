@@ -21,17 +21,21 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=171">
+    <link rel="stylesheet" href="/static/styles.css?v=172">
 </head>
 <body>
     <div class="app">
         <!-- Header with control toggle -->
         <header class="header">
-            <div class="header-right">
+            <div class="header-left">
+                <span id="connectionIndicator" class="connection-indicator connected" title="Connected"></span>
+                <span id="contextPill" class="context-pill hidden"></span>
                 <span id="headerPhaseIndicator" class="header-phase hidden">
                     <span id="headerPhaseDot" class="status-dot idle"></span>
                     <span id="headerPhaseLabel" class="header-phase-label">Idle</span>
                 </span>
+            </div>
+            <div class="header-right">
                 <button id="sidebarToggle" class="sidebar-toggle" title="Toggle team sidebar (T)">&#x25e8;</button>
                 <button id="docsBtn" class="docs-btn" title="View project docs">Docs</button>
                 <span id="lastActivity" class="last-activity" title="Last activity">--</span>
@@ -39,7 +43,11 @@
                     <span>↻</span>
                 </button>
                 <button id="pushToggleBtn" class="push-toggle-btn hidden" title="Push notifications" aria-label="Push notifications">&#x1F514;</button>
-                <span id="connectionIndicator" class="connection-indicator connected" title="Connected"></span>
+                <button id="repoBtn" class="repo-btn">
+                    <span id="repoLabel">Terminal</span>
+                    <span class="repo-arrow">&#x25BC;</span>
+                </button>
+                <div id="repoDropdown" class="repo-dropdown hidden"></div>
             </div>
         </header>
 
@@ -191,11 +199,7 @@
         <!-- Shortcut bar (Control mode only) -->
         <div id="controlBarsContainer" class="control-bars-container hidden">
             <div class="collapse-row">
-                <button id="repoBtn" class="repo-btn">
-                    <span id="repoLabel">Terminal</span>
-                    <span class="repo-arrow">&#x25BC;</span>
-                </button>
-                <div id="repoDropdown" class="repo-dropdown hidden"></div>
+                <div id="recentRepos" class="recent-repos"></div>
                 <div id="viewSwitcher" class="view-dots hidden">
                     <button class="view-dot active" data-view="team"></button>
                     <button class="view-dot" data-view="log"></button>

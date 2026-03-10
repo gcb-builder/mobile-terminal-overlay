@@ -4,6 +4,23 @@ Append-only log of implementation batches.
 
 ---
 
+## 2026-03-10: Header Reorganization + Pane Quick-Switcher
+
+### Files Changed
+- `mobile_terminal/static/index.html` — Header restructured: header-left (connection indicator, context pill, phase indicator) + header-right (sidebar, docs, activity, refresh, push, repo btn/dropdown). Collapse row: replaced duplicate repo switcher with `#recentRepos` pane quick-switcher div. CSS version bump to v172.
+- `mobile_terminal/static/styles.css` — `.header-right` gets `position: relative` for dropdown positioning. `.repo-dropdown` opens downward (`top: 100%`, `right: 0`). `.repo-btn` max-width 140px. Added `.recent-repos` and `.recent-repo-btn` styles. Desktop overrides: `.control-bars-container.hidden` forced to `display: flex` so collapse row visible; input/control/role bars force-hidden on desktop; collapse toggle hidden on desktop.
+- `mobile_terminal/static/terminal.js` — Added `populateRecentRepos()` (pane-based quick-switcher using `ctx.targets`). Called after `loadTargets()`, `selectTarget()`, and `populateUI()`. Added `extractContextUsage()` for context pill. Removed unused session-tracking code (`recentSessions`, `trackRecentSession`).
+- `mobile_terminal/static/dist/terminal.min.js` — Rebuilt bundle.
+
+### New Files Created
+- None
+
+### Risks / Follow-ups
+- Pane quick-switcher only shows when `ctx.targets.length >= 2` (single-pane sessions show empty collapse row)
+- Desktop collapse-row visibility relies on CSS `!important` override of `.control-bars-container.hidden`
+
+---
+
 ## 2026-03-04: Batch 4 — Consolidate Duplicate Utility Functions
 
 ### Files Changed

@@ -444,6 +444,7 @@ let forceScrollToBottom = false;
 // Unified drawer state
 let drawerOpen = false;
 
+
 // Terminal busy state - when busy, input box shows Q instead of Enter
 let terminalBusy = false;
 
@@ -733,8 +734,13 @@ async function refreshActivePrompt(signal) {
         const data = await response.json();
         if (!data.content) return;
 
-        // Strip ANSI codes and clean up clutter
+        // Strip ANSI codes
         let content = stripAnsi(data.content);
+
+        // Extract context usage before cleaning strips it
+        extractContextUsage(content);
+
+        // Clean up clutter for display
         content = cleanTerminalOutput(content);
 
         // Update content (no auto-scroll - let user control scroll position)
@@ -781,6 +787,63 @@ function stopActivePrompt() {
     if (activePromptController) {
         activePromptController.abort();
         activePromptController = null;
+    }
+}
+
+/**
+ * Extract context usage from Claude Code's status bar.
+ * Looks for patterns like "XX% context left" or "context left until auto-compact".
+ */
+let lastContextPct = -1;
+let contextAlertSent = false;
+
+function extractContextUsage(content) {
+    const pill = document.getElementById('contextPill');
+    if (!pill) return;
+
+    // Claude Code shows: "XX% context left until auto-compact" or similar
+    // Also: "Context left until auto-compact: XX%"
+    const patterns = [
+        /(\d+)%\s*context\s*left/i,
+        /context\s*left[^:]*?:\s*(\d+)%/i,
+        /(\d+)%\s*remaining/i,
+    ];
+
+    let remaining = -1;
+    for (const pat of patterns) {
+        const m = content.match(pat);
+        if (m) {
+            remaining = parseInt(m[1], 10);
+            break;
+        }
+    }
+
+    if (remaining < 0 || remaining > 100) {
+        // No context indicator found — hide pill if agent not running
+        if (lastContextPct < 0) pill.classList.add('hidden');
+        return;
+    }
+
+    // Avoid unnecessary DOM updates
+    if (remaining === lastContextPct) return;
+    lastContextPct = remaining;
+
+    const used = 100 - remaining;
+    pill.textContent = `ctx ${remaining}%`;
+    pill.classList.remove('hidden', 'ctx-ok', 'ctx-warn', 'ctx-critical');
+
+    if (remaining > 30) {
+        pill.classList.add('ctx-ok');
+    } else if (remaining > 15) {
+        pill.classList.add('ctx-warn');
+    } else {
+        pill.classList.add('ctx-critical');
+    }
+
+    // Toast warning at 15% remaining (once per session)
+    if (remaining <= 15 && !contextAlertSent) {
+        contextAlertSent = true;
+        showToast(`Context low: ${remaining}% remaining`, 'warning', 5000);
     }
 }
 
@@ -1972,8 +2035,9 @@ async function populateUI() {
         });
     }
 
-    // Populate repo dropdown
+    // Populate repo dropdown and recent repos quick-switcher
     populateRepoDropdown();
+    populateRecentRepos();
 
     // Load target selector (for multi-pane sessions)
     // IMPORTANT: await to ensure ctx.activeTarget is set before log view loads
@@ -2322,6 +2386,7 @@ async function switchRepo(session) {
         localStorage.removeItem('mto_active_target');
 
         // Update unified nav label
+        populateRecentRepos();
         updateNavLabel();
 
         // Clear ctx.terminal and log content immediately (don't show old session's output)
@@ -2358,6 +2423,40 @@ async function switchRepo(session) {
             statusOverlay.classList.add('hidden');
         }, 2000);
     }
+}
+
+/**
+ * Populate the collapse-row quick-switcher with panes (targets).
+ * Shows other panes in the current session for fast switching.
+ */
+function populateRecentRepos() {
+    const container = document.getElementById('recentRepos');
+    if (!container) return;
+    container.innerHTML = '';
+
+    // Need multiple targets to show switcher
+    if (ctx.targets.length < 2) return;
+
+    // Build team target set to annotate buttons
+    const teamTargetIds = new Set();
+    if (ctx.teamState?.has_team && ctx.teamState.team) {
+        if (ctx.teamState.team.leader) teamTargetIds.add(ctx.teamState.team.leader.target_id);
+        for (const a of ctx.teamState.team.agents) teamTargetIds.add(a.target_id);
+    }
+
+    ctx.targets.forEach(target => {
+        const isActive = target.id === ctx.activeTarget;
+        const btn = document.createElement('button');
+        btn.className = 'recent-repo-btn' + (isActive ? ' current' : '');
+        // Label: project name or window name, keep it short
+        const label = target.project || target.window_name || target.id;
+        btn.textContent = label;
+        btn.title = target.cwd || target.id;
+        if (!isActive) {
+            btn.addEventListener('click', () => selectTarget(target.id));
+        }
+        container.appendChild(btn);
+    });
 }
 
 /**
@@ -2416,8 +2515,9 @@ async function loadTargets() {
             expectedRepoPath = currentRepo ? currentRepo.path : null;
         }
 
-        // Update unified nav label
+        // Update unified nav label and pane quick-switcher
         updateNavLabel();
+        populateRecentRepos();
 
         // Check if locked target still exists
         if (targetLocked && ctx.activeTarget && !data.active_exists) {
@@ -2466,6 +2566,7 @@ async function selectTarget(targetId, isInitialSync = false) {
     ctx.activeTarget = targetId;
     localStorage.setItem('mto_active_target', targetId);
     updateNavLabel();
+    populateRecentRepos();
 
     // Load new target's queue from localStorage
     reloadQueueForTarget();
@@ -2476,6 +2577,10 @@ async function selectTarget(targetId, isInitialSync = false) {
     if (logInput) { logInput.value = ''; logInput.dataset.autoSuggestion = 'false'; }
     lastSuggestion = '';
     recentSentCommands.clear();
+    lastContextPct = -1;
+    contextAlertSent = false;
+    const ctxPill = document.getElementById('contextPill');
+    if (ctxPill) ctxPill.classList.add('hidden');
 
     // Reset Claude health state for new target
     lastAgentHealth = null;
@@ -5706,6 +5811,16 @@ function sendPromptChoice(choice) {
         sendTextAtomic(choiceStr, true);
         setTerminalBusy(true);
         captureSnapshot('user_send');
+
+        // Clear input box and prevent re-suggestion of the answer
+        if (logInput) {
+            logInput.value = '';
+            logInput.dataset.autoSuggestion = 'false';
+        }
+        recentSentCommands.add(choiceStr);
+        lastSuggestion = '';
+        // Clear terminal tail so the question text doesn't linger
+        if (activePromptContent) activePromptContent.textContent = '';
     } else {
         console.error('[sendPromptChoice] Socket not open!');
     }
@@ -6121,9 +6236,10 @@ async function refreshLogContent(signal) {
             return;
         }
 
-        // User is at bottom - safe to re-render
+        // User is at bottom - safe to re-render, then pin to bottom
         renderLogEntries(logData);
         pendingLogContent = null;
+        logContent.scrollTop = logContent.scrollHeight;
 
         // Auto-hide permission banner if log content changed after a delay
         // (new content means Claude moved past the approval point)
@@ -7309,11 +7425,21 @@ function hidePermissionBanner() {
 function setupPermissionBanner() {
     document.getElementById('permissionAllow')?.addEventListener('click', () => {
         sendTextAtomic('y', true);
+        setTerminalBusy(true);
+        recentSentCommands.add('y');
+        if (logInput) { logInput.value = ''; logInput.dataset.autoSuggestion = 'false'; }
+        lastSuggestion = '';
+        if (activePromptContent) activePromptContent.textContent = '';
         hidePermissionBanner();
     });
 
     document.getElementById('permissionDeny')?.addEventListener('click', () => {
         sendTextAtomic('n', true);
+        setTerminalBusy(true);
+        recentSentCommands.add('n');
+        if (logInput) { logInput.value = ''; logInput.dataset.autoSuggestion = 'false'; }
+        lastSuggestion = '';
+        if (activePromptContent) activePromptContent.textContent = '';
         hidePermissionBanner();
     });
 
@@ -7586,6 +7712,7 @@ function enterDesktopLayout() {
     const teamViewEl = document.getElementById('teamView');
     if (teamViewEl) teamViewEl.classList.remove('hidden');
     if (logView) logView.classList.remove('hidden');
+
 
     // Start refresh timers
     startLogAutoRefresh();

@@ -92,7 +92,7 @@ html, body {
     font-size: 16px;
 }
 
-/* Unified nav button (in collapse row) */
+/* Unified nav button (in header) */
 .repo-btn {
     display: flex;
     align-items: center;
@@ -107,7 +107,7 @@ html, body {
     cursor: pointer;
     min-width: 0;
     overflow: hidden;
-    max-width: 50%;
+    max-width: 140px;
 }
 
 .repo-btn #repoLabel {
@@ -126,12 +126,12 @@ html, body {
     flex-shrink: 0;
 }
 
-/* Unified nav dropdown (opens upward from collapse row) */
+/* Unified nav dropdown (opens downward from header) */
 .repo-dropdown {
     position: absolute;
-    bottom: 100%;
-    left: 0;
-    margin-bottom: 4px;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
     min-width: 260px;
     max-width: 340px;
     max-height: 70vh;
@@ -467,6 +467,39 @@ html, body {
 
 /* Agent status strip */
 /* Header-inline phase indicator (replaces standalone agent-status-strip) */
+/* Context usage pill */
+.context-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    font-family: monospace;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.context-pill.hidden {
+    display: none;
+}
+
+.context-pill.ctx-ok {
+    color: var(--success, #3fb950);
+    background: rgba(46, 160, 67, 0.1);
+}
+
+.context-pill.ctx-warn {
+    color: var(--warning, #e3b341);
+    background: rgba(227, 179, 65, 0.1);
+}
+
+.context-pill.ctx-critical {
+    color: var(--error, #f85149);
+    background: rgba(248, 81, 73, 0.15);
+    animation: pulse 2s infinite;
+}
+
 .header-phase {
     display: inline-flex;
     align-items: center;
@@ -652,6 +685,7 @@ html, body {
     align-items: center;
     gap: 6px;
     flex-shrink: 0;
+    position: relative;
 }
 
 /* Connection health indicator */
@@ -1673,6 +1707,43 @@ html, body {
     transform: rotate(180deg);
 }
 
+/* Recent repos quick-switcher (in collapse row) */
+.recent-repos {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+}
+
+.recent-repo-btn {
+    display: flex;
+    align-items: center;
+    padding: 2px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 45%;
+    touch-action: manipulation;
+}
+
+.recent-repo-btn:active {
+    background: var(--bg-secondary);
+}
+
+.recent-repo-btn.current {
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+
 /* Collapsible control bars container - feels like keyboard extension */
 .control-bars-container {
     flex-shrink: 0;
@@ -2199,6 +2270,39 @@ html, body {
     flex: 1;
     font-weight: 600;
     color: var(--text-primary);
+}
+
+.queue-count {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    padding: 2px 8px;
+    border-radius: 10px;
+    min-width: 20px;
+    text-align: center;
+}
+
+.queue-pause-btn {
+    padding: 4px 12px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    min-height: 28px;
+}
+
+.queue-pause-btn:active {
+    background: var(--bg-primary);
+}
+
+.queue-pause-btn.paused {
+    background: var(--warning, #e3b341);
+    color: #000;
+    border-color: var(--warning, #e3b341);
 }
 
 .queue-list {
@@ -6947,43 +7051,26 @@ html, body {
         display: none !important;
     }
 
-    /* Push header-right to the far right on desktop (no header-left to balance) */
-    .app.desktop-multipane .header {
-        justify-content: flex-end;
-    }
-
-    /* On desktop, reposition the collapse-row into the header area (top-left)
-       instead of hiding it entirely, so the repo switcher remains accessible. */
-    .app.desktop-multipane .collapse-row {
-        position: fixed;
-        top: 0;
-        left: 0;
-        height: 40px;
+    /* On desktop, show control bars container even when "hidden" — only collapse row is visible,
+       the actual bars (input, control, role) are hidden via desktop-specific rules. */
+    .app.desktop-multipane .control-bars-container.hidden {
         display: flex !important;
-        align-items: center;
-        padding-left: 12px;
-        z-index: 101;
-        background: transparent;
-        border: none;
+        flex-direction: column;
     }
-
+    .app.desktop-multipane .control-bars-container .input-bar,
+    .app.desktop-multipane .control-bars-container .control-bar,
+    .app.desktop-multipane .control-bars-container .role-bar {
+        display: none !important;
+    }
     .app.desktop-multipane .collapse-row .collapse-toggle-btn {
         display: none !important;
     }
 
-    /* On desktop, repo button gets more room */
+    /* On desktop, repo button in header gets more room */
     .app.desktop-multipane .repo-btn {
         font-size: 14px;
         max-width: none;
         padding: 4px 10px;
-    }
-
-    /* On desktop, dropdown opens downward from header */
-    .app.desktop-multipane .repo-dropdown {
-        bottom: auto;
-        top: 100%;
-        margin-bottom: 0;
-        margin-top: 4px;
     }
 
     /* Context banner: compact floating pill on desktop, overlays content */
