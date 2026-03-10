@@ -7605,5 +7605,25 @@ html, body {
         font-size: 12px;
         color: var(--text-secondary);
     }
+
+    /* ===== Desktop font size bump ===== */
+    .app.desktop-multipane .log-view-content {
+        font-size: 15px;
+    }
+    .app.desktop-multipane .terminal-block-output {
+        font-size: 14px;
+    }
+    .app.desktop-multipane .terminal-input {
+        font-size: 16px;
+    }
+    .app.desktop-multipane .terminal-prompt {
+        font-size: 16px;
+    }
+    .app.desktop-multipane .prompt-banner-text {
+        font-size: 14px;
+    }
+    .app.desktop-multipane .prompt-choice-btn {
+        font-size: 14px;
+    }
 }
 

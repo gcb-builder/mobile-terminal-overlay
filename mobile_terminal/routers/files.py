@@ -275,13 +275,25 @@ def register(app: FastAPI, deps):
                 status_code=400,
             )
 
-        # Create uploads directory inside the active repo so the path
-        # resolves relative to Claude's CWD in that repo.
-        repo_path = deps.get_current_repo_path()
-        if repo_path:
-            uploads_dir = repo_path / ".claude" / "uploads"
-        else:
-            uploads_dir = Path(".claude/uploads")
+        # Save uploads into the configured repo for the current session.
+        # This ensures the file lands in the repo root's .claude/uploads/
+        # where Claude Code can reliably find it via absolute path.
+        config = app.state.config
+        session = app.state.current_session
+        repo_path = None
+        for repo in config.repos:
+            if repo.session == session:
+                repo_path = Path(repo.path).expanduser().resolve()
+                break
+        if not repo_path:
+            repo_path = deps.get_current_repo_path()
+        if not repo_path:
+            return JSONResponse(
+                {"error": "No repo path available for uploads"},
+                status_code=400,
+            )
+
+        uploads_dir = repo_path / ".claude" / "uploads"
         uploads_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate filename with timestamp
@@ -290,18 +302,15 @@ def register(app: FastAPI, deps):
         filename = f"upload-{timestamp}.{ext}"
         filepath = uploads_dir / filename
 
-        # Return path relative to repo root so it resolves from Claude's CWD
-        if repo_path:
-            rel_path = filepath.relative_to(repo_path)
-        else:
-            rel_path = filepath
+        # Always return absolute path so it resolves regardless of Claude's CWD
+        abs_path = filepath.resolve()
 
         # Write file
         try:
             with open(filepath, "wb") as f:
                 f.write(content)
             logger.info(f"Uploaded file: {filepath}")
-            return {"path": str(rel_path), "filename": filename, "size": len(content)}
+            return {"path": str(abs_path), "filename": filename, "size": len(content)}
         except Exception as e:
             logger.error(f"Failed to save upload: {e}")
             return JSONResponse({"error": "Failed to save file"}, status_code=500)

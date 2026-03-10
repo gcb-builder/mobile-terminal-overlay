@@ -1013,11 +1013,16 @@ function tryDrainQueue() {
     queueDrainTimer = null;
     if (terminalBusy || isQueuePaused()) return;
 
-    // Don't auto-send if agent is actively working/planning — prompt may be
-    // transiently visible but the agent hasn't truly finished yet
+    // Don't auto-send if there's an active prompt/permission banner
+    // (user needs to answer the question, not have queue inject commands)
+    if (pendingPrompt) return;
+    const permBanner = document.getElementById('permissionBanner');
+    if (permBanner && !permBanner.classList.contains('hidden')) return;
+
+    // Don't auto-send if agent is running in any non-idle phase
     const phase = lastPhase?.phase;
     const agentRunning = lastPhase?.claude_running;
-    if (agentRunning && phase && phase !== 'idle' && phase !== 'waiting') return;
+    if (agentRunning && phase && phase !== 'idle') return;
 
     const pending = getQueueItems().filter(i => i.status === 'queued');
     if (pending.length === 0) return;

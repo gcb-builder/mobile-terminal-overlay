@@ -396,15 +396,24 @@ class CommandQueue:
     COOLDOWN_MS = 250        # Between sends
     CHECK_INTERVAL_MS = 100  # How often to check ready state
 
-    # Patterns indicating terminal is ready for input
+    # Patterns indicating terminal is ready for input (shell prompts only).
+    # Excludes interactive prompts like [y/n] and [1-9] — those indicate
+    # the agent is waiting for user input, not ready for queued commands.
     PROMPT_PATTERNS = [
         r'❯\s*$',            # Claude Code prompt
         r'\$\s*$',           # Bash prompt
         r'#\s*$',            # Root prompt
         r'>>>\s*$',          # Python REPL
-        r'>\s*$',            # Node REPL
-        r'\[y/n\]',          # Yes/no prompt
-        r'\[[1-9]\]',        # Numbered options
+    ]
+
+    # Patterns indicating agent is waiting for user input — NOT ready for queue
+    BUSY_PATTERNS = [
+        r'\[y/n\]',                          # Yes/no prompt
+        r'\[Y/n\]',                          # Default yes prompt
+        r'\[y/N\]',                          # Default no prompt
+        r'Do you want to proceed\?',         # Confirmation question
+        r'Allow\s',                          # Permission prompt
+        r'\? \(\d+ options?\)',              # Multi-choice question
     ]
 
     # Patterns for commands that are safe to auto-send
@@ -627,6 +636,12 @@ class CommandQueue:
                 return False
 
             content = result.stdout
+
+            # Check if agent is waiting for user input — NOT ready
+            for pattern in self.BUSY_PATTERNS:
+                if re.search(pattern, content, re.MULTILINE):
+                    return False
+
             # Check if any prompt pattern matches
             for pattern in self.PROMPT_PATTERNS:
                 if re.search(pattern, content, re.MULTILINE):
