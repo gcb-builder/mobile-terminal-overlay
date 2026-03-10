@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=172">
+    <link rel="stylesheet" href="/static/styles.css?v=184">
 </head>
 <body>
     <div class="app">
@@ -116,6 +116,60 @@
 
         <!-- Views container: flex column on mobile, CSS grid on desktop -->
         <div id="viewsContainer" class="views-container">
+            <!-- Tools panel: desktop icon rail + content panel -->
+            <div id="toolsPanel" class="tools-panel hidden">
+                <div class="tools-rail">
+                    <!-- Workspace tools -->
+                    <button class="tools-rail-btn" data-tool="team" title="Team (1)">
+                        <span class="rail-icon">&#x2261;</span>
+                    </button>
+                    <button class="tools-rail-btn" data-tool="queue" title="Queue">
+                        <span class="rail-icon">&#x25F7;</span>
+                        <span class="rail-badge hidden" id="toolsQueueBadge">0</span>
+                    </button>
+                    <button class="tools-rail-btn" data-tool="history" title="History">
+                        <span class="rail-icon">&#x21BA;</span>
+                    </button>
+                    <button class="tools-rail-btn" data-tool="process" title="Process">
+                        <span class="rail-icon">&#x2338;</span>
+                    </button>
+                    <!-- Dev tools -->
+                    <button class="tools-rail-btn" data-tool="runner" title="Runner">
+                        <span class="rail-icon">&#x25B7;</span>
+                    </button>
+                    <button class="tools-rail-btn" data-tool="dev" title="Dev">
+                        <span class="rail-icon">&#x29C9;</span>
+                    </button>
+                    <button class="tools-rail-btn" data-tool="mcp" title="MCP">
+                        <span class="rail-icon">&#x2699;</span>
+                    </button>
+                    <button class="tools-rail-btn" data-tool="env" title="Env">
+                        <span class="rail-icon">&#x2387;</span>
+                    </button>
+                    <div class="tools-rail-spacer"></div>
+                    <!-- Actions -->
+                    <button class="tools-rail-btn" data-action="terminal" title="Terminal (3)">
+                        <span class="rail-icon">&#x2587;</span>
+                    </button>
+                    <button class="tools-rail-btn" data-action="select" title="Select">
+                        <span class="rail-icon">&#x2B1A;</span>
+                    </button>
+                    <button class="tools-rail-btn rail-stop" data-action="stop" title="Stop (Ctrl+C)">
+                        <span class="rail-icon">&#x25A0;</span>
+                    </button>
+                    <button class="tools-rail-btn" data-action="compose" title="Compose">
+                        <span class="rail-icon">&#x270E;</span>
+                    </button>
+                </div>
+                <div class="tools-content" id="toolsContent">
+                    <div class="tools-content-header">
+                        <span id="toolsContentTitle">Tools</span>
+                        <button id="toolsContentClose" aria-label="Close panel">&times;</button>
+                    </div>
+                    <div id="toolsContentBody" class="tools-content-body"></div>
+                </div>
+            </div>
+
             <!-- Log view: Log + Command input (primary view) -->
             <div id="logView" class="log-view">
                 <div id="logFilterBar" class="log-filter-bar hidden">

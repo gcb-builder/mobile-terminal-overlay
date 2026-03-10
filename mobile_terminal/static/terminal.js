@@ -665,6 +665,9 @@ function initTerminal() {
     });
 
     ctx.terminal.onData((data) => {
+        // On desktop, terminal is view-only — all input goes through the input bar
+        // Only allow direct terminal input in interactive mode (vim/top/fzf)
+        if (ctx.uiMode === 'desktop-multipane' && !interactiveMode) return;
         if (isControlUnlocked && !isPreviewMode() && ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
             // Skip during active composition - wait for compositionend then onData fires
             if (isComposing) {
@@ -1891,9 +1894,9 @@ function setupTerminalFocus() {
         ctx.terminal.textarea.setAttribute('inputmode', 'text');
     }
 
-    // Tap ctx.terminal to focus and show keyboard
+    // Tap ctx.terminal to focus and show keyboard (mobile only — desktop uses input bar)
     terminalContainer.addEventListener('click', () => {
-        if (isControlUnlocked) {
+        if (isControlUnlocked && ctx.uiMode !== 'desktop-multipane') {
             ctx.terminal.focus();
         }
     });
@@ -2838,7 +2841,10 @@ async function updateTeamState() {
     if (hadTeam !== hasTeam) {
         updateTabIndicator();
         updateLogFilterBarVisibility();
-        updateSidebarCollapse();
+        // Auto-open team panel when team appears on desktop
+        if (hasTeam && ctx.uiMode === 'desktop-multipane' && activeToolPanel !== 'team') {
+            openToolPanel('team');
+        }
         // If team disappeared while viewing team, switch to log
         if (!hasTeam && ctx.currentView === 'team') {
             switchToView('log');
@@ -3237,7 +3243,7 @@ function setupEventListeners() {
     // Sidebar toggle (desktop)
     const sidebarToggle = document.getElementById('sidebarToggle');
     if (sidebarToggle) {
-        sidebarToggle.addEventListener('click', toggleSidebar);
+        sidebarToggle.addEventListener('click', () => openToolPanel('team'));
     }
 
     // Queue "Run" button — send next queued command immediately
@@ -3543,6 +3549,10 @@ function setupViewportHandler() {
 function setupClipboard() {
     document.addEventListener('paste', (e) => {
         if (!isControlUnlocked) return;
+
+        // If an input or textarea has focus, let the browser handle paste natively
+        const tag = document.activeElement?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
         const text = e.clipboardData.getData('text');
         if (text) {
@@ -4453,6 +4463,8 @@ function setupCommandHistory() {
 const DESKTOP_BREAKPOINT = 1024;
 let desktopFocusedPane = 'log'; // 'team' | 'log' | 'terminal'
 let desktopResizeTimer = null;
+let activeToolPanel = null;        // Currently open tool panel name
+let toolsPanelOrigParents = new Map(); // Track reparented drawer tab content
 
 function shouldLogRefreshRun() {
     return document.visibilityState === 'visible' &&
@@ -6651,7 +6663,7 @@ function setupPreviewHandlers() {
         closeFabMenu();
     });
 
-    // FAB menu items — open drawer at selected tab (or special actions)
+    // FAB menu items — open surface at selected tab (or special actions)
     document.querySelectorAll('.fab-menu-item').forEach(item => {
         item.addEventListener('click', () => {
             const tab = item.dataset.tab;
@@ -6661,8 +6673,7 @@ function setupPreviewHandlers() {
                 document.getElementById('docsModal')?.classList.remove('hidden');
                 return;
             }
-            openDrawer();
-            if (tab) switchRollbackTab(tab);
+            if (tab) openSurface(tab);
         });
     });
     document.getElementById('fabMenuClose')?.addEventListener('click', closeFabMenu);
@@ -7607,6 +7618,171 @@ ctx.showToast = showToast;
 // ===== Desktop Multi-Pane Layout =====
 
 /**
+ * Surface abstraction: routes to tools panel (desktop) or drawer (mobile)
+ */
+function openSurface(name) {
+    if (ctx.uiMode === 'desktop-multipane') {
+        openToolPanel(name);
+    } else {
+        switchRollbackTab(name);
+        openDrawer();
+    }
+}
+
+/**
+ * Map drawer tab names to their content element IDs
+ */
+const TOOL_TAB_MAP = {
+    queue: 'queueTabContent',
+    runner: 'runnerTabContent',
+    dev: 'devTabContent',
+    history: 'historyTabContent',
+    process: 'processTabContent',
+    mcp: 'mcpTabContent',
+    env: 'envTabContent',
+};
+
+/**
+ * Friendly display names for tool panels
+ */
+const TOOL_TITLES = {
+    queue: 'Queue',
+    runner: 'Runner',
+    dev: 'Dev Preview',
+    history: 'History',
+    process: 'Process',
+    mcp: 'MCP',
+    env: 'Env',
+    team: 'Team',
+};
+
+/**
+ * Open a tool panel on desktop. For 'team', shows team view as grid element.
+ * For other tools, reparents drawer tab content into tools-content panel.
+ */
+function openToolPanel(name) {
+    if (ctx.uiMode !== 'desktop-multipane') return;
+
+    const app = document.querySelector('.app');
+    if (!app) return;
+
+    // Toggle: clicking same tool closes it
+    if (activeToolPanel === name) {
+        closeToolPanel();
+        return;
+    }
+
+    // Restore previously reparented content
+    restoreToolContent();
+
+    // Clear previous rail active state
+    document.querySelectorAll('.tools-rail-btn[data-tool]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tool === name);
+    });
+
+    // Remove both state classes, we'll add the correct one
+    app.classList.remove('desktop-team-open', 'desktop-tools-open');
+
+    const teamViewEl = document.getElementById('teamView');
+
+    if (name === 'team') {
+        // Show team view as grid element
+        if (teamViewEl) teamViewEl.classList.remove('hidden');
+        app.classList.add('desktop-team-open');
+        // Hide tools-content (team has its own panel)
+        const toolsContent = document.getElementById('toolsContent');
+        if (toolsContent) toolsContent.style.display = 'none';
+    } else {
+        // Hide team view
+        if (teamViewEl) teamViewEl.classList.add('hidden');
+
+        // Reparent drawer tab content into tools-content-body
+        const contentId = TOOL_TAB_MAP[name];
+        const sourceEl = contentId ? document.getElementById(contentId) : null;
+        const body = document.getElementById('toolsContentBody');
+
+        if (sourceEl && body) {
+            // Save original parent for restore
+            toolsPanelOrigParents.set(name, {
+                element: sourceEl,
+                parent: sourceEl.parentElement,
+                nextSibling: sourceEl.nextElementSibling,
+            });
+            body.innerHTML = '';
+            body.appendChild(sourceEl);
+            sourceEl.classList.remove('hidden');
+            sourceEl.classList.add('active');
+        }
+
+        app.classList.add('desktop-tools-open');
+        const toolsContent = document.getElementById('toolsContent');
+        if (toolsContent) toolsContent.style.display = '';
+
+        // Set title
+        const title = document.getElementById('toolsContentTitle');
+        if (title) title.textContent = TOOL_TITLES[name] || name;
+
+        // Trigger tab-specific load
+        switchRollbackTab(name);
+    }
+
+    activeToolPanel = name;
+    localStorage.setItem('mto_desktop_tool', name);
+
+    // Re-fit terminal if open
+    if (fitAddon) requestAnimationFrame(() => fitAddon.fit());
+}
+
+/**
+ * Close the current tool panel
+ */
+function closeToolPanel() {
+    if (ctx.uiMode !== 'desktop-multipane') return;
+
+    const app = document.querySelector('.app');
+    if (!app) return;
+
+    restoreToolContent();
+
+    app.classList.remove('desktop-team-open', 'desktop-tools-open');
+
+    // Hide team view
+    const teamViewEl = document.getElementById('teamView');
+    if (teamViewEl) teamViewEl.classList.add('hidden');
+
+    // Clear rail active state
+    document.querySelectorAll('.tools-rail-btn[data-tool]').forEach(btn => {
+        btn.classList.remove('active');
+    });
+
+    activeToolPanel = null;
+    localStorage.removeItem('mto_desktop_tool');
+
+    // Re-fit terminal
+    if (fitAddon) requestAnimationFrame(() => fitAddon.fit());
+}
+
+/**
+ * Restore reparented drawer tab content back to original parents
+ */
+function restoreToolContent() {
+    for (const [name, info] of toolsPanelOrigParents) {
+        const { element, parent, nextSibling } = info;
+        if (parent) {
+            // Reset classes before returning
+            element.classList.add('hidden');
+            element.classList.remove('active');
+            if (nextSibling) {
+                parent.insertBefore(element, nextSibling);
+            } else {
+                parent.appendChild(element);
+            }
+        }
+    }
+    toolsPanelOrigParents.clear();
+}
+
+/**
  * Setup desktop layout detection and resize handler
  */
 function setupDesktopLayout() {
@@ -7638,6 +7814,39 @@ function setupDesktopLayout() {
         });
     }
 
+    // Tools rail: tool buttons
+    document.querySelectorAll('.tools-rail-btn[data-tool]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (ctx.uiMode === 'desktop-multipane') openToolPanel(btn.dataset.tool);
+        });
+    });
+
+    // Tools rail: action buttons
+    document.querySelectorAll('.tools-rail-btn[data-action]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (ctx.uiMode !== 'desktop-multipane') return;
+            const action = btn.dataset.action;
+            if (action === 'terminal') {
+                if (document.querySelector('.app')?.classList.contains('desktop-terminal-open')) {
+                    closeDesktopTerminal();
+                } else {
+                    openDesktopTerminal();
+                }
+            }
+            else if (action === 'select' && selectCopyBtn) selectCopyBtn.click();
+            else if (action === 'stop') {
+                sendKeyDebounced('\x03', true);
+                showToast('Interrupt sent', 'success');
+            }
+            else if (action === 'compose' && composeBtn) composeBtn.click();
+        });
+    });
+
+    // Tools content close button
+    document.getElementById('toolsContentClose')?.addEventListener('click', () => {
+        closeToolPanel();
+    });
+
     // Team filters (density toggle handled by initTeam)
     setupTeamFilters();
 
@@ -7660,47 +7869,6 @@ function checkDesktopLayout() {
 }
 
 /**
- * Update sidebar collapse state based on team presence and user preference.
- * has_team === false  → force collapsed
- * has_team === true   → restore user preference from localStorage
- */
-function updateSidebarCollapse() {
-    if (ctx.uiMode !== 'desktop-multipane') return;
-    const app = document.querySelector('.app');
-    if (!app) return;
-    const hasTeam = ctx.teamState?.has_team;
-
-    if (!hasTeam) {
-        app.classList.add('sidebar-collapsed');
-    } else {
-        const userCollapsed = localStorage.getItem('mto_sidebar_collapsed') === 'true';
-        app.classList.toggle('sidebar-collapsed', userCollapsed);
-    }
-
-    // Re-fit terminal if open (grid columns changed)
-    if (fitAddon) requestAnimationFrame(() => fitAddon.fit());
-
-    // Update toggle button state
-    const toggle = document.getElementById('sidebarToggle');
-    if (toggle) {
-        toggle.disabled = !hasTeam;
-    }
-}
-
-/**
- * Toggle sidebar manually. Only effective when team is present.
- */
-function toggleSidebar() {
-    const hasTeam = ctx.teamState?.has_team;
-    if (!hasTeam) return;  // Can't toggle when no team
-    const app = document.querySelector('.app');
-    if (!app) return;
-    const isCollapsed = app.classList.toggle('sidebar-collapsed');
-    localStorage.setItem('mto_sidebar_collapsed', isCollapsed);
-    if (fitAddon) requestAnimationFrame(() => fitAddon.fit());
-}
-
-/**
  * Enter desktop multi-pane mode
  */
 function enterDesktopLayout() {
@@ -7708,11 +7876,10 @@ function enterDesktopLayout() {
     const app = document.querySelector('.app');
     if (app) app.classList.add('desktop-multipane');
 
-    // Show both team + log simultaneously
-    const teamViewEl = document.getElementById('teamView');
-    if (teamViewEl) teamViewEl.classList.remove('hidden');
+    // Show tools panel + log
+    const toolsPanel = document.getElementById('toolsPanel');
+    if (toolsPanel) toolsPanel.classList.remove('hidden');
     if (logView) logView.classList.remove('hidden');
-
 
     // Start refresh timers
     startLogAutoRefresh();
@@ -7726,13 +7893,17 @@ function enterDesktopLayout() {
     // Apply density
     applyDensity(getTeamDensity());
 
-    // Collapse sidebar if no team
-    updateSidebarCollapse();
+    // Open tool panel: team if has_team, else restore saved tool
+    const hasTeam = ctx.teamState?.has_team;
+    if (hasTeam) {
+        openToolPanel('team');
+    } else {
+        const savedTool = localStorage.getItem('mto_desktop_tool');
+        if (savedTool) openToolPanel(savedTool);
+    }
 
-    // Open xterm terminal by default — rAF ensures container has dimensions
-    requestAnimationFrame(() => {
-        openDesktopTerminal();
-    });
+    // Terminal stays in tail mode by default on desktop.
+    // User can press 3 to open full xterm panel when needed.
 
     console.debug('[Desktop] Entered multi-pane layout');
 }
@@ -7743,14 +7914,25 @@ function enterDesktopLayout() {
 function exitDesktopLayout() {
     ctx.uiMode = 'mobile-single';
     const app = document.querySelector('.app');
+
+    // Restore reparented tool content + reset tool state
+    restoreToolContent();
+    activeToolPanel = null;
+
+    // Hide tools panel
+    const toolsPanel = document.getElementById('toolsPanel');
+    if (toolsPanel) toolsPanel.classList.add('hidden');
+
+    // Hide team view (mobile shows it via switchToView)
+    const teamViewEl = document.getElementById('teamView');
+    if (teamViewEl) teamViewEl.classList.add('hidden');
+
     if (app) {
-        app.classList.remove('desktop-multipane', 'sidebar-collapsed');
+        app.classList.remove('desktop-multipane', 'desktop-team-open', 'desktop-tools-open', 'desktop-terminal-open');
         app.classList.remove('density-comfortable', 'density-compact', 'density-ultra');
     }
 
-    // Close terminal panel if open
-    const container = document.getElementById('viewsContainer');
-    if (container) container.classList.remove('terminal-open');
+    // Close terminal column
     if (terminalView) terminalView.classList.remove('desktop-panel');
 
     // Remove pane focus indicators
@@ -7783,17 +7965,21 @@ function switchDesktopFocus(viewName) {
  * Open terminal as bottom dock panel (desktop)
  */
 function openDesktopTerminal() {
-    const container = document.getElementById('viewsContainer');
-    if (!container || !terminalView) return;
+    const app = document.querySelector('.app');
+    if (!app || !terminalView) return;
 
-    container.classList.add('terminal-open');
+    app.classList.add('desktop-terminal-open');
     terminalView.classList.add('desktop-panel');
     terminalView.classList.remove('hidden');
     switchDesktopFocus('terminal');
 
+    // Mark rail button active
+    const termBtn = document.querySelector('.tools-rail-btn[data-action="terminal"]');
+    if (termBtn) termBtn.classList.add('active');
+
     updateTerminalAgentSelector();
 
-    // Fit xterm and switch to full mode
+    // Fit xterm to panel and switch to full mode
     requestAnimationFrame(() => {
         if (fitAddon) fitAddon.fit();
         sendResize();
@@ -7801,7 +7987,7 @@ function openDesktopTerminal() {
         if (ctx.terminal) ctx.terminal.focus();
     });
 
-    // Setup resize handle for ctx.terminal panel
+    // Setup vertical resize handle
     setupDesktopTerminalResize();
 }
 
@@ -7809,12 +7995,16 @@ function openDesktopTerminal() {
  * Close terminal bottom dock panel (desktop)
  */
 function closeDesktopTerminal() {
-    const container = document.getElementById('viewsContainer');
-    if (!container || !terminalView) return;
+    const app = document.querySelector('.app');
+    if (!app || !terminalView) return;
 
-    container.classList.remove('terminal-open');
+    app.classList.remove('desktop-terminal-open');
     terminalView.classList.remove('desktop-panel');
     terminalView.classList.add('hidden');
+
+    // Clear rail button active state
+    const termBtn = document.querySelector('.tools-rail-btn[data-action="terminal"]');
+    if (termBtn) termBtn.classList.remove('active');
 
     // Switch back to tail mode
     setOutputMode('tail');
@@ -7827,7 +8017,7 @@ function closeDesktopTerminal() {
 }
 
 /**
- * Setup resize handle for desktop ctx.terminal panel
+ * Setup vertical resize handle for desktop terminal panel
  */
 let desktopTerminalResizeCleanup = null;
 function setupDesktopTerminalResize() {
@@ -7835,7 +8025,7 @@ function setupDesktopTerminalResize() {
     if (desktopTerminalResizeCleanup) desktopTerminalResizeCleanup();
 
     const container = document.getElementById('viewsContainer');
-    if (!container) return;
+    if (!container || !terminalView) return;
 
     let dragging = false;
     let startY = 0;
@@ -7844,7 +8034,7 @@ function setupDesktopTerminalResize() {
     const MAX_HEIGHT = Math.round(window.innerHeight * 0.7);
 
     function onPointerDown(e) {
-        // Only start drag from the border area (top 6px of ctx.terminal panel)
+        // Only start drag from the border area (top 8px of terminal panel)
         const termRect = terminalView.getBoundingClientRect();
         if (Math.abs(e.clientY - termRect.top) > 8) return;
 
@@ -7861,7 +8051,6 @@ function setupDesktopTerminalResize() {
         const delta = startY - e.clientY;
         const newHeight = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, startHeight + delta));
         container.style.setProperty('--terminal-panel-height', newHeight + 'px');
-        // Re-fit ctx.terminal
         if (fitAddon) requestAnimationFrame(() => fitAddon.fit());
     }
 
@@ -7870,13 +8059,12 @@ function setupDesktopTerminalResize() {
         dragging = false;
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
-        // Save height
         const h = terminalView.offsetHeight;
         localStorage.setItem('mto_desktop_terminal_height', h.toString());
         sendResize();
     }
 
-    if (terminalView) terminalView.addEventListener('pointerdown', onPointerDown);
+    terminalView.addEventListener('pointerdown', onPointerDown);
     document.addEventListener('pointermove', onPointerMove);
     document.addEventListener('pointerup', onPointerUp);
 
@@ -7887,7 +8075,7 @@ function setupDesktopTerminalResize() {
     }
 
     desktopTerminalResizeCleanup = () => {
-        if (terminalView) terminalView.removeEventListener('pointerdown', onPointerDown);
+        terminalView.removeEventListener('pointerdown', onPointerDown);
         document.removeEventListener('pointermove', onPointerMove);
         document.removeEventListener('pointerup', onPointerUp);
         desktopTerminalResizeCleanup = null;
@@ -7920,7 +8108,7 @@ function setupDesktopShortcuts() {
         switch (key) {
             case '1':
                 e.preventDefault();
-                switchDesktopFocus('team');
+                openToolPanel('team');
                 break;
             case '2':
                 e.preventDefault();
@@ -7928,7 +8116,7 @@ function setupDesktopShortcuts() {
                 break;
             case '3':
                 e.preventDefault();
-                if (desktopFocusedPane === 'terminal') {
+                if (document.querySelector('.app')?.classList.contains('desktop-terminal-open')) {
                     closeDesktopTerminal();
                 } else {
                     openDesktopTerminal();
@@ -7956,14 +8144,14 @@ function setupDesktopShortcuts() {
                 break;
             case 't':
                 e.preventDefault();
-                toggleSidebar();
+                openToolPanel('team');
                 break;
             case '/':
                 e.preventDefault();
                 focusSearchInput();
                 break;
             case 'Escape':
-                if (desktopFocusedPane === 'terminal') {
+                if (document.querySelector('.app')?.classList.contains('desktop-terminal-open') && desktopFocusedPane === 'terminal') {
                     e.preventDefault();
                     closeDesktopTerminal();
                 } else if (document.querySelector('.shortcut-help-modal.visible')) {
