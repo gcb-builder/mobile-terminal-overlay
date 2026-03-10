@@ -98,6 +98,11 @@ def create_app(config: Config) -> FastAPI:
     app.state.permission_detector = ClaudePermissionDetector()  # JSONL-based permission prompt detector
     app.state.driver = get_driver(config.agent_type, config.agent_display_name)
 
+    from mobile_terminal.scratch import ScratchStore
+    app.state.scratch_store = ScratchStore(
+        max_bytes=getattr(config, "scratch_max_mb", 50) * 1024 * 1024
+    )
+
     async def send_typed(ws, msg_type: str, payload: dict, level: str = "info"):
         """Send a v2 typed message over WebSocket."""
         try:
@@ -1275,6 +1280,7 @@ def create_app(config: Config) -> FastAPI:
     from mobile_terminal.routers import team as team_router
     from mobile_terminal.routers import push as push_router
     from mobile_terminal.routers import terminal_io as terminal_io_router
+    from mobile_terminal.routers import scratch as scratch_router
 
     deps = AppDeps(
         verify_token=verify_token,
@@ -1303,6 +1309,7 @@ def create_app(config: Config) -> FastAPI:
     team_router.register(app, deps)
     push_router.register(app, deps)
     terminal_io_router.register(app, deps)
+    scratch_router.register(app, deps)
 
     @app.on_event("startup")
     async def startup():

@@ -24,9 +24,11 @@ def test_route_inventory():
     assert "/api/mcp-servers" in paths
     assert "/api/process/terminate" in paths
     assert "/api/push/vapid-key" in paths
+    assert "/api/scratch/list" in paths
+    assert "/api/scratch/store" in paths
 
     # Total route count (adjust as routers are extracted)
     builtin_paths = {"/docs", "/docs/oauth2-redirect", "/openapi.json", "/redoc"}
     route_count = len([r for r in app.routes
                        if hasattr(r, "methods") and r.path not in builtin_paths])
-    assert route_count >= 95, f"Expected >=95 custom routes, got {route_count}"
+    assert route_count >= 101, f"Expected >=101 custom routes, got {route_count}"
