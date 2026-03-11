@@ -15,7 +15,7 @@ import { initCollapse, scheduleCollapse, scheduleSuperCollapse } from './src/fea
 import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          reconcileQueue, reloadQueueForTarget, refreshQueueList,
          getQueueItems, isQueuePaused, saveQueueToStorage,
-         popNextQueueItem, requeueItem } from './src/features/queue.js';
+         popNextQueueItem, popNextQueueItemById, requeueItem } from './src/features/queue.js';
 import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js';
 import { initDocs } from './src/features/docs.js';
 import { initToolOutput } from './src/features/tool-output.js';
@@ -1007,7 +1007,8 @@ function setTerminalBusy(busy) {
 }
 
 /**
- * Auto-send next queued command if conditions are met
+ * Auto-send next queued command if conditions are met.
+ * Only sends "safe" items — unsafe items require manual "Run" click.
  */
 function tryDrainQueue() {
     queueDrainTimer = null;
@@ -1024,10 +1025,41 @@ function tryDrainQueue() {
     const agentRunning = lastPhase?.claude_running;
     if (agentRunning && phase && phase !== 'idle') return;
 
-    const pending = getQueueItems().filter(i => i.status === 'queued');
-    if (pending.length === 0) return;
-    showToast(`Sending queued command (${pending.length} left)`, 'info', 1500);
-    sendNextUnsafe();
+    // Only auto-send safe items; unsafe items wait for manual "Run"
+    const safePending = getQueueItems().filter(i => i.status === 'queued' && i.policy === 'safe');
+    if (safePending.length === 0) return;
+    showToast(`Sending queued command (${safePending.length} safe left)`, 'info', 1500);
+    sendNextSafe();
+}
+
+/**
+ * Pop the next safe queued command and send it.
+ * Unlike sendNextUnsafe, only pops items with policy === 'safe'.
+ */
+function sendNextSafe() {
+    const items = getQueueItems();
+    const safeItem = items.find(i => i.status === 'queued' && i.policy === 'safe');
+    if (!safeItem) return;
+
+    // Mark as sent via popNextQueueItem (finds first queued item)
+    // To ensure we pop the right one, we need to send the safe item specifically
+    const item = popNextQueueItemById(safeItem.id);
+    if (!item) return;
+
+    if (terminalBusy) {
+        requeueItem(item);
+        return;
+    }
+
+    dequeueFromServer(item.id);
+    sendTextAtomic(item.text, true);
+    setTerminalBusy(true);
+    captureSnapshot('queue_send');
+    recentSentCommands.add(item.text);
+    if (recentSentCommands.size > 20) {
+        recentSentCommands.delete(recentSentCommands.values().next().value);
+    }
+    if (item.text) addToHistory(item.text);
 }
 
 /**
@@ -6680,6 +6712,18 @@ function setupPreviewHandlers() {
     // Backdrop tap to close drawer + FAB menu
     document.getElementById('drawerBackdrop')?.addEventListener('click', () => {
         closePreviewDrawer();
+        closeFabMenu();
+    });
+
+    // Close FAB menu when tapping anywhere outside it
+    // Use mousedown (fires before click) to avoid race with toggleFabMenu
+    document.addEventListener('mousedown', (e) => {
+        const menu = document.getElementById('fabMenu');
+        if (!menu || menu.classList.contains('hidden')) return;
+        // Don't close if tap is inside the menu itself
+        if (menu.contains(e.target)) return;
+        // Don't close if tap is on the ••• button (let toggleFabMenu handle it)
+        if (e.target.closest('.action-bar-btn')) return;
         closeFabMenu();
     });
 

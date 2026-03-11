@@ -300,7 +300,11 @@ async function removeQueueItem(itemId) {
 async function toggleQueuePause() {
     if (!ctx.currentSession) return;
 
-    const endpoint = queuePaused ? '/api/queue/resume' : '/api/queue/pause';
+    // Optimistic update — flip immediately for instant feel
+    queuePaused = !queuePaused;
+    updatePauseButton();
+
+    const endpoint = queuePaused ? '/api/queue/pause' : '/api/queue/resume';
     const params = new URLSearchParams({
         session: ctx.currentSession,
         token: ctx.token
@@ -309,12 +313,15 @@ async function toggleQueuePause() {
 
     try {
         const resp = await fetch(`${endpoint}?${params}`, { method: 'POST' });
-        if (resp.ok) {
+        if (!resp.ok) {
+            // Revert on failure
             queuePaused = !queuePaused;
             updatePauseButton();
         }
     } catch (e) {
         console.error('Failed to toggle pause:', e);
+        queuePaused = !queuePaused;
+        updatePauseButton();
     }
 }
 
@@ -522,6 +529,22 @@ export function isQueuePaused() {
  */
 export function popNextQueueItem() {
     const idx = queueItems.findIndex(i => i.status === 'queued');
+    if (idx < 0) return null;
+    const item = queueItems[idx];
+    item.status = 'sent';
+    item.sentAt = Date.now();
+    saveQueueToStorage();
+    renderQueueList();
+    scheduleSentPurge();
+    return item;
+}
+
+/**
+ * Mark a specific queued item as "sent" by ID and return it.
+ * Used by sendNextSafe to pop a specific safe item.
+ */
+export function popNextQueueItemById(itemId) {
+    const idx = queueItems.findIndex(i => i.id === itemId && i.status === 'queued');
     if (idx < 0) return null;
     const item = queueItems[idx];
     item.status = 'sent';
