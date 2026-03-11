@@ -75,8 +75,16 @@ export function deriveUIState(agent) {
     }
 
     // Role microcopy
+    const roleCopy = {
+        explorer: 'Exploring',
+        planner: 'Planning',
+        executor: 'Executing',
+        reviewer: 'Reviewing',
+    };
     if (agent.team_role === 'leader' && ui.isRunning) {
         ui.subtitle = ui.subtitle || 'Orchestrating';
+    } else if (agent.assigned_role && roleCopy[agent.assigned_role] && ui.isRunning) {
+        ui.subtitle = ui.subtitle || roleCopy[agent.assigned_role];
     } else if (agent.team_role === 'agent' && ui.isRunning) {
         ui.subtitle = ui.subtitle || 'Executing task';
     }

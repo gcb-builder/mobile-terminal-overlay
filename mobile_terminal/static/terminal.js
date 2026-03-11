@@ -1042,6 +1042,10 @@ function sendNextUnsafe() {
         showToast('Terminal busy \u2014 command re-queued', 'info', 1500);
         return;
     }
+
+    // Remove from server-side queue so _process_loop doesn't send it again
+    dequeueFromServer(item.id);
+
     sendTextAtomic(item.text, true);
     setTerminalBusy(true);
     // No scheduleEarlyBusyCheck() here — the early busy-clear is too
@@ -1053,6 +1057,20 @@ function sendNextUnsafe() {
         recentSentCommands.delete(recentSentCommands.values().next().value);
     }
     if (item.text) addToHistory(item.text);
+}
+
+/**
+ * Fire-and-forget: tell server to remove a queue item.
+ * Prevents server-side _process_loop from sending it again.
+ */
+function dequeueFromServer(itemId) {
+    const params = new URLSearchParams({
+        session: ctx.currentSession,
+        item_id: itemId,
+        token: ctx.token,
+    });
+    if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
+    fetch(`/api/queue/remove?${params}`, { method: 'POST' }).catch(() => {});
 }
 
 /**

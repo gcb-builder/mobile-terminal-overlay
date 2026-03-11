@@ -464,6 +464,25 @@ function createTeamCard(agent, capture, ui) {
     const name = document.createElement('div');
     name.className = 'team-card-name';
     name.textContent = agent.agent_name || 'unknown';
+
+    // Role badge or assign button
+    if (agent.team_role === 'agent') {
+        const roleEl = document.createElement('span');
+        if (agent.assigned_role) {
+            roleEl.className = `team-card-role role-${agent.assigned_role}`;
+            roleEl.textContent = agent.assigned_role;
+            roleEl.title = 'Click to change role';
+        } else {
+            roleEl.className = 'team-card-role-btn';
+            roleEl.textContent = '+ role';
+        }
+        roleEl.addEventListener('click', (e) => {
+            e.stopPropagation();
+            showRoleSelector(e.target, agent.agent_name);
+        });
+        name.appendChild(roleEl);
+    }
+
     info.appendChild(name);
 
     if (ui.subtitle) {
@@ -589,6 +608,59 @@ export async function sendTeamInput(targetId, text) {
     }
     // Refresh cards after a short delay to show updated state
     setTimeout(() => refreshTeamCards(), 1500);
+}
+
+// ── Role selector popover ────────────────────────────────────────────
+
+function showRoleSelector(anchorEl, agentName) {
+    // Remove any existing selector
+    document.querySelector('.role-selector')?.remove();
+
+    const sel = document.createElement('div');
+    sel.className = 'role-selector';
+
+    const roles = [
+        { key: 'explorer', label: 'Explorer', desc: 'Search & investigate' },
+        { key: 'planner', label: 'Planner', desc: 'Design & plan' },
+        { key: 'executor', label: 'Executor', desc: 'Write & build' },
+        { key: 'reviewer', label: 'Reviewer', desc: 'Review & test' },
+        { key: null, label: 'Clear role', desc: 'Remove assignment' },
+    ];
+
+    for (const r of roles) {
+        const btn = document.createElement('button');
+        btn.className = 'role-selector-item';
+        btn.innerHTML = `${escapeHtml(r.label)}<span class="role-desc">${escapeHtml(r.desc)}</span>`;
+        btn.addEventListener('click', async () => {
+            sel.remove();
+            try {
+                await fetch(`/api/team/role?token=${ctx.token}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ agent_name: agentName, role: r.key }),
+                });
+            } catch (e) {
+                console.warn('Failed to set role:', e);
+            }
+            refreshTeamCards();
+        });
+        sel.appendChild(btn);
+    }
+
+    // Position near anchor
+    const rect = anchorEl.getBoundingClientRect();
+    sel.style.top = `${rect.bottom + 4}px`;
+    sel.style.left = `${rect.left}px`;
+    document.body.appendChild(sel);
+
+    // Close on outside click
+    const close = (e) => {
+        if (!sel.contains(e.target) && e.target !== anchorEl) {
+            sel.remove();
+            document.removeEventListener('click', close);
+        }
+    };
+    setTimeout(() => document.addEventListener('click', close), 0);
 }
 
 // ── Team filters (desktop) ───────────────────────────────────────────

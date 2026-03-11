@@ -16,6 +16,7 @@ let queuePaused = false;
 // Queue persistence constants
 const QUEUE_STORAGE_PREFIX = 'mto_queue_';
 const QUEUE_SENDING_TIMEOUT_MS = 30000;
+const SENT_RETAIN_MS = 60000; // Keep sent items visible for 60s
 
 // DOM refs (set in initQueue)
 let queueList, queueCount, queueBadge, queueTabBadge;
@@ -70,7 +71,12 @@ function loadQueueFromStorage() {
             }
         }
 
-        return items.filter(i => i.status === 'queued' || i.status === 'sending');
+        // Keep queued, sending, and recently-sent items
+        return items.filter(i => {
+            if (i.status === 'queued' || i.status === 'sending') return true;
+            if (i.status === 'sent') return (now - (i.sentAt || 0)) < SENT_RETAIN_MS;
+            return false;
+        });
     } catch (e) {
         console.warn('Failed to load queue from storage:', e);
         return [];
@@ -107,19 +113,26 @@ export function renderQueueList() {
         const displayText = item.text.length > 40 ? item.text.slice(0, 40) + '...' : item.text;
         const escapedText = escapeHtml(displayText);
         const isQueued = item.status === 'queued';
+        const isSent = item.status === 'sent';
         const escapedId = escapeHtml(String(item.id));
-        const reorderHtml = isQueued ? `
+        let actionsHtml = '';
+        if (isQueued) {
+            actionsHtml = `
                 <div class="queue-item-reorder">
                     <button class="queue-reorder-btn up" data-id="${escapedId}" data-dir="up"${idx === firstQueued ? ' style="visibility:hidden"' : ''}>&#x25B2;</button>
                     <button class="queue-reorder-btn down" data-id="${escapedId}" data-dir="down"${idx === lastQueued ? ' style="visibility:hidden"' : ''}>&#x25BC;</button>
-                </div>` : '';
+                </div>`;
+        } else if (isSent) {
+            actionsHtml = `<button class="queue-item-requeue" data-id="${escapedId}" title="Re-queue">&#x21BA;</button>`;
+        }
         return `
             <div class="queue-item" data-id="${escapedId}" data-status="${escapeHtml(item.status)}">
-                <span class="queue-item-status ${escapeHtml(item.status)}"></span>${reorderHtml}
+                <span class="queue-item-status ${escapeHtml(item.status)}"></span>${actionsHtml}
                 <div class="queue-item-content">
                     <div class="queue-item-text">${escapedText || '(Enter)'}</div>
                     <div class="queue-item-meta">
                         <span class="queue-item-policy ${escapeHtml(item.policy)}">${escapeHtml(item.policy)}</span>
+                        ${isSent ? '<span class="queue-item-sent-label">sent</span>' : ''}
                     </div>
                 </div>
                 <button class="queue-item-remove" data-id="${escapedId}">&times;</button>
@@ -127,8 +140,9 @@ export function renderQueueList() {
         `;
     }).join('');
 
+    const queuedCount = queueItems.filter(i => i.status === 'queued').length;
     if (queueCount) queueCount.textContent = queueItems.length.toString();
-    updateQueueBadge(queueItems.length);
+    updateQueueBadge(queuedCount);
 
     queueList.querySelectorAll('.queue-item-remove').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -147,6 +161,13 @@ export function renderQueueList() {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             reorderQueueItem(btn.dataset.id, btn.dataset.dir);
+        });
+    });
+
+    queueList.querySelectorAll('.queue-item-requeue').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            requeueSentItem(btn.dataset.id);
         });
     });
 }
@@ -446,11 +467,17 @@ export function handleQueueMessage(msg) {
             renderQueueList();
             break;
 
-        case 'queue_sent':
-            queueItems = queueItems.filter(i => i.id !== msg.id);
+        case 'queue_sent': {
+            const sentIdx = queueItems.findIndex(i => i.id === msg.id);
+            if (sentIdx >= 0) {
+                queueItems[sentIdx].status = 'sent';
+                queueItems[sentIdx].sentAt = Date.now();
+            }
             saveQueueToStorage();
             renderQueueList();
+            scheduleSentPurge();
             break;
+        }
 
         case 'queue_state':
             queuePaused = msg.paused;
@@ -482,15 +509,19 @@ export function isQueuePaused() {
 }
 
 /**
- * Pop the first queued item from the queue.
- * Removes it, persists, and re-renders. Returns the item or null.
+ * Mark the first queued item as "sent" and return it.
+ * Item stays in the list (dimmed) so the user can re-queue if it landed wrong.
+ * Auto-purged after SENT_RETAIN_MS.
  */
 export function popNextQueueItem() {
     const idx = queueItems.findIndex(i => i.status === 'queued');
     if (idx < 0) return null;
-    const item = queueItems.splice(idx, 1)[0];
+    const item = queueItems[idx];
+    item.status = 'sent';
+    item.sentAt = Date.now();
     saveQueueToStorage();
     renderQueueList();
+    scheduleSentPurge();
     return item;
 }
 
@@ -498,10 +529,66 @@ export function popNextQueueItem() {
  * Re-insert an item at the front of the queue (e.g. after a failed send).
  */
 export function requeueItem(item) {
-    item.status = 'queued';
-    queueItems.unshift(item);
+    // If item is still in the array (marked sent), just flip status back
+    const idx = queueItems.findIndex(i => i.id === item.id);
+    if (idx >= 0) {
+        queueItems[idx].status = 'queued';
+        delete queueItems[idx].sentAt;
+    } else {
+        item.status = 'queued';
+        delete item.sentAt;
+        queueItems.unshift(item);
+    }
     saveQueueToStorage();
     renderQueueList();
+}
+
+// ── Sent item retention ─────────────────────────────────────────────
+
+let sentPurgeTimer = null;
+
+function scheduleSentPurge() {
+    if (sentPurgeTimer) return; // Already scheduled
+    sentPurgeTimer = setTimeout(() => {
+        sentPurgeTimer = null;
+        const now = Date.now();
+        const before = queueItems.length;
+        queueItems = queueItems.filter(i => {
+            if (i.status !== 'sent') return true;
+            return (now - (i.sentAt || 0)) < SENT_RETAIN_MS;
+        });
+        if (queueItems.length !== before) {
+            saveQueueToStorage();
+            renderQueueList();
+        }
+        // Re-schedule if sent items remain
+        if (queueItems.some(i => i.status === 'sent')) {
+            scheduleSentPurge();
+        }
+    }, SENT_RETAIN_MS);
+}
+
+/**
+ * Re-queue a sent item (user recovery action).
+ */
+function requeueSentItem(itemId) {
+    const idx = queueItems.findIndex(i => i.id === itemId && i.status === 'sent');
+    if (idx < 0) return;
+    queueItems[idx].status = 'queued';
+    delete queueItems[idx].sentAt;
+    saveQueueToStorage();
+    renderQueueList();
+    // Also re-enqueue on server
+    const item = queueItems[idx];
+    const params = new URLSearchParams({
+        session: ctx.currentSession,
+        text: item.text,
+        policy: item.policy || 'auto',
+        id: item.id,
+        token: ctx.token,
+    });
+    if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
+    fetch(`/api/queue/enqueue?${params}`, { method: 'POST' }).catch(() => {});
 }
 
 // ── Public API ───────────────────────────────────────────────────────

@@ -851,6 +851,7 @@ html, body {
     flex-shrink: 0;
     max-height: 60vh;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     /* Overlay the terminal tail below when banner needs more room */
     position: relative;
     z-index: 15;
@@ -858,6 +859,11 @@ html, body {
 
 .prompt-banner.visible {
     display: flex;
+}
+
+/* When prompt banner is visible, shrink the live tail area so choices fit */
+.prompt-banner.visible ~ .terminal-block .terminal-block-output {
+    height: 60px;
 }
 
 .prompt-banner-content {
@@ -964,6 +970,8 @@ html, body {
     width: 100%;
     text-align: left;
     min-height: 44px;
+    white-space: normal;
+    word-break: break-word;
 }
 
 /* "Other" textarea input area — fixed bottom sheet to escape flex constraints */
@@ -2376,6 +2384,31 @@ html, body {
 
 .queue-item-status.sent {
     background: var(--success);
+}
+
+.queue-item[data-status="sent"] {
+    opacity: 0.5;
+}
+
+.queue-item-sent-label {
+    font-size: 10px;
+    color: var(--success);
+    margin-left: 6px;
+}
+
+.queue-item-requeue {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.queue-item-requeue:hover {
+    color: var(--accent);
+    border-color: var(--accent);
 }
 
 .queue-item-status.failed {
@@ -6770,6 +6803,66 @@ html, body {
 .team-card-footer-info.danger {
     color: var(--danger);
     font-weight: bold;
+}
+
+/* Role badge on team card */
+.team-card-role {
+    display: inline-block;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    margin-left: 6px;
+    vertical-align: middle;
+    cursor: pointer;
+}
+.team-card-role.role-explorer { color: var(--accent); }
+.team-card-role.role-planner { color: #c084fc; }
+.team-card-role.role-executor { color: #34d399; }
+.team-card-role.role-reviewer { color: #fbbf24; }
+
+.team-card-role-btn {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    background: none;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 1px 6px;
+    margin-left: 6px;
+    cursor: pointer;
+}
+.team-card-role-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Role selector popover */
+.role-selector {
+    position: fixed;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 4px;
+    z-index: 200;
+    min-width: 160px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.role-selector-item {
+    display: block;
+    width: 100%;
+    padding: 8px 10px;
+    background: none;
+    border: none;
+    text-align: left;
+    color: var(--text-primary);
+    font-size: 13px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.role-selector-item:hover { background: var(--bg-tertiary); }
+.role-selector-item .role-desc {
+    display: block;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 2px;
 }
 
 /* Urgency visual weight */

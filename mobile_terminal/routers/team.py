@@ -12,9 +12,33 @@ from mobile_terminal.drivers import ObserveContext
 from mobile_terminal.helpers import (
     run_subprocess, get_tmux_target,
     get_cached_capture, set_cached_capture,
+    load_team_roles, save_team_roles,
 )
 
 logger = logging.getLogger(__name__)
+
+TEAM_ROLES = {
+    "explorer": {
+        "label": "Explorer",
+        "description": "Searches code, reads files, investigates questions",
+        "guidance": "Use this agent for research, codebase exploration, and information gathering. Send file searches, code reading, and investigation tasks here.",
+    },
+    "planner": {
+        "label": "Planner",
+        "description": "Designs approaches and writes implementation plans",
+        "guidance": "Use this agent for designing solutions, writing plans, and architectural decisions. Do NOT include EnterPlanMode \u2014 the agent decides its own workflow.",
+    },
+    "executor": {
+        "label": "Executor",
+        "description": "Writes code, edits files, runs commands",
+        "guidance": "Use this agent for implementation work: writing code, editing files, running builds and tests. Best for well-defined tasks with clear requirements.",
+    },
+    "reviewer": {
+        "label": "Reviewer",
+        "description": "Reviews code, runs tests, validates changes",
+        "guidance": "Use this agent for code review, test execution, and validation. Send quality checks, test runs, and change verification here.",
+    },
+}
 
 
 def register(app: FastAPI, deps):
@@ -41,6 +65,7 @@ def register(app: FastAPI, deps):
         leader = None
         agents = []
         driver = app.state.driver
+        roles_map = load_team_roles()
         for line in result.stdout.strip().split("\n"):
             parts = line.split("|")
             if len(parts) < 3:
@@ -86,6 +111,7 @@ def register(app: FastAPI, deps):
                     "target": obs.permission_target or "",
                 } if obs.waiting_reason == "permission" else None,
                 "git": git_info,
+                "assigned_role": roles_map.get(name),
             }
 
             if role == "leader":
@@ -208,6 +234,39 @@ def register(app: FastAPI, deps):
 
         return {"success": True, "target_id": target_id}
 
+    @app.get("/api/team/roles")
+    async def get_team_roles(_auth=Depends(deps.verify_token)):
+        """Return available roles and current assignments."""
+        roles_map = load_team_roles()
+        return {
+            "available": {
+                k: {"label": v["label"], "description": v["description"]}
+                for k, v in TEAM_ROLES.items()
+            },
+            "assigned": roles_map,
+        }
+
+    @app.post("/api/team/role")
+    async def set_team_role(
+        body: dict,
+        _auth=Depends(deps.verify_token),
+    ):
+        """Assign or clear a role for an agent (keyed by agent_name)."""
+        agent_name = body.get("agent_name")
+        role = body.get("role")  # role name or null to clear
+        if not agent_name:
+            return JSONResponse({"error": "agent_name required"}, status_code=400)
+        if role and role not in TEAM_ROLES:
+            return JSONResponse({"error": f"Unknown role: {role}"}, status_code=400)
+
+        roles_map = load_team_roles()
+        if role:
+            roles_map[agent_name] = role
+        else:
+            roles_map.pop(agent_name, None)
+        save_team_roles(roles_map)
+        return {"ok": True, "assigned": roles_map}
+
     @app.post("/api/team/dispatch")
     async def team_dispatch(
         plan_filename: str = Query(...),
@@ -327,17 +386,30 @@ def register(app: FastAPI, deps):
             except Exception:
                 pass
 
-        # Build roster table
-        roster_lines = ["| Agent | Branch | CWD | Phase |", "|-------|--------|-----|-------|"]
+        # Build roster table (with Role column)
+        roles_map = load_team_roles()
+        roster_lines = ["| Agent | Role | Branch | CWD | Phase |", "|-------|------|--------|-----|-------|"]
         all_agents = sorted(agents, key=lambda a: a["agent_name"])
         warning_main_agents = []
         for a in all_agents:
             branch = a["git"].get("branch") or "unknown"
             if a["git"].get("is_main"):
                 warning_main_agents.append(a["agent_name"])
-            roster_lines.append(f"| {a['agent_name']} | {branch} | {a['cwd']} | {a['phase']} |")
+            role_label = roles_map.get(a["agent_name"], "\u2014")
+            roster_lines.append(f"| {a['agent_name']} | {role_label} | {branch} | {a['cwd']} | {a['phase']} |")
 
         roster_table = "\n".join(roster_lines)
+
+        # Build role assignments section
+        role_assignments = ""
+        assigned_agents = [(a, roles_map[a["agent_name"]]) for a in all_agents if a["agent_name"] in roles_map]
+        if assigned_agents:
+            role_lines = []
+            for a, role_key in assigned_agents:
+                role_info = TEAM_ROLES.get(role_key, {})
+                desc = role_info.get("description", role_key)
+                role_lines.append(f"- **{a['agent_name']}**: {role_info.get('label', role_key)} \u2014 {desc}")
+            role_assignments = "\n## Role Assignments\n\n" + "\n".join(role_lines) + "\n\nWhen dispatching tasks, prefer sending work to agents whose role matches the task type. This is guidance, not a hard rule \u2014 any agent can do any work if needed.\n"
 
         # Assemble dispatch markdown
         now_iso = datetime.now().isoformat()
@@ -368,7 +440,7 @@ Reply with:
 ## Team Roster
 
 {roster_table}
-
+{role_assignments}
 **Leader CWD:** {leader_cwd}
 **Git root:** {git_root}
 
@@ -384,7 +456,7 @@ Reply with:
 {context_content}
 """
 
-        dispatch_md += """
+        constraints_section = """
 ## Constraints
 
 - Each agent works in its own git worktree on its own branch
@@ -392,6 +464,15 @@ Reply with:
 - You (leader) are the single coordination point
 - When agents finish, review their branches before merging
 """
+        if assigned_agents:
+            constraints_section += """
+### Using Roles
+
+- Match tasks to agent roles when possible (exploration -> explorer, implementation -> executor, etc.)
+- Roles indicate the agent's *strength*, not a limitation -- reassign work if the preferred agent is busy
+- When all agents share the same role or have no role, distribute work by availability
+"""
+        dispatch_md += constraints_section
 
         if preferences:
             dispatch_md += f"""

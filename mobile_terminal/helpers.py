@@ -279,6 +279,29 @@ def save_plan_links(links: dict):
     PLAN_LINKS_FILE.write_text(json.dumps(links, indent=2))
 
 
+# ---------------------------------------------------------------------------
+# Team roles
+# ---------------------------------------------------------------------------
+
+TEAM_ROLES_FILE = Path.home() / ".cache" / "mobile-overlay" / "team-roles.json"
+
+
+def load_team_roles() -> dict:
+    """Load {session: role_name} mapping."""
+    try:
+        if TEAM_ROLES_FILE.exists():
+            return json.loads(TEAM_ROLES_FILE.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def save_team_roles(roles: dict):
+    """Persist {session: role_name} mapping."""
+    TEAM_ROLES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TEAM_ROLES_FILE.write_text(json.dumps(roles, indent=2))
+
+
 def score_plan_for_repo(plan_path: Path, repo_path: Path) -> int:
     """
     Score how well a plan matches a repo based on content.
