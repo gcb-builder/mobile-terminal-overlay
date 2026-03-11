@@ -17,6 +17,7 @@
     --sidebar-width: 320px;
     --terminal-panel-height: 350px;
     --tools-rail-width: 48px;
+    --desktop-sidebar-width: 300px;
     --tools-panel-width: 320px;
     --terminal-col-width: 400px;
 
@@ -6975,51 +6976,126 @@ html, body {
     display: none !important;
 }
 
+/* Desktop sidebar: hidden on mobile */
+.desktop-sidebar {
+    display: none !important;
+}
+
 /* ===== Desktop multi-pane layout (>=1024px) ===== */
 @media (min-width: 1024px) {
-    /* Grid shell: tools rail + main area (base: rail only) */
+    /* Views container: rail + sidebar are fixed-position, content offset via margin */
     .app.desktop-multipane .views-container {
-        display: grid;
-        grid-template-columns: var(--tools-rail-width) 1fr;
-        grid-template-rows: 1fr;
+        display: flex;
+        flex-direction: column;
         overflow: hidden;
-    }
-
-    /* Team open: rail + team sidebar + main */
-    .app.desktop-multipane.desktop-team-open .views-container {
-        grid-template-columns: var(--tools-rail-width) var(--sidebar-width) 1fr;
-    }
-
-    /* Tools panel open: rail + tools panel + main */
-    .app.desktop-multipane.desktop-tools-open .views-container {
-        grid-template-columns: var(--tools-rail-width) var(--tools-panel-width) 1fr;
+        margin-left: calc(var(--tools-rail-width) + var(--desktop-sidebar-width));
     }
 
     /* Terminal open: add bottom row for terminal panel */
-    .app.desktop-multipane.desktop-terminal-open .views-container {
-        grid-template-rows: 1fr var(--terminal-panel-height);
-    }
+    /* Terminal open: no grid changes needed, terminal panel is flex child */
 
-    /* Sidebar toggle: visible in desktop mode */
+    /* Sidebar toggle: hidden on desktop (sidebar always visible) */
     .app.desktop-multipane .sidebar-toggle {
-        display: inline-flex;
-        align-items: center;
+        display: none !important;
     }
 
-    /* Team sidebar: hidden by default, shown via .desktop-team-open */
+    /* Team view hidden on desktop — content reparented to sidebar */
     .app.desktop-multipane .team-view {
         display: none !important;
     }
-    .app.desktop-multipane.desktop-team-open .team-view {
+
+    /* Tools content panel hidden — tools open in sidebar instead */
+    .app.desktop-multipane .tools-content {
+        display: none !important;
+    }
+
+    /* Hide team + queue rail buttons (always in sidebar) */
+    .app.desktop-multipane .tools-rail-btn[data-tool="team"],
+    .app.desktop-multipane .tools-rail-btn[data-tool="queue"] {
+        display: none;
+    }
+
+    /* Hide collapse row on desktop (sessions in sidebar) */
+    .app.desktop-multipane .collapse-row {
+        display: none !important;
+    }
+
+    /* Desktop sidebar: fixed left column, starts below header */
+    .app.desktop-multipane .desktop-sidebar {
         display: flex !important;
         flex-direction: column;
-        grid-column: 2;
-        grid-row: 1 / -1;
+        position: fixed;
+        top: var(--sidebar-top, 0px); bottom: 0;
+        left: var(--tools-rail-width);
+        width: var(--desktop-sidebar-width);
         border-right: 1px solid var(--border);
-        overflow-y: auto;
-        -webkit-overflow-scrolling: touch;
-        min-height: 0;
+        overflow: hidden;
+        background: var(--bg-primary);
+        z-index: 10;
     }
+
+    .desktop-sidebar-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg-secondary);
+        flex-shrink: 0;
+        min-height: 36px;
+    }
+    .desktop-sidebar-title {
+        font-size: 13px; font-weight: 600; color: var(--text-primary);
+    }
+    .sidebar-back-btn {
+        background: none; border: none; color: var(--text-secondary);
+        font-size: 16px; cursor: pointer; padding: 2px 6px; border-radius: 4px;
+    }
+    .sidebar-back-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+    .sidebar-tool-title {
+        font-size: 13px; font-weight: 600; color: var(--text-primary);
+    }
+
+    .sidebar-default-content {
+        flex: 1; overflow: hidden;
+        display: flex; flex-direction: column; min-height: 0;
+    }
+
+    .sidebar-section { display: flex; flex-direction: column; border-bottom: 1px solid var(--border); min-height: 0; flex-shrink: 0; }
+    #sidebarQueueSection { flex: 1; flex-shrink: 1; border-bottom: none; }
+    .sidebar-section-toggle {
+        display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+        background: var(--bg-secondary); border: none; color: var(--text-secondary);
+        font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+        cursor: pointer; width: 100%; text-align: left;
+    }
+    .sidebar-section-toggle:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+    .sidebar-section-arrow { font-size: 8px; transition: transform 0.15s; }
+    .sidebar-section.collapsed .sidebar-section-arrow { transform: rotate(-90deg); }
+    .sidebar-section.collapsed .sidebar-section-body { display: none; }
+    .sidebar-section-count {
+        margin-left: auto; background: var(--accent); color: #fff;
+        font-size: 9px; min-width: 16px; height: 16px; line-height: 16px;
+        text-align: center; border-radius: 8px; padding: 0 4px;
+    }
+    .sidebar-section-body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    .sidebar-section-flex { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+    /* Sessions list in sidebar */
+    .sidebar-session-btn {
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 12px; background: transparent; border: none;
+        color: var(--text-secondary); font-size: 12px; cursor: pointer;
+        text-align: left; width: 100%; min-height: 32px;
+    }
+    .sidebar-session-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .sidebar-session-btn.current {
+        color: var(--text-primary); border-left: 2px solid var(--accent);
+        background: rgba(55, 148, 255, 0.05);
+    }
+
+    /* Sidebar tool content (replaces default when secondary tool opened) */
+    .sidebar-tool-content { flex: 1; overflow-y: auto; min-height: 0; }
 
     /* Team view header: visible on desktop */
     .app.desktop-multipane .team-view-header {
@@ -7047,7 +7123,7 @@ html, body {
     .app.desktop-multipane .log-view {
         display: flex !important;
         flex-direction: column;
-        grid-row: 1;
+        flex: 1;
         min-height: 0;
         min-width: 0;
         overflow: hidden;
@@ -7062,8 +7138,8 @@ html, body {
     .app.desktop-multipane .terminal-view.desktop-panel {
         display: flex !important;
         flex-direction: column;
-        grid-column: 2 / -1;
-        grid-row: 2;
+        height: var(--terminal-panel-height);
+        flex-shrink: 0;
         border-top: 2px solid var(--border);
         min-height: 0;
         position: relative;
@@ -7133,12 +7209,13 @@ html, body {
         background: var(--bg-tertiary);
     }
 
-    /* ===== Tools Panel (icon rail + content) ===== */
+    /* ===== Tools Panel (icon rail) — fixed left column ===== */
     .app.desktop-multipane .tools-panel {
         display: flex !important;
-        grid-column: 1;
-        grid-row: 1 / -1;
-        min-height: 0;
+        position: fixed;
+        top: var(--sidebar-top, 0px); bottom: 0; left: 0;
+        width: var(--tools-rail-width);
+        z-index: 10;
     }
 
     .tools-rail {
@@ -7224,10 +7301,6 @@ html, body {
         min-height: 0;
     }
 
-    .app.desktop-multipane.desktop-tools-open .tools-content {
-        display: flex;
-    }
-
     .tools-content-header {
         display: flex;
         align-items: center;
@@ -7288,6 +7361,14 @@ html, body {
     }
     .app.desktop-multipane .collapse-row .collapse-toggle-btn {
         display: none !important;
+    }
+
+    /* Align tail, input, prompt banner with log column (offset past rail + sidebar) */
+    .app.desktop-multipane .tail-resize-handle,
+    .app.desktop-multipane .terminal-block,
+    .app.desktop-multipane .prompt-banner,
+    .app.desktop-multipane .control-bars-container {
+        margin-left: calc(var(--tools-rail-width) + var(--desktop-sidebar-width));
     }
 
     /* On desktop, repo button in header gets more room */
@@ -7701,10 +7782,16 @@ html, body {
 
     /* ===== Desktop font size bump ===== */
     .app.desktop-multipane .log-view-content {
+        font-size: 16px;
+    }
+    .app.desktop-multipane .log-text {
+        font-size: 16px;
+    }
+    .app.desktop-multipane .log-text.assistant-text code {
         font-size: 15px;
     }
     .app.desktop-multipane .terminal-block-output {
-        font-size: 14px;
+        font-size: 16px;
     }
     .app.desktop-multipane .terminal-input {
         font-size: 16px;

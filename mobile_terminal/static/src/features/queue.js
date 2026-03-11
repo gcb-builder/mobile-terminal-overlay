@@ -144,6 +144,13 @@ export function renderQueueList() {
     if (queueCount) queueCount.textContent = queueItems.length.toString();
     updateQueueBadge(queuedCount);
 
+    // Update sidebar queue count badge
+    const sidebarQueueCount = document.getElementById('sidebarQueueCount');
+    if (sidebarQueueCount) {
+        sidebarQueueCount.textContent = queuedCount.toString();
+        sidebarQueueCount.classList.toggle('hidden', queuedCount === 0);
+    }
+
     queueList.querySelectorAll('.queue-item-remove').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();

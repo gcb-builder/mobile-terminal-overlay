@@ -35,7 +35,7 @@ import { initTeam, activateTeamView, startTeamCardRefresh, stopTeamCardRefresh,
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC - if you see this in console, browser has v247 code
-console.log('=== TERMINAL.JS v257 UISTATE + VIEW SWITCHER + TEAM SECTIONS ===');
+console.log('=== TERMINAL.JS v258 DESKTOP SIDEBAR LAYOUT ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 
 // Global error boundary for debugging
@@ -2482,6 +2482,9 @@ function populateRecentRepos() {
         }
         container.appendChild(btn);
     });
+
+    // Update sidebar sessions if in desktop mode
+    if (ctx.uiMode === 'desktop-multipane') populateSidebarSessions();
 }
 
 /**
@@ -2863,10 +2866,6 @@ async function updateTeamState() {
     if (hadTeam !== hasTeam) {
         updateTabIndicator();
         updateLogFilterBarVisibility();
-        // Auto-open team panel when team appears on desktop
-        if (hasTeam && ctx.uiMode === 'desktop-multipane' && activeToolPanel !== 'team') {
-            openToolPanel('team');
-        }
         // If team disappeared while viewing team, switch to log
         if (!hasTeam && ctx.currentView === 'team') {
             switchToView('log');
@@ -2877,6 +2876,8 @@ async function updateTeamState() {
             if (sysStrip) sysStrip.classList.add('hidden');
         }
     }
+    // Update sidebar counts when in desktop mode
+    if (ctx.uiMode === 'desktop-multipane') updateSidebarCounts();
 }
 
 /**
@@ -4487,6 +4488,8 @@ let desktopFocusedPane = 'log'; // 'team' | 'log' | 'terminal'
 let desktopResizeTimer = null;
 let activeToolPanel = null;        // Currently open tool panel name
 let toolsPanelOrigParents = new Map(); // Track reparented drawer tab content
+let sidebarOrigParents = new Map();    // Track reparented sidebar content
+let sidebarShowingTool = null;         // Currently open tool in sidebar
 
 function shouldLogRefreshRun() {
     return document.visibilityState === 'visible' &&
@@ -7672,77 +7675,29 @@ const TOOL_TITLES = {
 };
 
 /**
- * Open a tool panel on desktop. For 'team', shows team view as grid element.
- * For other tools, reparents drawer tab content into tools-content panel.
+ * Open a tool panel on desktop. For 'team'/'queue', scroll to sidebar section.
+ * For other tools, open in sidebar via openSidebarTool.
  */
 function openToolPanel(name) {
     if (ctx.uiMode !== 'desktop-multipane') return;
 
-    const app = document.querySelector('.app');
-    if (!app) return;
-
-    // Toggle: clicking same tool closes it
-    if (activeToolPanel === name) {
-        closeToolPanel();
-        return;
-    }
-
-    // Restore previously reparented content
-    restoreToolContent();
-
-    // Clear previous rail active state
-    document.querySelectorAll('.tools-rail-btn[data-tool]').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.tool === name);
-    });
-
-    // Remove both state classes, we'll add the correct one
-    app.classList.remove('desktop-team-open', 'desktop-tools-open');
-
-    const teamViewEl = document.getElementById('teamView');
-
-    if (name === 'team') {
-        // Show team view as grid element
-        if (teamViewEl) teamViewEl.classList.remove('hidden');
-        app.classList.add('desktop-team-open');
-        // Hide tools-content (team has its own panel)
-        const toolsContent = document.getElementById('toolsContent');
-        if (toolsContent) toolsContent.style.display = 'none';
-    } else {
-        // Hide team view
-        if (teamViewEl) teamViewEl.classList.add('hidden');
-
-        // Reparent drawer tab content into tools-content-body
-        const contentId = TOOL_TAB_MAP[name];
-        const sourceEl = contentId ? document.getElementById(contentId) : null;
-        const body = document.getElementById('toolsContentBody');
-
-        if (sourceEl && body) {
-            // Save original parent for restore
-            toolsPanelOrigParents.set(name, {
-                element: sourceEl,
-                parent: sourceEl.parentElement,
-                nextSibling: sourceEl.nextElementSibling,
-            });
-            body.innerHTML = '';
-            body.appendChild(sourceEl);
-            sourceEl.classList.remove('hidden');
-            sourceEl.classList.add('active');
+    if (name === 'team' || name === 'queue') {
+        // Scroll to sidebar section + expand if collapsed
+        restoreSidebarToolContent();
+        const sectionId = name === 'team' ? 'sidebarTeamSection' : 'sidebarQueueSection';
+        const section = document.getElementById(sectionId);
+        if (section) {
+            section.classList.remove('collapsed');
+            section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
-
-        app.classList.add('desktop-tools-open');
-        const toolsContent = document.getElementById('toolsContent');
-        if (toolsContent) toolsContent.style.display = '';
-
-        // Set title
-        const title = document.getElementById('toolsContentTitle');
-        if (title) title.textContent = TOOL_TITLES[name] || name;
-
-        // Trigger tab-specific load
-        switchRollbackTab(name);
+    } else {
+        // Toggle: clicking same tool closes it
+        if (sidebarShowingTool === name) {
+            restoreSidebarToolContent();
+            return;
+        }
+        openSidebarTool(name);
     }
-
-    activeToolPanel = name;
-    localStorage.setItem('mto_desktop_tool', name);
 
     // Re-fit terminal if open
     if (fitAddon) requestAnimationFrame(() => fitAddon.fit());
@@ -7754,24 +7709,7 @@ function openToolPanel(name) {
 function closeToolPanel() {
     if (ctx.uiMode !== 'desktop-multipane') return;
 
-    const app = document.querySelector('.app');
-    if (!app) return;
-
-    restoreToolContent();
-
-    app.classList.remove('desktop-team-open', 'desktop-tools-open');
-
-    // Hide team view
-    const teamViewEl = document.getElementById('teamView');
-    if (teamViewEl) teamViewEl.classList.add('hidden');
-
-    // Clear rail active state
-    document.querySelectorAll('.tools-rail-btn[data-tool]').forEach(btn => {
-        btn.classList.remove('active');
-    });
-
-    activeToolPanel = null;
-    localStorage.removeItem('mto_desktop_tool');
+    restoreSidebarToolContent();
 
     // Re-fit terminal
     if (fitAddon) requestAnimationFrame(() => fitAddon.fit());
@@ -7795,6 +7733,243 @@ function restoreToolContent() {
         }
     }
     toolsPanelOrigParents.clear();
+}
+
+// ===== Desktop Sidebar Functions =====
+
+/**
+ * Populate sidebar sessions list (mirrors populateRecentRepos but for sidebar)
+ */
+function populateSidebarSessions() {
+    const body = document.getElementById('sidebarSessionsBody');
+    if (!body) return;
+    body.innerHTML = '';
+
+    if (!ctx.targets || ctx.targets.length === 0) return;
+
+    ctx.targets.forEach(target => {
+        const isActive = target.id === ctx.activeTarget;
+        const btn = document.createElement('button');
+        btn.className = 'sidebar-session-btn' + (isActive ? ' current' : '');
+        const label = target.project || target.window_name || target.id;
+        btn.textContent = label;
+        btn.title = target.cwd || target.id;
+        if (!isActive) {
+            btn.addEventListener('click', () => selectTarget(target.id));
+        }
+        body.appendChild(btn);
+    });
+}
+
+/**
+ * Populate desktop sidebar: reparent team cards + queue, build sessions
+ */
+function updateSidebarTop() {
+    const vc = document.getElementById('viewsContainer');
+    if (vc) {
+        document.documentElement.style.setProperty(
+            '--sidebar-top', vc.getBoundingClientRect().top + 'px'
+        );
+    }
+}
+
+function populateDesktopSidebar() {
+    const sidebar = document.getElementById('desktopSidebar');
+    if (!sidebar) return;
+
+    // Measure where views-container starts (below header + banners)
+    updateSidebarTop();
+
+    // Reparent team cards container into sidebar
+    const teamCards = document.getElementById('teamCardsContainer');
+    const sidebarTeamBody = document.getElementById('sidebarTeamBody');
+    if (teamCards && sidebarTeamBody) {
+        sidebarOrigParents.set('teamCards', {
+            element: teamCards,
+            parent: teamCards.parentElement,
+            nextSibling: teamCards.nextElementSibling,
+        });
+        sidebarTeamBody.appendChild(teamCards);
+    }
+
+    // Reparent queue tab content into sidebar
+    const queueContent = document.getElementById('queueTabContent');
+    const sidebarQueueBody = document.getElementById('sidebarQueueBody');
+    if (queueContent && sidebarQueueBody) {
+        sidebarOrigParents.set('queueContent', {
+            element: queueContent,
+            parent: queueContent.parentElement,
+            nextSibling: queueContent.nextElementSibling,
+        });
+        sidebarQueueBody.appendChild(queueContent);
+        queueContent.classList.remove('hidden');
+        queueContent.classList.add('active');
+    }
+
+    // Build sessions list
+    populateSidebarSessions();
+
+    // Show sidebar
+    sidebar.classList.remove('hidden');
+
+    // Hide team section if no team detected
+    const teamSection = document.getElementById('sidebarTeamSection');
+    if (teamSection) {
+        const hasTeam = ctx.teamState?.has_team;
+        teamSection.style.display = hasTeam ? '' : 'none';
+    }
+
+    // Update counts
+    updateSidebarCounts();
+}
+
+/**
+ * Restore desktop sidebar: return reparented content to original parents
+ */
+function restoreDesktopSidebar() {
+    // Restore any tool content first
+    restoreSidebarToolContent();
+
+    // Restore reparented elements
+    for (const [, info] of sidebarOrigParents) {
+        const { element, parent, nextSibling } = info;
+        if (parent) {
+            // Reset queue classes before returning
+            if (element.id === 'queueTabContent') {
+                element.classList.add('hidden');
+                element.classList.remove('active');
+            }
+            if (nextSibling) {
+                parent.insertBefore(element, nextSibling);
+            } else {
+                parent.appendChild(element);
+            }
+        }
+    }
+    sidebarOrigParents.clear();
+
+    // Hide sidebar
+    const sidebar = document.getElementById('desktopSidebar');
+    if (sidebar) sidebar.classList.add('hidden');
+}
+
+/**
+ * Open a tool in the sidebar (for secondary tools: history, process, runner, dev, mcp, env)
+ */
+function openSidebarTool(name) {
+    if (sidebarShowingTool === name) {
+        restoreSidebarToolContent();
+        return;
+    }
+
+    // Restore previous tool content if any
+    restoreToolContent();
+
+    const contentId = TOOL_TAB_MAP[name];
+    const sourceEl = contentId ? document.getElementById(contentId) : null;
+    const sidebarToolEl = document.getElementById('sidebarToolContent');
+    const sidebarDefault = document.getElementById('sidebarDefaultContent');
+
+    if (sourceEl && sidebarToolEl) {
+        // Save original parent for restore
+        toolsPanelOrigParents.set(name, {
+            element: sourceEl,
+            parent: sourceEl.parentElement,
+            nextSibling: sourceEl.nextElementSibling,
+        });
+        sidebarToolEl.innerHTML = '';
+        sidebarToolEl.appendChild(sourceEl);
+        sourceEl.classList.remove('hidden');
+        sourceEl.classList.add('active');
+    }
+
+    // Hide default content, show tool content
+    if (sidebarDefault) sidebarDefault.classList.add('hidden');
+    if (sidebarToolEl) sidebarToolEl.classList.remove('hidden');
+
+    // Show back button + tool title in sidebar header
+    const backBtn = document.getElementById('sidebarBackBtn');
+    const toolTitle = document.getElementById('sidebarToolTitle');
+    const mainTitle = document.querySelector('.desktop-sidebar-title');
+    if (backBtn) backBtn.classList.remove('hidden');
+    if (toolTitle) {
+        toolTitle.textContent = TOOL_TITLES[name] || name;
+        toolTitle.classList.remove('hidden');
+    }
+    if (mainTitle) mainTitle.classList.add('hidden');
+
+    // Update rail active state
+    document.querySelectorAll('.tools-rail-btn[data-tool]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tool === name);
+    });
+
+    sidebarShowingTool = name;
+    activeToolPanel = name;
+    localStorage.setItem('mto_desktop_tool', name);
+
+    // Trigger tab-specific load
+    switchRollbackTab(name);
+}
+
+/**
+ * Restore sidebar tool content back to default view
+ */
+function restoreSidebarToolContent() {
+    // Return reparented elements to drawer
+    restoreToolContent();
+
+    const sidebarDefault = document.getElementById('sidebarDefaultContent');
+    const sidebarToolEl = document.getElementById('sidebarToolContent');
+    if (sidebarDefault) sidebarDefault.classList.remove('hidden');
+    if (sidebarToolEl) {
+        sidebarToolEl.classList.add('hidden');
+        sidebarToolEl.innerHTML = '';
+    }
+
+    // Reset header
+    const backBtn = document.getElementById('sidebarBackBtn');
+    const toolTitle = document.getElementById('sidebarToolTitle');
+    const mainTitle = document.querySelector('.desktop-sidebar-title');
+    if (backBtn) backBtn.classList.add('hidden');
+    if (toolTitle) toolTitle.classList.add('hidden');
+    if (mainTitle) mainTitle.classList.remove('hidden');
+
+    // Clear rail active state
+    document.querySelectorAll('.tools-rail-btn[data-tool]').forEach(btn => {
+        btn.classList.remove('active');
+    });
+
+    sidebarShowingTool = null;
+    activeToolPanel = null;
+    localStorage.removeItem('mto_desktop_tool');
+}
+
+/**
+ * Update sidebar count badges for team and queue
+ */
+function updateSidebarCounts() {
+    const teamCountEl = document.getElementById('sidebarTeamCount');
+    if (teamCountEl) {
+        const agents = ctx.teamState?.team?.agents;
+        const count = agents ? agents.length : 0;
+        teamCountEl.textContent = count.toString();
+        teamCountEl.classList.toggle('hidden', count === 0);
+    }
+
+    const queueCountEl = document.getElementById('sidebarQueueCount');
+    if (queueCountEl) {
+        const items = getQueueItems();
+        const queuedCount = items.filter(i => i.status === 'queued').length;
+        queueCountEl.textContent = queuedCount.toString();
+        queueCountEl.classList.toggle('hidden', queuedCount === 0);
+    }
+
+    // Show/hide team section based on team state
+    const teamSection = document.getElementById('sidebarTeamSection');
+    if (teamSection) {
+        const hasTeam = ctx.teamState?.has_team;
+        teamSection.style.display = hasTeam ? '' : 'none';
+    }
 }
 
 /**
@@ -7865,6 +8040,19 @@ function setupDesktopLayout() {
     // Team filters (density toggle handled by initTeam)
     setupTeamFilters();
 
+    // Sidebar section collapse/expand toggles
+    document.querySelectorAll('.sidebar-section-toggle').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const section = btn.closest('.sidebar-section');
+            if (section) section.classList.toggle('collapsed');
+        });
+    });
+
+    // Sidebar back button
+    document.getElementById('sidebarBackBtn')?.addEventListener('click', () => {
+        restoreSidebarToolContent();
+    });
+
     // Keyboard shortcuts
     setupDesktopShortcuts();
 }
@@ -7881,6 +8069,8 @@ function checkDesktopLayout() {
     } else if (!shouldBeDesktop && wasDesktop) {
         exitDesktopLayout();
     }
+    // Keep sidebar top in sync with header/banner changes
+    if (ctx.uiMode === 'desktop-multipane') updateSidebarTop();
 }
 
 /**
@@ -7905,16 +8095,14 @@ function enterDesktopLayout() {
     // Load log if needed
     if (!logLoaded) loadLogContent();
 
-    // Apply density
-    applyDensity(getTeamDensity());
+    // Populate sidebar and apply compact density
+    populateDesktopSidebar();
+    applyDensity('compact');
 
-    // Open tool panel: team if has_team, else restore saved tool
-    const hasTeam = ctx.teamState?.has_team;
-    if (hasTeam) {
-        openToolPanel('team');
-    } else {
-        const savedTool = localStorage.getItem('mto_desktop_tool');
-        if (savedTool) openToolPanel(savedTool);
+    // Restore saved secondary tool in sidebar
+    const savedTool = localStorage.getItem('mto_desktop_tool');
+    if (savedTool && savedTool !== 'team' && savedTool !== 'queue') {
+        openSidebarTool(savedTool);
     }
 
     // Terminal stays in tail mode by default on desktop.
@@ -7930,7 +8118,8 @@ function exitDesktopLayout() {
     ctx.uiMode = 'mobile-single';
     const app = document.querySelector('.app');
 
-    // Restore reparented tool content + reset tool state
+    // Restore sidebar reparented content + tool content
+    restoreDesktopSidebar();
     restoreToolContent();
     activeToolPanel = null;
 
@@ -7943,7 +8132,7 @@ function exitDesktopLayout() {
     if (teamViewEl) teamViewEl.classList.add('hidden');
 
     if (app) {
-        app.classList.remove('desktop-multipane', 'desktop-team-open', 'desktop-tools-open', 'desktop-terminal-open');
+        app.classList.remove('desktop-multipane', 'desktop-terminal-open');
         app.classList.remove('density-comfortable', 'density-compact', 'density-ultra');
     }
 
@@ -8102,6 +8291,53 @@ function setupDesktopTerminalResize() {
  * Desktop keyboard shortcuts
  */
 function setupDesktopShortcuts() {
+    // Terminal control keys: work even when input is focused
+    document.addEventListener('keydown', (e) => {
+        if (ctx.uiMode !== 'desktop-multipane') return;
+        if (!isControlUnlocked) return;
+
+        // Skip if compose/challenge modal is open
+        if (document.querySelector('.compose-modal:not(.hidden)') ||
+            document.querySelector('.challenge-modal:not(.hidden)')) return;
+
+        // Ctrl+B → tmux prefix
+        if (e.ctrlKey && e.key === 'b') {
+            e.preventDefault();
+            sendKeyDebounced('\x02');
+            return;
+        }
+
+        // Only intercept remaining keys when logInput is focused
+        const isLogInput = document.activeElement?.id === 'logInput';
+        if (!isLogInput) return;
+
+        // Escape → send to terminal + blur input
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            sendKeyDebounced('\x1b');
+            return;
+        }
+
+        // Arrow Up/Down → send to terminal (history navigation)
+        if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            sendKeyWithSync('\x1b[A', 100);
+            return;
+        }
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            sendKeyWithSync('\x1b[B', 100);
+            return;
+        }
+
+        // Tab → send to terminal (completion)
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            sendKeyWithSync('\t', 200);
+            return;
+        }
+    });
+
     document.addEventListener('keydown', (e) => {
         if (ctx.uiMode !== 'desktop-multipane') return;
 
