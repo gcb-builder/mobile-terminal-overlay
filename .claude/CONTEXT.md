@@ -3,12 +3,53 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Wave 2 (ScratchStore) complete, UI reorganization complete
-- **Last Updated:** 2026-03-10
-- **Server Version:** v276 (terminal.js), v116 (sw.js cache), v172 (styles.css)
+- **Stage:** Team Launcher v1 implemented, dismiss flow smoothed
+- **Last Updated:** 2026-03-12
+- **Server Version:** v280 (terminal.js), v200 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --no-auth --host 0.0.0.0 --verbose > /tmp/mto-server.log 2>&1 &`
 
-## Recent: Header Reorganization + Pane Quick-Switcher + Context Pill (2026-03-10)
+## Recent: Team Launcher v1 + Repo-Scoped Team UI + Smooth Dismiss (2026-03-12)
+
+### Team Launcher
+- **Templates**: 6 built-in templates in `mobile_terminal/team_templates.py` (solo_reviewer, research_implement, feature_delivery, bug_hunt, review_swarm, refactor_validate)
+- **Backend**: `mobile_terminal/routers/team_launcher.py` — phased pipeline (validate → check_branch → create_windows → start_claude → await_ready → inject_prompts → save_roles → dispatch), dry_run support, per-agent results
+- **Frontend**: `mobile_terminal/static/src/features/team-launcher.js` — two-step modal (plan+goal+template → roster+options), plan dropdown auto-fills goal
+- **Modal HTML**: Added to index.html after stashResultModal
+- **FAB menu**: "Launch Team" item added (data-action="launchTeam")
+- **Empty state**: "No team running" + "Launch Team" CTA in team cards view
+- **Router registered** in server.py
+
+### Repo-Scoped Team UI
+- `isTeamInCurrentRepo()` helper in terminal.js compares active target CWD against team member CWDs
+- Team dot in view switcher only shown when team is in current repo
+- Team section in nav dropdown only shown when team is in current repo
+- Team panes always hidden from "Current Session" pane list (even when viewing other repo)
+- Sidebar team count badge scoped to current repo
+- `renderTeamCards()` shows "Team active in **[repo]**" when viewing different repo
+- Added `cwd` field to team state API response (`routers/team.py`)
+
+### Smooth Team Dismiss
+- "Dismiss Team" button in team cards view (right-aligned, subtle)
+- Backend: parallel `asyncio.gather` kills all windows simultaneously (was sequential with 2s wait)
+- Frontend: stops team card refresh timer before kill, renders empty state in one shot after
+- Crash detection suppressed when `ctx.teamState` is null (team just dismissed)
+
+### Log Stability After Send
+- `sendLogCommand()` no longer does hard log reset (was `logLoaded=false` + `loadLogContent()`)
+- Now invalidates hash + calls `refreshLogContent()` which preserves scroll and previous context
+
+### Files Changed
+- `mobile_terminal/team_templates.py` — NEW: templates, role prompts, validation
+- `mobile_terminal/routers/team_launcher.py` — NEW: launch/templates/kill endpoints
+- `mobile_terminal/routers/team.py` — added `cwd` field to team state entries
+- `mobile_terminal/server.py` — registered team_launcher router
+- `mobile_terminal/static/src/features/team-launcher.js` — NEW: launcher modal logic
+- `mobile_terminal/static/src/features/team.js` — import launcher, empty state CTA, dismiss button, repo scoping
+- `mobile_terminal/static/terminal.js` — isTeamInCurrentRepo(), FAB handler, repo-scoped team UI, crash suppress, log send fix
+- `mobile_terminal/static/styles.css` — launcher modal + dismiss button styles
+- `mobile_terminal/static/index.html` — modal HTML, FAB item, version bump (v280/v200)
+
+## Previous: Header Reorganization + Pane Quick-Switcher + Context Pill (2026-03-10)
 
 ### Header Layout
 - **header-left:** Connection indicator (green dot), context pill (% context remaining), phase indicator (dot + label)
