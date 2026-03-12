@@ -11,6 +11,9 @@
 import ctx from '../context.js';
 import { escapeHtml } from '../utils.js';
 import { deriveUIState, deriveSystemSummary } from '../ui-state.js';
+import { initTeamLauncher, showLaunchTeamModal } from './team-launcher.js';
+
+export { showLaunchTeamModal };
 
 // Module-local state
 let dispatchPlansCache = null;
@@ -130,10 +133,45 @@ export async function refreshTeamCards() {
 
 export function renderTeamCards(state, captures) {
     const teamViewEl = document.getElementById('teamView');
-    if (!teamViewEl || !state || !state.team) return;
+    if (!teamViewEl) return;
 
     // Use cards container if available (desktop restructured DOM), else fallback
     const cardsTarget = document.getElementById('teamCardsContainer') || teamViewEl;
+
+    // Empty state: no team running
+    if (!state || !state.team || !state.has_team) {
+        cardsTarget.innerHTML = `
+            <div class="team-no-team">
+                <div class="team-no-team-text">No team running</div>
+                <button class="no-team-launch-btn" id="noTeamLaunchBtn">Launch Team</button>
+            </div>
+        `;
+        document.getElementById('noTeamLaunchBtn')?.addEventListener('click', showLaunchTeamModal);
+        return;
+    }
+
+    // Repo-scoping: only show team UI when viewing the same repo as team members
+    const activeTarget = ctx.targets?.find(t => t.id === ctx.activeTarget);
+    const activeCwd = activeTarget?.cwd;
+    if (activeCwd) {
+        const allMembers = [state.team.leader, ...(state.team.agents || [])].filter(Boolean);
+        const teamCwds = allMembers.map(a => a.cwd).filter(Boolean);
+        if (teamCwds.length > 0) {
+            // Check if active CWD shares a common repo root with any team member
+            const inSameRepo = teamCwds.some(tc =>
+                activeCwd.startsWith(tc) || tc.startsWith(activeCwd)
+            );
+            if (!inSameRepo) {
+                const teamRepo = teamCwds[0].split('/').pop() || 'another repo';
+                cardsTarget.innerHTML = `
+                    <div class="team-no-team">
+                        <div class="team-no-team-text">Team active in <strong>${escapeHtml(teamRepo)}</strong></div>
+                    </div>
+                `;
+                return;
+            }
+        }
+    }
 
     // Collect all agents
     const allAgents = [];
@@ -153,6 +191,16 @@ export function renderTeamCards(state, captures) {
     lastRenderedAgentNames = allAgents.map(a => a.agent_name || 'unknown');
 
     const allIdle = attention.length === 0 && active.length === 0;
+
+    // Dismiss button when team exists
+    const dismissBar = document.createElement('div');
+    dismissBar.className = 'team-dismiss-bar';
+    const dismissBtn = document.createElement('button');
+    dismissBtn.className = 'team-dismiss-btn';
+    dismissBtn.textContent = 'Dismiss Team';
+    dismissBtn.addEventListener('click', dismissTeam);
+    dismissBar.appendChild(dismissBtn);
+    cardsTarget.appendChild(dismissBar);
 
     if (attention.length) {
         cardsTarget.appendChild(renderTeamSection('Needs Attention', attention, captures, 'attention'));
@@ -868,6 +916,51 @@ function setupDispatchHandlers() {
     if (leaderMsgBtn) leaderMsgBtn.addEventListener('click', sendLeaderMessage);
 }
 
+// ── Dismiss team ────────────────────────────────────────────────────
+
+async function dismissTeam() {
+    if (!confirm('Dismiss team? This closes all team windows.')) {
+        return;
+    }
+
+    // Stop team card refresh BEFORE kill to prevent mid-teardown re-renders
+    stopTeamCardRefresh();
+
+    try {
+        const resp = await fetch(`/api/team/kill?token=${ctx.token}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session: ctx.currentSession || '' }),
+        });
+        const data = await resp.json();
+
+        // Clear team state atomically — one render, no cascading polls
+        ctx.teamState = null;
+
+        // Render empty state immediately
+        const cardsTarget = document.getElementById('teamCardsContainer')
+            || document.getElementById('teamView');
+        if (cardsTarget) {
+            cardsTarget.innerHTML = `
+                <div class="team-no-team">
+                    <div class="team-no-team-text">No team running</div>
+                    <button class="no-team-launch-btn" id="noTeamLaunchBtn">Launch Team</button>
+                </div>
+            `;
+            document.getElementById('noTeamLaunchBtn')?.addEventListener('click', showLaunchTeamModal);
+        }
+
+        // Hide system status strip
+        const sysStrip = document.getElementById('systemStatusStrip');
+        if (sysStrip) sysStrip.classList.add('hidden');
+
+    } catch (err) {
+        console.error('Dismiss team failed:', err);
+        // Restart refresh on failure so team view doesn't go stale
+        startTeamCardRefresh();
+    }
+}
+
 // ── Public API ───────────────────────────────────────────────────────
 
 /**
@@ -895,4 +988,5 @@ export function initTeam(opts = {}) {
     updateActionBarCb = opts.updateActionBar || null;
     setupDispatchHandlers();
     setupDensityToggle();
+    initTeamLauncher();
 }

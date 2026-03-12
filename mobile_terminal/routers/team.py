@@ -101,6 +101,7 @@ def register(app: FastAPI, deps):
                 "target_id": target_id,
                 "agent_name": name,
                 "team_role": role,
+                "cwd": cwd,
                 "phase": obs.phase,
                 "detail": obs.detail,
                 "tool": obs.tool,
