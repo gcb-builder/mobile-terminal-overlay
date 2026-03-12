@@ -25,7 +25,8 @@ import { initTeam, activateTeamView, startTeamCardRefresh, stopTeamCardRefresh,
          sendTeamInput, selectNextAgent, selectPrevAgent, approveSelectedAgent,
          denySelectedAgent, openSelectedAgentTerminal, focusSearchInput,
          getLastSystemSummary, scrollToFirstAttention, populateDispatchPlans,
-         setupTeamFilters, applyDensity, getTeamDensity } from './src/features/team.js';
+         setupTeamFilters, applyDensity, getTeamDensity,
+         showLaunchTeamModal } from './src/features/team.js';
 
 // Init order (runtime-sensitive):
 // 1. DOM refs available (DOMContentLoaded)
@@ -2186,7 +2187,7 @@ async function killPane(targetId) {
 function populateRepoDropdown() {
     const hasRepos = ctx.config && ((ctx.config.repos && ctx.config.repos.length > 0) || (ctx.config.workspace_dirs && ctx.config.workspace_dirs.length > 0));
     const hasMultiplePanes = ctx.targets.length > 1;
-    const hasTeam = ctx.teamState && ctx.teamState.has_team && ctx.teamState.team;
+    const hasTeam = isTeamInCurrentRepo();
     const hasNewWindow = hasRepos || hasMultiplePanes;  // Always allow new window if there are panes
     const hasContent = hasNewWindow || hasTeam;
 
@@ -2203,9 +2204,14 @@ function populateRepoDropdown() {
     repoDropdown.innerHTML = '';
 
     // Build set of team target IDs so we can skip them in "Current Session"
+    // Always build this set (even if team is in another repo) to hide team panes from session list
     let teamTargetIds = new Set();
+    if (ctx.teamState && ctx.teamState.has_team && ctx.teamState.team) {
+        const allMembers = [ctx.teamState.team.leader, ...(ctx.teamState.team.agents || [])].filter(Boolean);
+        teamTargetIds = new Set(allMembers.map(a => a.target_id));
+    }
 
-    // Section 0: Team (only when team exists)
+    // Section 0: Team (only when team is in current repo)
     if (hasTeam) {
         const header = document.createElement('div');
         header.className = 'nav-section-header';
@@ -2215,8 +2221,6 @@ function populateRepoDropdown() {
         const teamList = [];
         if (ctx.teamState.team.leader) teamList.push(ctx.teamState.team.leader);
         teamList.push(...ctx.teamState.team.agents);
-
-        teamTargetIds = new Set(teamList.map(a => a.target_id));
 
         for (const agent of teamList) {
             const opt = document.createElement('button');
@@ -2464,7 +2468,7 @@ async function switchRepo(session) {
             // Refresh log, ctx.targets, and queue after connection established
             setTimeout(async () => {
                 await loadTargets();
-                refreshLogContent();
+                loadLogContent();  // Full reload, not incremental refresh
                 await reconcileQueue();  // Reconcile queue for new session
                 // Refresh context banner for new repo
                 sessionStorage.removeItem(`mto_context_dismissed_${session}`);
@@ -2707,10 +2711,15 @@ async function selectTarget(targetId, isInitialSync = false) {
             lastLogModified = 0;
             lastLogContentHash = '';
 
-            // Refresh context-dependent views after short delay
+            // Clear log DOM immediately to avoid showing stale content
+            if (logContent) {
+                logContent.innerHTML = '<div class="log-loading">Loading...</div>';
+            }
+
+            // Full log reload after WebSocket reconnect settles
             setTimeout(() => {
-                refreshLogContent();
-            }, 300);
+                loadLogContent();
+            }, 500);
         }
 
     } catch (error) {
@@ -2767,7 +2776,8 @@ async function checkAgentHealth() {
         }
 
         // Detect crash: was running, now not, and was running for at least 3s
-        if (wasRunning && !isNowRunning && agentStartedAt) {
+        // Skip crash detection if team was just dismissed (teamState cleared)
+        if (wasRunning && !isNowRunning && agentStartedAt && ctx.teamState !== null) {
             const runDuration = Date.now() - agentStartedAt;
             if (runDuration > 3000) {
                 // Debounce crash detection by 3s to avoid false positives
@@ -4564,9 +4574,25 @@ function setupViewToggle() {
 
 // updateTerminalAgentSelector — moved to src/features/team.js
 
-// Dynamic tab order based on team presence
+/**
+ * Check if the active target is in the same repo as the team members.
+ * Returns true if team exists AND shares a CWD prefix with active pane.
+ * Returns false if no team, or team is in a different repo.
+ */
+function isTeamInCurrentRepo() {
+    if (!ctx.teamState || !ctx.teamState.has_team || !ctx.teamState.team) return false;
+    const activeTarget = ctx.targets?.find(t => t.id === ctx.activeTarget);
+    const activeCwd = activeTarget?.cwd;
+    if (!activeCwd) return true; // No CWD info — assume same repo
+    const allMembers = [ctx.teamState.team.leader, ...(ctx.teamState.team.agents || [])].filter(Boolean);
+    const teamCwds = allMembers.map(a => a.cwd).filter(Boolean);
+    if (teamCwds.length === 0) return true; // No CWD info on team — assume same repo
+    return teamCwds.some(tc => activeCwd.startsWith(tc) || tc.startsWith(activeCwd));
+}
+
+// Dynamic tab order based on team presence in current repo
 function getTabOrder() {
-    if (ctx.teamState && ctx.teamState.has_team) return ['team', 'log', 'terminal'];
+    if (isTeamInCurrentRepo()) return ['team', 'log', 'terminal'];
     return ['log', 'terminal'];
 }
 
@@ -6265,6 +6291,8 @@ let pendingLogContent = null;
 
 async function refreshLogContent(signal) {
     if (!logContent) return;
+    // If logLoaded is false, a full loadLogContent is pending — don't race with it
+    if (!logLoaded) return;
 
     try {
         // Include pane_id to avoid race condition with other tabs
@@ -6397,13 +6425,13 @@ function sendLogCommand() {
         localStorage.setItem('terminalHistory', JSON.stringify(commandHistory));
     }
 
-    // Force refresh log after a short delay
-    setTimeout(() => {
-        logLoaded = false;
-        lastLogModified = 0;
-        lastLogContentHash = '';  // Force re-fetch
-        loadLogContent();
-    }, 500);
+    // Invalidate log cache so next refresh picks up changes.
+    // Use incremental refreshLogContent (not loadLogContent) to avoid
+    // replacing the entire DOM — preserves scroll position and keeps
+    // previous context (e.g. team summary) visible.
+    lastLogContentHash = '';
+    lastLogModified = 0;
+    setTimeout(() => refreshLogContent(), 500);
 }
 
 /**
@@ -6733,6 +6761,10 @@ function setupPreviewHandlers() {
             const tab = item.dataset.tab;
             const action = item.dataset.action;
             closeFabMenu();
+            if (action === 'launchTeam') {
+                showLaunchTeamModal();
+                return;
+            }
             if (action === 'docs') {
                 document.getElementById('docsModal')?.classList.remove('hidden');
                 return;
@@ -7856,11 +7888,10 @@ function populateDesktopSidebar() {
     // Show sidebar
     sidebar.classList.remove('hidden');
 
-    // Hide team section if no team detected
+    // Always show team section — empty state CTA handled by renderTeamCards
     const teamSection = document.getElementById('sidebarTeamSection');
     if (teamSection) {
-        const hasTeam = ctx.teamState?.has_team;
-        teamSection.style.display = hasTeam ? '' : 'none';
+        teamSection.style.display = '';
     }
 
     // Update counts
@@ -7994,7 +8025,8 @@ function restoreSidebarToolContent() {
 function updateSidebarCounts() {
     const teamCountEl = document.getElementById('sidebarTeamCount');
     if (teamCountEl) {
-        const agents = ctx.teamState?.team?.agents;
+        const teamVisible = isTeamInCurrentRepo();
+        const agents = teamVisible ? ctx.teamState?.team?.agents : null;
         const count = agents ? agents.length : 0;
         teamCountEl.textContent = count.toString();
         teamCountEl.classList.toggle('hidden', count === 0);
@@ -8008,11 +8040,10 @@ function updateSidebarCounts() {
         queueCountEl.classList.toggle('hidden', queuedCount === 0);
     }
 
-    // Show/hide team section based on team state
+    // Always show team section — empty state CTA handled by renderTeamCards
     const teamSection = document.getElementById('sidebarTeamSection');
     if (teamSection) {
-        const hasTeam = ctx.teamState?.has_team;
-        teamSection.style.display = hasTeam ? '' : 'none';
+        teamSection.style.display = '';
     }
 }
 
