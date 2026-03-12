@@ -7807,3 +7807,376 @@ html, body {
     }
 }
 
+/* ── Team Launcher Modal ─────────────────────────────────────────── */
+
+.launch-team-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+.launch-team-modal.hidden {
+    display: none;
+}
+
+.launch-team-content {
+    background: #1a1a2e;
+    border: 1px solid #333;
+    border-radius: 12px;
+    max-width: 440px;
+    width: 100%;
+    max-height: 85vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.launch-team-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid #333;
+}
+.launch-team-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #e0e0e0;
+}
+.launch-team-close-btn {
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 22px;
+    cursor: pointer;
+    padding: 4px 8px;
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.launch-team-close-btn:hover {
+    color: #fff;
+}
+
+.launch-team-body {
+    padding: 16px;
+    flex: 1;
+    overflow-y: auto;
+}
+
+.launch-team-label {
+    display: block;
+    font-size: 12px;
+    color: #999;
+    margin-bottom: 6px;
+    margin-top: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.launch-team-label:first-child {
+    margin-top: 0;
+}
+
+.launch-team-select {
+    width: 100%;
+    padding: 10px 12px;
+    background: #0d0d1a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 14px;
+    min-height: 44px;
+}
+
+.launch-team-textarea {
+    width: 100%;
+    padding: 10px 12px;
+    background: #0d0d1a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 14px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 44px;
+    box-sizing: border-box;
+}
+.launch-team-textarea:focus,
+.launch-team-select:focus {
+    border-color: #5b8dee;
+    outline: none;
+}
+
+/* Template grid */
+.launch-team-template-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.launch-team-template-card {
+    background: #0d0d1a;
+    border: 2px solid #333;
+    border-radius: 8px;
+    padding: 12px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+.launch-team-template-card:hover {
+    border-color: #555;
+}
+.launch-team-template-card.selected {
+    border-color: #5b8dee;
+    background: #141428;
+}
+
+.template-card-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e0e0e0;
+    margin-bottom: 4px;
+}
+.template-card-desc {
+    font-size: 11px;
+    color: #888;
+    line-height: 1.3;
+    margin-bottom: 6px;
+}
+.template-card-count {
+    font-size: 11px;
+    color: #5b8dee;
+    font-weight: 500;
+}
+
+/* Roster */
+.launch-team-roster {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.launch-team-agent-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+.launch-team-agent-name {
+    flex: 1;
+    padding: 8px 10px;
+    background: #0d0d1a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 13px;
+    min-height: 44px;
+    box-sizing: border-box;
+}
+.launch-team-agent-role {
+    width: 110px;
+    padding: 8px 10px;
+    background: #0d0d1a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 13px;
+    min-height: 44px;
+}
+.launch-team-agent-remove {
+    background: none;
+    border: 1px solid #555;
+    border-radius: 6px;
+    color: #888;
+    font-size: 14px;
+    cursor: pointer;
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.launch-team-agent-remove:hover {
+    color: #ff6b6b;
+    border-color: #ff6b6b;
+}
+
+.launch-team-add-btn {
+    background: none;
+    border: 1px dashed #555;
+    border-radius: 6px;
+    color: #888;
+    padding: 10px;
+    cursor: pointer;
+    font-size: 13px;
+    margin-top: 6px;
+    min-height: 44px;
+    width: 100%;
+}
+.launch-team-add-btn:hover {
+    border-color: #5b8dee;
+    color: #5b8dee;
+}
+
+.launch-team-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    font-size: 13px;
+    color: #ccc;
+    min-height: 44px;
+}
+.launch-team-checkbox-label input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+}
+
+.launch-team-confirm-msg {
+    margin-top: 12px;
+    font-size: 13px;
+    color: #888;
+    text-align: center;
+    padding: 8px;
+    background: #0d0d1a;
+    border-radius: 6px;
+}
+
+.launch-team-summary {
+    font-size: 14px;
+    color: #ccc;
+    padding: 10px 12px;
+    background: #0d0d1a;
+    border-radius: 6px;
+    margin-bottom: 8px;
+}
+
+/* Status messages */
+.launch-team-status {
+    padding: 10px 16px;
+    font-size: 13px;
+    border-top: 1px solid #333;
+}
+.launch-team-status.hidden {
+    display: none;
+}
+.launch-team-status.info {
+    color: #5b8dee;
+    background: rgba(91, 141, 238, 0.08);
+}
+.launch-team-status.success {
+    color: #4ecdc4;
+    background: rgba(78, 205, 196, 0.08);
+}
+.launch-team-status.warning {
+    color: #ffa726;
+    background: rgba(255, 167, 38, 0.08);
+}
+.launch-team-status.error {
+    color: #ff6b6b;
+    background: rgba(255, 107, 107, 0.08);
+}
+
+/* Footer buttons */
+.launch-team-footer {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid #333;
+    justify-content: flex-end;
+}
+.launch-team-btn {
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    min-height: 44px;
+}
+.launch-team-btn.primary {
+    background: #5b8dee;
+    color: #fff;
+}
+.launch-team-btn.primary:hover {
+    background: #4a7de0;
+}
+.launch-team-btn.primary:disabled {
+    background: #3a5a8a;
+    cursor: not-allowed;
+}
+.launch-team-btn.secondary {
+    background: #333;
+    color: #ccc;
+}
+.launch-team-btn.secondary:hover {
+    background: #444;
+}
+.launch-team-btn.danger {
+    background: #8b2020;
+    color: #ff9999;
+}
+.launch-team-btn.danger:hover {
+    background: #a02828;
+}
+
+/* Empty state */
+.team-no-team {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 16px;
+    gap: 12px;
+}
+.team-no-team-text {
+    font-size: 14px;
+    color: #888;
+}
+.no-team-launch-btn {
+    padding: 10px 24px;
+    background: #5b8dee;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    min-height: 44px;
+}
+.no-team-launch-btn:hover {
+    background: #4a7de0;
+}
+
+/* Dismiss team bar */
+.team-dismiss-bar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 0 8px;
+}
+.team-dismiss-btn {
+    background: none;
+    border: 1px solid #555;
+    border-radius: 6px;
+    color: #999;
+    font-size: 12px;
+    padding: 6px 14px;
+    cursor: pointer;
+    min-height: 36px;
+}
+.team-dismiss-btn:hover {
+    color: #ff6b6b;
+    border-color: #ff6b6b;
+}
+
+/* Error display */
+.launch-team-error {
+    color: #ff6b6b;
+    font-size: 13px;
+    padding: 12px;
+    text-align: center;
+}
+

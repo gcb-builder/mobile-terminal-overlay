@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=199">
+    <link rel="stylesheet" href="/static/styles.css?v=200">
 </head>
 <body>
     <div class="app">
@@ -574,6 +574,45 @@
             </div>
         </div>
 
+        <!-- Team Launcher modal -->
+        <div id="launchTeamModal" class="launch-team-modal hidden">
+          <div class="launch-team-content">
+            <div class="launch-team-header">
+              <span class="launch-team-title">Launch Team</span>
+              <button id="launchTeamClose" class="launch-team-close-btn">&times;</button>
+            </div>
+            <div class="launch-team-body">
+              <!-- Step 1: Plan + Goal + Template -->
+              <div id="launchTeamStep1">
+                <label class="launch-team-label">Plan (optional)</label>
+                <select id="launchTeamPlan" class="launch-team-select">
+                  <option value="">No plan -- enter goal manually</option>
+                </select>
+                <label class="launch-team-label">Goal</label>
+                <textarea id="launchTeamGoal" class="launch-team-textarea" rows="2" placeholder="What should the team accomplish?"></textarea>
+                <label class="launch-team-label">Template</label>
+                <div id="launchTeamTemplates" class="launch-team-template-grid"></div>
+              </div>
+              <!-- Step 2: Roster + Options -->
+              <div id="launchTeamStep2" class="hidden">
+                <div id="launchTeamSummary" class="launch-team-summary"></div>
+                <label class="launch-team-label">Agents</label>
+                <div id="launchTeamRoster" class="launch-team-roster"></div>
+                <button id="launchTeamAddAgent" class="launch-team-add-btn">+ Add Agent</button>
+                <label class="launch-team-checkbox-label"><input type="checkbox" id="launchTeamAutoDispatch" checked> Auto-dispatch to leader</label>
+                <div class="launch-team-confirm-msg">This will start Claude in <strong><span id="launchTeamCount">0</span></strong> windows</div>
+              </div>
+            </div>
+            <div id="launchTeamStatus" class="launch-team-status hidden"></div>
+            <div class="launch-team-footer">
+              <button id="launchTeamBack" class="launch-team-btn secondary hidden">Back</button>
+              <button id="launchTeamKill" class="launch-team-btn danger hidden">Kill Team</button>
+              <button id="launchTeamNext" class="launch-team-btn primary">Next</button>
+              <button id="launchTeamLaunch" class="launch-team-btn primary hidden">Launch</button>
+            </div>
+          </div>
+        </div>
+
         <!-- FAB menu (vertical list, opens drawer tabs) -->
         <div id="fabMenu" class="fab-menu hidden">
             <button class="fab-menu-item" data-tab="queue"><span class="fab-icon">&#x23F3;</span>Queue</button>
@@ -583,6 +622,7 @@
             <button class="fab-menu-item" data-tab="process"><span class="fab-icon">&#x2630;</span>Process</button>
             <button class="fab-menu-item" data-tab="mcp"><span class="fab-icon">&#x26A1;</span>MCP</button>
             <button class="fab-menu-item" data-tab="env"><span class="fab-icon">&#x1F511;</span>Env</button>
+            <button class="fab-menu-item" data-action="launchTeam"><span class="fab-icon">&#x1F680;</span>Launch Team</button>
             <button class="fab-menu-item" data-action="docs"><span class="fab-icon">&#x1F4C4;</span>Docs</button>
             <button class="fab-menu-close" id="fabMenuClose" aria-label="Close">&times;</button>
         </div>
@@ -779,6 +819,6 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script defer src="/static/terminal.js?v=279"></script>
+    <script defer src="/static/terminal.js?v=280"></script>
 </body>
 </html>
