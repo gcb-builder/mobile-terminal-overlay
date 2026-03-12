@@ -397,7 +397,7 @@ def create_app(config: Config) -> FastAPI:
                 del app.state.target_log_mapping[old_target]
 
         # Skip full switch if already on this target (avoids WS disconnect on initial sync)
-        if app.state.active_target == target_id and app.state.master_fd is not None:
+        if app.state.active_target == target_id:
             logger.info(f"Target {target_id} already active, skipping switch")
             return {
                 "success": True,
@@ -1278,6 +1278,7 @@ def create_app(config: Config) -> FastAPI:
     from mobile_terminal.routers import logs as logs_router
     from mobile_terminal.routers import process as process_router
     from mobile_terminal.routers import team as team_router
+    from mobile_terminal.routers import team_launcher as team_launcher_router
     from mobile_terminal.routers import push as push_router
     from mobile_terminal.routers import terminal_io as terminal_io_router
     from mobile_terminal.routers import scratch as scratch_router
@@ -1307,6 +1308,7 @@ def create_app(config: Config) -> FastAPI:
     logs_router.register(app, deps)
     process_router.register(app, deps)
     team_router.register(app, deps)
+    team_launcher_router.register(app, deps)
     push_router.register(app, deps)
     terminal_io_router.register(app, deps)
     scratch_router.register(app, deps)
