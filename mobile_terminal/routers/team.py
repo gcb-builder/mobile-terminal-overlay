@@ -97,6 +97,13 @@ def register(app: FastAPI, deps):
             obs = driver.observe(ctx)
             git_info = deps.get_git_info_cached(cwd_path)
 
+            # Register team member's log file so main pane log detection
+            # can exclude it (avoids showing team member logs in central view)
+            if obs.log_paths and target_id not in app.state.target_log_mapping:
+                app.state.target_log_mapping[target_id] = {
+                    "path": str(obs.log_paths[0]), "pinned": False,
+                }
+
             entry = {
                 "target_id": target_id,
                 "agent_name": name,

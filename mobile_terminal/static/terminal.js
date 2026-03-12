@@ -2187,9 +2187,8 @@ async function killPane(targetId) {
 function populateRepoDropdown() {
     const hasRepos = ctx.config && ((ctx.config.repos && ctx.config.repos.length > 0) || (ctx.config.workspace_dirs && ctx.config.workspace_dirs.length > 0));
     const hasMultiplePanes = ctx.targets.length > 1;
-    const hasTeam = isTeamInCurrentRepo();
     const hasNewWindow = hasRepos || hasMultiplePanes;  // Always allow new window if there are panes
-    const hasContent = hasNewWindow || hasTeam;
+    const hasContent = hasNewWindow;
 
     // Update nav label
     updateNavLabel();
@@ -2211,83 +2210,8 @@ function populateRepoDropdown() {
         teamTargetIds = new Set(allMembers.map(a => a.target_id));
     }
 
-    // Section 0: Team (only when team is in current repo)
-    if (hasTeam) {
-        const header = document.createElement('div');
-        header.className = 'nav-section-header';
-        header.textContent = 'Team';
-        repoDropdown.appendChild(header);
-
-        const teamList = [];
-        if (ctx.teamState.team.leader) teamList.push(ctx.teamState.team.leader);
-        teamList.push(...ctx.teamState.team.agents);
-
-        for (const agent of teamList) {
-            const opt = document.createElement('button');
-            const isActive = agent.target_id === ctx.activeTarget;
-            opt.className = 'nav-pane-option team-agent' + (isActive ? ' active' : '');
-
-            const content = document.createElement('div');
-            content.className = 'nav-pane-content';
-
-            // Phase dot
-            const dot = document.createElement('span');
-            dot.className = 'team-dot ' + agent.phase;
-            content.appendChild(dot);
-
-            // Agent name
-            const nameEl = document.createElement('span');
-            nameEl.className = 'nav-project';
-            nameEl.textContent = agent.team_role === 'leader'
-                ? 'Leader'
-                : agent.agent_name.replace(/^a-/, '');
-            content.appendChild(nameEl);
-
-            // Branch label (if available)
-            if (agent.git && agent.git.branch) {
-                const branchEl = document.createElement('span');
-                branchEl.className = 'team-branch' + (agent.git.is_main ? ' team-branch-main' : '');
-                const branchText = agent.git.branch.length > 20
-                    ? agent.git.branch.slice(0, 18) + '...'
-                    : agent.git.branch;
-                branchEl.textContent = branchText;
-                if (agent.git.is_worktree) {
-                    branchEl.title = `Worktree: ${agent.git.branch}`;
-                }
-                content.appendChild(branchEl);
-            }
-
-            // Phase label
-            const phaseEl = document.createElement('span');
-            phaseEl.className = 'team-phase';
-            const phaseLabels = {
-                waiting: 'Waiting', planning: 'Planning',
-                working: 'Working', running_task: 'Agent', idle: 'Idle'
-            };
-            phaseEl.textContent = agent.active
-                ? (phaseLabels[agent.phase] || agent.phase)
-                : 'Off';
-            content.appendChild(phaseEl);
-
-            // Permission badge (only for permission waits, not questions)
-            if (agent.waiting_reason === 'permission' && agent.permission) {
-                const badge = document.createElement('span');
-                badge.className = 'team-perm-badge';
-                badge.title = `${agent.permission.tool}: ${agent.permission.target}`;
-                badge.textContent = '!';
-                content.appendChild(badge);
-            }
-
-            opt.appendChild(content);
-            opt.addEventListener('click', () => selectTarget(agent.target_id));
-            repoDropdown.appendChild(opt);
-        }
-
-        // Divider after team section
-        const divider = document.createElement('div');
-        divider.className = 'nav-section-divider';
-        repoDropdown.appendChild(divider);
-    }
+    // Team agents are shown in the team screen only — not in the pane switcher.
+    // (teamTargetIds built above still filters them from "Current Session")
 
     // Section 1: Current Session panes (skip team panes)
     if (ctx.targets.length > 0) {
@@ -2450,6 +2374,16 @@ async function switchRepo(session) {
         populateRecentRepos();
         updateNavLabel();
 
+        // Immediately hide team UI — new session has no targets yet so
+        // isTeamInCurrentRepo() returns false. Prevents stale team bar/tabs.
+        updateLogFilterBarVisibility();
+        updateTabIndicator();
+        if (ctx.currentView === 'team') {
+            switchToView('log');
+        }
+        const sysStrip = document.getElementById('systemStatusStrip');
+        if (sysStrip) sysStrip.classList.add('hidden');
+
         // Clear ctx.terminal and log content immediately (don't show old session's output)
         if (ctx.terminal) {
             ctx.terminal.clear();
@@ -2505,7 +2439,9 @@ function populateRecentRepos() {
         for (const a of ctx.teamState.team.agents) teamTargetIds.add(a.target_id);
     }
 
-    ctx.targets.forEach(target => {
+    // Filter out team panes from quick-switcher
+    const nonTeamTargets = ctx.targets.filter(t => !teamTargetIds.has(t.id));
+    nonTeamTargets.forEach(target => {
         const isActive = target.id === ctx.activeTarget;
         const btn = document.createElement('button');
         btn.className = 'recent-repo-btn' + (isActive ? ' current' : '');
@@ -2631,6 +2567,13 @@ async function selectTarget(targetId, isInitialSync = false) {
     localStorage.setItem('mto_active_target', targetId);
     updateNavLabel();
     populateRecentRepos();
+
+    // Immediately update team-scoped UI for the new target's repo
+    updateLogFilterBarVisibility();
+    updateTabIndicator();
+    if (!isTeamInCurrentRepo() && ctx.currentView === 'team') {
+        switchToView('log');
+    }
 
     // Load new target's queue from localStorage
     reloadQueueForTarget();
@@ -2888,7 +2831,7 @@ async function respawnAgent() {
  * Fetch team state (phase + git info for all team panes)
  */
 async function updateTeamState() {
-    const hadTeam = ctx.teamState && ctx.teamState.has_team;
+    const hadTeamHere = isTeamInCurrentRepo();
     try {
         const sessParam = ctx.currentSession ? `&session=${encodeURIComponent(ctx.currentSession)}` : '';
         const resp = await fetchWithTimeout(
@@ -2903,17 +2846,18 @@ async function updateTeamState() {
     } catch {
         ctx.teamState = null;
     }
-    const hasTeam = ctx.teamState && ctx.teamState.has_team;
-    // Detect team presence transitions
-    if (hadTeam !== hasTeam) {
+    const hasTeamHere = isTeamInCurrentRepo();
+    // Detect team-in-current-repo transitions (covers both global team changes
+    // and switching between repos with/without team)
+    if (hadTeamHere !== hasTeamHere) {
         updateTabIndicator();
         updateLogFilterBarVisibility();
-        // If team disappeared while viewing team, switch to log
-        if (!hasTeam && ctx.currentView === 'team') {
+        // If team not in this repo while viewing team, switch to log
+        if (!hasTeamHere && ctx.currentView === 'team') {
             switchToView('log');
         }
-        // Hide system strip when team disappears
-        if (!hasTeam) {
+        // Hide system strip when team not in this repo
+        if (!hasTeamHere) {
             const sysStrip = document.getElementById('systemStatusStrip');
             if (sysStrip) sysStrip.classList.add('hidden');
         }
@@ -5076,12 +5020,34 @@ function setupLogFilterBar() {
 
 /**
  * Show/hide filter bar based on team presence (only useful with multi-agent).
+ * Also populates the agent filter dropdown from current team state.
  */
 function updateLogFilterBarVisibility() {
     const filterBar = document.getElementById('logFilterBar');
     if (!filterBar) return;
-    if (ctx.teamState && ctx.teamState.has_team) {
+    const teamHere = isTeamInCurrentRepo();
+    if (teamHere) {
         filterBar.classList.remove('hidden');
+        // Populate agent dropdown from team state
+        const agentSelect = document.getElementById('logAgentFilter');
+        if (agentSelect && ctx.teamState?.team) {
+            const current = agentSelect.value;
+            agentSelect.innerHTML = '<option value="all">All Agents</option>';
+            const members = [ctx.teamState.team.leader, ...(ctx.teamState.team.agents || [])].filter(Boolean);
+            for (const m of members) {
+                const opt = document.createElement('option');
+                opt.value = m.agent_name || m.target_id;
+                const label = m.team_role === 'leader'
+                    ? 'Leader'
+                    : (m.agent_name || '').replace(/^a-/, '');
+                opt.textContent = label;
+                agentSelect.appendChild(opt);
+            }
+            // Restore previous selection if still valid
+            if (current && [...agentSelect.options].some(o => o.value === current)) {
+                agentSelect.value = current;
+            }
+        }
     } else {
         filterBar.classList.add('hidden');
     }
@@ -7823,7 +7789,15 @@ function populateSidebarSessions() {
 
     if (!ctx.targets || ctx.targets.length === 0) return;
 
-    ctx.targets.forEach(target => {
+    // Build team target set to filter out team panes
+    const teamTargetIds = new Set();
+    if (ctx.teamState?.has_team && ctx.teamState.team) {
+        if (ctx.teamState.team.leader) teamTargetIds.add(ctx.teamState.team.leader.target_id);
+        for (const a of ctx.teamState.team.agents) teamTargetIds.add(a.target_id);
+    }
+
+    const nonTeamTargets = ctx.targets.filter(t => !teamTargetIds.has(t.id));
+    nonTeamTargets.forEach(target => {
         const isActive = target.id === ctx.activeTarget;
         const btn = document.createElement('button');
         btn.className = 'sidebar-session-btn' + (isActive ? ' current' : '');

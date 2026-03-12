@@ -172,27 +172,36 @@ def register(app: FastAPI, deps):
         Detect which .jsonl log file belongs to a specific target pane.
 
         Strategy:
-        1. Check cached mapping
-        2. Fall back to most recently modified
+        1. Check cached mapping (pinned or monitor-detected)
+        2. Fall back to most recently modified (only among non-team logs)
         """
         jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
         if not jsonl_files:
             return None
 
-        # Check if we have a PINNED mapping for this target (user explicitly selected)
+        # Check if we have a mapping for this target (pinned or detected)
         if target_id:
             cached = app.state.target_log_mapping.get(target_id)
             if cached:
-                is_pinned = cached.get("pinned", False) if isinstance(cached, dict) else False
-                if is_pinned:
-                    cached_path = Path(cached["path"]) if isinstance(cached, dict) else Path(cached)
-                    if cached_path.exists():
-                        logger.debug(f"Using pinned log file for target {target_id}: {cached_path.name}")
-                        return cached_path
+                cached_path = Path(cached["path"]) if isinstance(cached, dict) else Path(cached)
+                if cached_path.exists():
+                    logger.debug(f"Using mapped log file for target {target_id}: {cached_path.name}")
+                    return cached_path
 
-        # For non-pinned: ALWAYS use the most recently modified file
-        newest_file = max(jsonl_files, key=lambda f: f.stat().st_mtime)
-        logger.info(f"Using newest log file: {newest_file.name} (mtime-based)")
+        # Build set of log files claimed by OTHER targets (team members)
+        claimed_paths = set()
+        if target_id:
+            for tid, mapping in app.state.target_log_mapping.items():
+                if tid != target_id:
+                    p = Path(mapping["path"]) if isinstance(mapping, dict) else Path(mapping)
+                    claimed_paths.add(str(p))
+
+        # Prefer unclaimed files (avoids picking a team member's log)
+        unclaimed = [f for f in jsonl_files if str(f) not in claimed_paths]
+        candidates = unclaimed if unclaimed else jsonl_files
+
+        newest_file = max(candidates, key=lambda f: f.stat().st_mtime)
+        logger.info(f"Using newest log file: {newest_file.name} (mtime-based, {len(claimed_paths)} claimed by others)")
         return newest_file
 
     # Expose monitor function for use by target/select route in server.py
