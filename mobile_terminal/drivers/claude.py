@@ -71,8 +71,11 @@ class ClaudeDriver(BaseAgentDriver):
             except Exception:
                 pass
 
-        # 4. If not running and no activity, return early idle
-        if not obs.running and not obs.active:
+        # 4. If Claude is not running in this pane, phase is idle.
+        # Don't use log activity as a gate — find_claude_log_file picks the
+        # most recent log by repo, which may belong to a different Claude
+        # instance (e.g. a team agent in another pane).
+        if not obs.running:
             obs.phase = "idle"
             return obs
 
