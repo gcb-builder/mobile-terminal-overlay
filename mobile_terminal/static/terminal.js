@@ -6361,10 +6361,81 @@ function setupLogInput() {
         }
     });
 
+    // Queue button (desktop) — always queues
+    const logQueue = document.getElementById('logQueue');
+    if (logQueue) {
+        logQueue.addEventListener('click', () => queueLogCommand());
+    }
+
     // Focus mode: when input is tapped, refresh the active prompt
     logInput.addEventListener('focus', () => {
         refreshActivePrompt();
     });
+
+    // Paste images/files into log input — upload and insert path
+    logInput.addEventListener('paste', async (e) => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        for (const item of items) {
+            if (item.type.startsWith('image/') || item.kind === 'file') {
+                e.preventDefault();
+                const file = item.getAsFile();
+                if (file) await uploadAndInsertPath(file, logInput);
+                return;
+            }
+        }
+    });
+
+    // Drag-and-drop files onto log view
+    if (logView) {
+        logView.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            logView.classList.add('drag-over');
+        });
+        logView.addEventListener('dragleave', () => {
+            logView.classList.remove('drag-over');
+        });
+        logView.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            logView.classList.remove('drag-over');
+            if (e.dataTransfer?.files) {
+                for (const file of e.dataTransfer.files) {
+                    await uploadAndInsertPath(file, logInput);
+                }
+            }
+        });
+    }
+}
+
+/**
+ * Upload a file and insert its server path into an input element.
+ */
+async function uploadAndInsertPath(file, inputEl) {
+    const placeholder = `[uploading ${file.name}...]`;
+    const start = inputEl.selectionStart || inputEl.value.length;
+    const before = inputEl.value.substring(0, start);
+    const after = inputEl.value.substring(inputEl.selectionEnd || start);
+    inputEl.value = before + placeholder + after;
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch(`/api/upload?token=${ctx.token}`, {
+            method: 'POST',
+            body: formData,
+        });
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.error || 'Upload failed');
+        }
+        const data = await response.json();
+        inputEl.value = inputEl.value.replace(placeholder, data.path);
+        showToast(`Uploaded ${data.filename}`, 'success');
+    } catch (error) {
+        inputEl.value = inputEl.value.replace(placeholder, '');
+        showToast(`Upload failed: ${error.message}`, 'error');
+    }
+    inputEl.focus();
 }
 
 /**
