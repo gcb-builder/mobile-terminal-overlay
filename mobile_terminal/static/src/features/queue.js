@@ -100,6 +100,7 @@ export function renderQueueList() {
     if (queueItems.length === 0) {
         queueList.innerHTML = '<div class="queue-empty">Queue is empty</div>';
         if (queueCount) queueCount.textContent = '0';
+        if (queueSendNext) queueSendNext.classList.remove('primary');
         updateQueueBadge(0);
         return;
     }
@@ -142,6 +143,7 @@ export function renderQueueList() {
 
     const queuedCount = queueItems.filter(i => i.status === 'queued').length;
     if (queueCount) queueCount.textContent = queueItems.length.toString();
+    if (queueSendNext) queueSendNext.classList.toggle('primary', queuedCount > 0);
     updateQueueBadge(queuedCount);
 
     // Update sidebar queue count badge

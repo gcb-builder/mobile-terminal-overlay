@@ -5781,6 +5781,12 @@ function showPromptBanner() {
 
     // Wire up event handlers
     setupPromptBannerHandlers();
+
+    // Auto-focus banner for keyboard interaction (desktop)
+    if (ctx.uiMode === 'desktop-multipane' && !answered) {
+        promptBanner.setAttribute('tabindex', '-1');
+        requestAnimationFrame(() => promptBanner.focus({ preventScroll: true }));
+    }
 }
 
 /**
@@ -5790,6 +5796,10 @@ function hidePromptBanner() {
     if (!promptBanner) return;
     promptBanner.classList.remove('visible');
     promptBanner.classList.remove('expanded');
+    // Return focus to input on desktop
+    if (ctx.uiMode === 'desktop-multipane' && logInput) {
+        logInput.focus();
+    }
 }
 
 /**
@@ -5833,6 +5843,49 @@ function setupPromptBannerHandlers() {
             clearPendingPrompt();
         };
     }
+
+    // Keyboard shortcuts: number keys select choice, Enter confirms first, Escape dismisses
+    promptBanner.onkeydown = (e) => {
+        if (!pendingPrompt || pendingPrompt.answered) return;
+        const { choices } = pendingPrompt;
+
+        // Number keys 1-9 → select matching choice
+        const num = parseInt(e.key, 10);
+        if (num >= 1 && num <= choices.length) {
+            e.preventDefault();
+            const choice = choices[num - 1];
+            if (choice.num != null) {
+                sendPromptChoice(String(choice.num));
+            }
+            return;
+        }
+
+        // Enter → select first choice (primary action)
+        if (e.key === 'Enter' && choices.length > 0) {
+            e.preventDefault();
+            sendPromptChoice(String(choices[0].num));
+            return;
+        }
+
+        // Escape → dismiss
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            if (dismissedPrompts.size > 500) dismissedPrompts.clear();
+            dismissedPrompts.add(pendingPrompt.id);
+            clearPendingPrompt();
+            // Return focus to input
+            if (logInput) logInput.focus();
+            return;
+        }
+
+        // Y/N for 2-choice prompts (yes/no, allow/deny style)
+        if (choices.length === 2 && (e.key === 'y' || e.key === 'Y' || e.key === 'n' || e.key === 'N')) {
+            e.preventDefault();
+            const idx = (e.key === 'y' || e.key === 'Y') ? 0 : 1;
+            sendPromptChoice(String(choices[idx].num));
+            return;
+        }
+    };
 }
 
 /**
@@ -6324,6 +6377,12 @@ function setupLogInput() {
             e.preventDefault();
             sendLogCommand();
             historyIndex = -1;
+            return;
+        }
+        // Shift+Enter → queue command instead of sending
+        if ((e.key === 'Enter' || e.keyCode === 13) && e.shiftKey) {
+            e.preventDefault();
+            queueLogCommand();
             return;
         }
         if (e.key === 'ArrowUp') {

@@ -866,6 +866,9 @@ html, body {
 .prompt-banner.visible {
     display: flex;
 }
+.prompt-banner:focus {
+    outline: none;
+}
 
 /* When prompt banner is visible, shrink the live tail area so choices fit */
 .prompt-banner.visible ~ .terminal-block .terminal-block-output {
@@ -7806,7 +7809,7 @@ html, body {
 
     /* ===== Desktop font size bump ===== */
     .app.desktop-multipane .log-view-content {
-        font-size: 16px;
+        font-size: 15px;
     }
     .app.desktop-multipane .log-text {
         font-size: 16px;
@@ -7815,7 +7818,7 @@ html, body {
         font-size: 15px;
     }
     .app.desktop-multipane .terminal-block-output {
-        font-size: 16px;
+        font-size: 15px;
     }
     .app.desktop-multipane .terminal-input {
         font-size: 16px;
