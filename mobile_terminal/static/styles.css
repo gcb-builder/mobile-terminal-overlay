@@ -7134,6 +7134,12 @@ html, body {
         display: none;
     }
 
+    /* When terminal panel is open, hide the tail area (terminal replaces it) */
+    .app.desktop-multipane.desktop-terminal-open .tail-resize-handle,
+    .app.desktop-multipane.desktop-terminal-open .terminal-block-output {
+        display: none !important;
+    }
+
     /* Terminal as bottom dock panel (view-only — input bar handles typing) */
     .app.desktop-multipane .terminal-view.desktop-panel {
         display: flex !important;
