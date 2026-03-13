@@ -8385,22 +8385,22 @@ function setupDesktopShortcuts() {
         const isLogInput = document.activeElement?.id === 'logInput';
         if (!isLogInput) return;
 
-        // Escape → send to terminal + blur input
+        // Escape → blur input; if terminal panel open, close it
         if (e.key === 'Escape') {
             e.preventDefault();
-            sendKeyDebounced('\x1b');
+            document.activeElement.blur();
+            if (document.querySelector('.app')?.classList.contains('desktop-terminal-open')) {
+                closeDesktopTerminal();
+            }
             return;
         }
 
-        // Arrow Up/Down → send to terminal (history navigation)
-        if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            sendKeyWithSync('\x1b[A', 100);
-            return;
-        }
-        if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            sendKeyWithSync('\x1b[B', 100);
+        // Ctrl+C → send interrupt when input is empty
+        if (e.ctrlKey && e.key === 'c') {
+            if (logInput && !logInput.value.trim()) {
+                e.preventDefault();
+                sendKeyDebounced('\x03', true);
+            }
             return;
         }
 
