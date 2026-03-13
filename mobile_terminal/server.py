@@ -198,9 +198,12 @@ def create_app(config: Config) -> FastAPI:
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         dist_js = STATIC_DIR / "dist" / "terminal.min.js"
         if dist_js.exists():
+            # Preserve version query string for cache busting
+            m = re.search(r'terminal\.js\?v=(\d+)', html)
+            v_qs = f"?v={m.group(1)}" if m else ""
             html = re.sub(
                 r'<script\s+defer\s+src="/static/terminal\.js\?v=\d+"',
-                '<script defer src="/static/dist/terminal.min.js"',
+                f'<script defer src="/static/dist/terminal.min.js{v_qs}"',
                 html,
                 count=1,
             )

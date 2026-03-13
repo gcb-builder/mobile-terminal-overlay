@@ -21,7 +21,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=202">
+    <link rel="stylesheet" href="/static/styles.css?v=208">
 </head>
 <body>
     <div class="app">
@@ -114,6 +114,41 @@
             </div>
         </div>
 
+        <!-- Desktop sidebar: persistent panel with sessions, team, queue -->
+        <div id="desktopSidebar" class="desktop-sidebar hidden">
+            <div class="desktop-sidebar-header">
+                <span class="desktop-sidebar-title">Workspace</span>
+                <button id="sidebarBackBtn" class="sidebar-back-btn hidden" aria-label="Back">&larr;</button>
+                <span id="sidebarToolTitle" class="sidebar-tool-title hidden"></span>
+            </div>
+            <div id="sidebarDefaultContent" class="sidebar-default-content">
+                <div class="sidebar-section" id="sidebarSessionsSection">
+                    <button class="sidebar-section-toggle" data-section="sessions">
+                        <span class="sidebar-section-arrow">&#x25BC;</span>
+                        <span class="sidebar-section-label">Sessions</span>
+                    </button>
+                    <div class="sidebar-section-body" id="sidebarSessionsBody"></div>
+                </div>
+                <div class="sidebar-section" id="sidebarTeamSection">
+                    <button class="sidebar-section-toggle" data-section="team">
+                        <span class="sidebar-section-arrow">&#x25BC;</span>
+                        <span class="sidebar-section-label">Team</span>
+                        <span id="sidebarTeamCount" class="sidebar-section-count hidden">0</span>
+                    </button>
+                    <div class="sidebar-section-body" id="sidebarTeamBody"></div>
+                </div>
+                <div class="sidebar-section" id="sidebarQueueSection">
+                    <button class="sidebar-section-toggle" data-section="queue">
+                        <span class="sidebar-section-arrow">&#x25BC;</span>
+                        <span class="sidebar-section-label">Queue</span>
+                        <span id="sidebarQueueCount" class="sidebar-section-count hidden">0</span>
+                    </button>
+                    <div class="sidebar-section-body sidebar-section-flex" id="sidebarQueueBody"></div>
+                </div>
+            </div>
+            <div id="sidebarToolContent" class="sidebar-tool-content hidden"></div>
+        </div>
+
         <!-- Views container: flex column on mobile, CSS grid on desktop -->
         <div id="viewsContainer" class="views-container">
             <!-- Tools panel: desktop icon rail + content panel -->
@@ -168,41 +203,6 @@
                     </div>
                     <div id="toolsContentBody" class="tools-content-body"></div>
                 </div>
-            </div>
-
-            <!-- Desktop sidebar: persistent panel with sessions, team, queue -->
-            <div id="desktopSidebar" class="desktop-sidebar hidden">
-                <div class="desktop-sidebar-header">
-                    <span class="desktop-sidebar-title">Workspace</span>
-                    <button id="sidebarBackBtn" class="sidebar-back-btn hidden" aria-label="Back">&larr;</button>
-                    <span id="sidebarToolTitle" class="sidebar-tool-title hidden"></span>
-                </div>
-                <div id="sidebarDefaultContent" class="sidebar-default-content">
-                    <div class="sidebar-section" id="sidebarSessionsSection">
-                        <button class="sidebar-section-toggle" data-section="sessions">
-                            <span class="sidebar-section-arrow">&#x25BC;</span>
-                            <span class="sidebar-section-label">Sessions</span>
-                        </button>
-                        <div class="sidebar-section-body" id="sidebarSessionsBody"></div>
-                    </div>
-                    <div class="sidebar-section" id="sidebarTeamSection">
-                        <button class="sidebar-section-toggle" data-section="team">
-                            <span class="sidebar-section-arrow">&#x25BC;</span>
-                            <span class="sidebar-section-label">Team</span>
-                            <span id="sidebarTeamCount" class="sidebar-section-count hidden">0</span>
-                        </button>
-                        <div class="sidebar-section-body" id="sidebarTeamBody"></div>
-                    </div>
-                    <div class="sidebar-section" id="sidebarQueueSection">
-                        <button class="sidebar-section-toggle" data-section="queue">
-                            <span class="sidebar-section-arrow">&#x25BC;</span>
-                            <span class="sidebar-section-label">Queue</span>
-                            <span id="sidebarQueueCount" class="sidebar-section-count hidden">0</span>
-                        </button>
-                        <div class="sidebar-section-body sidebar-section-flex" id="sidebarQueueBody"></div>
-                    </div>
-                </div>
-                <div id="sidebarToolContent" class="sidebar-tool-content hidden"></div>
             </div>
 
             <!-- Log view: Log + Command input (primary view) -->
@@ -820,6 +820,6 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script defer src="/static/terminal.js?v=283"></script>
+    <script defer src="/static/terminal.js?v=288"></script>
 </body>
 </html>

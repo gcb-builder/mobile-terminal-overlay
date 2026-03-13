@@ -36,7 +36,7 @@ import { initTeam, activateTeamView, startTeamCardRefresh, stopTeamCardRefresh,
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC - if you see this in console, browser has v247 code
-console.log('=== TERMINAL.JS v258 DESKTOP SIDEBAR LAYOUT ===');
+console.log('=== TERMINAL.JS v285 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 
 // Global error boundary for debugging

@@ -7095,6 +7095,9 @@ html, body {
     .sidebar-section-body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
     .sidebar-section-flex { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
+    /* Queue in sidebar: override scroll container so flex chain resolves heights */
+    #sidebarQueueBody { overflow: hidden; }
+
     /* Sessions list in sidebar */
     .sidebar-session-btn {
         display: flex; align-items: center; gap: 8px;
@@ -7110,6 +7113,7 @@ html, body {
 
     /* Sidebar tool content (replaces default when secondary tool opened) */
     .sidebar-tool-content { flex: 1; overflow-y: auto; min-height: 0; }
+    .sidebar-tool-content.hidden { display: none; }
 
     /* Team view header: visible on desktop */
     .app.desktop-multipane .team-view-header {
