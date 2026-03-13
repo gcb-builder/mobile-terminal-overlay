@@ -412,6 +412,7 @@ let idleCheckTimer = null;
 const MAX_HISTORY_SIZE = 100;
 let commandHistory = JSON.parse(localStorage.getItem('terminalHistory') || '[]');
 let historyIndex = -1;
+let historySavedInput = '';
 let currentInput = '';
 
 // DOM elements (initialized in DOMContentLoaded)
@@ -6317,15 +6318,39 @@ async function refreshLogContent(signal) {
 function setupLogInput() {
     if (!logInput || !logSend) return;
 
-    // Send on Enter key (multiple event types for mobile compatibility)
-    const handleEnter = (e) => {
+    // Send on Enter, navigate history on ArrowUp/Down
+    logInput.addEventListener('keydown', (e) => {
         if ((e.key === 'Enter' || e.keyCode === 13) && !e.shiftKey) {
             e.preventDefault();
             sendLogCommand();
+            historyIndex = -1;
+            return;
         }
-    };
-    logInput.addEventListener('keydown', handleEnter);
-    logInput.addEventListener('keypress', handleEnter);
+        if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (commandHistory.length === 0) return;
+            if (historyIndex === -1) {
+                historySavedInput = logInput.value;
+                historyIndex = commandHistory.length - 1;
+            } else if (historyIndex > 0) {
+                historyIndex--;
+            }
+            logInput.value = commandHistory[historyIndex];
+            return;
+        }
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (historyIndex === -1) return;
+            if (historyIndex < commandHistory.length - 1) {
+                historyIndex++;
+                logInput.value = commandHistory[historyIndex];
+            } else {
+                historyIndex = -1;
+                logInput.value = historySavedInput || '';
+            }
+            return;
+        }
+    });
 
     // Send button - smart mode: send when idle, queue when busy
     logSend.addEventListener('click', () => {
