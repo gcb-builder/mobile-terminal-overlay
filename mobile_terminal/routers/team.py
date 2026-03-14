@@ -385,9 +385,10 @@ def register(app: FastAPI, deps):
             pass
 
         # Optionally read CONTEXT.md
+        config_dir = driver.config_dir_name()
         context_content = ""
         if include_context:
-            context_path = leader_cwd / ".claude" / "CONTEXT.md"
+            context_path = leader_cwd / config_dir / "CONTEXT.md"
             try:
                 if context_path.is_file():
                     context_content = context_path.read_text(encoding="utf-8")[:3000]
@@ -426,7 +427,7 @@ def register(app: FastAPI, deps):
 **ID:** {dispatch_id}
 **Plan:** {plan_filename}
 **Dispatched:** {now_iso}
-**Progress file:** `.claude/team-memory.md`
+**Progress file:** `{config_dir}/team-memory.md`
 
 ## What to do now
 
@@ -434,7 +435,7 @@ def register(app: FastAPI, deps):
 2. Propose a task split (agent -> task) in your response
 3. Flag any shared-file conflict risks
 4. Assign tasks to agents and begin execution
-5. Track progress in `.claude/team-memory.md`
+5. Track progress in `{config_dir}/team-memory.md`
 6. Ask me (human) only when blocked
 
 ## Response contract
@@ -490,7 +491,7 @@ Reply with:
 """
 
         # Write dispatch files
-        dispatch_dir = leader_cwd / ".claude"
+        dispatch_dir = leader_cwd / config_dir
         dispatch_archive_dir = dispatch_dir / "dispatch"
         dispatch_dir.mkdir(parents=True, exist_ok=True)
         dispatch_archive_dir.mkdir(parents=True, exist_ok=True)
@@ -506,7 +507,7 @@ Reply with:
 
         # Send instruction to leader pane
         tmux_target = get_tmux_target(sess, leader["target_id"])
-        instruction = f"Read .claude/dispatch.md and execute the plan. Dispatch ID: {dispatch_id}"
+        instruction = f"Read {config_dir}/dispatch.md and execute the plan. Dispatch ID: {dispatch_id}"
         try:
             await run_subprocess(
                 ["tmux", "send-keys", "-t", tmux_target, "-l", instruction],

@@ -6,6 +6,7 @@ AgentDriver is the abstraction that separates terminal/session orchestration
 permission signals, log parsing, start commands).
 """
 
+import asyncio
 import json
 import logging
 import subprocess
@@ -153,6 +154,11 @@ class AgentDriver(Protocol):
     def start_command(self, startup_command: Optional[str] = None) -> list: ...
     def observe(self, ctx: ObserveContext) -> Observation: ...
     def capabilities(self) -> dict: ...
+    def find_log_file(self, repo_path: Path) -> Optional[Path]: ...
+    async def is_ready(self, session: str, target: str,
+                       timeout: float = 15.0, interval: float = 2.0) -> bool: ...
+    def ready_patterns(self) -> list[str]: ...
+    def config_dir_name(self) -> str: ...
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +192,42 @@ class BaseAgentDriver:
             "has_phase_detection": False,
             "has_pane_title_signal": False,
         }
+
+    def find_log_file(self, repo_path: Path) -> Optional[Path]:
+        """Find the most recent log file for this agent at repo_path.
+        Override in subclasses. Default: None (no log lookup)."""
+        return None
+
+    async def is_ready(self, session: str, target: str,
+                       timeout: float = 15.0, interval: float = 2.0) -> bool:
+        """Driver-specific readiness check after starting agent in a tmux pane.
+        Default implementation polls pane output for ready_patterns()."""
+        elapsed = 0.0
+        while elapsed < timeout:
+            await asyncio.sleep(interval)
+            elapsed += interval
+            try:
+                result = subprocess.run(
+                    ["tmux", "capture-pane", "-t", f"{session}:{target}", "-p", "-S", "-5"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    output = result.stdout
+                    if any(p in output for p in self.ready_patterns()):
+                        return True
+            except Exception:
+                pass
+        return False
+
+    def ready_patterns(self) -> list[str]:
+        """Strings indicating agent is ready in pane output.
+        Used by default is_ready(). Override for agent-specific patterns."""
+        return [" > ", "$ "]
+
+    def config_dir_name(self) -> str:
+        """Agent's config directory name (e.g. '.claude', '.codex').
+        Conservative default; override per driver."""
+        return ".agent"
 
     def observe(self, ctx: ObserveContext) -> Observation:
         """Default observe: is_running → detect_permission → parse_progress."""
@@ -229,7 +271,7 @@ class BaseAgentDriver:
 
         # Activity fallback: log recency
         if ctx.repo_path:
-            log_file = find_claude_log_file(ctx.repo_path)
+            log_file = self.find_log_file(ctx.repo_path)
             if log_file:
                 try:
                     age = time.time() - log_file.stat().st_mtime

@@ -75,6 +75,17 @@ class CodexDriver(BaseAgentDriver):
     _display_name = "Codex CLI"
     _process_name = "codex"
 
+    def find_log_file(self, repo_path: Path) -> Optional[Path]:
+        # Codex logs are global (~/.codex/sessions/), not repo-scoped.
+        # repo_path accepted for interface conformance but not used.
+        return find_codex_log_file()
+
+    def ready_patterns(self) -> list[str]:
+        return ["codex", "Codex", " > "]
+
+    def config_dir_name(self) -> str:
+        return ".codex"
+
     def capabilities(self) -> dict:
         return {
             "has_jsonl_logs": True,

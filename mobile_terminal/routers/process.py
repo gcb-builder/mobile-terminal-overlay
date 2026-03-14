@@ -225,7 +225,8 @@ def register(app: FastAPI, deps):
                 "phase": "idle", "detail": "", "tool": "",
                 "session": app.state.current_session,
                 "pane_id": target or "",
-                "claude_running": False,
+                "agent_running": False,
+                "claude_running": False,  # deprecated alias
             }
 
         obs = app.state.driver.observe(ctx)
@@ -235,7 +236,8 @@ def register(app: FastAPI, deps):
             "tool": obs.tool,
             "session": app.state.current_session,
             "pane_id": target or "",
-            "claude_running": obs.running,
+            "agent_running": obs.running,
+            "claude_running": obs.running,  # deprecated alias
         }
 
     @app.post("/api/agent/start")

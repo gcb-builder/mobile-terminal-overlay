@@ -867,7 +867,7 @@ function extractAndSuggestCommand(content) {
     }
 
     // Skip Claude's session rating prompt — not actionable
-    if (/How is Claude doing/i.test(content)) return;
+    if (ctx.agentType === 'claude' && /How is Claude doing/i.test(content)) return;
 
     const lines = content.split('\n');
     let suggestion = '';
@@ -1024,7 +1024,7 @@ function tryDrainQueue() {
 
     // Don't auto-send if agent is running in any non-idle phase
     const phase = lastPhase?.phase;
-    const agentRunning = lastPhase?.claude_running;
+    const agentRunning = lastPhase?.agent_running ?? lastPhase?.claude_running;
     if (agentRunning && phase && phase !== 'idle') return;
 
     // Only auto-send safe items; unsafe items wait for manual "Run"
@@ -1969,7 +1969,8 @@ async function loadConfig() {
             return;
         }
         ctx.config = await response.json();
-        // Set agent display name from server ctx.config
+        // Set agent type and display name from server config
+        ctx.agentType = ctx.config.agent_type || 'claude';
         if (ctx.config.agent_name) {
             agentName = ctx.config.agent_name;
         }
@@ -2927,7 +2928,7 @@ async function updateAgentPhase() {
         lastPhase = data;
 
         const phase = data.phase;
-        const agentRunning = data.claude_running;
+        const agentRunning = data.agent_running ?? data.claude_running;
 
         // Hide indicator when idle and agent not running
         if (phase === 'idle' && !agentRunning) {
@@ -5623,7 +5624,7 @@ function extractPermissionPrompt(terminalContent) {
     if (!terminalContent) return;
 
     // Skip Claude's session rating prompt — not actionable
-    if (/How is Claude doing/i.test(terminalContent)) return;
+    if (ctx.agentType === 'claude' && /How is Claude doing/i.test(terminalContent)) return;
 
     // Strip box-drawing characters (Claude Code wraps prompts in TUI boxes)
     // Characters: │ ╭ ╮ ╰ ╯ ─ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼

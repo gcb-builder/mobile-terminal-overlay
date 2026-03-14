@@ -29,7 +29,7 @@ ROLE_PROMPTS = {
     ),
     "leader": (
         "You are the leader. Coordinate the team, split tasks, track progress. "
-        "Read .claude/dispatch.md when it appears."
+        "Read the dispatch file when it appears."
     ),
 }
 

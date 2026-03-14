@@ -8,6 +8,11 @@ set -e
 #   ./spawn-team.sh claude eval back frontend
 #   ./spawn-team.sh              # defaults: session=claude, agents=eval back
 #
+# Environment:
+#   AGENT_CMD  Full shell string for the agent command.
+#              Examples: "claude", "claude --worktree", "codex", "codex --full-auto"
+#              Default: "claude --worktree"
+#
 # Cleanup:
 #   ./spawn-team.sh --kill [session]
 
@@ -50,6 +55,7 @@ fi
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 CURRENT_BRANCH=$(git branch --show-current)
+AGENT_CMD="${AGENT_CMD:-claude --worktree}"
 
 # Prevent spawning from main/master
 if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
@@ -84,7 +90,7 @@ spawn_window() {
     # Wait for checkout to complete before starting claude
     sleep 0.5
 
-    tmux send-keys -t "$SESSION:$NAME" "claude --worktree" Enter
+    tmux send-keys -t "$SESSION:$NAME" "$AGENT_CMD" Enter
 
     echo "  $NAME -> branch $AGENT_BRANCH"
 }

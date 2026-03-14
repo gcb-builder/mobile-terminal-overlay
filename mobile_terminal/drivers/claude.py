@@ -38,6 +38,16 @@ class ClaudeDriver(BaseAgentDriver):
     _display_name = "Claude"
     _process_name = "claude"
 
+    def find_log_file(self, repo_path: Path) -> Optional[Path]:
+        return find_claude_log_file(repo_path)
+
+    def ready_patterns(self) -> list[str]:
+        return ["claude-code", "Claude Code", " > ",
+                "What would you like to do?", "How can I help"]
+
+    def config_dir_name(self) -> str:
+        return ".claude"
+
     def capabilities(self) -> dict:
         return {
             "has_jsonl_logs": True,

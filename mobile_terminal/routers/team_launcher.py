@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import secrets
+import shlex
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -65,40 +66,6 @@ async def _window_exists(session: str, name: str) -> bool:
             return name in result.stdout.strip().split("\n")
     except Exception:
         pass
-    return False
-
-
-async def _poll_for_ready(session: str, window_name: str,
-                          timeout: float = 15.0, interval: float = 2.0) -> bool:
-    """Poll tmux pane output for Claude ready indicator.
-
-    Looks for common ready patterns: the $ prompt after Claude starts,
-    or Claude's initial output. Returns True if ready detected, False on timeout.
-    """
-    elapsed = 0.0
-    while elapsed < timeout:
-        await asyncio.sleep(interval)
-        elapsed += interval
-        try:
-            result = await run_subprocess(
-                ["tmux", "capture-pane", "-t", f"{session}:{window_name}",
-                 "-p", "-S", "-5"],
-                timeout=5,
-            )
-            if result.returncode == 0:
-                output = result.stdout
-                # Claude Code shows a prompt with ">" or prints initial message
-                # Also detect "Claude Code" banner or the input cursor
-                if any(indicator in output for indicator in [
-                    "claude-code",
-                    "Claude Code",
-                    " > ",
-                    "What would you like to do?",
-                    "How can I help",
-                ]):
-                    return True
-        except Exception:
-            pass
     return False
 
 
@@ -220,35 +187,38 @@ def register(app: FastAPI, deps):
         else:
             steps.append({"name": "create_windows", "ok": True})
 
-        # ── Phase 4: Start Claude ───────────────────────────────────
-        claude_ok = True
+        # ── Phase 4: Start agent ─────────────────────────────────────
+        driver = app.state.driver
+        agent_ok = True
         for ar in agent_results:
             if not ar["ok"] or ar.get("skipped"):
                 continue
             name = ar["name"]
             try:
                 target = f"{session}:{name}"
+                cmd_parts = driver.start_command()
+                cmd_str = " ".join(shlex.quote(part) for part in cmd_parts)
                 await run_subprocess(
-                    ["tmux", "send-keys", "-t", target, "claude", "Enter"],
+                    ["tmux", "send-keys", "-t", target, cmd_str, "Enter"],
                     timeout=5,
                 )
             except Exception as e:
                 ar["ok"] = False
-                ar["error"] = f"Failed to start claude: {e}"
-                claude_ok = False
+                ar["error"] = f"Failed to start {driver.display_name()}: {e}"
+                agent_ok = False
 
-        if not claude_ok:
-            steps.append({"name": "start_claude", "ok": False,
-                          "error": "Claude failed to start in some windows"})
+        if not agent_ok:
+            steps.append({"name": "start_agent", "ok": False,
+                          "error": f"{driver.display_name()} failed to start in some windows"})
         else:
-            steps.append({"name": "start_claude", "ok": True})
+            steps.append({"name": "start_agent", "ok": True})
 
         # ── Phase 5: Await ready ────────────────────────────────────
         for ar in agent_results:
             if not ar["ok"] or ar.get("skipped"):
                 continue
             name = ar["name"]
-            ready = await _poll_for_ready(session, name, timeout=15.0, interval=2.0)
+            ready = await driver.is_ready(session, name, timeout=15.0, interval=2.0)
             ar["ready"] = ready
             if not ready:
                 ar["ready_status"] = "started_but_unconfirmed"
@@ -322,6 +292,7 @@ def register(app: FastAPI, deps):
                         leader_cwd = Path(repo_path)
 
                     dispatch_id = f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
+                    config_dir = driver.config_dir_name()
 
                     # Build simple dispatch content
                     dispatch_md = f"# Team Dispatch\n\n**ID:** {dispatch_id}\n**Goal:** {goal}\n\n"
@@ -334,7 +305,7 @@ def register(app: FastAPI, deps):
                     dispatch_md += "\n"
 
                     # Write dispatch file
-                    dispatch_dir = leader_cwd / ".claude"
+                    dispatch_dir = leader_cwd / config_dir
                     dispatch_dir.mkdir(parents=True, exist_ok=True)
                     (dispatch_dir / "dispatch.md").write_text(dispatch_md, encoding="utf-8")
 
@@ -343,7 +314,7 @@ def register(app: FastAPI, deps):
                     archive_dir.mkdir(parents=True, exist_ok=True)
                     (archive_dir / f"dispatch-{dispatch_id}.md").write_text(dispatch_md, encoding="utf-8")
 
-                    instruction = f"Read .claude/dispatch.md and execute the plan. Dispatch ID: {dispatch_id}"
+                    instruction = f"Read {config_dir}/dispatch.md and execute the plan. Dispatch ID: {dispatch_id}"
                 else:
                     # Goal-only dispatch
                     instruction = goal

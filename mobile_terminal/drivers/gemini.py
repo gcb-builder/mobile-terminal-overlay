@@ -57,6 +57,12 @@ class GeminiDriver(BaseAgentDriver):
     _display_name = "Gemini CLI"
     _process_name = "gemini"
 
+    def ready_patterns(self) -> list[str]:
+        return ["gemini", "Gemini", " > "]
+
+    def config_dir_name(self) -> str:
+        return ".gemini"
+
     def capabilities(self) -> dict:
         return {
             "has_jsonl_logs": False,
