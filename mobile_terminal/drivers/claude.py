@@ -37,6 +37,7 @@ class ClaudeDriver(BaseAgentDriver):
     _agent_id = "claude"
     _display_name = "Claude"
     _process_name = "claude"
+    _context_limit = 200_000
 
     def find_log_file(self, repo_path: Path) -> Optional[Path]:
         return find_claude_log_file(repo_path)
@@ -93,6 +94,11 @@ class ClaudeDriver(BaseAgentDriver):
         if log_file:
             self._parse_phase_and_permission(ctx, obs, log_file)
 
+        # 6. Compute context percentage
+        if obs.context_used is not None:
+            obs.context_limit = self._context_limit
+            obs.context_pct = round((obs.context_used / self._context_limit) * 100, 1)
+
         return obs
 
     def _parse_phase_and_permission(
@@ -138,6 +144,7 @@ class ClaudeDriver(BaseAgentDriver):
             "waiting_reason": None,
             "permission_tool": None,
             "permission_target": None,
+            "context_used": None,
         }
 
         # Check pane_title for signal detection
@@ -161,6 +168,17 @@ class ClaudeDriver(BaseAgentDriver):
 
             if msg_type != "assistant":
                 continue
+
+            # Extract token usage from most recent assistant entry
+            if result["context_used"] is None:
+                usage = msg.get("usage", {})
+                if usage:
+                    total = (usage.get("input_tokens", 0)
+                             + usage.get("cache_creation_input_tokens", 0)
+                             + usage.get("cache_read_input_tokens", 0)
+                             + usage.get("output_tokens", 0))
+                    if total > 0:
+                        result["context_used"] = total
 
             content = msg.get("content", [])
             if isinstance(content, str) or not isinstance(content, list):
@@ -273,6 +291,7 @@ class ClaudeDriver(BaseAgentDriver):
         obs.waiting_reason = result.get("waiting_reason")
         obs.permission_tool = result.get("permission_tool")
         obs.permission_target = result.get("permission_target")
+        obs.context_used = result.get("context_used")
 
 
 class ClaudePermissionDetector:

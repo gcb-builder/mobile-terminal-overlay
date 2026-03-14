@@ -38,7 +38,7 @@ def register(app: FastAPI, deps):
             return
         if app.state.active_websocket is not None:
             return
-        cooldowns = {"permission": 30, "completed": 300, "crashed": 60}
+        cooldowns = {"permission": 30, "completed": 300, "crashed": 60, "context_high": 300}
         min_interval = cooldowns.get(push_type, 30)
         now = time.time()
         if now - _push_cooldowns.get(push_type, 0) < min_interval:
@@ -182,6 +182,18 @@ def register(app: FastAPI, deps):
                             _crash_candidate_since = 0
                 else:
                     _crash_candidate_since = 0
+
+                # === Context high push ===
+                if obs.context_pct is not None:
+                    threshold = app.state.config.context_alert_threshold
+                    if obs.context_pct >= threshold:
+                        remaining = round(100 - obs.context_pct, 1)
+                        await maybe_send_push(
+                            f"{agent_name}: context {remaining}% remaining",
+                            f"Context window {obs.context_pct:.0f}% used in {pane_target}.",
+                            "context_high",
+                            extra_data=extra,
+                        )
 
                 # === Auto-capture snapshots (event-driven, rate-limited) ===
                 now = time.time()

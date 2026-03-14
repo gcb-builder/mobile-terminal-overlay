@@ -227,6 +227,9 @@ def register(app: FastAPI, deps):
                 "pane_id": target or "",
                 "agent_running": False,
                 "claude_running": False,  # deprecated alias
+                "context_used": None,
+                "context_limit": None,
+                "context_pct": None,
             }
 
         obs = app.state.driver.observe(ctx)
@@ -238,6 +241,9 @@ def register(app: FastAPI, deps):
             "pane_id": target or "",
             "agent_running": obs.running,
             "claude_running": obs.running,  # deprecated alias
+            "context_used": obs.context_used,
+            "context_limit": obs.context_limit,
+            "context_pct": obs.context_pct,
         }
 
     @app.post("/api/agent/start")

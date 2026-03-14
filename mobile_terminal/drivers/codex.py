@@ -74,6 +74,7 @@ class CodexDriver(BaseAgentDriver):
     _agent_id = "codex"
     _display_name = "Codex CLI"
     _process_name = "codex"
+    _context_limit = 200_000
 
     def find_log_file(self, repo_path: Path) -> Optional[Path]:
         # Codex logs are global (~/.codex/sessions/), not repo-scoped.
@@ -129,6 +130,11 @@ class CodexDriver(BaseAgentDriver):
             obs.phase = "working"
             obs.detail = "Working..."
 
+        # 6. Compute context percentage
+        if obs.context_used is not None:
+            obs.context_limit = self._context_limit
+            obs.context_pct = round((obs.context_used / self._context_limit) * 100, 1)
+
         return obs
 
     def _parse_phase(
@@ -183,6 +189,7 @@ class CodexDriver(BaseAgentDriver):
             "waiting_reason": None,
             "permission_tool": None,
             "permission_target": None,
+            "context_used": None,
         }
 
         if not entries:
@@ -238,6 +245,14 @@ class CodexDriver(BaseAgentDriver):
             if event_type == "turn.completed" or payload_type == "turn.completed":
                 result["phase"] = "idle"
                 result["detail"] = "Turn complete"
+                # Extract token usage from turn.completed payload
+                usage = payload.get("usage", {})
+                if usage:
+                    input_tok = usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0)
+                    output_tok = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0)
+                    total = input_tok + output_tok
+                    if total > 0:
+                        result["context_used"] = total
                 return result
 
             if event_type == "turn.failed" or payload_type == "turn.failed":
@@ -303,3 +318,4 @@ class CodexDriver(BaseAgentDriver):
         obs.waiting_reason = result.get("waiting_reason")
         obs.permission_tool = result.get("permission_tool")
         obs.permission_target = result.get("permission_target")
+        obs.context_used = result.get("context_used")

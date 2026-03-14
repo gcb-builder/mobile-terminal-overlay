@@ -852,6 +852,36 @@ function extractContextUsage(content) {
 }
 
 /**
+ * Update context pill from backend /api/status/phase data.
+ * Preferred over pane-scraping when backend provides context_pct.
+ */
+function updateContextFromBackend(data) {
+    if (data.context_pct == null) return;
+    const pill = document.getElementById('contextPill');
+    if (!pill) return;
+
+    const remaining = Math.round(100 - data.context_pct);
+    if (remaining === lastContextPct) return;
+    lastContextPct = remaining;
+
+    pill.textContent = `ctx ${remaining}%`;
+    pill.classList.remove('hidden', 'ctx-ok', 'ctx-warn', 'ctx-critical');
+
+    if (remaining > 30) {
+        pill.classList.add('ctx-ok');
+    } else if (remaining > 15) {
+        pill.classList.add('ctx-warn');
+    } else {
+        pill.classList.add('ctx-critical');
+    }
+
+    if (remaining <= 15 && !contextAlertSent) {
+        contextAlertSent = true;
+        showToast(`Context low: ${remaining}% remaining`, 'warning', 5000);
+    }
+}
+
+/**
  * Extract suggestion from ctx.terminal output and pre-fill input box
  */
 let lastSuggestion = '';
@@ -2924,6 +2954,7 @@ async function updateAgentPhase() {
         if (!response.ok) return;
 
         const data = await response.json();
+        updateContextFromBackend(data);
         const prevPhase = lastPhase?.phase;
         lastPhase = data;
 

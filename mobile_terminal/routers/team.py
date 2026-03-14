@@ -118,6 +118,7 @@ def register(app: FastAPI, deps):
                     "tool": obs.permission_tool or "",
                     "target": obs.permission_target or "",
                 } if obs.waiting_reason == "permission" else None,
+                "context_pct": obs.context_pct,
                 "git": git_info,
                 "assigned_role": roles_map.get(name),
             }

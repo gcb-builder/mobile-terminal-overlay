@@ -98,6 +98,7 @@ class Config:
 
     # Push notifications
     push_enabled: bool = True
+    context_alert_threshold: int = 85  # Push alert when context_pct >= this
 
     # Agent driver selection
     agent_type: str = "claude"  # Driver to use: claude, codex, generic
@@ -140,6 +141,7 @@ class Config:
             "scrollback": self.scrollback,
             "auto_setup": self.auto_setup,
             "push_enabled": self.push_enabled,
+            "context_alert_threshold": self.context_alert_threshold,
             "agent_type": self.agent_type,
             "agent_display_name": self.agent_display_name,
         }
@@ -209,6 +211,8 @@ def load_config(path: Optional[Path] = None) -> Config:
         config.auto_setup = bool(data["auto_setup"])
     if "push_enabled" in data:
         config.push_enabled = bool(data["push_enabled"])
+    if "context_alert_threshold" in data:
+        config.context_alert_threshold = max(0, min(100, int(data["context_alert_threshold"])))
     if "agent_type" in data:
         config.agent_type = str(data["agent_type"])
     if "agent_display_name" in data:
@@ -287,6 +291,7 @@ def merge_configs(base: Config, override: Config) -> Config:
         scrollback=override.scrollback if override.scrollback != 20000 else base.scrollback,
         auto_setup=override.auto_setup if not override.auto_setup else base.auto_setup,
         push_enabled=override.push_enabled if not override.push_enabled else base.push_enabled,
+        context_alert_threshold=override.context_alert_threshold if override.context_alert_threshold != 85 else base.context_alert_threshold,
         agent_type=override.agent_type if override.agent_type != "claude" else base.agent_type,
         agent_display_name=override.agent_display_name or base.agent_display_name,
         project_root=override.project_root or base.project_root,

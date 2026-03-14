@@ -47,6 +47,10 @@ class Observation:
     permission_target: Optional[str] = None
     # Log hints
     log_paths: list = field(default_factory=list)
+    # Context window usage (from JSONL token counts)
+    context_used: Optional[int] = None     # Total tokens consumed
+    context_limit: Optional[int] = None    # Model's context window size
+    context_pct: Optional[float] = None    # Percentage used (0.0-100.0)
 
     def to_dict(self) -> dict:
         return {
@@ -62,6 +66,9 @@ class Observation:
             "permission_tool": self.permission_tool,
             "permission_target": self.permission_target,
             "log_paths": [str(p) for p in self.log_paths],
+            "context_used": self.context_used,
+            "context_limit": self.context_limit,
+            "context_pct": self.context_pct,
         }
 
 
