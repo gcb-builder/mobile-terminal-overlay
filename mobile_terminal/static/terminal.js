@@ -6761,15 +6761,14 @@ function closeFabMenu() {
 /**
  * Open unified drawer (defaults to queue tab)
  */
-function openDrawer() {
+function openDrawer(tab) {
     const drawer = document.getElementById('previewDrawer');
     const backdrop = document.getElementById('drawerBackdrop');
     if (drawer) {
         drawer.classList.remove('hidden');
         if (backdrop) backdrop.classList.remove('hidden');
         drawerOpen = true;
-        // Default to queue tab, refresh list
-        switchRollbackTab('queue');
+        switchRollbackTab(tab || 'queue');
     }
 }
 
@@ -7839,8 +7838,7 @@ function openSurface(name) {
     if (ctx.uiMode === 'desktop-multipane') {
         openToolPanel(name);
     } else {
-        switchRollbackTab(name);
-        openDrawer();
+        openDrawer(name);
     }
 }
 
