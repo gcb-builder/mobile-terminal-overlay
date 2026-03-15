@@ -5772,6 +5772,8 @@ html, body {
     padding: 0 4px;
 }
 
+#devTabContent { overflow-y: auto; }
+
 /* Dev log viewer */
 .dev-log-viewer { display: flex; flex-direction: column; border-top: 1px solid var(--border); }
 .dev-log-viewer.hidden { display: none; }
