@@ -2,12 +2,15 @@
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Dict, Optional
 
 from fastapi import Depends, FastAPI, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
+
+from mobile_terminal.helpers import get_tmux_target, run_subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +19,8 @@ _preview_config_cache: Dict[str, dict] = {}
 _preview_status_cache: Dict[str, dict] = {}
 _preview_status_cache_time: float = 0
 PREVIEW_STATUS_CACHE_TTL = 2.0  # seconds
+
+DEV_LOG_DIR = Path.home() / ".cache" / "mobile-overlay" / "dev-logs"
 
 
 def load_preview_config(repo_path: Optional[Path]) -> Optional[dict]:
@@ -86,6 +91,40 @@ async def check_service_health(port: int, path: str = "/", timeout: float = 1.5)
     except Exception as e:
         # TCP worked but HTTP failed - still likely running
         return {"status": "running", "latency": None, "note": "TCP only"}
+
+
+def _dev_log_path(repo_path: Optional[Path], service_id: str) -> Path:
+    """Build log file path for a preview service."""
+    repo_name = repo_path.name if repo_path else "unknown"
+    # Sanitize for filesystem
+    safe_name = re.sub(r'[^\w\-]', '_', f"{repo_name}--{service_id}")
+    return DEV_LOG_DIR / f"{safe_name}.log"
+
+
+async def _start_pipe_pane(session: str, pane_id: Optional[str], log_path: Path):
+    """Enable tmux pipe-pane to capture pane output to a log file."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    target = get_tmux_target(session, pane_id)
+    try:
+        await run_subprocess(
+            ["tmux", "pipe-pane", "-t", target, f"cat > {log_path}"],
+            timeout=3,
+        )
+        logger.info(f"Dev logging started: {log_path}")
+    except Exception as e:
+        logger.warning(f"Failed to start pipe-pane: {e}")
+
+
+async def _stop_pipe_pane(session: str, pane_id: Optional[str]):
+    """Disable tmux pipe-pane on a pane."""
+    target = get_tmux_target(session, pane_id)
+    try:
+        await run_subprocess(
+            ["tmux", "pipe-pane", "-t", target],
+            timeout=3,
+        )
+    except Exception:
+        pass
 
 
 def register(app: FastAPI, deps):
@@ -193,18 +232,26 @@ def register(app: FastAPI, deps):
         if not master_fd:
             return JSONResponse({"error": "No PTY available"}, status_code=400)
 
+        # Enable dev logging via tmux pipe-pane
+        log_path = _dev_log_path(repo_path, service_id)
+        current_session = session or app.state.current_session
+        current_pane = pane_id or getattr(app.state, 'active_target', None)
+        await _start_pipe_pane(current_session, current_pane, log_path)
+
         # Send command to PTY
         try:
             os.write(master_fd, (start_command + '\r').encode('utf-8'))
             app.state.audit_log.log("preview_start", {
                 "service_id": service_id,
-                "command": start_command
+                "command": start_command,
+                "log_file": str(log_path),
             })
             return {
                 "success": True,
                 "service_id": service_id,
                 "command": start_command,
-                "label": service.get("label", service_id)
+                "label": service.get("label", service_id),
+                "log_file": str(log_path),
             }
         except Exception as e:
             logger.error(f"Preview start failed: {e}")
@@ -234,6 +281,11 @@ def register(app: FastAPI, deps):
         if not master_fd:
             return JSONResponse({"error": "No PTY available"}, status_code=400)
 
+        # Stop dev logging
+        current_session = session or app.state.current_session
+        current_pane = pane_id or getattr(app.state, 'active_target', None)
+        await _stop_pipe_pane(current_session, current_pane)
+
         # Send Ctrl+C (0x03) to PTY
         try:
             os.write(master_fd, b'\x03')
@@ -242,3 +294,71 @@ def register(app: FastAPI, deps):
         except Exception as e:
             logger.error(f"Preview stop failed: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/preview/logs")
+    async def get_preview_logs(
+        service_id: str = Query(...),
+        tail: int = Query(200, ge=1, le=5000),
+        _auth=Depends(deps.verify_token),
+    ):
+        """Read dev log for a preview service (last N lines)."""
+        repo_path = deps.get_current_repo_path()
+        log_path = _dev_log_path(repo_path, service_id)
+
+        if not log_path.exists():
+            return {"content": "", "lines": 0, "exists": False}
+
+        try:
+            raw = log_path.read_text(errors="replace")
+            lines = raw.splitlines()
+            tail_lines = lines[-tail:]
+            return {
+                "content": "\n".join(tail_lines),
+                "lines": len(tail_lines),
+                "total_lines": len(lines),
+                "exists": True,
+                "log_file": str(log_path),
+            }
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/preview/logs/list")
+    async def list_preview_logs(
+        _auth=Depends(deps.verify_token),
+    ):
+        """List available dev log files."""
+        if not DEV_LOG_DIR.exists():
+            return {"logs": []}
+
+        logs = []
+        for f in sorted(DEV_LOG_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True):
+            stat = f.stat()
+            logs.append({
+                "filename": f.name,
+                "size_bytes": stat.st_size,
+                "modified": stat.st_mtime,
+                "service_id": f.stem.split("--", 1)[-1] if "--" in f.stem else f.stem,
+            })
+        return {"logs": logs}
+
+    @app.delete("/api/preview/logs")
+    async def clear_preview_logs(
+        service_id: Optional[str] = Query(None),
+        _auth=Depends(deps.verify_token),
+    ):
+        """Clear dev logs. If service_id is provided, clear only that log."""
+        if not DEV_LOG_DIR.exists():
+            return {"cleared": 0}
+
+        cleared = 0
+        if service_id:
+            repo_path = deps.get_current_repo_path()
+            log_path = _dev_log_path(repo_path, service_id)
+            if log_path.exists():
+                log_path.unlink()
+                cleared = 1
+        else:
+            for f in DEV_LOG_DIR.glob("*.log"):
+                f.unlink()
+                cleared += 1
+        return {"cleared": cleared}

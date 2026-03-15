@@ -7480,8 +7480,9 @@ function updateDevControls(enabled) {
     const stopBtn = document.getElementById('devStopBtn');
     const openBtn = document.getElementById('devOpenBtn');
     const copyBtn = document.getElementById('devCopyBtn');
+    const logsBtn = document.getElementById('devLogsBtn');
 
-    [startBtn, restartBtn, stopBtn, openBtn, copyBtn].forEach(btn => {
+    [startBtn, restartBtn, stopBtn, openBtn, copyBtn, logsBtn].forEach(btn => {
         if (btn) btn.disabled = !enabled;
     });
 }
@@ -7685,6 +7686,63 @@ function copyDevPreviewUrl() {
 }
 
 /**
+ * Toggle dev log viewer for the active service
+ */
+async function toggleDevLogs() {
+    const viewer = document.getElementById('devLogViewer');
+    const content = document.getElementById('devLogContent');
+    const meta = document.getElementById('devLogMeta');
+    if (!viewer || !content) return;
+
+    // Toggle off
+    if (!viewer.classList.contains('hidden')) {
+        viewer.classList.add('hidden');
+        return;
+    }
+
+    if (!activeDevService) {
+        showToast('Select a service first', 'error');
+        return;
+    }
+
+    viewer.classList.remove('hidden');
+    content.textContent = 'Loading...';
+    if (meta) meta.textContent = '';
+
+    try {
+        const resp = await apiFetch(
+            `/api/preview/logs?service_id=${activeDevService}&tail=500&token=${ctx.token}`
+        );
+        const data = await resp.json();
+
+        if (!data.exists || !data.content) {
+            content.textContent = 'No logs yet. Start the service to begin capturing.';
+        } else {
+            content.textContent = data.content;
+            content.scrollTop = content.scrollHeight;
+            if (meta) {
+                meta.textContent = `${data.lines} / ${data.total_lines} lines`;
+            }
+        }
+    } catch (e) {
+        content.textContent = `Error loading logs: ${e.message}`;
+    }
+}
+
+/**
+ * Copy dev log content to clipboard
+ */
+function copyDevLogs() {
+    const content = document.getElementById('devLogContent');
+    if (!content || !content.textContent) return;
+    navigator.clipboard.writeText(content.textContent).then(() => {
+        showToast('Logs copied', 'success');
+    }).catch(() => {
+        showToast('Copy failed', 'error');
+    });
+}
+
+/**
  * Setup Dev Preview event handlers
  */
 function setupDevPreview() {
@@ -7693,6 +7751,11 @@ function setupDevPreview() {
     document.getElementById('devRestartBtn')?.addEventListener('click', restartDevService);
     document.getElementById('devOpenBtn')?.addEventListener('click', openDevPreview);
     document.getElementById('devCopyBtn')?.addEventListener('click', copyDevPreviewUrl);
+    document.getElementById('devLogsBtn')?.addEventListener('click', toggleDevLogs);
+    document.getElementById('devLogCopyBtn')?.addEventListener('click', copyDevLogs);
+    document.getElementById('devLogCloseBtn')?.addEventListener('click', () => {
+        document.getElementById('devLogViewer')?.classList.add('hidden');
+    });
 
     // Link card: share sheet (lets user pick browser/incognito), fallback to window.open
     document.getElementById('devServiceLink')?.addEventListener('click', async () => {

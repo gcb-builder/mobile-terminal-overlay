@@ -5772,6 +5772,24 @@ html, body {
     padding: 0 4px;
 }
 
+/* Dev log viewer */
+.dev-log-viewer { display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+.dev-log-viewer.hidden { display: none; }
+.dev-log-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; background: var(--bg-tertiary); border-bottom: 1px solid var(--border);
+}
+.dev-log-title { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.dev-log-meta { flex: 1; font-size: 11px; color: var(--text-muted); }
+.dev-btn.small { font-size: 11px; padding: 4px 10px; min-height: 28px; }
+.dev-log-content {
+    margin: 0; padding: 10px 12px; font-family: var(--font-mono, monospace);
+    font-size: 11px; line-height: 1.5; color: var(--text-secondary);
+    background: var(--bg-primary); overflow-y: auto; max-height: 300px;
+    white-space: pre-wrap; word-break: break-all; user-select: text;
+    -webkit-user-select: text;
+}
+
 .dev-empty {
     padding: 16px;
     color: var(--text-secondary);

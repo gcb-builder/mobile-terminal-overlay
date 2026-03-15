@@ -691,6 +691,7 @@
                     <button id="devStopBtn" class="dev-btn danger">Stop</button>
                     <button id="devOpenBtn" class="dev-btn">Open</button>
                     <button id="devCopyBtn" class="dev-btn">Copy</button>
+                    <button id="devLogsBtn" class="dev-btn">Logs</button>
                 </div>
                 <div id="devPreviewPlaceholder" class="dev-preview-placeholder">
                     Select a service above
@@ -702,6 +703,15 @@
                         <span class="dev-service-link-hint">Tap to share / open in browser</span>
                     </div>
                     <span id="devServiceStatus" class="dev-service-status-label"></span>
+                </div>
+                <div id="devLogViewer" class="dev-log-viewer hidden">
+                    <div class="dev-log-header">
+                        <span class="dev-log-title">Service Logs</span>
+                        <span id="devLogMeta" class="dev-log-meta"></span>
+                        <button id="devLogCopyBtn" class="dev-btn small">Copy</button>
+                        <button id="devLogCloseBtn" class="dev-btn small">Close</button>
+                    </div>
+                    <pre id="devLogContent" class="dev-log-content">Loading...</pre>
                 </div>
             </div>
             <!-- History tab content (unified commits + snapshots) -->
