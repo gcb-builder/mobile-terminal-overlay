@@ -233,3 +233,60 @@ def register(app: FastAPI, deps):
                 })
 
         return {"plugins": plugins}
+
+    @app.get("/api/mcp-servers/catalog")
+    async def list_mcp_catalog(_auth=Depends(deps.verify_token)):
+        """Browse MCP servers from locally cached external_plugins directories."""
+
+        settings, _ = load_claude_settings()
+        configured = settings.get("mcpServers", {})
+        servers = []
+
+        if not MARKETPLACES_DIR.is_dir():
+            return {"servers": servers}
+
+        for mp_dir in sorted(MARKETPLACES_DIR.iterdir()):
+            ext_dir = mp_dir / "external_plugins"
+            if not ext_dir.is_dir():
+                continue
+
+            for plugin_dir in sorted(ext_dir.iterdir()):
+                mcp_file = plugin_dir / ".mcp.json"
+                if not mcp_file.is_file():
+                    continue
+
+                try:
+                    mcp_data = json.loads(mcp_file.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+
+                # Read description from .claude-plugin/plugin.json
+                description = ""
+                meta_file = plugin_dir / ".claude-plugin" / "plugin.json"
+                if meta_file.is_file():
+                    try:
+                        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                        description = meta.get("description", "")
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        pass
+
+                # Normalize: some wrap in mcpServers, some don't
+                server_defs = mcp_data
+                if "mcpServers" in mcp_data:
+                    server_defs = mcp_data["mcpServers"]
+
+                for name, config in server_defs.items():
+                    if not isinstance(config, dict):
+                        continue
+                    server_type = config.get("type", "stdio")
+                    if "command" in config:
+                        server_type = "stdio"
+                    servers.append({
+                        "name": name,
+                        "description": description,
+                        "type": server_type,
+                        "config": config,
+                        "configured": name in configured,
+                    })
+
+        return {"servers": servers}

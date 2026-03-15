@@ -175,6 +175,9 @@
                     <button class="tools-rail-btn" data-tool="dev" title="Dev">
                         <span class="rail-icon">&#x29C9;</span>
                     </button>
+                    <button class="tools-rail-btn" data-tool="plugins" title="Plugins">
+                        <span class="rail-icon">&#x1F9E9;</span>
+                    </button>
                     <button class="tools-rail-btn" data-tool="mcp" title="MCP">
                         <span class="rail-icon">&#x2699;</span>
                     </button>
@@ -621,7 +624,8 @@
             <button class="fab-menu-item" data-tab="dev"><span class="fab-icon">&#x2699;</span>Dev</button>
             <button class="fab-menu-item" data-tab="history"><span class="fab-icon">&#x231A;</span>History</button>
             <button class="fab-menu-item" data-tab="process"><span class="fab-icon">&#x2630;</span>Process</button>
-            <button class="fab-menu-item" data-tab="mcp"><span class="fab-icon">&#x26A1;</span>MCP</button>
+            <button class="fab-menu-item" data-tab="plugins"><span class="fab-icon">&#x1F9E9;</span>Plugins</button>
+            <button class="fab-menu-item" data-tab="mcp"><span class="fab-icon">&#x2699;</span>MCP</button>
             <button class="fab-menu-item" data-tab="env"><span class="fab-icon">&#x1F511;</span>Env</button>
             <button class="fab-menu-item" data-action="launchTeam"><span class="fab-icon">&#x1F680;</span>Launch Team</button>
             <button class="fab-menu-item" data-action="docs"><span class="fab-icon">&#x1F4C4;</span>Docs</button>
@@ -640,6 +644,7 @@
                     <button class="rollback-tab" data-tab="dev">Dev</button>
                     <button class="rollback-tab" data-tab="history">History</button>
                     <button class="rollback-tab" data-tab="process">Process</button>
+                    <button class="rollback-tab" data-tab="plugins">Plugins</button>
                     <button class="rollback-tab" data-tab="mcp">MCP</button>
                     <button class="rollback-tab" data-tab="env">Env</button>
                 </div>
@@ -738,20 +743,16 @@
                 </div>
                 <div id="processResult" class="process-result hidden"></div>
             </div>
-            <!-- MCP tab content -->
-            <div id="mcpTabContent" class="rollback-tab-content hidden">
-                <div id="mcpRestartBanner" class="mcp-restart-banner hidden">
+            <!-- Plugins tab content -->
+            <div id="pluginsTabContent" class="rollback-tab-content hidden">
+                <div id="pluginsRestartBanner" class="mcp-restart-banner hidden">
                     <span>Changes saved</span>
                     <div class="mcp-restart-actions">
-                        <button id="mcpRestartOneBtn" class="mcp-restart-btn">Restart Pane</button>
-                        <button id="mcpRestartAllBtn" class="mcp-restart-btn">Restart All</button>
+                        <button class="mcp-restart-btn plugins-restart-one">Restart Pane</button>
+                        <button class="mcp-restart-btn plugins-restart-all">Restart All</button>
                     </div>
                 </div>
                 <p class="process-description mcp-scope-note">Global config (applies to all Claude Code sessions).</p>
-                <!-- Plugins section -->
-                <div class="process-tab-header">
-                    <span class="process-title">Plugins</span>
-                </div>
                 <div class="plugin-search">
                     <input id="pluginSearchInput" class="mcp-input" placeholder="Search plugins..." aria-label="Search plugins">
                 </div>
@@ -764,10 +765,27 @@
                     <input id="pluginIdInput" class="mcp-input" placeholder="Custom plugin ID" aria-label="Plugin ID">
                     <button id="pluginAddBtn" class="process-action-btn primary">Enable Plugin</button>
                 </div>
-                <!-- MCP Servers section -->
+            </div>
+            <!-- MCP tab content -->
+            <div id="mcpTabContent" class="rollback-tab-content hidden">
+                <div id="mcpRestartBanner" class="mcp-restart-banner hidden">
+                    <span>Changes saved</span>
+                    <div class="mcp-restart-actions">
+                        <button id="mcpRestartOneBtn" class="mcp-restart-btn">Restart Pane</button>
+                        <button id="mcpRestartAllBtn" class="mcp-restart-btn">Restart All</button>
+                    </div>
+                </div>
+                <p class="process-description mcp-scope-note">Global config (applies to all Claude Code sessions).</p>
                 <div class="process-tab-header">
-                    <span class="process-title">MCP Servers</span>
+                    <span class="process-title">Available Servers</span>
                     <button id="mcpRefreshBtn" class="process-refresh-btn">Refresh</button>
+                </div>
+                <div class="plugin-search">
+                    <input id="mcpCatalogSearch" class="mcp-input" placeholder="Search servers..." aria-label="Search MCP servers">
+                </div>
+                <div id="mcpCatalogList" class="mcp-server-list"></div>
+                <div class="process-tab-header">
+                    <span class="process-title">Configured</span>
                 </div>
                 <div id="mcpServerList" class="mcp-server-list">
                     <p class="process-description">Loading...</p>

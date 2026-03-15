@@ -15,6 +15,8 @@ let mcpServersCache = {};
 let marketplaceCache = [];
 let marketplaceCategory = '';
 let marketplaceSearch = '';
+let mcpCatalogCache = [];
+let mcpCatalogSearch = '';
 
 // Callback for resetting agent health tracking after restart
 // Set by terminal.js via initMcp(opts)
@@ -208,6 +210,120 @@ function onPluginSearch(e) {
     }, 200);
 }
 
+// ── MCP Server catalog ───────────────────────────────────────────────
+
+async function loadMcpCatalog() {
+    const list = document.getElementById('mcpCatalogList');
+    if (!list) return;
+
+    try {
+        const response = await ctx.apiFetch(`/api/mcp-servers/catalog?token=${ctx.token}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        mcpCatalogCache = data.servers || [];
+    } catch (error) {
+        console.error('Failed to load MCP catalog:', error);
+        mcpCatalogCache = [];
+    }
+
+    renderMcpCatalog();
+}
+
+function renderMcpCatalog() {
+    const list = document.getElementById('mcpCatalogList');
+    if (!list) return;
+
+    let filtered = mcpCatalogCache;
+    if (mcpCatalogSearch) {
+        const q = mcpCatalogSearch.toLowerCase();
+        filtered = filtered.filter(s =>
+            s.name.toLowerCase().includes(q) ||
+            s.description.toLowerCase().includes(q)
+        );
+    }
+
+    if (filtered.length === 0) {
+        list.innerHTML = mcpCatalogCache.length === 0
+            ? '<p class="process-description">No catalog available.</p>'
+            : '<p class="process-description">No servers match.</p>';
+        return;
+    }
+
+    let html = '';
+    for (const s of filtered) {
+        const typeBadge = `<span class="plugin-browse-category">${escapeHtml(s.type)}</span>`;
+        html += `<div class="plugin-browse-item">
+            <div class="plugin-browse-info">
+                <div class="plugin-browse-name">${escapeHtml(s.name)}</div>
+                <div class="plugin-browse-desc">${escapeHtml(s.description)}</div>
+                ${typeBadge}
+            </div>
+            <button class="process-action-btn catalog-add-btn${s.configured ? ' configured' : ''}" data-catalog-name="${escapeHtml(s.name)}">${s.configured ? 'Added' : 'Add'}</button>
+        </div>`;
+    }
+    list.innerHTML = html;
+
+    list.querySelectorAll('.catalog-add-btn').forEach(btn => {
+        if (btn.classList.contains('configured')) {
+            btn.disabled = true;
+            return;
+        }
+        btn.addEventListener('click', () => {
+            const name = btn.dataset.catalogName;
+            const server = mcpCatalogCache.find(s => s.name === name);
+            if (!server) return;
+            addCatalogServer(server, btn);
+        });
+    });
+}
+
+async function addCatalogServer(server, btn) {
+    const config = server.config;
+    const body = { name: server.name };
+
+    // stdio servers have command+args, others use type+url
+    if (config.command) {
+        body.command = config.command;
+        body.args = config.args || [];
+    } else {
+        // For http/sse servers, store as url-type config
+        body.command = config.type || 'http';
+        body.args = [config.url || ''];
+    }
+
+    try {
+        const response = await ctx.apiFetch(`/api/mcp-servers?token=${ctx.token}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            ctx.showToast(data.error || 'Failed to add server', 'error');
+            return;
+        }
+        ctx.showToast(`Added ${server.name}`, 'success');
+        btn.textContent = 'Added';
+        btn.disabled = true;
+        btn.classList.add('configured');
+        server.configured = true;
+        await loadMcpServers();
+        mcpSetDirty();
+    } catch (error) {
+        console.error('Failed to add catalog server:', error);
+        ctx.showToast('Failed to add server', 'error');
+    }
+}
+
+let _catalogSearchTimer = null;
+function onCatalogSearch(e) {
+    clearTimeout(_catalogSearchTimer);
+    _catalogSearchTimer = setTimeout(() => {
+        mcpCatalogSearch = (e.target.value || '').trim();
+        renderMcpCatalog();
+    }, 200);
+}
+
 // ── MCP Server functions ─────────────────────────────────────────────
 
 async function loadMcpServers() {
@@ -381,11 +497,26 @@ async function removeMcpServer(name) {
 
 // ── Dirty state & restart ────────────────────────────────────────────
 
+function showRestartBanner(banner, agentRunning) {
+    if (!banner) return;
+    const span = banner.querySelector('span');
+    const oneBtn = banner.querySelector('.mcp-restart-btn:first-child');
+    const allBtn = banner.querySelector('.mcp-restart-btn:last-child');
+
+    if (agentRunning) {
+        if (span) span.textContent = 'Restart to apply';
+        if (oneBtn) oneBtn.classList.remove('hidden');
+        if (allBtn) allBtn.classList.remove('hidden');
+    } else {
+        if (span) span.textContent = 'Applies on next start';
+        if (oneBtn) oneBtn.classList.add('hidden');
+        if (allBtn) allBtn.classList.add('hidden');
+    }
+    banner.classList.remove('hidden');
+}
+
 async function mcpSetDirty() {
     mcpDirty = true;
-    const banner = document.getElementById('mcpRestartBanner');
-    const span = banner?.querySelector('span');
-    if (!banner) return;
 
     let agentRunning = false;
     if (ctx.activeTarget) {
@@ -398,19 +529,8 @@ async function mcpSetDirty() {
         } catch (e) { /* ignore */ }
     }
 
-    const oneBtn = document.getElementById('mcpRestartOneBtn');
-    const allBtn = document.getElementById('mcpRestartAllBtn');
-
-    if (agentRunning) {
-        if (span) span.textContent = 'Restart to apply';
-        if (oneBtn) oneBtn.classList.remove('hidden');
-        if (allBtn) allBtn.classList.remove('hidden');
-    } else {
-        if (span) span.textContent = 'Applies on next start';
-        if (oneBtn) oneBtn.classList.add('hidden');
-        if (allBtn) allBtn.classList.add('hidden');
-    }
-    banner.classList.remove('hidden');
+    showRestartBanner(document.getElementById('mcpRestartBanner'), agentRunning);
+    showRestartBanner(document.getElementById('pluginsRestartBanner'), agentRunning);
 }
 
 async function stopAgentInPane(paneId, session) {
@@ -513,8 +633,8 @@ async function mcpRestartAgents(mode) {
         ctx.showToast(`Restarted ${started}/${panesToRestart.length} ${label} with --resume`, 'success');
 
         mcpDirty = false;
-        const banner = document.getElementById('mcpRestartBanner');
-        if (banner) banner.classList.add('hidden');
+        document.getElementById('mcpRestartBanner')?.classList.add('hidden');
+        document.getElementById('pluginsRestartBanner')?.classList.add('hidden');
 
         // Notify terminal.js to reset health tracking if active pane was restarted
         if (panesToRestart.some(p => p.paneId === ctx.activeTarget) && onAgentRestarted) {
@@ -540,20 +660,10 @@ async function mcpRestartAgents(mode) {
 export function initMcp(opts = {}) {
     onAgentRestarted = opts.onAgentRestarted || null;
 
-    document.getElementById('mcpRefreshBtn')?.addEventListener('click', () => { loadPlugins(); loadMcpServers(); loadMarketplace(); });
-
-    document.getElementById('pluginSearchInput')?.addEventListener('input', onPluginSearch);
-
-    document.getElementById('pluginCategoryFilter')?.addEventListener('click', (e) => {
-        const pill = e.target.closest('.plugin-category-pill');
-        if (!pill) return;
-        marketplaceCategory = pill.dataset.cat || '';
-        document.querySelectorAll('.plugin-category-pill').forEach(p => p.classList.remove('active'));
-        pill.classList.add('active');
-        renderMarketplace();
-    });
+    // MCP Servers tab
+    document.getElementById('mcpRefreshBtn')?.addEventListener('click', () => { loadMcpServers(); loadMcpCatalog(); });
+    document.getElementById('mcpCatalogSearch')?.addEventListener('input', onCatalogSearch);
     document.getElementById('mcpAddBtn')?.addEventListener('click', addMcpServer);
-    document.getElementById('pluginAddBtn')?.addEventListener('click', addPlugin);
     document.getElementById('mcpCancelEditBtn')?.addEventListener('click', cancelMcpEdit);
     document.getElementById('mcpRestartOneBtn')?.addEventListener('click', () => mcpRestartAgents('one'));
     document.getElementById('mcpRestartAllBtn')?.addEventListener('click', () => mcpRestartAgents('all'));
@@ -571,13 +681,37 @@ export function initMcp(opts = {}) {
             if (name) removeMcpServer(name);
         }
     });
+
+    // Plugins tab
+    document.getElementById('pluginAddBtn')?.addEventListener('click', addPlugin);
+    document.getElementById('pluginSearchInput')?.addEventListener('input', onPluginSearch);
+
+    document.getElementById('pluginCategoryFilter')?.addEventListener('click', (e) => {
+        const pill = e.target.closest('.plugin-category-pill');
+        if (!pill) return;
+        marketplaceCategory = pill.dataset.cat || '';
+        document.querySelectorAll('.plugin-category-pill').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        renderMarketplace();
+    });
+
+    // Plugins tab restart buttons (mirror MCP restart)
+    document.querySelector('.plugins-restart-one')?.addEventListener('click', () => mcpRestartAgents('one'));
+    document.querySelector('.plugins-restart-all')?.addEventListener('click', () => mcpRestartAgents('all'));
 }
 
 /**
- * Load MCP tab content. Called when MCP tab becomes active.
+ * Load MCP tab content (servers only). Called when MCP tab becomes active.
  */
 export function loadMcp() {
-    loadPlugins();
     loadMcpServers();
+    loadMcpCatalog();
+}
+
+/**
+ * Load Plugins tab content. Called when Plugins tab becomes active.
+ */
+export function loadPluginsTab() {
+    loadPlugins();
     loadMarketplace();
 }

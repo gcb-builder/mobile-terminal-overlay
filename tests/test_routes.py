@@ -23,6 +23,7 @@ def test_route_inventory():
     assert "/api/preview/config" in paths
     assert "/api/mcp-servers" in paths
     assert "/api/plugins/marketplace" in paths
+    assert "/api/mcp-servers/catalog" in paths
     assert "/api/process/terminate" in paths
     assert "/api/push/vapid-key" in paths
     assert "/api/scratch/list" in paths
