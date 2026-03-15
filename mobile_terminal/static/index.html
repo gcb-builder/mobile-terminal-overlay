@@ -682,12 +682,16 @@
                     <button id="devOpenBtn" class="dev-btn">Open</button>
                     <button id="devCopyBtn" class="dev-btn">Copy</button>
                 </div>
-                <div class="dev-preview-container">
-                    <iframe id="devPreviewFrame" class="dev-preview-frame hidden"
-                            sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
-                    <div id="devPreviewPlaceholder" class="dev-preview-placeholder">
-                        Select a service to preview
+                <div id="devPreviewPlaceholder" class="dev-preview-placeholder">
+                    Select a service above
+                </div>
+                <div id="devServiceInfo" class="dev-service-info hidden">
+                    <div id="devServiceLink" class="dev-service-link" role="button" tabindex="0">
+                        <span id="devServiceLinkLabel" class="dev-service-link-label"></span>
+                        <span id="devServiceLinkUrl" class="dev-service-link-url"></span>
+                        <span class="dev-service-link-hint">Tap to share / open in browser</span>
                     </div>
+                    <span id="devServiceStatus" class="dev-service-status-label"></span>
                 </div>
             </div>
             <!-- History tab content (unified commits + snapshots) -->

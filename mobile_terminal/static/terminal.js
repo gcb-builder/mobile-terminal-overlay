@@ -7440,27 +7440,30 @@ function selectDevService(serviceId) {
 
     renderDevServices();  // Update active state
 
-    const frame = document.getElementById('devPreviewFrame');
     const placeholder = document.getElementById('devPreviewPlaceholder');
+    const info = document.getElementById('devServiceInfo');
+    const link = document.getElementById('devServiceLink');
+    const linkLabel = document.getElementById('devServiceLinkLabel');
+    const linkUrl = document.getElementById('devServiceLinkUrl');
+    const statusLabel = document.getElementById('devServiceStatus');
     const status = devPreviewStatus[serviceId]?.status;
+    const url = buildDevPreviewUrl(svc);
 
-    if (status === 'running') {
-        const url = buildDevPreviewUrl(svc);
-        if (frame) {
-            frame.src = url;
-            frame.classList.remove('hidden');
-        }
-        if (placeholder) placeholder.classList.add('hidden');
-    } else {
-        if (frame) {
-            frame.src = 'about:blank';
-            frame.classList.add('hidden');
-        }
-        if (placeholder) {
-            placeholder.classList.remove('hidden');
-            placeholder.textContent = status === 'stopped'
-                ? `${svc.label} is not running`
-                : `${svc.label} status: ${status || 'unknown'}`;
+    if (placeholder) placeholder.classList.add('hidden');
+    if (info) info.classList.remove('hidden');
+    if (link) link.dataset.url = url;
+    if (linkLabel) linkLabel.textContent = `Open ${svc.label}`;
+    if (linkUrl) linkUrl.textContent = url;
+    if (statusLabel) {
+        if (status === 'running') {
+            statusLabel.textContent = 'Running';
+            statusLabel.style.color = 'var(--success)';
+        } else if (status === 'stopped') {
+            statusLabel.textContent = 'Stopped';
+            statusLabel.style.color = 'var(--text-muted)';
+        } else {
+            statusLabel.textContent = status || 'Unknown';
+            statusLabel.style.color = 'var(--warning)';
         }
     }
 }
@@ -7474,9 +7477,16 @@ function buildDevPreviewUrl(service) {
             .replace('{hostname}', devPreviewConfig.tailscaleServe.hostname || '')
             .replace('{port}', service.port);
     }
-    // Fallback to localhost (works if on same network)
+    // If accessed over Tailscale HTTPS, use same origin + service path
+    // (raw HTTP ports aren't exposed over Tailscale)
+    if (window.location.protocol === 'https:' && window.location.hostname.includes('.ts.net')) {
+        const path = service.path || '/';
+        return `${window.location.origin}${path}`;
+    }
+    // Fallback: use the current host with service port (local network)
+    const host = window.location.hostname || 'localhost';
     const path = service.path || '/';
-    return `http://localhost:${service.port}${path}`;
+    return `http://${host}:${service.port}${path}`;
 }
 
 /**
@@ -7588,11 +7598,19 @@ async function restartDevService() {
 /**
  * Open preview in new tab
  */
-function openDevPreview() {
+async function openDevPreview() {
     const svc = devPreviewConfig?.services?.find(s => s.id === activeDevService);
-    if (svc) {
-        window.open(buildDevPreviewUrl(svc), '_blank');
+    if (!svc) return;
+    const url = buildDevPreviewUrl(svc);
+    if (navigator.share) {
+        try {
+            await navigator.share({ title: svc.label, url });
+            return;
+        } catch (e) {
+            if (e.name === 'AbortError') return;
+        }
     }
+    window.open(url, '_blank', 'noopener,noreferrer');
 }
 
 /**
@@ -7619,6 +7637,21 @@ function setupDevPreview() {
     document.getElementById('devRestartBtn')?.addEventListener('click', restartDevService);
     document.getElementById('devOpenBtn')?.addEventListener('click', openDevPreview);
     document.getElementById('devCopyBtn')?.addEventListener('click', copyDevPreviewUrl);
+
+    // Link card: share sheet (lets user pick browser/incognito), fallback to window.open
+    document.getElementById('devServiceLink')?.addEventListener('click', async () => {
+        const url = document.getElementById('devServiceLink')?.dataset.url;
+        if (!url) return;
+        if (navigator.share) {
+            try {
+                await navigator.share({ title: activeDevService || 'Preview', url });
+                return;
+            } catch (e) {
+                if (e.name === 'AbortError') return; // User cancelled
+            }
+        }
+        window.open(url, '_blank', 'noopener,noreferrer');
+    });
 }
 
 // ============================================================================
