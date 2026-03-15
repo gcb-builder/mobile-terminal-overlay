@@ -1,6 +1,7 @@
 """Routes for MCP server and plugin management."""
 import json
 import logging
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -10,6 +11,8 @@ from mobile_terminal.helpers import (
     PLUGIN_NAME_RE, INSTALLED_PLUGINS_FILE,
     load_claude_settings, save_claude_settings,
 )
+
+MARKETPLACES_DIR = Path.home() / ".claude" / "plugins" / "marketplaces"
 
 logger = logging.getLogger(__name__)
 
@@ -192,3 +195,41 @@ def register(app: FastAPI, deps):
         )
 
         return {"success": True, "name": name, "enabled": enabled}
+
+    @app.get("/api/plugins/marketplace")
+    async def list_marketplace_plugins(_auth=Depends(deps.verify_token)):
+        """Browse plugins from locally cached marketplace directories."""
+
+        settings, _ = load_claude_settings()
+        enabled = settings.get("enabledPlugins", {})
+        plugins = []
+
+        if not MARKETPLACES_DIR.is_dir():
+            return {"plugins": plugins}
+
+        for mp_dir in sorted(MARKETPLACES_DIR.iterdir()):
+            manifest = mp_dir / ".claude-plugin" / "marketplace.json"
+            if not manifest.is_file():
+                continue
+            marketplace = mp_dir.name
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                logger.warning(f"Skipping corrupt marketplace.json in {mp_dir}")
+                continue
+
+            for p in data.get("plugins", []):
+                name = p.get("name", "")
+                if not name:
+                    continue
+                plugin_id = f"{name}@{marketplace}"
+                plugins.append({
+                    "id": plugin_id,
+                    "name": name,
+                    "description": p.get("description", ""),
+                    "category": p.get("category", ""),
+                    "marketplace": marketplace,
+                    "enabled": plugin_id in enabled,
+                })
+
+        return {"plugins": plugins}

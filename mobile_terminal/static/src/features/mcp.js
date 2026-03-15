@@ -12,6 +12,9 @@ import { escapeHtml, shellSplit } from '../utils.js';
 let mcpEditingName = null;
 let mcpDirty = false;
 let mcpServersCache = {};
+let marketplaceCache = [];
+let marketplaceCategory = '';
+let marketplaceSearch = '';
 
 // Callback for resetting agent health tracking after restart
 // Set by terminal.js via initMcp(opts)
@@ -105,6 +108,104 @@ async function addPlugin() {
         if (input) input.value = '';
         await loadPlugins();
     }
+}
+
+// ── Marketplace browse ───────────────────────────────────────────────
+
+async function loadMarketplace() {
+    const list = document.getElementById('pluginBrowseList');
+    if (!list) return;
+
+    try {
+        const response = await ctx.apiFetch(`/api/plugins/marketplace?token=${ctx.token}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        marketplaceCache = data.plugins || [];
+    } catch (error) {
+        console.error('Failed to load marketplace:', error);
+        marketplaceCache = [];
+    }
+
+    // Build category pills
+    const categories = [...new Set(marketplaceCache.map(p => p.category).filter(Boolean))].sort();
+    const filterDiv = document.getElementById('pluginCategoryFilter');
+    if (filterDiv) {
+        let pills = `<button class="plugin-category-pill${!marketplaceCategory ? ' active' : ''}" data-cat="">All</button>`;
+        for (const cat of categories) {
+            const label = cat.charAt(0).toUpperCase() + cat.slice(1);
+            pills += `<button class="plugin-category-pill${marketplaceCategory === cat ? ' active' : ''}" data-cat="${escapeHtml(cat)}">${escapeHtml(label)}</button>`;
+        }
+        filterDiv.innerHTML = pills;
+    }
+
+    renderMarketplace();
+}
+
+function renderMarketplace() {
+    const list = document.getElementById('pluginBrowseList');
+    if (!list) return;
+
+    let filtered = marketplaceCache;
+
+    if (marketplaceCategory) {
+        filtered = filtered.filter(p => p.category === marketplaceCategory);
+    }
+
+    if (marketplaceSearch) {
+        const q = marketplaceSearch.toLowerCase();
+        filtered = filtered.filter(p =>
+            p.name.toLowerCase().includes(q) ||
+            p.description.toLowerCase().includes(q)
+        );
+    }
+
+    if (filtered.length === 0) {
+        list.innerHTML = '<p class="process-description">No plugins match.</p>';
+        return;
+    }
+
+    let html = '';
+    for (const p of filtered) {
+        const catBadge = p.category
+            ? `<span class="plugin-browse-category">${escapeHtml(p.category)}</span>`
+            : '';
+        html += `<div class="plugin-browse-item">
+            <div class="plugin-browse-info">
+                <div class="plugin-browse-name">${escapeHtml(p.name)}</div>
+                <div class="plugin-browse-desc">${escapeHtml(p.description)}</div>
+                ${catBadge}
+            </div>
+            <label class="mcp-toggle">
+                <input type="checkbox" data-browse-plugin="${escapeHtml(p.id)}" ${p.enabled ? 'checked' : ''}>
+                <span class="mcp-toggle-slider"></span>
+            </label>
+        </div>`;
+    }
+    list.innerHTML = html;
+
+    list.querySelectorAll('input[data-browse-plugin]').forEach(input => {
+        input.addEventListener('change', async () => {
+            const id = input.dataset.browsePlugin;
+            const enabled = input.checked;
+            const ok = await togglePlugin(id, enabled);
+            if (!ok) {
+                input.checked = !enabled; // revert on failure
+            } else {
+                // Update cache
+                const entry = marketplaceCache.find(p => p.id === id);
+                if (entry) entry.enabled = enabled;
+            }
+        });
+    });
+}
+
+let _searchTimer = null;
+function onPluginSearch(e) {
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(() => {
+        marketplaceSearch = (e.target.value || '').trim();
+        renderMarketplace();
+    }, 200);
 }
 
 // ── MCP Server functions ─────────────────────────────────────────────
@@ -439,7 +540,18 @@ async function mcpRestartAgents(mode) {
 export function initMcp(opts = {}) {
     onAgentRestarted = opts.onAgentRestarted || null;
 
-    document.getElementById('mcpRefreshBtn')?.addEventListener('click', () => { loadPlugins(); loadMcpServers(); });
+    document.getElementById('mcpRefreshBtn')?.addEventListener('click', () => { loadPlugins(); loadMcpServers(); loadMarketplace(); });
+
+    document.getElementById('pluginSearchInput')?.addEventListener('input', onPluginSearch);
+
+    document.getElementById('pluginCategoryFilter')?.addEventListener('click', (e) => {
+        const pill = e.target.closest('.plugin-category-pill');
+        if (!pill) return;
+        marketplaceCategory = pill.dataset.cat || '';
+        document.querySelectorAll('.plugin-category-pill').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        renderMarketplace();
+    });
     document.getElementById('mcpAddBtn')?.addEventListener('click', addMcpServer);
     document.getElementById('pluginAddBtn')?.addEventListener('click', addPlugin);
     document.getElementById('mcpCancelEditBtn')?.addEventListener('click', cancelMcpEdit);
@@ -467,4 +579,5 @@ export function initMcp(opts = {}) {
 export function loadMcp() {
     loadPlugins();
     loadMcpServers();
+    loadMarketplace();
 }

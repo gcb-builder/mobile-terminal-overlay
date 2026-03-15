@@ -752,11 +752,16 @@
                 <div class="process-tab-header">
                     <span class="process-title">Plugins</span>
                 </div>
+                <div class="plugin-search">
+                    <input id="pluginSearchInput" class="mcp-input" placeholder="Search plugins..." aria-label="Search plugins">
+                </div>
+                <div id="pluginCategoryFilter" class="plugin-category-filter"></div>
+                <div id="pluginBrowseList" class="mcp-server-list"></div>
                 <div id="pluginList" class="mcp-server-list">
                     <p class="process-description">Loading...</p>
                 </div>
                 <div class="mcp-add-section mcp-plugin-add">
-                    <input id="pluginIdInput" class="mcp-input" placeholder="Plugin ID (e.g. code-simplifier@claude-plugins-official)" aria-label="Plugin ID">
+                    <input id="pluginIdInput" class="mcp-input" placeholder="Custom plugin ID" aria-label="Plugin ID">
                     <button id="pluginAddBtn" class="process-action-btn primary">Enable Plugin</button>
                 </div>
                 <!-- MCP Servers section -->
