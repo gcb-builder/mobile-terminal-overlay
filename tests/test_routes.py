@@ -28,6 +28,7 @@ def test_route_inventory():
     assert "/api/push/vapid-key" in paths
     assert "/api/scratch/list" in paths
     assert "/api/scratch/store" in paths
+    assert "/api/activity" in paths
 
     # Total route count (adjust as routers are extracted)
     builtin_paths = {"/docs", "/docs/oauth2-redirect", "/openapi.json", "/redoc"}

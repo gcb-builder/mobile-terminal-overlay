@@ -7,8 +7,12 @@ from typing import Optional
 from fastapi import Depends, FastAPI, Query
 from fastapi.responses import JSONResponse
 
-from mobile_terminal.challenge import get_available_models, DEFAULT_MODEL
+from mobile_terminal.challenge import (
+    get_available_models, DEFAULT_MODEL, MODELS, PROVIDERS,
+    call_cli,
+)
 from mobile_terminal.helpers import get_tmux_target, run_subprocess
+from mobile_terminal.models import GitOpLock
 
 logger = logging.getLogger(__name__)
 
@@ -16,16 +20,23 @@ logger = logging.getLogger(__name__)
 def register(app: FastAPI, deps):
     """Register challenge routes."""
 
+    cli_review_lock = GitOpLock()
+
     @app.get("/api/challenge/models")
     async def get_challenge_models(_auth=Depends(deps.verify_token)):
         """
         Get list of available AI models for challenge function.
 
-        Returns only models whose provider has a valid API key configured.
+        Returns models with valid API keys or CLI binaries on PATH.
         """
 
         models = get_available_models()
-        return {"models": models, "default": DEFAULT_MODEL}
+        return {
+            "models": models,
+            "default": DEFAULT_MODEL,
+            "cli_busy": cli_review_lock.is_locked,
+            "cli_current_op": cli_review_lock.current_operation,
+        }
 
     @app.post("/api/challenge")
     async def challenge_code(
@@ -153,7 +164,6 @@ def register(app: FastAPI, deps):
         bundle = "\n\n".join(bundle_parts)
 
         # Call API with problem-focused system prompt
-        from mobile_terminal.challenge import MODELS
         if model not in MODELS:
             return JSONResponse({"error": f"Unknown model: {model}"}, status_code=400)
 
@@ -227,21 +237,53 @@ Only the top 1–3 risks worth caring about.
 - Prefer negative certainty ("this will fail if…") over hedging
 - If everything looks correct, say so—but still identify one thing to watch"""
 
-        # Build request manually to use custom system prompt
+        # Route to appropriate provider
         model_info = MODELS[model]
         provider_key = model_info["provider"]
+        provider_config = PROVIDERS.get(provider_key, {})
+
+        # CLI-based review: pipe prompt via stdin to local tool
+        if provider_config.get("format") == "cli":
+            if not await cli_review_lock.acquire("challenge_cli"):
+                return JSONResponse(
+                    {"error": "Another CLI review is already running"},
+                    status_code=409,
+                )
+            try:
+                full_prompt = f"{system_prompt}\n\n---\n\n{bundle}"
+                result = await call_cli(provider_key, full_prompt, repo_path, model)
+            finally:
+                cli_review_lock.release()
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "content": result["content"],
+                    "model": result.get("model"),
+                    "model_name": result.get("model_name"),
+                    "provider": result.get("provider"),
+                    "bundle_chars": len(bundle),
+                    "local": result.get("local", True),
+                    "usage": result.get("usage", {}),
+                }
+            else:
+                return JSONResponse(
+                    {"error": result.get("error", "CLI review failed")},
+                    status_code=500,
+                )
+
+        # API-based review: build HTTP request to cloud provider
         model_id = model_info["model_id"]
 
         from mobile_terminal.challenge import (
-            PROVIDERS, get_api_key, validate_api_key,
-            build_openai_payload, build_anthropic_payload,
+            get_api_key, validate_api_key,
             build_openai_headers, build_anthropic_headers,
             parse_openai_response, parse_anthropic_response,
             parse_openai_responses_response,
         )
         import httpx
 
-        provider = PROVIDERS[provider_key]
+        provider = provider_config
         api_key = get_api_key(provider_key)
         is_valid, error_msg = validate_api_key(api_key, provider_key)
         if not is_valid:

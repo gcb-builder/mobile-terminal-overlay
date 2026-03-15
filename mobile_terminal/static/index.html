@@ -184,6 +184,9 @@
                     <button class="tools-rail-btn" data-tool="env" title="Env">
                         <span class="rail-icon">&#x2387;</span>
                     </button>
+                    <button class="tools-rail-btn" data-tool="activity" title="Activity">
+                        <span class="rail-icon">&#x23F1;</span>
+                    </button>
                     <div class="tools-rail-spacer"></div>
                     <!-- Actions -->
                     <button class="tools-rail-btn" data-action="terminal" title="Terminal (3)">
@@ -627,6 +630,7 @@
             <button class="fab-menu-item" data-tab="plugins"><span class="fab-icon">&#x1F9E9;</span>Plugins</button>
             <button class="fab-menu-item" data-tab="mcp"><span class="fab-icon">&#x2699;</span>MCP</button>
             <button class="fab-menu-item" data-tab="env"><span class="fab-icon">&#x1F511;</span>Env</button>
+            <button class="fab-menu-item" data-tab="activity"><span class="fab-icon">&#x23F1;</span>Activity</button>
             <button class="fab-menu-item" data-action="launchTeam"><span class="fab-icon">&#x1F680;</span>Launch Team</button>
             <button class="fab-menu-item" data-action="docs"><span class="fab-icon">&#x1F4C4;</span>Docs</button>
             <button class="fab-menu-close" id="fabMenuClose" aria-label="Close">&times;</button>
@@ -647,6 +651,7 @@
                     <button class="rollback-tab" data-tab="plugins">Plugins</button>
                     <button class="rollback-tab" data-tab="mcp">MCP</button>
                     <button class="rollback-tab" data-tab="env">Env</button>
+                    <button class="rollback-tab" data-tab="activity">Activity</button>
                 </div>
                 <button id="previewDrawerClose" class="preview-drawer-close" aria-label="Close drawer">&times;</button>
             </div>
@@ -831,6 +836,22 @@
                     </div>
                 </div>
             </div>
+            <!-- Activity Timeline tab content -->
+            <div id="activityTabContent" class="rollback-tab-content hidden">
+                <div class="activity-filter-bar">
+                    <button class="activity-filter-pill active" data-category="all">All</button>
+                    <button class="activity-filter-pill" data-category="tools">Tools</button>
+                    <button class="activity-filter-pill" data-category="files">Files</button>
+                    <button class="activity-filter-pill" data-category="tests">Tests</button>
+                    <button class="activity-filter-pill" data-category="git">Git</button>
+                    <button class="activity-filter-pill" data-category="errors">Errors</button>
+                </div>
+                <div class="activity-phase-banner hidden" id="activityPhaseBanner">
+                    <span id="activityPhaseIcon" class="activity-phase-icon"></span>
+                    <span id="activityPhaseText" class="activity-phase-text"></span>
+                </div>
+                <div id="activityList" class="activity-list"></div>
+            </div>
         </div>
 
         <!-- Connection status overlay -->
@@ -840,6 +861,21 @@
                 <p id="statusText">Connecting...</p>
                 <button id="reconnectBtn" class="reconnect-btn hidden">Reconnect Now</button>
                 <button id="hardRefreshBtn" class="hard-refresh-btn hidden">Hard Refresh</button>
+            </div>
+        </div>
+
+        <!-- Command Palette overlay -->
+        <div id="paletteOverlay" class="palette-overlay hidden">
+            <div class="palette-content">
+                <div class="palette-header">
+                    <span class="palette-icon">&#x2318;</span>
+                    <input type="text" id="paletteInput" class="palette-input"
+                           placeholder="Type a command..." autocomplete="off"
+                           autocorrect="off" spellcheck="false"
+                           aria-label="Command palette search">
+                    <button id="paletteClose" class="palette-close" aria-label="Close">&times;</button>
+                </div>
+                <div id="paletteResults" class="palette-results" role="listbox"></div>
             </div>
         </div>
 

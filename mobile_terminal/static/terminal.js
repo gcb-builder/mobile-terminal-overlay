@@ -27,6 +27,8 @@ import { initTeam, activateTeamView, startTeamCardRefresh, stopTeamCardRefresh,
          getLastSystemSummary, scrollToFirstAttention, populateDispatchPlans,
          setupTeamFilters, applyDensity, getTeamDensity,
          showLaunchTeamModal } from './src/features/team.js';
+import { initPalette, openPalette, closePalette } from './src/features/palette.js';
+import { initActivity, loadActivity, stopActivity } from './src/features/activity.js';
 
 // Init order (runtime-sensitive):
 // 1. DOM refs available (DOMContentLoaded)
@@ -3856,6 +3858,7 @@ function setupChallenge() {
     let modelsLoaded = false;
     let plansLoaded = false;
     let plansCache = [];
+    let modelMetadataCache = {};
 
     // Fetch available models
     async function loadModels() {
@@ -3869,11 +3872,14 @@ function setupChallenge() {
             const data = await response.json();
 
             challengeModelSelect.innerHTML = '';
+            modelMetadataCache = {};
             if (data.models && data.models.length > 0) {
                 data.models.forEach(model => {
+                    modelMetadataCache[model.key] = model;
                     const option = document.createElement('option');
                     option.value = model.key;
-                    option.textContent = model.name;
+                    const suffix = model.local ? ' (local)' : '';
+                    option.textContent = model.name + suffix;
                     if (model.key === data.default) {
                         option.selected = true;
                     }
@@ -4042,11 +4048,18 @@ function setupChallenge() {
         const modelName = challengeModelSelect.options[challengeModelSelect.selectedIndex]?.text || selectedModel;
 
         challengeRun.disabled = true;
-        challengeRun.textContent = 'Running...';
         challengeResult.classList.remove('hidden');
-        challengeResultContent.innerHTML = `<div class="loading">Analyzing with ${escapeHtml(modelName)}...</div>`;
         challengeResult.classList.add('loading');
         challengeStatus.textContent = '';
+
+        // Elapsed timer — critical for CLI reviews (60-120s)
+        const startTime = Date.now();
+        challengeRun.textContent = '0s';
+        challengeResultContent.innerHTML = `<div class="loading">Analyzing with ${escapeHtml(modelName)}...</div>`;
+        const timerInterval = setInterval(() => {
+            const elapsed = Math.round((Date.now() - startTime) / 1000);
+            challengeRun.textContent = `${elapsed}s`;
+        }, 1000);
 
         try {
             const params = new URLSearchParams({
@@ -4067,6 +4080,9 @@ function setupChallenge() {
 
             const data = await response.json();
 
+            if (response.status === 409) {
+                throw new Error(data.error || 'Another review is in progress');
+            }
             if (!response.ok) {
                 throw new Error(data.error || 'Challenge failed');
             }
@@ -4111,6 +4127,7 @@ function setupChallenge() {
             challengeResult.classList.remove('loading');
             challengeStatus.textContent = '';
         } finally {
+            clearInterval(timerInterval);
             challengeRun.disabled = false;
             challengeRun.textContent = 'Run';
         }
@@ -7022,6 +7039,7 @@ function switchRollbackTab(tabName) {
     const pluginsContent = document.getElementById('pluginsTabContent');
     const mcpContent = document.getElementById('mcpTabContent');
     const envContent = document.getElementById('envTabContent');
+    const activityContent = document.getElementById('activityTabContent');
 
     // Hide all tabs
     queueContent?.classList.add('hidden');
@@ -7040,6 +7058,9 @@ function switchRollbackTab(tabName) {
     mcpContent?.classList.remove('active');
     envContent?.classList.add('hidden');
     envContent?.classList.remove('active');
+    activityContent?.classList.add('hidden');
+    activityContent?.classList.remove('active');
+    stopActivity();
 
     // Show selected tab
     if (tabName === 'queue') {
@@ -7075,6 +7096,10 @@ function switchRollbackTab(tabName) {
         envContent?.classList.remove('hidden');
         envContent?.classList.add('active');
         loadEnv();
+    } else if (tabName === 'activity') {
+        activityContent?.classList.remove('hidden');
+        activityContent?.classList.add('active');
+        loadActivity();
     }
 }
 
@@ -7950,6 +7975,7 @@ const TOOL_TAB_MAP = {
     plugins: 'pluginsTabContent',
     mcp: 'mcpTabContent',
     env: 'envTabContent',
+    activity: 'activityTabContent',
 };
 
 /**
@@ -7964,6 +7990,7 @@ const TOOL_TITLES = {
     mcp: 'MCP',
     env: 'Env',
     team: 'Team',
+    activity: 'Activity',
 };
 
 /**
@@ -8595,9 +8622,10 @@ function setupDesktopShortcuts() {
         if (ctx.uiMode !== 'desktop-multipane') return;
         if (!isControlUnlocked) return;
 
-        // Skip if compose/challenge modal is open
+        // Skip if compose/challenge/palette modal is open
         if (document.querySelector('.compose-modal:not(.hidden)') ||
-            document.querySelector('.challenge-modal:not(.hidden)')) return;
+            document.querySelector('.challenge-modal:not(.hidden)') ||
+            document.querySelector('.palette-overlay:not(.hidden)')) return;
 
         // Ctrl+B → tmux prefix
         if (e.ctrlKey && e.key === 'b') {
@@ -8648,6 +8676,7 @@ function setupDesktopShortcuts() {
         if (document.querySelector('.compose-modal:not(.hidden)') ||
             document.querySelector('.challenge-modal:not(.hidden)') ||
             document.querySelector('.docs-modal:not(.hidden)') ||
+            document.querySelector('.palette-overlay:not(.hidden)') ||
             document.querySelector('.shortcut-help-modal.visible')) return;
 
         // Skip if interactive mode
@@ -8815,6 +8844,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     initMarkdown(logContent);
     initToolOutput(logContent);
     initDocs();
+    initPalette({
+        switchToView, openSurface, executeRunnerCommand,
+        respawnProcess, showLaunchTeamModal,
+        sendInterrupt: () => sendKeyDebounced('\x03', true),
+    });
+    initActivity();
     initHistory({ captureSnapshot, enterPreviewMode });
     initTeam({ selectTarget, switchToView, fetchWithTimeout, updateActionBar });
     setupPreviewHandlers();
@@ -8822,6 +8857,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupDevPreview();
     setupPermissionBanner();
     setupDesktopLayout();
+
+    // Command palette: Ctrl+K / Cmd+K (works in all UI modes)
+    document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+            e.preventDefault();
+            const paletteEl = document.getElementById('paletteOverlay');
+            if (paletteEl && !paletteEl.classList.contains('hidden')) {
+                closePalette();
+            } else {
+                openPalette();
+            }
+        }
+    });
 
     // Reconnect/refresh button click handlers
     const reconnectBadge = document.getElementById('reconnectBadge');

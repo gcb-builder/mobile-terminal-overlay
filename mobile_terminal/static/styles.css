@@ -3272,6 +3272,7 @@ html, body {
     align-items: center;
     justify-content: center;
     color: var(--text-secondary);
+    animation: status-pulse 2s ease-in-out infinite;
 }
 
 .challenge-result-content h3 {
@@ -5491,7 +5492,8 @@ html, body {
 
 #envTabContent,
 #mcpTabContent,
-#pluginsTabContent {
+#pluginsTabContent,
+#activityTabContent {
     padding: 12px 16px;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
@@ -8324,5 +8326,357 @@ html, body {
     font-size: 13px;
     padding: 12px;
     text-align: center;
+}
+
+/* ========================================================================
+   COMMAND PALETTE
+   ======================================================================== */
+
+.palette-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 500;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 0;
+}
+
+.palette-overlay.hidden {
+    display: none;
+}
+
+.palette-overlay.visible .palette-content {
+    animation: paletteSlideDown 0.15s ease-out;
+}
+
+@keyframes paletteSlideDown {
+    from { transform: translateY(-100%); opacity: 0; }
+    to   { transform: translateY(0); opacity: 1; }
+}
+
+.palette-content {
+    width: 100%;
+    max-width: 560px;
+    max-height: 60vh;
+    background: var(--bg-secondary, #1e1e2e);
+    border-radius: 0 0 12px 12px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.palette-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border, #333);
+    background: var(--bg-tertiary, #252536);
+    flex-shrink: 0;
+}
+
+.palette-icon {
+    font-size: 16px;
+    color: var(--text-secondary, #999);
+    flex-shrink: 0;
+}
+
+.palette-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-primary, #e0e0e0);
+    font-size: 16px;
+    font-family: inherit;
+    min-height: 44px;
+    padding: 0 4px;
+}
+
+.palette-input::placeholder {
+    color: var(--text-secondary, #999);
+}
+
+.palette-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary, #999);
+    font-size: 22px;
+    cursor: pointer;
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.palette-results {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    flex: 1;
+    min-height: 0;
+}
+
+.palette-group {
+    padding: 4px 0;
+}
+
+.palette-group-label {
+    padding: 6px 16px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary, #999);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.palette-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    min-height: 44px;
+    cursor: pointer;
+    color: var(--text-primary, #e0e0e0);
+    transition: background 0.1s;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.palette-item:hover,
+.palette-item.selected {
+    background: var(--bg-tertiary, #252536);
+}
+
+.palette-item.selected {
+    border-left: 2px solid var(--accent, #3794ff);
+}
+
+.palette-item-icon {
+    width: 24px;
+    text-align: center;
+    font-size: 16px;
+    flex-shrink: 0;
+}
+
+.palette-item-label {
+    flex: 1;
+    font-size: 14px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.palette-item-label mark {
+    background: none;
+    color: var(--accent, #3794ff);
+    font-weight: 600;
+}
+
+.palette-item-badge {
+    flex-shrink: 0;
+    padding: 2px 8px;
+    font-size: 10px;
+    border-radius: 10px;
+    background: var(--bg-primary, #161622);
+    color: var(--text-secondary, #999);
+    border: 1px solid var(--border, #333);
+}
+
+.palette-item-shortcut {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-muted, #666);
+    font-family: monospace;
+}
+
+.palette-empty {
+    padding: 24px 16px;
+    text-align: center;
+    color: var(--text-secondary, #999);
+    font-size: 14px;
+}
+
+/* Hide shortcuts on mobile */
+@media (max-width: 768px) {
+    .palette-item-shortcut { display: none; }
+}
+
+/* Desktop: center with top margin, full border-radius */
+@media (min-width: 769px) {
+    .palette-overlay { padding-top: 10vh; }
+    .palette-content { border-radius: 12px; }
+}
+
+/* ========================================================================
+   ACTIVITY TIMELINE TAB
+   ======================================================================== */
+
+#activityTabContent {
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.activity-filter-bar {
+    display: flex;
+    gap: 6px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border, #333);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-shrink: 0;
+}
+
+.activity-filter-pill {
+    flex-shrink: 0;
+    padding: 6px 14px;
+    font-size: 12px;
+    border: 1px solid var(--border, #333);
+    border-radius: 16px;
+    background: transparent;
+    color: var(--text-secondary, #999);
+    cursor: pointer;
+    white-space: nowrap;
+    min-height: 32px;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.activity-filter-pill.active {
+    border-color: var(--accent, #3794ff);
+    color: var(--accent, #3794ff);
+    background: rgba(55, 148, 255, 0.1);
+}
+
+.activity-filter-pill[data-category="errors"].active {
+    border-color: var(--error, #f85149);
+    color: var(--error, #f85149);
+    background: rgba(248, 81, 73, 0.1);
+}
+
+.activity-filter-pill[data-category="tests"].active {
+    border-color: var(--success, #89d185);
+    color: var(--success, #89d185);
+    background: rgba(137, 209, 133, 0.1);
+}
+
+.activity-filter-pill[data-category="git"].active {
+    border-color: #c586c0;
+    color: #c586c0;
+    background: rgba(197, 134, 192, 0.1);
+}
+
+.activity-phase-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary, #252536);
+    border-bottom: 1px solid var(--border, #333);
+    font-size: 13px;
+    color: var(--accent, #3794ff);
+    flex-shrink: 0;
+}
+
+.activity-phase-banner.hidden { display: none; }
+
+.activity-phase-icon { font-size: 16px; }
+
+.activity-list {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 0;
+}
+
+.activity-empty {
+    padding: 24px 16px;
+    text-align: center;
+    color: var(--text-secondary, #999);
+    font-size: 13px;
+}
+
+.activity-event {
+    border-bottom: 1px solid var(--border, #333);
+}
+
+.activity-event.filtered-out { display: none; }
+
+.activity-event-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    cursor: pointer;
+    min-height: 44px;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.activity-event-header:active {
+    background: var(--bg-tertiary, #252536);
+}
+
+.activity-event-icon {
+    flex-shrink: 0;
+    width: 20px;
+    text-align: center;
+    font-size: 14px;
+}
+
+.activity-event-title {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-primary, #e0e0e0);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.activity-badge {
+    flex-shrink: 0;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: monospace;
+}
+
+.activity-badge-ok {
+    background: rgba(137, 209, 133, 0.15);
+    color: var(--success, #89d185);
+}
+
+.activity-badge-error {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--error, #f85149);
+}
+
+.activity-event-time {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-secondary, #999);
+    min-width: 24px;
+    text-align: right;
+}
+
+.activity-event-detail {
+    padding: 4px 12px 10px 40px;
+    font-size: 12px;
+    color: var(--text-secondary, #999);
+    font-family: monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 200px;
+    overflow-y: auto;
+    background: var(--bg-secondary, #1e1e2e);
+}
+
+.activity-event-detail.hidden { display: none; }
+
+.activity-event.expanded .activity-event-header {
+    background: var(--bg-tertiary, #252536);
 }
 

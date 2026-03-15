@@ -1,11 +1,14 @@
 """
 Challenge function - skeptical code review using multiple AI providers.
 
-Supports: Together.ai, OpenAI, Anthropic
+Supports: Together.ai, OpenAI, Anthropic, CLI tools (Codex, Gemini)
 User selects model, system routes to appropriate provider.
 """
 
+import asyncio
+import json
 import os
+import shutil
 import subprocess
 import httpx
 from pathlib import Path
@@ -42,6 +45,16 @@ PROVIDERS = {
         "url": "https://api.anthropic.com/v1/messages",
         "env_key": "ANTHROPIC_API_KEY",
         "format": "anthropic",
+    },
+    "codex_cli": {
+        "name": "Codex CLI (local)",
+        "cli_binary": "codex",
+        "format": "cli",
+    },
+    "gemini_cli": {
+        "name": "Gemini CLI (local)",
+        "cli_binary": "gemini",
+        "format": "cli",
     },
 }
 
@@ -91,6 +104,18 @@ MODELS = {
         "name": "Claude 3.5 Sonnet",
         "provider": "anthropic",
         "model_id": "claude-3-5-sonnet-20241022",
+    },
+    "codex-local": {
+        "name": "Codex CLI (local)",
+        "provider": "codex_cli",
+        "model_id": "codex",
+        "local": True,
+    },
+    "gemini-local": {
+        "name": "Gemini CLI (local)",
+        "provider": "gemini_cli",
+        "model_id": "gemini",
+        "local": True,
     },
 }
 
@@ -148,22 +173,39 @@ def validate_api_key(api_key: Optional[str], provider: str = "together") -> tupl
 
 def get_available_models() -> list[dict]:
     """
-    Get list of models that have valid API keys configured.
+    Get list of models that are available (valid API key or CLI binary on PATH).
 
     Returns:
-        List of {key, name} dicts for available models
+        List of {key, name, local, mode, provider} dicts for available models
     """
     available = []
     for model_key, model_info in MODELS.items():
         provider = model_info["provider"]
-        api_key = get_api_key(provider)
-        if api_key:
-            is_valid, _ = validate_api_key(api_key, provider)
-            if is_valid:
+        provider_config = PROVIDERS.get(provider, {})
+        fmt = provider_config.get("format")
+
+        if fmt == "cli":
+            binary = provider_config.get("cli_binary")
+            if binary and shutil.which(binary):
                 available.append({
                     "key": model_key,
                     "name": model_info["name"],
+                    "local": True,
+                    "mode": "prompt",
+                    "provider": provider,
                 })
+        else:
+            api_key = get_api_key(provider)
+            if api_key:
+                is_valid, _ = validate_api_key(api_key, provider)
+                if is_valid:
+                    available.append({
+                        "key": model_key,
+                        "name": model_info["name"],
+                        "local": False,
+                        "mode": "api",
+                        "provider": provider,
+                    })
     return available
 
 
@@ -459,6 +501,135 @@ async def call_api(model_key: str, bundle: str) -> dict:
             "success": False,
             "error": str(e),
         }
+
+
+# ============================================================================
+# CLI-Based Review
+# ============================================================================
+
+CLI_OVERALL_TIMEOUT = 120  # seconds
+
+
+async def call_cli(
+    provider_key: str,
+    prompt: str,
+    repo_path: Path,
+    model_key: str = "",
+) -> dict:
+    """
+    Call a CLI-based AI tool with prompt piped via stdin.
+
+    Args:
+        provider_key: Key from PROVIDERS dict (e.g., "codex_cli")
+        prompt: The complete prompt to send (system + bundle)
+        repo_path: Repository path (cwd for subprocess)
+        model_key: Model key for response metadata
+
+    Returns:
+        dict with 'success', 'content' or 'error' keys
+    """
+    if provider_key not in PROVIDERS:
+        return {"success": False, "error": f"Unknown provider: {provider_key}"}
+
+    provider = PROVIDERS[provider_key]
+    binary = provider.get("cli_binary")
+    if not binary or not shutil.which(binary):
+        return {"success": False, "error": f"CLI tool '{binary}' not found on PATH"}
+
+    model_info = MODELS.get(model_key, {})
+
+    # Build CLI command per tool
+    if provider_key == "codex_cli":
+        cmd = [binary, "exec", "--sandbox", "read-only", "-"]
+    elif provider_key == "gemini_cli":
+        cmd = [binary, "-p", "-"]
+    else:
+        return {"success": False, "error": f"No CLI command template for: {provider_key}"}
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(repo_path),
+        )
+
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(input=prompt.encode("utf-8")),
+                timeout=CLI_OVERALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return {
+                "success": False,
+                "error": f"CLI review timed out after {CLI_OVERALL_TIMEOUT}s",
+            }
+
+        stdout = stdout_bytes.decode("utf-8", errors="replace")
+        stderr = stderr_bytes.decode("utf-8", errors="replace")
+
+        if proc.returncode != 0:
+            error_detail = stderr.strip() or stdout.strip() or f"Exit code {proc.returncode}"
+            return {
+                "success": False,
+                "error": f"CLI tool failed: {error_detail[:500]}",
+            }
+
+        content = _parse_cli_output(provider_key, stdout)
+        if content is None:
+            return {"success": False, "error": "Failed to parse CLI output"}
+
+        return {
+            "success": True,
+            "content": content,
+            "model": model_key,
+            "model_name": model_info.get("name", model_key),
+            "provider": provider_key,
+            "local": True,
+            "usage": {},
+        }
+
+    except FileNotFoundError:
+        return {"success": False, "error": f"CLI tool '{binary}' not found"}
+    except Exception as e:
+        logger.error(f"CLI error ({provider_key}): {e}")
+        return {"success": False, "error": str(e)}
+
+
+def _parse_cli_output(provider_key: str, stdout: str) -> Optional[str]:
+    """Parse CLI tool output to extract review text."""
+    try:
+        if provider_key == "codex_cli":
+            # JSONL output: scan backwards for content/message/text field
+            lines = [line.strip() for line in stdout.strip().split("\n") if line.strip()]
+            for line in reversed(lines):
+                try:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict):
+                        for key in ("content", "message", "text"):
+                            if key in obj and obj[key]:
+                                return obj[key]
+                except json.JSONDecodeError:
+                    continue
+            # Fallback: return raw stdout
+            return stdout.strip() or None
+
+        elif provider_key == "gemini_cli":
+            # Single JSON object: {"response": "...", "error": ...}
+            data = json.loads(stdout)
+            if data.get("error"):
+                return None
+            return data.get("response", stdout.strip()) or None
+
+        else:
+            return stdout.strip() or None
+
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.warning(f"CLI output parse error ({provider_key}): {e}")
+        return stdout.strip() or None
 
 
 # ============================================================================

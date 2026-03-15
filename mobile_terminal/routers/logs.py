@@ -815,3 +815,203 @@ def register(app: FastAPI, deps):
             "target": target_id,
             "message": "Reverted to auto-detection",
         }
+
+    # ----- Activity Timeline -----
+
+    _activity_cache = {}  # (project_id, pane_id) -> (ts, mtime, result)
+    _ACTIVITY_CACHE_TTL = 2.0
+
+    CATEGORY_ICONS = {
+        "tools": "\u2699",
+        "files": "\U0001f4dd",
+        "tests": "\u2713",
+        "git": "\U0001f500",
+        "errors": "\u26a0",
+    }
+
+    def _classify_event_category(tool_name: str, tool_input: dict) -> str:
+        """Classify a tool call into an activity category."""
+        if tool_name in ("Edit", "Write"):
+            return "files"
+        if tool_name == "Bash":
+            cmd = tool_input.get("command", "")
+            if cmd.strip().startswith("git ") or "| git " in cmd:
+                return "git"
+            if any(kw in cmd for kw in ("pytest", "npm test", "cargo test", "go test", "jest", "vitest", "make test")):
+                return "tests"
+        return "tools"
+
+    def _build_event(tool_name, tool_id, tool_input, timestamp, ts_epoch):
+        """Build one activity event from a tool_use block."""
+        category = _classify_event_category(tool_name, tool_input)
+        title = tool_name
+        detail = ""
+
+        if tool_name == "Bash":
+            cmd = tool_input.get("command", "")
+            detail = cmd[:300]
+            if category == "git":
+                parts = cmd.strip().split()
+                title = f"git {parts[1]}" if len(parts) > 1 else "git"
+            elif category == "tests":
+                title = f"Test: {cmd[:60]}"
+            else:
+                title = f"Bash: {cmd[:80]}"
+        elif tool_name in ("Edit", "Write"):
+            path = tool_input.get("file_path", "")
+            short = path.rsplit("/", 1)[-1] if "/" in path else path
+            title = f"{tool_name}: {short}"
+            detail = path
+        elif tool_name == "Read":
+            path = tool_input.get("file_path", "")
+            short = path.rsplit("/", 1)[-1] if "/" in path else path
+            title = f"Read: {short}"
+            detail = path
+        elif tool_name in ("Glob", "Grep"):
+            pattern = tool_input.get("pattern", "")
+            title = f"{tool_name}: {pattern[:60]}"
+            detail = pattern
+        else:
+            title = tool_name
+
+        return {
+            "id": tool_id or f"evt-{ts_epoch}",
+            "timestamp": timestamp,
+            "ts_epoch": ts_epoch,
+            "category": category,
+            "icon": CATEGORY_ICONS.get(category, "\u2022"),
+            "title": title,
+            "detail": detail,
+            "status": None,
+            "status_badge": None,
+            "tool_use_id": tool_id or None,
+            "_tool_name": tool_name,
+        }
+
+    def _parse_activity_events(raw_content: str, limit: int = 100, category: Optional[str] = None) -> list:
+        """Parse JSONL content into activity timeline events."""
+        events = []
+        pending = {}  # tool_use_id -> event index
+
+        for line in raw_content.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = entry.get("type")
+            message = entry.get("message", {})
+            timestamp = entry.get("timestamp", "")
+
+            ts_epoch = 0
+            if timestamp:
+                try:
+                    # ISO format: 2025-01-15T10:30:00.000Z
+                    from datetime import datetime, timezone
+                    ts = timestamp.replace("Z", "+00:00")
+                    dt = datetime.fromisoformat(ts)
+                    ts_epoch = int(dt.timestamp() * 1000)
+                except Exception:
+                    pass
+
+            if msg_type == "assistant":
+                content = message.get("content", [])
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    tool_name = block.get("name", "")
+                    tool_id = block.get("id", "")
+                    tool_input = block.get("input", {})
+                    # Skip phase tools — they go in banner, not feed
+                    if tool_name in ("EnterPlanMode", "ExitPlanMode", "TodoWrite",
+                                     "Task", "AskUserQuestion", "TaskCreate",
+                                     "TaskUpdate", "TaskList", "TaskGet"):
+                        continue
+                    evt = _build_event(tool_name, tool_id, tool_input, timestamp, ts_epoch)
+                    idx = len(events)
+                    events.append(evt)
+                    if tool_id:
+                        pending[tool_id] = idx
+
+            elif msg_type == "user":
+                content = message.get("content", "")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_result":
+                            tid = block.get("tool_use_id", "")
+                            if tid and tid in pending:
+                                idx = pending.pop(tid)
+                                result_content = block.get("content", "")
+                                is_error = block.get("is_error", False)
+                                tool_nm = events[idx].get("_tool_name", "")
+                                summary = _summarize_tool_result(tool_nm, result_content, is_error)
+                                events[idx]["status"] = "error" if is_error else "ok"
+                                events[idx]["status_badge"] = summary
+                                if is_error:
+                                    events[idx]["category"] = "errors"
+                                    events[idx]["icon"] = CATEGORY_ICONS["errors"]
+
+        # Filter
+        if category and category != "all":
+            events = [e for e in events if e.get("category") == category]
+
+        # Clean internal fields, reverse to newest-first
+        for e in events:
+            e.pop("_tool_name", None)
+        events.reverse()
+        return events[:limit]
+
+    @app.get("/api/activity")
+    async def get_activity(
+        request: Request,
+        _auth=Depends(deps.verify_token),
+        limit: int = Query(100),
+        category: Optional[str] = Query(None),
+        pane_id: Optional[str] = Query(None),
+    ):
+        """Activity timeline: structured event feed from JSONL logs."""
+        log_file = _resolve_log_file(pane_id=pane_id)
+        if not log_file or not log_file.exists():
+            return {"events": [], "phase": None, "truncated": False, "modified": 0}
+
+        try:
+            file_mtime = log_file.stat().st_mtime
+        except Exception:
+            return {"events": [], "phase": None, "truncated": False, "modified": 0}
+
+        # Cache check
+        target_id = pane_id or app.state.active_target or ""
+        project_id = get_project_id(deps.get_current_repo_path() or Path("."))
+        cache_key = (project_id, target_id, category or "all")
+        cached = _activity_cache.get(cache_key)
+        import time as _time
+        if cached:
+            ts, cached_mtime, cached_result = cached
+            if _time.time() - ts < _ACTIVITY_CACHE_TTL and cached_mtime == file_mtime:
+                return cached_result
+
+        raw = log_file.read_text(errors="replace")
+        events = _parse_activity_events(raw, limit=limit, category=category)
+        truncated = len(events) >= limit
+
+        result = {
+            "events": events,
+            "phase": None,
+            "truncated": truncated,
+            "modified": file_mtime,
+        }
+
+        # Cache result
+        _activity_cache[cache_key] = (_time.time(), file_mtime, result)
+        # Evict stale
+        now = _time.time()
+        stale = [k for k, (ts, _, _) in _activity_cache.items() if now - ts > _ACTIVITY_CACHE_TTL * 10]
+        for k in stale:
+            del _activity_cache[k]
+
+        return result
