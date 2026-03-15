@@ -9,7 +9,7 @@ import { abortableSleep, findSafeBoundary, formatFileSize, cleanTerminalOutput,
          shellSplit, formatTimeAgo } from './src/utils.js';
 import { deriveUIState, deriveSystemSummary } from './src/ui-state.js';
 import ctx from './src/context.js';
-import { initMcp, loadMcp } from './src/features/mcp.js';
+import { initMcp, loadMcp, loadPluginsTab } from './src/features/mcp.js';
 import { initEnv, loadEnv } from './src/features/env.js';
 import { initCollapse, scheduleCollapse, scheduleSuperCollapse } from './src/features/collapse.js';
 import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
@@ -432,6 +432,10 @@ let terminalView;
 
 // Attachments state for compose modal
 let pendingAttachments = [];
+
+// Draft persistence for compose modal
+let composeDraft = sessionStorage.getItem('composeDraft') || '';
+let draftAttachments = JSON.parse(sessionStorage.getItem('composeDraftAttachments') || '[]');
 
 // Last activity timestamp tracking
 let lastActivityTime = 0;
@@ -3648,10 +3652,14 @@ function setupComposeMode() {
     // Open compose modal
     composeBtn.addEventListener('click', () => {
         composeModal.classList.remove('hidden');
-        composeInput.value = '';
-        clearAttachments();
+        composeInput.value = composeDraft;
+        // Restore saved attachments
+        pendingAttachments = draftAttachments.slice();
+        renderAttachments();
         setTimeout(() => {
             composeInput.focus();
+            // Place cursor at end
+            composeInput.setSelectionRange(composeInput.value.length, composeInput.value.length);
         }, 100);
     });
 
@@ -3669,6 +3677,10 @@ function setupComposeMode() {
     composeClear.addEventListener('click', () => {
         composeInput.value = '';
         clearAttachments();
+        composeDraft = '';
+        draftAttachments = [];
+        sessionStorage.removeItem('composeDraft');
+        sessionStorage.removeItem('composeDraftAttachments');
         composeInput.focus();
     });
 
@@ -3710,7 +3722,7 @@ function setupComposeMode() {
         if (text && ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
             // Atomic send via tmux send-keys
             sendTextAtomic(text, withEnter);
-            closeComposeModal();
+            closeComposeModal(true);
         }
     }
 
@@ -3726,7 +3738,7 @@ function setupComposeMode() {
         if (text) {
             enqueueCommand(text).then(success => {
                 if (success) {
-                    closeComposeModal();
+                    closeComposeModal(true);
                 }
             });
         }
@@ -4293,7 +4305,19 @@ function clearAttachments() {
  */
 // formatFileSize — moved to src/utils.js
 
-function closeComposeModal() {
+function closeComposeModal(clearDraft = false) {
+    // Save or clear draft
+    if (clearDraft) {
+        composeDraft = '';
+        draftAttachments = [];
+        sessionStorage.removeItem('composeDraft');
+        sessionStorage.removeItem('composeDraftAttachments');
+    } else {
+        composeDraft = composeInput.value;
+        draftAttachments = pendingAttachments.slice();
+        sessionStorage.setItem('composeDraft', composeDraft);
+        sessionStorage.setItem('composeDraftAttachments', JSON.stringify(draftAttachments));
+    }
     composeModal.classList.add('hidden');
     composeInput.blur();
     clearAttachments();
@@ -6995,6 +7019,7 @@ function switchRollbackTab(tabName) {
     const devContent = document.getElementById('devTabContent');
     const historyContent = document.getElementById('historyTabContent');
     const processContent = document.getElementById('processTabContent');
+    const pluginsContent = document.getElementById('pluginsTabContent');
     const mcpContent = document.getElementById('mcpTabContent');
     const envContent = document.getElementById('envTabContent');
 
@@ -7009,6 +7034,8 @@ function switchRollbackTab(tabName) {
     historyContent?.classList.remove('active');
     processContent?.classList.add('hidden');
     processContent?.classList.remove('active');
+    pluginsContent?.classList.add('hidden');
+    pluginsContent?.classList.remove('active');
     mcpContent?.classList.add('hidden');
     mcpContent?.classList.remove('active');
     envContent?.classList.add('hidden');
@@ -7036,6 +7063,10 @@ function switchRollbackTab(tabName) {
         processContent?.classList.remove('hidden');
         processContent?.classList.add('active');
         loadProcessStatus();
+    } else if (tabName === 'plugins') {
+        pluginsContent?.classList.remove('hidden');
+        pluginsContent?.classList.add('active');
+        loadPluginsTab();
     } else if (tabName === 'mcp') {
         mcpContent?.classList.remove('hidden');
         mcpContent?.classList.add('active');
@@ -7916,6 +7947,7 @@ const TOOL_TAB_MAP = {
     dev: 'devTabContent',
     history: 'historyTabContent',
     process: 'processTabContent',
+    plugins: 'pluginsTabContent',
     mcp: 'mcpTabContent',
     env: 'envTabContent',
 };
