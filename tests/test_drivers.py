@@ -22,6 +22,7 @@ import pytest
 from mobile_terminal.drivers import get_driver, register_driver
 from mobile_terminal.drivers.base import (
     BaseAgentDriver,
+    DriverCapabilities,
     Observation,
     ObserveContext,
     tail_jsonl,
@@ -296,25 +297,45 @@ class TestObservation:
 class TestCapabilities:
     def test_claude_capabilities(self):
         caps = ClaudeDriver().capabilities()
-        assert caps["has_jsonl_logs"] is True
-        assert caps["has_permission_signal"] is True
+        assert caps.structured_logs is True
+        assert caps.permission_detection is True
+        assert caps.phase_detection is True
+        assert caps.pane_title_signal is True
 
     def test_generic_capabilities(self):
         caps = GenericDriver().capabilities()
-        assert caps["has_jsonl_logs"] is False
+        assert caps.structured_logs is False
+        assert caps.permission_detection is False
 
     def test_codex_capabilities(self):
         caps = CodexDriver().capabilities()
-        assert caps["has_jsonl_logs"] is True
-        assert caps["has_phase_detection"] is True
-        assert caps["has_pane_title_signal"] is False
+        assert caps.structured_logs is True
+        assert caps.phase_detection is True
+        assert caps.pane_title_signal is False
 
     def test_gemini_capabilities(self):
         caps = GeminiDriver().capabilities()
-        assert caps["has_jsonl_logs"] is False
-        assert caps["has_permission_signal"] is True
-        assert caps["has_phase_detection"] is True
-        assert caps["has_pane_title_signal"] is True
+        assert caps.structured_logs is False
+        assert caps.permission_detection is True
+        assert caps.phase_detection is True
+        assert caps.pane_title_signal is True
+
+    def test_capabilities_frozen(self):
+        """DriverCapabilities is immutable."""
+        from dataclasses import FrozenInstanceError
+        caps = ClaudeDriver().capabilities()
+        with pytest.raises(FrozenInstanceError):
+            caps.structured_logs = False
+
+    def test_default_capabilities_all_false(self):
+        """Default DriverCapabilities() has all flags False."""
+        caps = DriverCapabilities()
+        assert caps == DriverCapabilities(
+            structured_logs=False,
+            permission_detection=False,
+            phase_detection=False,
+            pane_title_signal=False,
+        )
 
 
 # ---------------------------------------------------------------------------

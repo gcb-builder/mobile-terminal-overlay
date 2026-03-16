@@ -16,6 +16,7 @@ from typing import Optional
 
 from .base import (
     BaseAgentDriver,
+    DriverCapabilities,
     Observation,
     ObserveContext,
     find_claude_log_file,
@@ -49,13 +50,13 @@ class ClaudeDriver(BaseAgentDriver):
     def config_dir_name(self) -> str:
         return ".claude"
 
-    def capabilities(self) -> dict:
-        return {
-            "has_jsonl_logs": True,
-            "has_permission_signal": True,
-            "has_phase_detection": True,
-            "has_pane_title_signal": True,
-        }
+    def capabilities(self) -> DriverCapabilities:
+        return DriverCapabilities(
+            structured_logs=True,
+            permission_detection=True,
+            phase_detection=True,
+            pane_title_signal=True,
+        )
 
     def observe(self, ctx: ObserveContext) -> Observation:
         """Full Claude observation: PID + JSONL phase + permission detection."""

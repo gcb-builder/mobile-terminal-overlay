@@ -9,7 +9,7 @@ Usage:
 
 from typing import Optional
 
-from .base import AgentDriver, BaseAgentDriver, Observation, ObserveContext
+from .base import AgentDriver, BaseAgentDriver, DriverCapabilities, Observation, ObserveContext
 from .claude import ClaudeDriver, ClaudePermissionDetector
 from .codex import CodexDriver
 from .gemini import GeminiDriver
@@ -18,6 +18,7 @@ from .generic import GenericDriver
 __all__ = [
     "AgentDriver",
     "BaseAgentDriver",
+    "DriverCapabilities",
     "Observation",
     "ObserveContext",
     "ClaudeDriver",

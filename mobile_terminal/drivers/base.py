@@ -102,6 +102,15 @@ class ObserveContext:
         return self._pane_snapshot
 
 
+@dataclass(frozen=True)
+class DriverCapabilities:
+    """Immutable capability flags — UI uses these to decide what to render."""
+    structured_logs: bool = False
+    permission_detection: bool = False
+    phase_detection: bool = False
+    pane_title_signal: bool = False
+
+
 # ---------------------------------------------------------------------------
 # JSONL parsing utilities (shared by Claude + any JSONL-based driver)
 # ---------------------------------------------------------------------------
@@ -156,16 +165,21 @@ def find_claude_log_file(repo_path: Path) -> Optional[Path]:
 
 @runtime_checkable
 class AgentDriver(Protocol):
+    # --- Identity ---
     def id(self) -> str: ...
     def display_name(self) -> str: ...
-    def start_command(self, startup_command: Optional[str] = None) -> list: ...
-    def observe(self, ctx: ObserveContext) -> Observation: ...
-    def capabilities(self) -> dict: ...
-    def find_log_file(self, repo_path: Path) -> Optional[Path]: ...
+    def config_dir_name(self) -> str: ...
+
+    # --- Launch ---
+    def start_command(self, startup_command: Optional[str] = None) -> list[str]: ...
     async def is_ready(self, session: str, target: str,
                        timeout: float = 15.0, interval: float = 2.0) -> bool: ...
     def ready_patterns(self) -> list[str]: ...
-    def config_dir_name(self) -> str: ...
+
+    # --- Observation ---
+    def observe(self, ctx: ObserveContext) -> Observation: ...
+    def capabilities(self) -> DriverCapabilities: ...
+    def find_log_file(self, repo_path: Path) -> Optional[Path]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -186,19 +200,14 @@ class BaseAgentDriver:
     def display_name(self) -> str:
         return self._display_name
 
-    def start_command(self, startup_command: Optional[str] = None) -> list:
+    def start_command(self, startup_command: Optional[str] = None) -> list[str]:
         if startup_command:
             return [startup_command]
         return [self._process_name or self._agent_id]
 
-    def capabilities(self) -> dict:
-        """Stable JSON for UI to decide what to render."""
-        return {
-            "has_jsonl_logs": False,
-            "has_permission_signal": False,
-            "has_phase_detection": False,
-            "has_pane_title_signal": False,
-        }
+    def capabilities(self) -> DriverCapabilities:
+        """Stable flags for UI to decide what to render."""
+        return DriverCapabilities()
 
     def find_log_file(self, repo_path: Path) -> Optional[Path]:
         """Find the most recent log file for this agent at repo_path.

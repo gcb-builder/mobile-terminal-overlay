@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .base import BaseAgentDriver, Observation, ObserveContext, tail_jsonl
+from .base import BaseAgentDriver, DriverCapabilities, Observation, ObserveContext, tail_jsonl
 
 logger = logging.getLogger(__name__)
 
@@ -87,13 +87,13 @@ class CodexDriver(BaseAgentDriver):
     def config_dir_name(self) -> str:
         return ".codex"
 
-    def capabilities(self) -> dict:
-        return {
-            "has_jsonl_logs": True,
-            "has_permission_signal": True,
-            "has_phase_detection": True,
-            "has_pane_title_signal": False,
-        }
+    def capabilities(self) -> DriverCapabilities:
+        return DriverCapabilities(
+            structured_logs=True,
+            permission_detection=True,
+            phase_detection=True,
+            pane_title_signal=False,
+        )
 
     def observe(self, ctx: ObserveContext) -> Observation:
         """Full Codex observation: PID + JSONL phase detection."""

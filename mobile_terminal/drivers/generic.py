@@ -10,7 +10,7 @@ Uses heuristics:
 import re
 import logging
 
-from .base import BaseAgentDriver, Observation, ObserveContext
+from .base import BaseAgentDriver, DriverCapabilities, Observation, ObserveContext
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +30,8 @@ class GenericDriver(BaseAgentDriver):
     _display_name = "Agent"
     _process_name = ""
 
-    def capabilities(self) -> dict:
-        return {
-            "has_jsonl_logs": False,
-            "has_permission_signal": False,  # heuristic only
-            "has_phase_detection": False,
-            "has_pane_title_signal": False,
-        }
+    def capabilities(self) -> DriverCapabilities:
+        return DriverCapabilities()
 
     def detect_permission_wait(self, ctx: ObserveContext, obs: Observation) -> None:
         """Check terminal output for permission-like prompts."""

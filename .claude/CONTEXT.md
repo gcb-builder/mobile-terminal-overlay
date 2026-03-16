@@ -3,8 +3,8 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Team Launcher v1 implemented, dismiss flow smoothed
-- **Last Updated:** 2026-03-12
+- **Stage:** CLI challenge providers + dev logging + architecture doc
+- **Last Updated:** 2026-03-16
 - **Server Version:** v280 (terminal.js), v200 (styles.css)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --no-auth --host 0.0.0.0 --verbose > /tmp/mto-server.log 2>&1 &`
 

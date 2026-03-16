@@ -21,7 +21,7 @@ import re
 import subprocess
 from typing import Optional
 
-from .base import BaseAgentDriver, Observation, ObserveContext
+from .base import BaseAgentDriver, DriverCapabilities, Observation, ObserveContext
 
 logger = logging.getLogger(__name__)
 
@@ -63,13 +63,13 @@ class GeminiDriver(BaseAgentDriver):
     def config_dir_name(self) -> str:
         return ".gemini"
 
-    def capabilities(self) -> dict:
-        return {
-            "has_jsonl_logs": False,
-            "has_permission_signal": True,
-            "has_phase_detection": True,
-            "has_pane_title_signal": True,
-        }
+    def capabilities(self) -> DriverCapabilities:
+        return DriverCapabilities(
+            structured_logs=False,
+            permission_detection=True,
+            phase_detection=True,
+            pane_title_signal=True,
+        )
 
     def is_running(self, ctx: ObserveContext, obs: Observation) -> None:
         """Detect Gemini CLI process.
