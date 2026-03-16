@@ -1,6 +1,5 @@
 """Routes for runner commands (build, test, lint, etc.)."""
 import logging
-import os
 import re
 from typing import Optional
 
@@ -97,13 +96,13 @@ def register(app: FastAPI, deps):
         command = commands[variant]
 
         # Check if PTY is available
-        master_fd = app.state.master_fd
-        if not master_fd:
+        runtime = app.state.runtime
+        if not runtime.has_fd:
             return JSONResponse({"error": "No PTY available"}, status_code=400)
 
         # Send command to PTY
         try:
-            os.write(master_fd, (command + '\r').encode('utf-8'))
+            runtime.write_command(command)
             app.state.audit_log.log("runner_execute", {
                 "command_id": command_id,
                 "command": command
@@ -168,13 +167,13 @@ def register(app: FastAPI, deps):
                 }, status_code=400)
 
         # Check if PTY is available
-        master_fd = app.state.master_fd
-        if not master_fd:
+        runtime = app.state.runtime
+        if not runtime.has_fd:
             return JSONResponse({"error": "No PTY available"}, status_code=400)
 
         # Send command to PTY
         try:
-            os.write(master_fd, (command + '\r').encode('utf-8'))
+            runtime.write_command(command)
             app.state.audit_log.log("runner_custom", {"command": command})
             return {"success": True, "command": command}
         except Exception as e:

@@ -1,7 +1,6 @@
 """Routes for preview service management."""
 import json
 import logging
-import os
 import re
 import time
 from pathlib import Path
@@ -10,7 +9,7 @@ from typing import Dict, Optional
 from fastapi import Depends, FastAPI, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from mobile_terminal.helpers import get_tmux_target, run_subprocess
+from mobile_terminal.helpers import get_tmux_target
 
 logger = logging.getLogger(__name__)
 
@@ -101,28 +100,22 @@ def _dev_log_path(repo_path: Optional[Path], service_id: str) -> Path:
     return DEV_LOG_DIR / f"{safe_name}.log"
 
 
-async def _start_pipe_pane(session: str, pane_id: Optional[str], log_path: Path):
+async def _start_pipe_pane(runtime, session: str, pane_id: Optional[str], log_path: Path):
     """Enable tmux pipe-pane to capture pane output to a log file."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     target = get_tmux_target(session, pane_id)
     try:
-        await run_subprocess(
-            ["tmux", "pipe-pane", "-t", target, f"cat > {log_path}"],
-            timeout=3,
-        )
+        await runtime.pipe_pane(target, f"cat > {log_path}")
         logger.info(f"Dev logging started: {log_path}")
     except Exception as e:
         logger.warning(f"Failed to start pipe-pane: {e}")
 
 
-async def _stop_pipe_pane(session: str, pane_id: Optional[str]):
+async def _stop_pipe_pane(runtime, session: str, pane_id: Optional[str]):
     """Disable tmux pipe-pane on a pane."""
     target = get_tmux_target(session, pane_id)
     try:
-        await run_subprocess(
-            ["tmux", "pipe-pane", "-t", target],
-            timeout=3,
-        )
+        await runtime.pipe_pane(target)
     except Exception:
         pass
 
@@ -228,19 +221,19 @@ def register(app: FastAPI, deps):
             return JSONResponse({"error": f"No startCommand for '{service_id}'"}, status_code=400)
 
         # Check if PTY is available
-        master_fd = app.state.master_fd
-        if not master_fd:
+        runtime = app.state.runtime
+        if not runtime.has_fd:
             return JSONResponse({"error": "No PTY available"}, status_code=400)
 
         # Enable dev logging via tmux pipe-pane
         log_path = _dev_log_path(repo_path, service_id)
         current_session = session or app.state.current_session
         current_pane = pane_id or getattr(app.state, 'active_target', None)
-        await _start_pipe_pane(current_session, current_pane, log_path)
+        await _start_pipe_pane(runtime, current_session, current_pane, log_path)
 
         # Send command to PTY
         try:
-            os.write(master_fd, (start_command + '\r').encode('utf-8'))
+            runtime.write_command(start_command)
             app.state.audit_log.log("preview_start", {
                 "service_id": service_id,
                 "command": start_command,
@@ -277,18 +270,18 @@ def register(app: FastAPI, deps):
             }, status_code=409)
 
         # Check if PTY is available
-        master_fd = app.state.master_fd
-        if not master_fd:
+        runtime = app.state.runtime
+        if not runtime.has_fd:
             return JSONResponse({"error": "No PTY available"}, status_code=400)
 
         # Stop dev logging
         current_session = session or app.state.current_session
         current_pane = pane_id or getattr(app.state, 'active_target', None)
-        await _stop_pipe_pane(current_session, current_pane)
+        await _stop_pipe_pane(runtime, current_session, current_pane)
 
         # Send Ctrl+C (0x03) to PTY
         try:
-            os.write(master_fd, b'\x03')
+            runtime.pty_write(b'\x03')
             app.state.audit_log.log("preview_stop", {"service_id": service_id})
             return {"success": True, "service_id": service_id}
         except Exception as e:

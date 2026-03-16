@@ -8,17 +8,13 @@ Provides:
 """
 
 import asyncio
-import fcntl
 import json
 import logging
 import os
-import pty
 import re
 import secrets
-import signal
 import subprocess
 import sys
-import termios
 import time
 import uuid
 from collections import OrderedDict
@@ -44,6 +40,7 @@ from mobile_terminal.models import (
     QueueItem, CommandQueue,
     QUEUE_DIR, get_queue_file, load_queue_from_disk, save_queue_to_disk,
 )
+from mobile_terminal.runtime import TmuxRuntime
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -74,15 +71,18 @@ def create_app(config: Config) -> FastAPI:
     app.state.config = config
     app.state.no_auth = config.no_auth
     app.state.token = None if config.no_auth else (config.token or secrets.token_urlsafe(16))
-    app.state.master_fd = None
-    app.state.child_pid = None
+
+    # ProcessRuntime — single owner of PTY lifecycle and tmux commands
+    runtime = TmuxRuntime()
+    app.state.runtime = runtime
+
     app.state.active_websocket = None
     app.state.read_task = None
     app.state.current_session = config.session_name  # Track current session
     app.state.last_ws_connect = 0  # Timestamp of last WebSocket connection
     app.state.ws_connect_lock = asyncio.Lock()  # Prevent concurrent connection handling
     app.state.output_buffer = RingBuffer(max_size=2 * 1024 * 1024)  # 2MB scrollback buffer
-    app.state.input_queue = InputQueue()  # Serialized input queue with ACKs
+    app.state.input_queue = InputQueue(runtime=runtime)  # Serialized input queue with ACKs
     app.state.command_queue = CommandQueue()  # Deferred-send command queue
     app.state.command_queue.set_app(app)
     app.state.snapshot_buffer = SnapshotBuffer()  # Preview snapshots ring buffer
@@ -92,7 +92,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.target_log_mapping = {}  # Maps pane_id -> {"path": str, "pinned": bool}
     app.state.last_restart_time = 0.0  # Timestamp of last server restart request
     app.state.target_epoch = 0  # Incremented on each target switch for cache invalidation
-    app.state.spawn_tmux = spawn_tmux  # Expose for process router
+    # spawn_tmux is now in runtime.spawn()
     app.state.setup_result = None  # Result from ensure_tmux_setup()
     app.state.last_ws_input_time = 0  # Last time mobile client sent input (for desktop activity detection)
     app.state.permission_detector = ClaudePermissionDetector()  # JSONL-based permission prompt detector
@@ -273,15 +273,12 @@ def create_app(config: Config) -> FastAPI:
         try:
             # tmux list-panes -s lists all panes in session
             # Format: window_index:pane_index|pane_current_path|window_name|pane_id|pane_title
-            result = await run_subprocess(
-                ["tmux", "list-panes", "-s", "-t", session,
-                 "-F", "#{window_index}:#{pane_index}|#{pane_current_path}|#{window_name}|#{pane_id}|#{pane_title}"],
-                capture_output=True, text=True, timeout=5
-            )
+            pane_fmt = "#{window_index}:#{pane_index}|#{pane_current_path}|#{window_name}|#{pane_id}|#{pane_title}"
+            raw = await app.state.runtime.list_panes(session, fmt=pane_fmt)
 
-            if result.returncode == 0:
+            if raw:
                 seen_cwds = {}  # Track duplicate cwds
-                for line in result.stdout.strip().split("\n"):
+                for line in raw.strip().split("\n"):
                     if "|" in line:
                         parts = line.split("|")
                         if len(parts) >= 5:
@@ -372,13 +369,9 @@ def create_app(config: Config) -> FastAPI:
         # Verify target exists
         try:
             _t1 = time.time()
-            result = await run_subprocess(
-                ["tmux", "list-panes", "-s", "-t", session,
-                 "-F", "#{window_index}:#{pane_index}"],
-                capture_output=True, text=True, timeout=5
-            )
+            raw = await app.state.runtime.list_panes(session, fmt="#{window_index}:#{pane_index}")
             logger.info(f"[TIMING] list-panes took {time.time()-_t1:.3f}s")
-            valid_targets = result.stdout.strip().split("\n") if result.returncode == 0 else []
+            valid_targets = raw.strip().split("\n") if raw else []
 
             if target_id not in valid_targets:
                 return JSONResponse({
@@ -422,17 +415,11 @@ def create_app(config: Config) -> FastAPI:
                 window_idx, pane_idx = parts
                 # Switch to the window first
                 _t2 = time.time()
-                await run_subprocess(
-                    ["tmux", "select-window", "-t", f"{session}:{window_idx}"],
-                    capture_output=True, timeout=2
-                )
+                await app.state.runtime.select_window(f"{session}:{window_idx}")
                 logger.info(f"[TIMING] select-window took {time.time()-_t2:.3f}s")
                 # Then select the pane within that window (format: session:window.pane)
                 _t3 = time.time()
-                await run_subprocess(
-                    ["tmux", "select-pane", "-t", f"{session}:{window_idx}.{pane_idx}"],
-                    capture_output=True, timeout=2
-                )
+                await app.state.runtime.select_pane(f"{session}:{window_idx}.{pane_idx}")
                 logger.info(f"[TIMING] select-pane took {time.time()-_t3:.3f}s")
                 logger.info(f"Switched tmux to pane {target_id}")
 
@@ -443,14 +430,13 @@ def create_app(config: Config) -> FastAPI:
                 while time.time() < _verify_deadline:
                     _verify_iterations += 1
                     try:
-                        verify_result = await run_subprocess(
-                            ["tmux", "display-message", "-t", session, "-p", "#{window_index}:#{pane_index}"],
-                            capture_output=True, text=True, timeout=0.5  # Short timeout per call
+                        current = await app.state.runtime.display_message(
+                            session, "#{window_index}:#{pane_index}"
                         )
-                        if verify_result.returncode == 0 and verify_result.stdout.strip() == target_id:
+                        if current == target_id:
                             switch_verified = True
                             break
-                    except subprocess.TimeoutExpired:
+                    except Exception:
                         pass  # Continue loop, will exit via deadline
                     await asyncio.sleep(0.05)
                 logger.info(f"[TIMING] verify loop took {time.time()-_t4:.3f}s ({_verify_iterations} iterations)")
@@ -468,21 +454,13 @@ def create_app(config: Config) -> FastAPI:
         # Close existing PTY so next WebSocket connection respawns with new target
         # This ensures the PTY attaches to the newly active pane
         _t5 = time.time()
-        if app.state.master_fd is not None:
+        if app.state.runtime.has_fd:
             try:
-                os.close(app.state.master_fd)
-                logger.info("Closed PTY for target switch")
-            except Exception as e:
-                logger.warning(f"Error closing PTY: {e}")
-            app.state.master_fd = None
-
-        # Kill child process
-        if app.state.child_pid is not None:
-            try:
-                os.kill(app.state.child_pid, signal.SIGTERM)
+                app.state.runtime.terminate()
             except Exception:
                 pass
-            app.state.child_pid = None
+            app.state.runtime.close_fd()
+            logger.info("Closed PTY for target switch")
         logger.info(f"[TIMING] PTY/child cleanup took {time.time()-_t5:.3f}s")
 
         # Close active WebSocket to force client reconnect
@@ -1067,18 +1045,12 @@ def create_app(config: Config) -> FastAPI:
             app.state.read_task = None
 
         # Kill child process and close pty
-        if app.state.child_pid is not None:
+        if app.state.runtime.has_fd:
             try:
-                os.kill(app.state.child_pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass  # Process already dead
-        if app.state.master_fd is not None:
-            try:
-                os.close(app.state.master_fd)
+                app.state.runtime.terminate()
             except Exception:
                 pass
-        app.state.master_fd = None
-        app.state.child_pid = None
+            app.state.runtime.close_fd()
 
         # Clear output buffer (don't replay old session's content)
         app.state.output_buffer.clear()
@@ -1402,56 +1374,13 @@ def create_app(config: Config) -> FastAPI:
         if push_task and not push_task.done():
             push_task.cancel()
 
-        if app.state.master_fd is not None:
-            try:
-                os.close(app.state.master_fd)
-            except Exception:
-                pass
+        if app.state.runtime.has_fd:
+            app.state.runtime.close_fd()
 
     return app
 
 
-def spawn_tmux(session_name: str) -> tuple:
-    """
-    Spawn a tmux session with a pty.
 
-    Uses `tmux new -A -s <session>` which:
-    - Creates the session if it doesn't exist
-    - Attaches to it if it does exist
-
-    Args:
-        session_name: Name of the tmux session.
-
-    Returns:
-        Tuple of (master_fd, child_pid).
-    """
-    master_fd, slave_fd = pty.openpty()
-
-    pid = os.fork()
-    if pid == 0:
-        # Child process
-        os.setsid()
-
-        # Set the slave PTY as the controlling terminal
-        try:
-            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
-        except Exception:
-            pass  # May fail on some systems, but dup2 should still work
-
-        os.dup2(slave_fd, 0)
-        os.dup2(slave_fd, 1)
-        os.dup2(slave_fd, 2)
-        os.close(master_fd)
-        os.close(slave_fd)
-
-        # Set TERM for tmux
-        os.environ["TERM"] = "xterm-256color"
-
-        # Execute tmux
-        os.execvp("tmux", ["tmux", "new", "-A", "-s", session_name])
-    else:
-        # Parent process
-        os.close(slave_fd)
-        return master_fd, pid
+# spawn_tmux has been moved to TmuxRuntime.spawn() in runtime.py
 
 

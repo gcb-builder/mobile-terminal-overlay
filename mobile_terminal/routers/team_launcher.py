@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from mobile_terminal.helpers import run_subprocess, save_team_roles, get_tmux_target
+from mobile_terminal.helpers import run_subprocess, save_team_roles
 from mobile_terminal.team_templates import (
     TEMPLATES, ROLE_PROMPTS, validate_team_spec,
 )
@@ -165,18 +165,15 @@ def register(app: FastAPI, deps):
                 if await _window_exists(session, name):
                     agent_results.append({"name": name, "ok": True, "skipped": True})
                     continue
-                cmd = ["tmux", "new-window", "-a", "-t", session, "-n", name]
-                if repo_path:
-                    cmd.extend(["-c", repo_path])
-                result = await run_subprocess(cmd, timeout=10)
-                if result.returncode != 0:
+                try:
+                    await app.state.runtime.new_window(session, name, cwd=repo_path or "")
+                    agent_results.append({"name": name, "ok": True})
+                except RuntimeError as win_err:
                     agent_results.append({
                         "name": name, "ok": False,
-                        "error": f"tmux new-window failed: {result.stderr.strip()}",
+                        "error": str(win_err),
                     })
                     windows_ok = False
-                else:
-                    agent_results.append({"name": name, "ok": True})
             except Exception as e:
                 agent_results.append({"name": name, "ok": False, "error": str(e)})
                 windows_ok = False
@@ -198,10 +195,7 @@ def register(app: FastAPI, deps):
                 target = f"{session}:{name}"
                 cmd_parts = driver.start_command()
                 cmd_str = " ".join(shlex.quote(part) for part in cmd_parts)
-                await run_subprocess(
-                    ["tmux", "send-keys", "-t", target, cmd_str, "Enter"],
-                    timeout=5,
-                )
+                await app.state.runtime.send_keys(target, cmd_str, "Enter")
             except Exception as e:
                 ar["ok"] = False
                 ar["error"] = f"Failed to start {driver.display_name()}: {e}"
@@ -238,14 +232,8 @@ def register(app: FastAPI, deps):
             prompt = prompt_template.format(goal=goal or "No specific goal set")
             try:
                 target = f"{session}:{name}"
-                await run_subprocess(
-                    ["tmux", "send-keys", "-t", target, "-l", prompt],
-                    timeout=5,
-                )
-                await run_subprocess(
-                    ["tmux", "send-keys", "-t", target, "Enter"],
-                    timeout=5,
-                )
+                await app.state.runtime.send_keys(target, prompt, literal=True)
+                await app.state.runtime.send_keys(target, "Enter")
             except Exception as e:
                 ar["prompt_error"] = str(e)
                 prompts_ok = False
@@ -320,14 +308,8 @@ def register(app: FastAPI, deps):
                     instruction = goal
 
                 # Send to leader
-                await run_subprocess(
-                    ["tmux", "send-keys", "-t", leader_target, "-l", instruction],
-                    timeout=5,
-                )
-                await run_subprocess(
-                    ["tmux", "send-keys", "-t", leader_target, "Enter"],
-                    timeout=5,
-                )
+                await app.state.runtime.send_keys(leader_target, instruction, literal=True)
+                await app.state.runtime.send_keys(leader_target, "Enter")
                 steps.append({"name": "dispatch", "ok": True})
 
             except Exception as e:
@@ -372,10 +354,7 @@ def register(app: FastAPI, deps):
         kill_tasks = []
         for name in team_windows:
             kill_tasks.append(
-                run_subprocess(
-                    ["tmux", "kill-window", "-t", f"{sess}:{name}"],
-                    timeout=5,
-                )
+                app.state.runtime.kill_window(f"{sess}:{name}")
             )
         results = await asyncio.gather(*kill_tasks, return_exceptions=True)
 
@@ -383,15 +362,13 @@ def register(app: FastAPI, deps):
         errors = []
         for name, r in zip(team_windows, results):
             if isinstance(r, Exception):
-                errors.append(f"{name}: {r}")
-            elif r.returncode == 0:
-                killed.append(name)
-            else:
-                stderr = (r.stderr or "").strip()
-                if "not found" in stderr.lower():
-                    killed.append(name)
+                err_str = str(r)
+                if "not found" in err_str.lower():
+                    killed.append(name)  # Window already gone
                 else:
-                    errors.append(f"{name}: {stderr}")
+                    errors.append(f"{name}: {r}")
+            else:
+                killed.append(name)
 
         # Clear roles
         try:

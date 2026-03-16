@@ -13,9 +13,8 @@ from fastapi.responses import JSONResponse
 
 from mobile_terminal.helpers import (
     strip_ansi, find_utf8_boundary,
-    run_subprocess, get_tmux_target,
+    get_tmux_target,
     get_cached_capture, set_cached_capture,
-    set_terminal_size,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,32 +71,21 @@ def register(app: FastAPI, deps):
             return cached
 
         try:
+            runtime = app.state.runtime
             # Capture last N lines from tmux pane
-            result = await run_subprocess(
-                ["tmux", "capture-pane", "-t", target, "-p", "-S", f"-{lines}"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
+            content = await runtime.capture_pane(target, lines=lines)
 
             # Get pane title - Claude Code sets this to indicate state
             # e.g., "✳ Signal Detection Pending" when waiting for input
             pane_title = ""
             try:
-                title_result = await run_subprocess(
-                    ["tmux", "display-message", "-p", "-t", target, "#{pane_title}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2,
-                )
-                if title_result.returncode == 0:
-                    pane_title = title_result.stdout.strip()
+                pane_title = await runtime.display_message(target, "#{pane_title}")
             except Exception:
                 pass
 
-            if result.returncode == 0:
+            if content:
                 response = {
-                    "content": result.stdout,
+                    "content": content,
                     "lines": lines,
                     "pane_title": pane_title,
                     "session": target_session,
@@ -106,13 +94,7 @@ def register(app: FastAPI, deps):
                 set_cached_capture(target_session, pane_id, lines, response)
                 return response
             else:
-                # Target missing or invalid
-                if "can't find" in result.stderr.lower() or "no such" in result.stderr.lower():
-                    return JSONResponse(
-                        {"error": f"Target not found: {target}", "session": target_session, "pane": pane},
-                        status_code=409,
-                    )
-                return {"content": "", "error": result.stderr, "pane_title": pane_title}
+                return {"content": "", "error": "capture failed", "pane_title": pane_title}
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "Capture timeout"}, status_code=504)
         except Exception as e:
@@ -145,30 +127,19 @@ def register(app: FastAPI, deps):
             tmux_target = session_name
 
         try:
+            runtime = app.state.runtime
             # Capture with ANSI escape sequences for accurate screen state
             # Limit to 80 lines to keep payload reasonable
-            result = await run_subprocess(
-                ["tmux", "capture-pane", "-p", "-e", "-S", "-80", "-t", tmux_target],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                content = result.stdout or ""
+            content = await runtime.capture_pane(tmux_target, lines=80, ansi=True)
+            if content:
                 # If still too large, reduce further
                 if len(content) > 50000:  # 50KB max
-                    result = await run_subprocess(
-                        ["tmux", "capture-pane", "-p", "-e", "-S", "-40", "-t", tmux_target],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    content = result.stdout or "" if result.returncode == 0 else ""
+                    content = await runtime.capture_pane(tmux_target, lines=40, ansi=True)
                 logger.info(f"Terminal snapshot: {len(content)} chars")
                 return {"content": content, "target": tmux_target}
             else:
-                logger.warning(f"Snapshot failed: {result.stderr}")
-                return {"content": "", "error": result.stderr}
+                logger.warning("Snapshot returned empty")
+                return {"content": "", "error": "capture failed"}
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "Snapshot timeout"}, status_code=504)
         except Exception as e:
@@ -195,7 +166,7 @@ def register(app: FastAPI, deps):
                 "got": session
             }, status_code=400)
 
-        if app.state.master_fd is None:
+        if not app.state.runtime.has_fd:
             return JSONResponse({"error": "No active terminal"}, status_code=400)
 
         # Atomic write: text + carriage return
@@ -205,7 +176,6 @@ def register(app: FastAPI, deps):
         success = await app.state.input_queue.send(
             msg_id,
             data,
-            app.state.master_fd,
             app.state.active_websocket
         )
 
@@ -267,33 +237,23 @@ def register(app: FastAPI, deps):
         target = get_tmux_target(session, app.state.active_target)
 
         try:
-            result = await run_subprocess(
-                ["tmux", "send-keys", "-t", target, tmux_key],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode != 0:
-                return JSONResponse({
-                    "error": f"tmux send-keys failed: {result.stderr}",
-                    "id": msg_id
-                }, status_code=500)
-
-            # Send ACK via WebSocket if connected
-            if app.state.active_websocket:
-                try:
-                    await app.state.active_websocket.send_json({
-                        "type": "ack",
-                        "id": msg_id
-                    })
-                except Exception:
-                    pass
-
-            return {"status": "ok", "id": msg_id, "key": tmux_key}
+            await app.state.runtime.send_keys(target, tmux_key)
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "tmux command timeout", "id": msg_id}, status_code=504)
         except Exception as e:
             return JSONResponse({"error": str(e), "id": msg_id}, status_code=500)
+
+        # Send ACK via WebSocket if connected
+        if app.state.active_websocket:
+            try:
+                await app.state.active_websocket.send_json({
+                    "type": "ack",
+                    "id": msg_id
+                })
+            except Exception:
+                pass
+
+        return {"status": "ok", "id": msg_id, "key": tmux_key}
 
     @app.websocket("/ws/terminal")
     async def terminal_websocket(websocket: WebSocket, _auth=Depends(deps.verify_token)):
@@ -330,13 +290,12 @@ def register(app: FastAPI, deps):
         logger.info(f"[TIMING] WebSocket lock+accept took {time.time()-_ws_start:.3f}s")
 
         # Spawn tmux if not already running
+        runtime = app.state.runtime
         _spawn_start = time.time()
-        if app.state.master_fd is None:
+        if not runtime.has_fd:
             try:
                 session_name = app.state.current_session
-                master_fd, child_pid = app.state.spawn_tmux(session_name)
-                app.state.master_fd = master_fd
-                app.state.child_pid = child_pid
+                runtime.spawn(session_name)
                 logger.info(f"Spawned tmux session: {session_name}")
             except Exception as e:
                 logger.error(f"Failed to spawn tmux: {e}")
@@ -344,7 +303,6 @@ def register(app: FastAPI, deps):
                 await websocket.close()
                 return
         logger.info(f"[TIMING] spawn_tmux took {time.time()-_spawn_start:.3f}s")
-        master_fd = app.state.master_fd
         output_buffer = app.state.output_buffer
 
         # Send hello handshake FIRST - client expects this within 2s
@@ -354,7 +312,7 @@ def register(app: FastAPI, deps):
             hello_msg = {
                 "type": "hello",
                 "session": app.state.current_session,
-                "pid": app.state.child_pid,
+                "pid": runtime.child_pid,
                 "started_at": int(time.time()),
             }
             await websocket.send_json(hello_msg)
@@ -414,7 +372,7 @@ def register(app: FastAPI, deps):
                     # Non-blocking read with select-like behavior
                     # ALWAYS read - never pause PTY drain
                     data = await loop.run_in_executor(
-                        None, lambda: os.read(master_fd, 4096)
+                        None, lambda: runtime.pty_read(4096)
                     )
                     if not data:
                         # PTY returned EOF - terminal died
@@ -491,7 +449,7 @@ def register(app: FastAPI, deps):
                         break
 
                     if "bytes" in message:
-                        os.write(master_fd, message["bytes"])
+                        runtime.pty_write(message["bytes"])
                         app.state.last_ws_input_time = time.time()
                     elif "text" in message:
                         text = message["text"]
@@ -504,18 +462,13 @@ def register(app: FastAPI, deps):
                                 if msg_type == "resize":
                                     cols = data.get("cols", 80)
                                     rows = data.get("rows", 24)
-                                    logger.info(f"Resize request: {cols}x{rows}, fd={master_fd}, pid={app.state.child_pid}")
-                                    set_terminal_size(
-                                        master_fd,
-                                        cols,
-                                        rows,
-                                        app.state.child_pid,
-                                    )
+                                    logger.info(f"Resize request: {cols}x{rows}, fd={runtime.master_fd}, pid={runtime.child_pid}")
+                                    runtime.set_size(cols, rows)
                                     logger.info(f"Terminal resized to {cols}x{rows}")
                                 elif msg_type == "input":
                                     input_data = data.get("data")
                                     if input_data:
-                                        os.write(master_fd, input_data.encode())
+                                        runtime.pty_write(input_data.encode())
                                         app.state.last_ws_input_time = time.time()
                                 elif msg_type == "ping":
                                     # Respond to heartbeat ping with pong
@@ -529,30 +482,17 @@ def register(app: FastAPI, deps):
                                     # This avoids interleaving with PTY output stream
                                     text_data = data.get("text", "")
                                     send_enter = data.get("enter", False)
-                                    loop = asyncio.get_event_loop()
                                     session = app.state.current_session
                                     target = app.state.active_target
                                     tmux_t = get_tmux_target(session, target)
                                     if text_data:
                                         try:
-                                            await loop.run_in_executor(
-                                                None,
-                                                lambda: subprocess.run(
-                                                    ["tmux", "send-keys", "-t", tmux_t, "-l", text_data],
-                                                    timeout=3, check=True,
-                                                ),
-                                            )
+                                            await runtime.send_keys(tmux_t, text_data, literal=True)
                                         except Exception as e:
                                             logger.warning(f"tmux send-keys failed: {e}")
                                     if send_enter:
                                         try:
-                                            await loop.run_in_executor(
-                                                None,
-                                                lambda: subprocess.run(
-                                                    ["tmux", "send-keys", "-t", tmux_t, "Enter"],
-                                                    timeout=3, check=True,
-                                                ),
-                                            )
+                                            await runtime.send_keys(tmux_t, "Enter")
                                         except Exception as e:
                                             logger.warning(f"tmux send-keys Enter failed: {e}")
                                     app.state.last_ws_input_time = time.time()
@@ -592,9 +532,9 @@ def register(app: FastAPI, deps):
                                                 logger.warning(f"[MODE] capture-pane catchup failed: {e}")
                                             # Also send SIGWINCH so live PTY forwarding
                                             # picks up from the correct state
-                                            if app.state.child_pid:
+                                            if runtime.child_pid:
                                                 try:
-                                                    os.kill(app.state.child_pid, signal.SIGWINCH)
+                                                    os.kill(runtime.child_pid, signal.SIGWINCH)
                                                 except ProcessLookupError:
                                                     pass
                                             logger.info("[MODE] Full mode activated with snapshot catchup")
@@ -611,10 +551,10 @@ def register(app: FastAPI, deps):
                                     logger.info("Client unsubscribed from terminal view (mode=tail)")
                             else:
                                 # JSON but not dict, treat as plain text
-                                os.write(master_fd, text.encode())
+                                runtime.pty_write(text.encode())
                         except (json.JSONDecodeError, TypeError, KeyError):
                             # Plain text input
-                            os.write(master_fd, text.encode())
+                            runtime.pty_write(text.encode())
 
                 except WebSocketDisconnect:
                     break
@@ -770,7 +710,6 @@ def register(app: FastAPI, deps):
                 except Exception:
                     pass
                 # Clear PTY state so next connection recreates it
-                app.state.master_fd = None
-                app.state.child_pid = None
+                runtime.close_fd()
 
             logger.info("WebSocket connection closed")

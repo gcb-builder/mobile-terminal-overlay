@@ -258,7 +258,8 @@ class InputQueue:
     COOLDOWN_MS = 200  # Min time between sends
     QUIET_TIMEOUT_MS = 2000  # Max wait for quiet
 
-    def __init__(self):
+    def __init__(self, runtime=None):
+        self._runtime = runtime
         self._queue: asyncio.Queue = asyncio.Queue()
         self._last_output_ts: float = 0
         self._last_send_ts: float = 0
@@ -271,7 +272,7 @@ class InputQueue:
         """Called when PTY output is received."""
         self._last_output_ts = time.time()
 
-    async def send(self, msg_id: str, data: bytes, master_fd: int, websocket) -> bool:
+    async def send(self, msg_id: str, data: bytes, websocket) -> bool:
         """
         Queue a send request and wait for ACK.
         Returns True if send was acknowledged, False on timeout.
@@ -279,7 +280,7 @@ class InputQueue:
         event = asyncio.Event()
         self._pending_acks[msg_id] = event
 
-        await self._queue.put((msg_id, data, master_fd, websocket))
+        await self._queue.put((msg_id, data, websocket))
 
         try:
             # Wait for ACK with timeout
@@ -321,7 +322,7 @@ class InputQueue:
 
         while self._running:
             try:
-                msg_id, data, master_fd, websocket = await asyncio.wait_for(
+                msg_id, data, websocket = await asyncio.wait_for(
                     self._queue.get(), timeout=1.0
                 )
             except asyncio.TimeoutError:
@@ -337,8 +338,8 @@ class InputQueue:
                     if since_send < self.COOLDOWN_MS:
                         await asyncio.sleep((self.COOLDOWN_MS - since_send) / 1000)
 
-                    # Write to PTY
-                    os.write(master_fd, data)
+                    # Write to PTY via runtime
+                    self._runtime.pty_write(data)
                     self._last_send_ts = time.time()
 
                     # Send ACK to client
@@ -670,10 +671,10 @@ class CommandQueue:
         item.status = "pending"
 
         try:
-            master_fd = self._app.state.master_fd
+            runtime = self._app.state.runtime
             websocket = self._app.state.active_websocket
 
-            if not master_fd:
+            if not runtime.has_fd:
                 item.status = "failed"
                 item.error = "No PTY available"
                 return False
@@ -682,7 +683,6 @@ class CommandQueue:
             success = await self._app.state.input_queue.send(
                 msg_id=item.id,
                 data=(item.text + '\r').encode('utf-8'),
-                master_fd=master_fd,
                 websocket=websocket,
             )
 

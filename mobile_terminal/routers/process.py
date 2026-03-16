@@ -1,8 +1,6 @@
 """Routes for process management and agent health."""
-import asyncio
 import logging
 import os
-import signal
 import subprocess
 from typing import Optional
 
@@ -10,7 +8,6 @@ from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 from mobile_terminal.drivers import Observation
-from mobile_terminal.helpers import run_subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -41,51 +38,21 @@ def register(app: FastAPI, deps):
                 "received": target_check["received"]
             }, status_code=409)
 
-        child_pid = app.state.child_pid
+        runtime = app.state.runtime
+        child_pid = runtime.child_pid
         if not child_pid:
             return JSONResponse({"error": "No process running"}, status_code=400)
 
         try:
-            # First try SIGTERM (graceful)
-            os.kill(child_pid, signal.SIGTERM)
-            app.state.audit_log.log("process_terminate", {"pid": child_pid, "signal": "SIGTERM"})
-
-            # Wait briefly for process to terminate
-            await asyncio.sleep(0.5)
-
-            # Check if still running
-            try:
-                os.kill(child_pid, 0)  # Signal 0 just checks if process exists
-                still_running = True
-            except OSError:
-                still_running = False
-
-            if still_running and force:
-                # SIGKILL as fallback
-                os.kill(child_pid, signal.SIGKILL)
-                app.state.audit_log.log("process_terminate", {"pid": child_pid, "signal": "SIGKILL"})
-                await asyncio.sleep(0.2)
-
-            # Clean up PTY state
-            if app.state.master_fd is not None:
-                try:
-                    os.close(app.state.master_fd)
-                except Exception:
-                    pass
-            app.state.master_fd = None
-            app.state.child_pid = None
+            method = runtime.terminate(force=force)
+            app.state.audit_log.log("process_terminate", {"pid": child_pid, "signal": method})
+            runtime.close_fd()
 
             return {
                 "success": True,
                 "pid": child_pid,
-                "method": "SIGKILL" if (still_running and force) else "SIGTERM"
+                "method": method
             }
-
-        except ProcessLookupError:
-            # Process already dead
-            app.state.master_fd = None
-            app.state.child_pid = None
-            return {"success": True, "pid": child_pid, "method": "already_dead"}
         except Exception as e:
             logger.error(f"Failed to terminate process: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
@@ -112,39 +79,24 @@ def register(app: FastAPI, deps):
                 "received": target_check["received"]
             }, status_code=409)
 
-        old_pid = app.state.child_pid
+        runtime = app.state.runtime
+        old_pid = runtime.child_pid
 
         # Terminate existing process if any
         if old_pid:
             try:
-                os.kill(old_pid, signal.SIGTERM)
-                await asyncio.sleep(0.3)
-                try:
-                    os.kill(old_pid, 0)
-                    os.kill(old_pid, signal.SIGKILL)
-                except OSError:
-                    pass
-            except ProcessLookupError:
-                pass
+                runtime.terminate(force=True)
             except Exception as e:
                 logger.warning(f"Error terminating old process: {e}")
 
         # Clean up old PTY
-        if app.state.master_fd is not None:
-            try:
-                os.close(app.state.master_fd)
-            except Exception:
-                pass
-        app.state.master_fd = None
-        app.state.child_pid = None
+        runtime.close_fd()
         app.state.output_buffer.clear()
 
         # Spawn new PTY
         try:
             session_name = app.state.current_session
-            master_fd, child_pid = app.state.spawn_tmux(session_name)
-            app.state.master_fd = master_fd
-            app.state.child_pid = child_pid
+            master_fd, child_pid = runtime.spawn(session_name)
 
             app.state.audit_log.log("process_respawn", {
                 "old_pid": old_pid,
@@ -168,7 +120,8 @@ def register(app: FastAPI, deps):
     ):
         """Get current process status."""
 
-        child_pid = app.state.child_pid
+        runtime = app.state.runtime
+        child_pid = runtime.child_pid
         is_running = False
 
         if child_pid:
@@ -181,7 +134,7 @@ def register(app: FastAPI, deps):
         return {
             "pid": child_pid,
             "is_running": is_running,
-            "has_pty": app.state.master_fd is not None,
+            "has_pty": runtime.has_fd,
             "session": app.state.current_session
         }
 
@@ -304,14 +257,8 @@ def register(app: FastAPI, deps):
         try:
             # Clear CLAUDECODE to prevent nested-session errors, then run command
             actual_cmd = f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; {startup_cmd}"
-            await run_subprocess(
-                ["tmux", "send-keys", "-t", pane_id, "-l", actual_cmd],
-                capture_output=True, timeout=5
-            )
-            await run_subprocess(
-                ["tmux", "send-keys", "-t", pane_id, "Enter"],
-                capture_output=True, timeout=5
-            )
+            await app.state.runtime.send_keys(pane_id, actual_cmd, literal=True)
+            await app.state.runtime.send_keys(pane_id, "Enter")
 
             logger.info(f"Started '{startup_cmd}' in pane {pane_id}")
             app.state.audit_log.log("agent_start", {
