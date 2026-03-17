@@ -8665,6 +8665,12 @@ function updateSidebarCounts() {
         const queuedCount = items.filter(i => i.status === 'queued').length;
         queueCountEl.textContent = queuedCount.toString();
         queueCountEl.classList.toggle('hidden', queuedCount === 0);
+
+        // Auto-collapse queue section when empty, expand when items arrive
+        const queueSection = document.getElementById('sidebarQueueSection');
+        if (queueSection) {
+            queueSection.classList.toggle('collapsed', queuedCount === 0);
+        }
     }
 
     // Always show team section — empty state CTA handled by renderTeamCards
