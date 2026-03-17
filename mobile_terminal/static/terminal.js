@@ -3856,6 +3856,120 @@ function setupComposeMode() {
             composeInput.dispatchEvent(new Event('input', { bubbles: true }));
         }, 0);
     });
+
+    // ── @-mention file autocomplete ──
+    let mentionSearchTimer = null;
+    let mentionActive = false;
+    let mentionStartPos = -1;
+    let mentionSelectedIndex = 0;
+    const mentionDropdown = document.getElementById('composeMentionDropdown');
+
+    composeInput.addEventListener('input', () => {
+        composeDraft = composeInput.value;
+        sessionStorage.setItem('composeDraft', composeDraft);
+        detectMention();
+    });
+
+    composeInput.addEventListener('keydown', (e) => {
+        if (!mentionActive || !mentionDropdown) return;
+        const items = mentionDropdown.querySelectorAll('.mention-item');
+        if (items.length === 0) return;
+
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            mentionSelectedIndex = Math.min(mentionSelectedIndex + 1, items.length - 1);
+            updateMentionSelection(items);
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            mentionSelectedIndex = Math.max(mentionSelectedIndex - 1, 0);
+            updateMentionSelection(items);
+        } else if (e.key === 'Enter' || e.key === 'Tab') {
+            if (items.length > 0) {
+                e.preventDefault();
+                e.stopPropagation();
+                selectMention(items[mentionSelectedIndex]?.dataset.path);
+            }
+        } else if (e.key === 'Escape') {
+            closeMentionDropdown();
+        }
+    });
+
+    function detectMention() {
+        const val = composeInput.value;
+        const cursor = composeInput.selectionStart;
+
+        let atPos = -1;
+        for (let i = cursor - 1; i >= 0; i--) {
+            if (val[i] === '@' && (i === 0 || /\s/.test(val[i - 1]))) {
+                atPos = i;
+                break;
+            }
+            if (/\s/.test(val[i])) break;
+        }
+
+        if (atPos < 0) { closeMentionDropdown(); return; }
+        const query = val.slice(atPos + 1, cursor);
+        if (query.length < 1) { closeMentionDropdown(); return; }
+
+        mentionStartPos = atPos;
+        mentionActive = true;
+        mentionSelectedIndex = 0;
+
+        clearTimeout(mentionSearchTimer);
+        mentionSearchTimer = setTimeout(() => fetchMentionResults(query), 150);
+    }
+
+    async function fetchMentionResults(query) {
+        try {
+            const resp = await fetch(`/api/files/search?token=${ctx.token}&q=${encodeURIComponent(query)}&limit=10`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+            renderMentionDropdown(data.files || []);
+        } catch (e) {
+            // Silently skip
+        }
+    }
+
+    function renderMentionDropdown(files) {
+        if (!mentionDropdown || files.length === 0) { closeMentionDropdown(); return; }
+        mentionDropdown.innerHTML = '';
+        files.forEach((filePath, i) => {
+            const item = document.createElement('div');
+            item.className = 'mention-item' + (i === 0 ? ' selected' : '');
+            item.dataset.path = filePath;
+            item.textContent = filePath;
+            item.addEventListener('click', () => selectMention(filePath));
+            mentionDropdown.appendChild(item);
+        });
+        mentionDropdown.classList.remove('hidden');
+    }
+
+    function updateMentionSelection(items) {
+        items.forEach((item, i) => item.classList.toggle('selected', i === mentionSelectedIndex));
+        items[mentionSelectedIndex]?.scrollIntoView({ block: 'nearest' });
+    }
+
+    function selectMention(filePath) {
+        if (!filePath) return;
+        const val = composeInput.value;
+        const cursor = composeInput.selectionStart;
+        const before = val.slice(0, mentionStartPos);
+        const after = val.slice(cursor);
+        const newVal = before + filePath + ' ' + after;
+        composeInput.value = newVal;
+        const newPos = mentionStartPos + filePath.length + 1;
+        composeInput.setSelectionRange(newPos, newPos);
+        composeInput.focus();
+        composeDraft = composeInput.value;
+        sessionStorage.setItem('composeDraft', composeDraft);
+        closeMentionDropdown();
+    }
+
+    function closeMentionDropdown() {
+        mentionActive = false;
+        mentionStartPos = -1;
+        if (mentionDropdown) mentionDropdown.classList.add('hidden');
+    }
 }
 
 /**
