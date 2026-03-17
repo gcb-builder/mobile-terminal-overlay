@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 _pr_info_cache: Dict[str, dict] = {}  # repo_path -> {data, time}
 PR_INFO_CACHE_TTL = 120.0  # seconds
 
+_git_status_cache: Dict[str, dict] = {}  # cache_key -> {result, time}
+GIT_STATUS_CACHE_TTL = 4.0  # seconds — UI polls at 5s
+
 
 def register(app: FastAPI, deps):
     """Register git routes."""
@@ -38,6 +41,15 @@ def register(app: FastAPI, deps):
                 "has_repo": False,
                 "error": "No git repository found"
             }
+
+        # Short-lived cache — avoids re-running 4 git commands within polling interval
+        status_cache_key = f"{repo_path}:{pane_id or ''}"
+        cached = _git_status_cache.get(status_cache_key)
+        if cached and (time.time() - cached["time"]) < GIT_STATUS_CACHE_TTL:
+            # Update lock state from live data (cheap, no subprocess)
+            cached["result"]["op_locked"] = app.state.git_op_lock.is_locked
+            cached["result"]["current_op"] = app.state.git_op_lock.current_operation
+            return cached["result"]
 
         try:
             # Get current branch
@@ -106,7 +118,7 @@ def register(app: FastAPI, deps):
                 except Exception:
                     pass  # gh not available or no PR
 
-            return {
+            result = {
                 "has_repo": True,
                 "repo_path": display_path,
                 "branch": branch,
@@ -120,6 +132,8 @@ def register(app: FastAPI, deps):
                 "current_op": app.state.git_op_lock.current_operation,
                 "pr": pr_info,
             }
+            _git_status_cache[status_cache_key] = {"result": result, "time": time.time()}
+            return result
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "Git command timed out"}, status_code=500)
         except Exception as e:
@@ -706,6 +720,7 @@ def register(app: FastAPI, deps):
         pane_id: Optional[str] = Query(None),
     ):
         """Discard all uncommitted changes. Optionally remove untracked files."""
+        _git_status_cache.clear()
 
         # Validate target before destructive operation
         target_check = deps.validate_target(session, pane_id)
@@ -793,6 +808,7 @@ def register(app: FastAPI, deps):
         pane_id: Optional[str] = Query(None),
     ):
         """Stage all changes and commit with a message."""
+        _git_status_cache.clear()
 
         # Validate target to prevent operating on wrong repo
         target_check = deps.validate_target(session, pane_id)
@@ -889,6 +905,7 @@ def register(app: FastAPI, deps):
         pane_id: Optional[str] = Query(None),
     ):
         """Push current branch to its upstream remote."""
+        _git_status_cache.clear()
 
         # Validate target to prevent operating on wrong repo
         target_check = deps.validate_target(session, pane_id)

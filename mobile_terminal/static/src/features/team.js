@@ -107,19 +107,13 @@ export async function refreshTeamCards() {
 
     const sessParam = ctx.currentSession ? `&session=${encodeURIComponent(ctx.currentSession)}` : '';
     try {
+        // Only fetch capture data — team state is already kept fresh by
+        // updateTeamState() in the health poll loop (avoids duplicate request)
         const resp = await fetchWithTimeoutCb(
             `/api/team/capture?lines=8&token=${ctx.token}${sessParam}`, {}, 5000
         );
         if (!resp.ok) return;
         const data = await resp.json();
-
-        // Also refresh team state for latest phase/permission info
-        const stateResp = await fetchWithTimeoutCb(
-            `/api/team/state?token=${ctx.token}${sessParam}`, {}, 5000
-        );
-        if (stateResp.ok) {
-            ctx.teamState = await stateResp.json();
-        }
 
         renderTeamCards(ctx.teamState, data.captures || {});
     } catch (e) {
