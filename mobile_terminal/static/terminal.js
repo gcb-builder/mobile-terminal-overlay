@@ -5744,8 +5744,8 @@ function createLogCard(msg) {
 
     card.appendChild(body);
 
-    // "Ask AI" action for error log cards
-    if (card.dataset.logType === 'error') {
+    // "Ask AI" action for error log cards (not user input)
+    if (card.dataset.logType === 'error' && msg.role !== 'user') {
         const actionRow = document.createElement('div');
         actionRow.className = 'log-card-actions';
         const askBtn = document.createElement('button');
