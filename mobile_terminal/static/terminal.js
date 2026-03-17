@@ -2608,15 +2608,53 @@ function showTargetMissingWarning() {
 }
 
 /**
- * Cycle to next target pane (Shift+Tab shortcut)
+ * Shift+Tab session cycling: preview mode
+ * Shift+Tab cycles the nav label through targets without switching.
+ * Enter confirms the previewed target. Escape or timeout cancels.
  */
-function cycleTarget() {
+let _cyclePreviewIdx = -1;
+let _cyclePreviewTimer = null;
+
+function cycleTargetPreview() {
     if (ctx.targets.length <= 1) return;
-    const currentIdx = ctx.targets.findIndex(t => t.id === ctx.activeTarget);
-    const nextIdx = (currentIdx + 1) % ctx.targets.length;
-    const next = ctx.targets[nextIdx];
-    selectTarget(next.id);
-    showToast(`Switched to ${next.window_name || next.id}`, 'info', 1500);
+
+    if (_cyclePreviewIdx < 0) {
+        // Start preview from current target
+        _cyclePreviewIdx = ctx.targets.findIndex(t => t.id === ctx.activeTarget);
+    }
+    _cyclePreviewIdx = (_cyclePreviewIdx + 1) % ctx.targets.length;
+    const target = ctx.targets[_cyclePreviewIdx];
+
+    // Update nav label to show preview
+    if (repoLabel) {
+        const name = target.window_name || target.project || target.cwd?.split('/').pop() || target.id;
+        repoLabel.textContent = name;
+        repoLabel.classList.add('cycle-preview');
+    }
+
+    // Reset auto-cancel timer (3s)
+    clearTimeout(_cyclePreviewTimer);
+    _cyclePreviewTimer = setTimeout(cancelCyclePreview, 3000);
+}
+
+function confirmCyclePreview() {
+    if (_cyclePreviewIdx < 0) return false;
+    const target = ctx.targets[_cyclePreviewIdx];
+    clearTimeout(_cyclePreviewTimer);
+    _cyclePreviewIdx = -1;
+    if (repoLabel) repoLabel.classList.remove('cycle-preview');
+    if (target.id !== ctx.activeTarget) {
+        selectTarget(target.id);
+    }
+    return true;
+}
+
+function cancelCyclePreview() {
+    if (_cyclePreviewIdx < 0) return;
+    clearTimeout(_cyclePreviewTimer);
+    _cyclePreviewIdx = -1;
+    if (repoLabel) repoLabel.classList.remove('cycle-preview');
+    updateNavLabel();  // Restore actual label
 }
 
 /**
@@ -9032,13 +9070,24 @@ function setupDesktopShortcuts() {
         const isLogInput = document.activeElement?.id === 'logInput';
         if (!isLogInput) return;
 
-        // Escape → blur input; if terminal panel open, close it
+        // Escape → cancel cycle preview or blur input
         if (e.key === 'Escape') {
             e.preventDefault();
-            document.activeElement.blur();
-            if (document.querySelector('.app')?.classList.contains('desktop-terminal-open')) {
-                closeDesktopTerminal();
+            if (_cyclePreviewIdx >= 0) {
+                cancelCyclePreview();
+            } else {
+                document.activeElement.blur();
+                if (document.querySelector('.app')?.classList.contains('desktop-terminal-open')) {
+                    closeDesktopTerminal();
+                }
             }
+            return;
+        }
+
+        // Enter → confirm cycle preview if active, otherwise normal behavior
+        if (e.key === 'Enter' && _cyclePreviewIdx >= 0) {
+            e.preventDefault();
+            confirmCyclePreview();
             return;
         }
 
@@ -9051,10 +9100,10 @@ function setupDesktopShortcuts() {
             return;
         }
 
-        // Shift+Tab → cycle to next session/pane
+        // Shift+Tab → cycle session/pane preview
         if (e.shiftKey && e.key === 'Tab') {
             e.preventDefault();
-            cycleTarget();
+            cycleTargetPreview();
             return;
         }
 

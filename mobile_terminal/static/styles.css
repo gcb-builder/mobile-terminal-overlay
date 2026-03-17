@@ -119,6 +119,10 @@ html, body {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+#repoLabel.cycle-preview {
+    color: var(--accent);
+    font-style: italic;
+}
 
 .repo-btn:active {
     background: var(--bg-secondary);
