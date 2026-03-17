@@ -2608,6 +2608,18 @@ function showTargetMissingWarning() {
 }
 
 /**
+ * Cycle to next target pane (Shift+Tab shortcut)
+ */
+function cycleTarget() {
+    if (ctx.targets.length <= 1) return;
+    const currentIdx = ctx.targets.findIndex(t => t.id === ctx.activeTarget);
+    const nextIdx = (currentIdx + 1) % ctx.targets.length;
+    const next = ctx.targets[nextIdx];
+    selectTarget(next.id);
+    showToast(`Switched to ${next.window_name || next.id}`, 'info', 1500);
+}
+
+/**
  * Select a target pane (optimistic - applies locally first, syncs in background)
  */
 let targetSelectController = null;
@@ -9036,6 +9048,13 @@ function setupDesktopShortcuts() {
                 e.preventDefault();
                 sendKeyDebounced('\x03', true);
             }
+            return;
+        }
+
+        // Shift+Tab → cycle to next session/pane
+        if (e.shiftKey && e.key === 'Tab') {
+            e.preventDefault();
+            cycleTarget();
             return;
         }
 
