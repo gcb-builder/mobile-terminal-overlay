@@ -119,10 +119,6 @@ html, body {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-#repoLabel.cycle-preview {
-    color: var(--accent);
-    font-style: italic;
-}
 
 .repo-btn:active {
     background: var(--bg-secondary);
@@ -7450,6 +7446,10 @@ html, body {
     .sidebar-session-btn.current {
         color: var(--text-primary); border-left: 2px solid var(--accent);
         background: rgba(55, 148, 255, 0.05);
+    }
+    .sidebar-session-btn.cycle-preview {
+        color: var(--accent); background: rgba(55, 148, 255, 0.12);
+        border-left: 2px solid var(--accent); font-weight: 600;
     }
 
     /* Sidebar tool content (replaces default when secondary tool opened) */

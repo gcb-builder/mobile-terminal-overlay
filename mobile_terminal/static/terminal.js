@@ -2609,28 +2609,30 @@ function showTargetMissingWarning() {
 
 /**
  * Shift+Tab session cycling: preview mode
- * Shift+Tab cycles the nav label through targets without switching.
+ * Shift+Tab highlights session buttons in the workspace sidebar.
  * Enter confirms the previewed target. Escape or timeout cancels.
  */
 let _cyclePreviewIdx = -1;
 let _cyclePreviewTimer = null;
 
+function _getSidebarSessionBtns() {
+    return Array.from(document.querySelectorAll('#sidebarSessionsBody .sidebar-session-btn'));
+}
+
 function cycleTargetPreview() {
-    if (ctx.targets.length <= 1) return;
+    const btns = _getSidebarSessionBtns();
+    if (btns.length <= 1) return;
 
     if (_cyclePreviewIdx < 0) {
-        // Start preview from current target
-        _cyclePreviewIdx = ctx.targets.findIndex(t => t.id === ctx.activeTarget);
+        // Start from current active
+        _cyclePreviewIdx = btns.findIndex(b => b.classList.contains('current'));
     }
-    _cyclePreviewIdx = (_cyclePreviewIdx + 1) % ctx.targets.length;
-    const target = ctx.targets[_cyclePreviewIdx];
+    _cyclePreviewIdx = (_cyclePreviewIdx + 1) % btns.length;
 
-    // Update nav label to show preview
-    if (repoLabel) {
-        const name = target.window_name || target.project || target.cwd?.split('/').pop() || target.id;
-        repoLabel.textContent = name;
-        repoLabel.classList.add('cycle-preview');
-    }
+    // Highlight the previewed button
+    btns.forEach(b => b.classList.remove('cycle-preview'));
+    btns[_cyclePreviewIdx].classList.add('cycle-preview');
+    btns[_cyclePreviewIdx].scrollIntoView({ block: 'nearest' });
 
     // Reset auto-cancel timer (3s)
     clearTimeout(_cyclePreviewTimer);
@@ -2639,12 +2641,13 @@ function cycleTargetPreview() {
 
 function confirmCyclePreview() {
     if (_cyclePreviewIdx < 0) return false;
-    const target = ctx.targets[_cyclePreviewIdx];
+    const btns = _getSidebarSessionBtns();
+    const btn = btns[_cyclePreviewIdx];
     clearTimeout(_cyclePreviewTimer);
     _cyclePreviewIdx = -1;
-    if (repoLabel) repoLabel.classList.remove('cycle-preview');
-    if (target.id !== ctx.activeTarget) {
-        selectTarget(target.id);
+    btns.forEach(b => b.classList.remove('cycle-preview'));
+    if (btn && !btn.classList.contains('current')) {
+        btn.click();
     }
     return true;
 }
@@ -2653,8 +2656,7 @@ function cancelCyclePreview() {
     if (_cyclePreviewIdx < 0) return;
     clearTimeout(_cyclePreviewTimer);
     _cyclePreviewIdx = -1;
-    if (repoLabel) repoLabel.classList.remove('cycle-preview');
-    updateNavLabel();  // Restore actual label
+    _getSidebarSessionBtns().forEach(b => b.classList.remove('cycle-preview'));
 }
 
 /**
