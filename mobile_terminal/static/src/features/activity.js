@@ -154,6 +154,23 @@ function createEventCard(evt) {
         });
     }
 
+    // "Ask AI" button on error events
+    if (evt.status === 'error' && evt.detail) {
+        const actionRow = document.createElement('div');
+        actionRow.className = 'log-card-actions';
+        const askBtn = document.createElement('button');
+        askBtn.className = 'log-ask-ai-btn';
+        askBtn.textContent = 'Ask AI';
+        askBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const text = `${evt.title}\n\n${evt.detail}`.slice(0, 1500);
+            const prompt = `Debug this error:\n\n${text}\n\nAnalyze the error above and suggest a fix.`;
+            if (window.prefillCompose) window.prefillCompose(prompt);
+        });
+        actionRow.appendChild(askBtn);
+        card.appendChild(actionRow);
+    }
+
     return card;
 }
 

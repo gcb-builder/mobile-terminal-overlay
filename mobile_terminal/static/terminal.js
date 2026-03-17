@@ -5764,6 +5764,21 @@ function createLogCard(msg) {
 }
 
 /**
+ * Pre-fill compose modal with text for AI debugging.
+ * Exposed on window so ES module features (activity.js) can call it.
+ */
+function prefillCompose(text) {
+    composeDraft = text;
+    composeInput.value = text;
+    composeModal.classList.remove('hidden');
+    setTimeout(() => {
+        composeInput.focus();
+        composeInput.setSelectionRange(text.length, text.length);
+    }, 100);
+}
+window.prefillCompose = prefillCompose;
+
+/**
  * Pre-fill compose modal with error context for AI debugging
  */
 function askAIAboutError(msg) {
@@ -5774,14 +5789,7 @@ function askAIAboutError(msg) {
         : errorText;
 
     const prompt = `Debug this error:\n\n${truncated}\n\nAnalyze the error above and suggest a fix.`;
-
-    composeDraft = prompt;
-    composeInput.value = prompt;
-    composeModal.classList.remove('hidden');
-    setTimeout(() => {
-        composeInput.focus();
-        composeInput.setSelectionRange(prompt.length, prompt.length);
-    }, 100);
+    prefillCompose(prompt);
 }
 
 // yieldToMain — moved to src/utils.js
@@ -7219,6 +7227,7 @@ function closePreviewDrawer() {
     if (drawer) drawer.classList.add('hidden');
     if (backdrop) backdrop.classList.add('hidden');
     drawerOpen = false;
+    stopActivity();
 }
 
 /**
@@ -8669,6 +8678,8 @@ function openSidebarTool(name) {
  * Restore sidebar tool content back to default view
  */
 function restoreSidebarToolContent() {
+    // Stop activity polling if leaving that tab
+    stopActivity();
     // Return reparented elements to drawer
     restoreToolContent();
 
