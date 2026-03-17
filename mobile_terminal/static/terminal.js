@@ -4938,7 +4938,7 @@ function switchToTeamView() {
  */
 function appendStandardActionButtons(bar) {
     const gitBtn = document.createElement('button');
-    gitBtn.className = 'action-bar-btn';
+    gitBtn.className = 'action-bar-btn action-bar-git';
     gitBtn.textContent = 'Commit';
     gitBtn.addEventListener('click', () => onGitButtonClick(gitBtn));
     bar.appendChild(gitBtn);
@@ -4954,7 +4954,7 @@ function appendStandardActionButtons(bar) {
     bar.appendChild(btn3);
 
     const btn4 = document.createElement('button');
-    btn4.className = 'action-bar-btn';
+    btn4.className = 'action-bar-btn action-bar-compose';
     btn4.textContent = 'Compose';
     btn4.addEventListener('click', () => { if (composeBtn) composeBtn.click(); });
     bar.appendChild(btn4);

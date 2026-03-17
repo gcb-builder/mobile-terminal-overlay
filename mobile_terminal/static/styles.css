@@ -520,21 +520,22 @@ html, body {
 }
 
 .header-phase-label {
-    color: var(--text-secondary);
+    color: var(--text-primary);
     white-space: nowrap;
+    font-weight: 500;
 }
 
 .status-dot {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     flex-shrink: 0;
 }
 
-.status-dot.waiting { background: #ef4444; animation: status-pulse-fast 0.8s ease-in-out infinite; }
-.status-dot.planning { background: #f59e0b; animation: status-pulse 2s ease-in-out infinite; }
-.status-dot.working { background: #3b82f6; animation: status-pulse 2s ease-in-out infinite; }
-.status-dot.running_task { background: #a855f7; animation: status-pulse 2s ease-in-out infinite; }
+.status-dot.waiting { background: #ef4444; box-shadow: 0 0 8px #ef4444; animation: status-pulse-fast 0.8s ease-in-out infinite; }
+.status-dot.planning { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; animation: status-pulse 2s ease-in-out infinite; }
+.status-dot.working { background: #3b82f6; box-shadow: 0 0 8px #3b82f6; animation: status-pulse 2s ease-in-out infinite; }
+.status-dot.running_task { background: #a855f7; box-shadow: 0 0 8px #a855f7; animation: status-pulse 2s ease-in-out infinite; }
 .status-dot.idle { background: #6b7280; }
 
 @keyframes status-pulse {
@@ -639,12 +640,13 @@ html, body {
 
 /* Project context banner */
 .context-banner {
-    padding: 6px 12px;
+    padding: 4px 12px;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--accent);
-    font-size: 12px;
+    font-size: 11px;
     flex-shrink: 0;
     cursor: pointer;
+    line-height: 1.2;
 }
 .context-banner.hidden { display: none; }
 .context-banner-header {
@@ -694,8 +696,8 @@ html, body {
 
 /* Connection health indicator */
 .connection-indicator {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     margin: 0 4px;
 }
@@ -2076,7 +2078,8 @@ html, body {
 }
 
 .action-bar-btn:active {
-    background: rgba(55, 148, 255, 0.15);
+    transform: scale(0.96);
+    transition: transform 0.1s ease;
 }
 
 .action-bar-btn.primary {
@@ -2087,11 +2090,37 @@ html, body {
 
 .action-bar-btn.primary:active {
     background: var(--accent-hover);
+    transform: scale(0.96);
+}
+
+.action-bar-btn.action-bar-git {
+    color: var(--success);
+    border-color: rgba(137, 209, 133, 0.4);
+}
+
+.action-bar-btn.action-bar-git:active {
+    background: rgba(137, 209, 133, 0.15);
+    transform: scale(0.96);
+}
+
+.action-bar-btn.action-bar-compose {
+    color: var(--accent-cyan);
+    border-color: rgba(78, 201, 176, 0.4);
+}
+
+.action-bar-btn.action-bar-compose:active {
+    background: rgba(78, 201, 176, 0.15);
+    transform: scale(0.96);
 }
 
 .action-bar-stop {
     color: var(--error);
     border-color: rgba(241, 76, 76, 0.5);
+}
+
+.action-bar-stop:active {
+    background: rgba(241, 76, 76, 0.15);
+    transform: scale(0.96);
 }
 
 /* FAB menu — vertical floating menu anchored bottom-right above ••• button */
