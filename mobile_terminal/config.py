@@ -98,7 +98,8 @@ class Config:
 
     # Push notifications
     push_enabled: bool = True
-    context_alert_threshold: int = 85  # Push alert when context_pct >= this
+    context_warn_threshold: int = 70   # Push warning when context_pct >= this (30% remaining)
+    context_alert_threshold: int = 85  # Push critical alert when context_pct >= this (15% remaining)
 
     # Agent driver selection
     agent_type: str = "claude"  # Driver to use: claude, codex, generic
