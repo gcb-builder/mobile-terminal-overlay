@@ -5626,7 +5626,45 @@ function createLogCard(msg) {
     }
 
     card.appendChild(body);
+
+    // "Ask AI" action for error log cards
+    if (card.dataset.logType === 'error') {
+        const actionRow = document.createElement('div');
+        actionRow.className = 'log-card-actions';
+        const askBtn = document.createElement('button');
+        askBtn.className = 'log-ask-ai-btn';
+        askBtn.textContent = 'Ask AI';
+        askBtn.title = 'Send error context to agent for debugging';
+        askBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            askAIAboutError(msg);
+        });
+        actionRow.appendChild(askBtn);
+        card.appendChild(actionRow);
+    }
+
     return card;
+}
+
+/**
+ * Pre-fill compose modal with error context for AI debugging
+ */
+function askAIAboutError(msg) {
+    const errorText = msg.blocks.map(b => b.text).join('\n').trim();
+    const maxLen = 1500;
+    const truncated = errorText.length > maxLen
+        ? errorText.slice(0, maxLen) + '\n[...truncated]'
+        : errorText;
+
+    const prompt = `Debug this error:\n\n${truncated}\n\nAnalyze the error above and suggest a fix.`;
+
+    composeDraft = prompt;
+    composeInput.value = prompt;
+    composeModal.classList.remove('hidden');
+    setTimeout(() => {
+        composeInput.focus();
+        composeInput.setSelectionRange(prompt.length, prompt.length);
+    }, 100);
 }
 
 // yieldToMain — moved to src/utils.js
