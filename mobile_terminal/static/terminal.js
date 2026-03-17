@@ -1329,6 +1329,10 @@ function startConnectionWatchdog() {
     if (watchdogTimer) clearInterval(watchdogTimer);
 
     watchdogTimer = setInterval(() => {
+        // Don't enforce foreground assumptions while hidden — browser/OS may
+        // clamp timers and delay packets, making socket state unreliable
+        if (document.visibilityState === 'hidden') return;
+
         // Check if we're in a stuck state:
         // - Not connecting
         // - Socket is null or not OPEN
@@ -2445,21 +2449,19 @@ async function switchRepo(session) {
         const sysStrip = document.getElementById('systemStatusStrip');
         if (sysStrip) sysStrip.classList.add('hidden');
 
-        // Clear ctx.terminal and log content immediately (don't show old session's output)
-        if (ctx.terminal) {
-            ctx.terminal.clear();
-        }
-        if (logContent) {
-            logContent.innerHTML = '<div class="loading">Switching session...</div>';
-        }
         // Reset log state to force fresh load
         logLoaded = false;
         lastLogModified = 0;
         lastLogContentHash = '';
 
-        // Server already closed WebSocket, reconnect after cleanup delay
+        // Server already closed WebSocket — reconnect just above the 500ms
+        // server rate-limit window. Defer terminal/log clearing until
+        // reconnect starts so old content stays visible during the gap.
         setTimeout(() => {
             repoSwitchInProgress = false;
+            // Clear now, right before reconnect — minimizes blank-screen time
+            if (ctx.terminal) ctx.terminal.clear();
+            if (logContent) logContent.innerHTML = '<div class="loading">Switching session...</div>';
             connect();
             // Refresh log, ctx.targets, and queue after connection established
             setTimeout(async () => {
@@ -2470,7 +2472,7 @@ async function switchRepo(session) {
                 sessionStorage.removeItem(`mto_context_dismissed_${session}`);
                 loadContextBanner().catch(() => {});
             }, 500);
-        }, 1000);
+        }, 600);
 
     } catch (error) {
         console.error('Error switching repo:', error);
@@ -3506,82 +3508,22 @@ function setupViewportHandler() {
                 reconnectDelay = INITIAL_RECONNECT_DELAY;
                 connect();
             } else {
-                // Socket says OPEN but may be stale (mobile background kills TCP
-                // silently). Send a probe ping — if no pong within 3s, force reconnect.
-                console.log('Page visible, probing connection health');
-                const probeStart = Date.now();
-                let probeResolved = false;
-                const prevPongTime = lastPongTime;
+                // Socket reports OPEN — don't kill it just because we were backgrounded.
+                // Reset timestamps so heartbeat/idle checks start fresh, then let normal
+                // heartbeat (15s interval + 5s timeout) detect true death organically.
+                console.log('Page visible, socket OPEN — trusting connection, resetting timers');
 
+                // If any inbound data arrived while hidden, socket is definitely alive
+                // If not, normal heartbeat will probe within 15s
+
+                // Only send a non-destructive keepalive — no kill timer
                 try {
                     ctx.socket.send(JSON.stringify({ type: 'ping' }));
                 } catch (e) {
-                    // Send failed — connection is dead
-                    console.log('Probe send failed, forcing reconnect');
+                    // Send threw — socket is actually dead, reconnect
+                    console.log('Keepalive send failed, socket dead — reconnecting');
                     ctx.socket.close();
-                    probeResolved = true;
                 }
-
-                if (!probeResolved) {
-                    setTimeout(() => {
-                        // If lastPongTime didn't update, connection is dead
-                        if (lastPongTime <= prevPongTime) {
-                            console.log('Probe timeout — no pong after visibility change, forcing reconnect');
-                            if (ctx.socket) ctx.socket.close();
-                        }
-                    }, 3000);
-                }
-
-                // If still not connected after timeout, try server restart
-                setTimeout(async () => {
-                    if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
-                        return; // Connected successfully, no restart needed
-                    }
-
-                    // Check cooldown
-                    const now = Date.now();
-                    if (now - lastRestartAttempt < RESTART_COOLDOWN) {
-                        console.log('Restart skipped: cooldown active');
-                        return;
-                    }
-
-                    if (restartPending) {
-                        console.log('Restart skipped: already pending');
-                        return;
-                    }
-
-                    console.log('Connection failed after timeout, requesting server restart');
-                    restartPending = true;
-                    lastRestartAttempt = now;
-
-                    try {
-                        const response = await fetch(`/api/restart?token=${ctx.token}`, {
-                            method: 'POST',
-                        });
-                        const data = await response.json();
-
-                        if (response.status === 202) {
-                            console.log('Server restart initiated');
-                            showToast('Server restarting...', 'info');
-                            // Wait for server to come back, then reconnect
-                            setTimeout(() => {
-                                restartPending = false;
-                                reconnectDelay = INITIAL_RECONNECT_DELAY;
-                                connect();
-                            }, 1500);
-                        } else if (response.status === 429) {
-                            console.log(`Restart throttled, retry after ${data.retry_after}s`);
-                            restartPending = false;
-                        } else {
-                            console.error('Restart failed:', data.error);
-                            restartPending = false;
-                        }
-                    } catch (e) {
-                        console.error('Restart request failed:', e);
-                        restartPending = false;
-                        // Server might already be down, just keep trying to reconnect
-                    }
-                }, RESTART_TIMEOUT);
             }
         } else {
             // Stop Claude health polling when hidden to save resources
