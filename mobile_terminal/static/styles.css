@@ -505,7 +505,7 @@ html, body {
 }
 
 .metrics-pill {
-    display: inline-flex;
+    display: none;
     align-items: center;
     padding: 2px 8px;
     border-radius: 10px;
@@ -514,6 +514,9 @@ html, body {
     font-family: monospace;
     line-height: 1;
     white-space: nowrap;
+}
+@media (min-width: 769px) {
+    .metrics-pill:not(.hidden) { display: inline-flex; }
 }
 .metrics-pill.hidden { display: none; }
 .metrics-pill.metrics-ok { color: var(--success); background: rgba(46, 160, 67, 0.1); }
