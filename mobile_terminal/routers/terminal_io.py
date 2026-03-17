@@ -600,6 +600,8 @@ def register(app: FastAPI, deps):
                             # Strip ANSI and get last 50 lines
                             plain = strip_ansi(text)
                             lines = plain.split('\n')[-50:]
+                            # Filter out Claude CLI feedback prompt
+                            lines = [l for l in lines if 'How is Claude doing this session' not in l]
                             tail_text = '\n'.join(lines)
                             tail_seq += 1
                             await websocket.send_json({
