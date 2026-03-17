@@ -9017,6 +9017,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
+    // Palette button (desktop header)
+    document.getElementById('paletteBtn')?.addEventListener('click', () => openPalette());
+
     // Reconnect/refresh button click handlers
     const reconnectBadge = document.getElementById('reconnectBadge');
     if (reconnectBadge) {

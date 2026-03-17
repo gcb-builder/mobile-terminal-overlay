@@ -3463,6 +3463,29 @@ html, body {
     cursor: default;
 }
 
+.palette-btn {
+    padding: 6px 10px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    min-height: 32px;
+    display: none;
+}
+.palette-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+}
+.palette-btn:active {
+    transform: scale(0.96);
+}
+.app.desktop-multipane .palette-btn {
+    display: inline-flex;
+    align-items: center;
+}
+
 .docs-btn {
     padding: 6px 12px;
     background: var(--accent);
@@ -7476,6 +7499,14 @@ html, body {
         flex: 1;
     }
 
+    .tools-rail-divider {
+        width: 28px;
+        height: 1px;
+        background: var(--border);
+        margin: 4px 0;
+        flex-shrink: 0;
+    }
+
     .rail-badge {
         position: absolute;
         top: 2px;
@@ -7584,6 +7615,17 @@ html, body {
         font-size: 14px;
         max-width: none;
         padding: 4px 10px;
+    }
+
+    /* Desktop: promote phase indicator — larger, left-aligned, always visible */
+    .app.desktop-multipane .header-phase {
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-size: 12px;
+        gap: 6px;
+    }
+    .app.desktop-multipane .header-phase-label {
+        font-size: 12px;
     }
 
     /* Context banner: compact floating pill on desktop, overlays content */
