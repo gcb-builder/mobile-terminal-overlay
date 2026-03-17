@@ -8835,6 +8835,61 @@ html, body {
 
 .activity-event.filtered-out { display: none; }
 
+/* Activity event groups (collapsible turn aggregation) */
+.activity-group {
+    border-left: 2px solid var(--border);
+    margin: 4px 0;
+    border-radius: 4px;
+}
+.activity-group.filtered-out { display: none; }
+
+.activity-group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    cursor: pointer;
+    list-style: none;
+    min-height: 44px;
+    border-radius: 4px;
+}
+.activity-group-header::-webkit-details-marker { display: none; }
+
+.activity-group[open] > .activity-group-header .activity-group-icon {
+    transform: rotate(90deg);
+}
+
+.activity-group-icon {
+    font-size: 10px;
+    color: var(--text-secondary);
+    transition: transform 0.15s;
+}
+
+.activity-group-title {
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.activity-group-badges {
+    font-size: 11px;
+    color: var(--text-secondary);
+    flex: 1;
+}
+
+.activity-group-duration {
+    font-size: 10px;
+    color: var(--accent-cyan);
+    font-family: monospace;
+}
+
+.activity-group-content {
+    padding-left: 12px;
+    border-left: 1px solid var(--border);
+    margin-left: 8px;
+}
+
 .activity-event-header {
     display: flex;
     align-items: center;

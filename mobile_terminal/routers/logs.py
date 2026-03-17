@@ -921,6 +921,7 @@ def register(app: FastAPI, deps):
                 content = message.get("content", [])
                 if not isinstance(content, list):
                     continue
+                group_id = f"turn_{len(events)}"
                 for block in content:
                     if not isinstance(block, dict) or block.get("type") != "tool_use":
                         continue
@@ -933,6 +934,7 @@ def register(app: FastAPI, deps):
                                      "TaskUpdate", "TaskList", "TaskGet"):
                         continue
                     evt = _build_event(tool_name, tool_id, tool_input, timestamp, ts_epoch)
+                    evt["group_id"] = group_id
                     idx = len(events)
                     events.append(evt)
                     if tool_id:
