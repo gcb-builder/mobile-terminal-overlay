@@ -24,8 +24,13 @@ def register(app: FastAPI, deps):
     @app.get("/api/rollback/git/status")
     async def git_status(
         _auth=Depends(deps.verify_token),
+        pane_id: Optional[str] = Query(None),
     ):
         """Get current git status: branch, dirty, ahead/behind, lock status."""
+
+        # If pane_id provided, verify it matches the active target
+        if pane_id and app.state.active_target and pane_id != app.state.active_target:
+            return {"has_repo": False, "error": "Pane mismatch"}
 
         repo_path = deps.get_current_repo_path()
         if not repo_path:
@@ -784,8 +789,20 @@ def register(app: FastAPI, deps):
     async def git_commit(
         request: Request,
         _auth=Depends(deps.verify_token),
+        session: Optional[str] = Query(None),
+        pane_id: Optional[str] = Query(None),
     ):
         """Stage all changes and commit with a message."""
+
+        # Validate target to prevent operating on wrong repo
+        target_check = deps.validate_target(session, pane_id)
+        if not target_check["valid"]:
+            return JSONResponse({
+                "error": "Target mismatch",
+                "message": target_check["error"],
+                "expected": target_check["expected"],
+                "received": target_check["received"]
+            }, status_code=409)
 
         repo_path = deps.get_current_repo_path()
         if not repo_path:
@@ -868,8 +885,20 @@ def register(app: FastAPI, deps):
     @app.post("/api/git/push")
     async def git_push(
         _auth=Depends(deps.verify_token),
+        session: Optional[str] = Query(None),
+        pane_id: Optional[str] = Query(None),
     ):
         """Push current branch to its upstream remote."""
+
+        # Validate target to prevent operating on wrong repo
+        target_check = deps.validate_target(session, pane_id)
+        if not target_check["valid"]:
+            return JSONResponse({
+                "error": "Target mismatch",
+                "message": target_check["error"],
+                "expected": target_check["expected"],
+                "received": target_check["received"]
+            }, status_code=409)
 
         repo_path = deps.get_current_repo_path()
         if not repo_path:

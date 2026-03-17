@@ -5213,7 +5213,8 @@ function appendStandardActionButtons(bar) {
 async function updateGitButton(btn) {
     if (!btn) return;
     try {
-        const resp = await fetch(`/api/rollback/git/status?token=${ctx.token}`);
+        const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
+        const resp = await fetch(`/api/rollback/git/status?token=${ctx.token}${paneParam}`);
         const data = await resp.json();
         if (!data.has_repo) return;
 
@@ -5253,7 +5254,11 @@ async function promptGitCommit() {
     if (!message || !message.trim()) return;
 
     try {
-        const resp = await fetch(`/api/git/commit?token=${ctx.token}`, {
+        const params = new URLSearchParams({ token: ctx.token });
+        if (ctx.currentSession) params.set('session', ctx.currentSession);
+        if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
+
+        const resp = await fetch(`/api/git/commit?${params}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message: message.trim() }),
@@ -5275,7 +5280,11 @@ async function promptGitCommit() {
 async function doGitPush() {
     try {
         showToast('Pushing...', 'success');
-        const resp = await fetch(`/api/git/push?token=${ctx.token}`, {
+        const params = new URLSearchParams({ token: ctx.token });
+        if (ctx.currentSession) params.set('session', ctx.currentSession);
+        if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
+
+        const resp = await fetch(`/api/git/push?${params}`, {
             method: 'POST',
         });
         const data = await resp.json();
