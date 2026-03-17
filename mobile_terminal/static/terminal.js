@@ -571,6 +571,7 @@ let availableWorkspaceDirs = [];
  * Uses fit addon to auto-size based on container width
  */
 let fitAddon = null;
+let searchAddon = null;
 
 // Detect mobile for performance tuning
 const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || window.innerWidth < 768;
@@ -618,6 +619,12 @@ function initTerminal() {
     // Web links addon for clickable URLs
     const webLinksAddon = new WebLinksAddon.WebLinksAddon();
     ctx.terminal.loadAddon(webLinksAddon);
+
+    // Search addon for in-terminal text search
+    if (typeof SearchAddon !== 'undefined') {
+        searchAddon = new SearchAddon.SearchAddon();
+        ctx.terminal.loadAddon(searchAddon);
+    }
 
     ctx.terminal.open(terminalContainer);
 
@@ -4364,6 +4371,69 @@ function closeComposeModal(clearDraft = false) {
  */
 let isSelectMode = false;
 let selectStart = null;  // {row, col}
+
+/**
+ * Setup terminal search bar (xterm SearchAddon)
+ */
+function setupTerminalSearch() {
+    const bar = document.getElementById('termSearchBar');
+    const input = document.getElementById('termSearchInput');
+    const countEl = document.getElementById('termSearchCount');
+    const prevBtn = document.getElementById('termSearchPrev');
+    const nextBtn = document.getElementById('termSearchNext');
+    const closeBtn = document.getElementById('termSearchClose');
+    const openBtn = document.getElementById('termSearchBtn');
+    if (!bar || !input || !searchAddon) return;
+
+    function openSearch() {
+        if (ctx.outputMode !== 'full') return;
+        bar.classList.remove('hidden');
+        input.focus();
+        input.select();
+    }
+
+    function closeSearch() {
+        bar.classList.add('hidden');
+        input.value = '';
+        countEl.textContent = '';
+        searchAddon.clearDecorations();
+    }
+
+    function doSearch(direction) {
+        const query = input.value;
+        if (!query) { countEl.textContent = ''; searchAddon.clearDecorations(); return; }
+        if (direction === 'prev') {
+            searchAddon.findPrevious(query);
+        } else {
+            searchAddon.findNext(query);
+        }
+    }
+
+    input.addEventListener('input', () => doSearch('next'));
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            doSearch(e.shiftKey ? 'prev' : 'next');
+        }
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            closeSearch();
+        }
+    });
+
+    nextBtn.addEventListener('click', () => doSearch('next'));
+    prevBtn.addEventListener('click', () => doSearch('prev'));
+    closeBtn.addEventListener('click', closeSearch);
+    if (openBtn) openBtn.addEventListener('click', openSearch);
+
+    // Ctrl+F / Cmd+F to open search (when in terminal view)
+    document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'f' && ctx.currentView === 'terminal') {
+            e.preventDefault();
+            openSearch();
+        }
+    });
+}
 
 function setupCopyButton() {
     // Select/Copy button states: 'select' | 'tap-start' | 'tap-end' | 'copy'
@@ -8991,6 +9061,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupTargetSelector();  // Non-blocking - applies saved target locally, syncs in background
     setupNewWindowModal();
     setupJumpToBottom();
+    setupTerminalSearch();
     setupCopyButton();
     setupCommandHistory();
     setupComposeMode();

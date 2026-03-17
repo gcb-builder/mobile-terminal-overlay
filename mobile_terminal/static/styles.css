@@ -755,6 +755,61 @@ html, body {
     display: none !important;
 }
 
+/* ===== Terminal Search Bar ===== */
+.term-search-bar {
+    position: absolute;
+    top: 40px;
+    right: 8px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    z-index: 10;
+    box-shadow: 0 2px 8px var(--shadow);
+}
+.term-search-bar.hidden { display: none; }
+
+.term-search-input {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    padding: 6px 8px;
+    font-size: 13px;
+    width: 140px;
+    outline: none;
+    font-family: inherit;
+}
+.term-search-input:focus { border-color: var(--accent); }
+
+.term-search-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+    min-width: 20px;
+    text-align: center;
+}
+
+.term-search-nav, .term-search-close {
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 14px;
+    padding: 4px;
+    min-width: 44px;
+    min-height: 44px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+}
+.term-search-nav:hover, .term-search-close:hover {
+    background: var(--bg-tertiary);
+}
+
 /* Hybrid view: Log + Terminal split */
 /* Log view (primary - full screen with input) */
 .log-view {
