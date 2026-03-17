@@ -1184,7 +1184,7 @@ html, body {
 
 .terminal-block-output {
     font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.4;
     color: var(--text-primary);
     margin: 0;
@@ -1448,7 +1448,7 @@ html, body {
 
 .log-text {
     font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.4;
 }
 
@@ -8165,10 +8165,10 @@ html, body {
         font-size: 14px;
     }
     .app.desktop-multipane .log-text {
-        font-size: 15px;
+        font-size: 14px;
     }
     .app.desktop-multipane .log-text.assistant-text code {
-        font-size: 14px;
+        font-size: 13px;
     }
     .app.desktop-multipane .terminal-block-output {
         font-size: 14px;
