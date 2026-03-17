@@ -657,10 +657,10 @@ class TestGeminiProcessDetection:
         driver.is_running(ctx, obs)
         assert obs.running is True
         assert obs.pid == 54321
-        # Verify pgrep was called with "gemini-cli"
+        # Verify single pgrep call with "gemini" (covers both gemini-cli and gemini)
         mock_run.assert_called_once()
         call_args = mock_run.call_args[0][0]
-        assert "gemini-cli" in call_args
+        assert "gemini" in call_args
 
     @patch("mobile_terminal.drivers.gemini.subprocess.run")
     def test_no_process_found(self, mock_run):

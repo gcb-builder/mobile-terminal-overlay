@@ -1065,8 +1065,8 @@ def create_app(config: Config) -> FastAPI:
 
         return {"status": "ok", "session": session}
 
-    def _build_observe_context(pane_id: str) -> Optional[ObserveContext]:
-        """Build ObserveContext from a pane_id with one tmux call."""
+    def _build_observe_context_sync(pane_id: str) -> Optional[ObserveContext]:
+        """Build ObserveContext from a pane_id with one tmux call (sync)."""
         session = app.state.current_session
         try:
             tmux_target = get_tmux_target(session, pane_id)
@@ -1094,6 +1094,11 @@ def create_app(config: Config) -> FastAPI:
         except Exception as e:
             logger.debug(f"Error building observe context: {e}")
             return None
+
+    async def _build_observe_context(pane_id: str) -> Optional[ObserveContext]:
+        """Async wrapper — runs tmux subprocess off the event loop."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _build_observe_context_sync, pane_id)
 
     # ===== Phase Detection — delegated to app.state.driver.observe() =====
     _git_head_cache: dict = {"value": "", "ts": 0.0}

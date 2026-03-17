@@ -123,11 +123,12 @@ def register(app: FastAPI, deps):
                 pane_target = f"{session}:{target}" if target else session
                 extra = {"session": session, "pane_id": target or ""}
 
-                # Use driver.observe() for all detection
-                ctx = deps.build_observe_context(target) if target else None
+                # Use driver.observe() for all detection (off event loop)
+                ctx = await deps.build_observe_context(target) if target else None
                 if ctx is None:
                     continue
-                obs = driver.observe(ctx)
+                loop = asyncio.get_event_loop()
+                obs = await loop.run_in_executor(None, driver.observe, ctx)
 
                 agent_running = obs.running
                 current_phase = obs.phase

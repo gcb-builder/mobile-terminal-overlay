@@ -85,21 +85,7 @@ class GeminiDriver(BaseAgentDriver):
                 obs.active = True
             return
 
-        try:
-            proc_check = subprocess.run(
-                ["pgrep", "-f", "gemini-cli", "-P", str(ctx.shell_pid)],
-                capture_output=True, text=True, timeout=2,
-            )
-            if proc_check.returncode == 0 and proc_check.stdout.strip():
-                pids = proc_check.stdout.strip().split("\n")
-                if pids and pids[0].isdigit():
-                    obs.running = True
-                    obs.pid = int(pids[0])
-                    return
-        except Exception:
-            pass
-
-        # Fallback: also try matching just "gemini" (some installs)
+        # Single pgrep: "gemini" matches both "gemini-cli" and "gemini" installs
         try:
             proc_check = subprocess.run(
                 ["pgrep", "-f", "gemini", "-P", str(ctx.shell_pid)],

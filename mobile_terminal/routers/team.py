@@ -1,4 +1,5 @@
 """Routes for team coordination (leader + agent panes)."""
+import asyncio
 import logging
 import re
 import secrets
@@ -94,7 +95,8 @@ def register(app: FastAPI, deps):
                 pane_title=pane_title,
                 repo_path=cwd_path if cwd_path.exists() else None,
             )
-            obs = driver.observe(ctx)
+            loop = asyncio.get_event_loop()
+            obs = await loop.run_in_executor(None, driver.observe, ctx)
             git_info = deps.get_git_info_cached(cwd_path)
 
             # Register team member's log file so main pane log detection
@@ -347,7 +349,8 @@ def register(app: FastAPI, deps):
                 pane_title=pane_title,
                 repo_path=cwd_path if cwd_path.exists() else None,
             )
-            obs = driver.observe(ctx)
+            loop = asyncio.get_event_loop()
+            obs = await loop.run_in_executor(None, driver.observe, ctx)
 
             entry = {
                 "target_id": target_id,

@@ -1,4 +1,5 @@
 """Routes for process management and agent health."""
+import asyncio
 import logging
 import os
 import subprocess
@@ -210,14 +211,15 @@ def register(app: FastAPI, deps):
         phase, detail, tool, active, waiting_reason, permission_tool, permission_target.
         """
 
-        ctx = deps.build_observe_context(pane_id)
+        ctx = await deps.build_observe_context(pane_id)
         if ctx is None:
             return Observation(
                 agent_type=app.state.driver.id(),
                 agent_name=app.state.driver.display_name(),
             ).to_dict()
 
-        obs = app.state.driver.observe(ctx)
+        loop = asyncio.get_event_loop()
+        obs = await loop.run_in_executor(None, app.state.driver.observe, ctx)
         return obs.to_dict()
 
     @app.get("/api/status/phase")
@@ -228,7 +230,7 @@ def register(app: FastAPI, deps):
         """Get agent's current phase for the status strip. Delegates to driver."""
 
         target = pane_id or app.state.active_target
-        ctx = deps.build_observe_context(target) if target else None
+        ctx = await deps.build_observe_context(target) if target else None
 
         if ctx is None:
             return {
@@ -242,7 +244,8 @@ def register(app: FastAPI, deps):
                 "context_pct": None,
             }
 
-        obs = app.state.driver.observe(ctx)
+        loop = asyncio.get_event_loop()
+        obs = await loop.run_in_executor(None, app.state.driver.observe, ctx)
         return {
             "phase": obs.phase,
             "detail": obs.detail,
@@ -274,11 +277,12 @@ def register(app: FastAPI, deps):
         agent_name = driver.display_name()
 
         # Check if agent is already running via driver.observe()
-        ctx = deps.build_observe_context(pane_id)
+        ctx = await deps.build_observe_context(pane_id)
         if ctx is None:
             return JSONResponse({"error": "Pane not found"}, status_code=404)
 
-        obs = driver.observe(ctx)
+        loop = asyncio.get_event_loop()
+        obs = await loop.run_in_executor(None, driver.observe, ctx)
         if obs.running:
             return JSONResponse({
                 "error": f"{agent_name} is already running in this pane",
