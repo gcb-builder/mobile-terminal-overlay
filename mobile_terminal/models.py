@@ -213,30 +213,46 @@ class AuditLog:
 
 
 class GitOpLock:
-    """Async lock to prevent concurrent git operations (race conditions from double-taps)."""
+    """Simple flag to prevent concurrent git operations (race conditions from double-taps).
+
+    Auto-releases after MAX_HOLD_SECONDS to prevent permanent stuck locks.
+    Uses a plain boolean — no asyncio.Lock needed since all access is
+    single-threaded on the event loop.
+    """
+
+    MAX_HOLD_SECONDS = 120.0
 
     def __init__(self):
-        self._lock = asyncio.Lock()
+        self._held = False
         self._current_op: Optional[str] = None
+        self._acquired_at: float = 0.0
 
     async def acquire(self, operation: str) -> bool:
-        """Try to acquire lock for an operation. Returns False if already locked."""
-        try:
-            await asyncio.wait_for(self._lock.acquire(), timeout=0)
-            self._current_op = operation
-            return True
-        except asyncio.TimeoutError:
-            return False
+        """Try to acquire lock for an operation. Returns False if already held."""
+        if self._held:
+            # Auto-release stale locks
+            held = time.time() - self._acquired_at
+            if held > self.MAX_HOLD_SECONDS:
+                logger.warning("GitOpLock stale (%s held %.0fs), force-releasing",
+                               self._current_op, held)
+                self._held = False
+            else:
+                return False
+
+        self._held = True
+        self._current_op = operation
+        self._acquired_at = time.time()
+        return True
 
     def release(self):
         """Release the lock."""
+        self._held = False
         self._current_op = None
-        if self._lock.locked():
-            self._lock.release()
+        self._acquired_at = 0.0
 
     @property
     def is_locked(self) -> bool:
-        return self._lock.locked()
+        return self._held
 
     @property
     def current_operation(self) -> Optional[str]:

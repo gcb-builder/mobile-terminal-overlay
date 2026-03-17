@@ -1,4 +1,4 @@
-"""Routes for git operations: status, commits, revert, stash, discard."""
+"""Routes for git operations: status, commits, revert, stash, discard, commit, push."""
 import json
 import logging
 import re
@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 from mobile_terminal.helpers import run_subprocess
@@ -773,6 +773,141 @@ def register(app: FastAPI, deps):
             }
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            app.state.git_op_lock.release()
+
+    # ========== Quick Git Actions (commit, push) ==========
+
+    @app.post("/api/git/commit")
+    async def git_commit(
+        request: Request,
+        _auth=Depends(deps.verify_token),
+    ):
+        """Stage all changes and commit with a message."""
+
+        repo_path = deps.get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo found"}, status_code=400)
+
+        try:
+            body = await request.json()
+            message = body.get("message", "").strip()
+        except Exception:
+            return JSONResponse({"error": "Invalid request body"}, status_code=400)
+
+        if not message:
+            return JSONResponse({"error": "Commit message required"}, status_code=400)
+        if len(message) > 500:
+            return JSONResponse({"error": "Message too long (max 500 chars)"}, status_code=400)
+
+        if not await app.state.git_op_lock.acquire("commit"):
+            return JSONResponse({
+                "error": "Another git operation in progress",
+                "current_op": app.state.git_op_lock.current_operation
+            }, status_code=409)
+
+        try:
+            # Stage all changes
+            add_result = await run_subprocess(
+                ["git", "add", "-A"],
+                cwd=repo_path, capture_output=True, text=True, timeout=15
+            )
+            if add_result.returncode != 0:
+                return JSONResponse({
+                    "error": "git add failed",
+                    "details": add_result.stderr
+                }, status_code=500)
+
+            # Check there's something to commit
+            diff_result = await run_subprocess(
+                ["git", "diff", "--cached", "--quiet"],
+                cwd=repo_path, capture_output=True, text=True, timeout=5
+            )
+            if diff_result.returncode == 0:
+                return JSONResponse({"error": "Nothing to commit"}, status_code=400)
+
+            # Commit
+            commit_result = await run_subprocess(
+                ["git", "commit", "-m", message],
+                cwd=repo_path, capture_output=True, text=True, timeout=30
+            )
+            if commit_result.returncode != 0:
+                return JSONResponse({
+                    "error": "Commit failed",
+                    "details": commit_result.stderr
+                }, status_code=500)
+
+            # Parse short hash from output
+            short_hash = ""
+            for line in commit_result.stdout.split("\n"):
+                if line.strip():
+                    match = re.search(r'\[.+?\s+([a-f0-9]+)\]', line)
+                    if match:
+                        short_hash = match.group(1)
+                    break
+
+            app.state.audit_log.log("git_commit", {
+                "message": message,
+                "hash": short_hash,
+            })
+
+            return {
+                "success": True,
+                "hash": short_hash,
+                "message": message,
+            }
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Git command timed out"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            app.state.git_op_lock.release()
+
+    @app.post("/api/git/push")
+    async def git_push(
+        _auth=Depends(deps.verify_token),
+    ):
+        """Push current branch to its upstream remote."""
+
+        repo_path = deps.get_current_repo_path()
+        if not repo_path:
+            return JSONResponse({"error": "No repo found"}, status_code=400)
+
+        if not await app.state.git_op_lock.acquire("push"):
+            return JSONResponse({
+                "error": "Another git operation in progress",
+                "current_op": app.state.git_op_lock.current_operation
+            }, status_code=409)
+
+        try:
+            branch_result = await run_subprocess(
+                ["git", "branch", "--show-current"],
+                cwd=repo_path, capture_output=True, text=True, timeout=5
+            )
+            branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
+            if not branch:
+                return JSONResponse({"error": "Not on a branch"}, status_code=400)
+
+            push_result = await run_subprocess(
+                ["git", "push", "-u", "origin", branch],
+                cwd=repo_path, capture_output=True, text=True, timeout=60
+            )
+            if push_result.returncode != 0:
+                return JSONResponse({
+                    "error": "Push failed",
+                    "details": push_result.stderr
+                }, status_code=500)
+
+            app.state.audit_log.log("git_push", {"branch": branch})
+
+            return {
+                "success": True,
+                "branch": branch,
+            }
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Push timed out"}, status_code=500)
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
         finally:

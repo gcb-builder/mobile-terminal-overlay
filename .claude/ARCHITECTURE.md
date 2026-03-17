@@ -1,4 +1,4 @@
-# Mobile Terminal Overlay (MTO) — Internal Architecture Note v0.1
+# Mobile Terminal Overlay (MTO) — Internal Architecture Note v0.2
 
 ## Purpose
 
@@ -138,17 +138,19 @@ State exists only in:
 
 ### 3.3 Heterogeneous Agent Observability
 
-Different agents expose different levels of introspection:
+Different agents expose different levels of introspection. The
+`DriverCapabilities` dataclass (see section 4) formalizes these differences:
 
-| Agent   | JSONL Logs | Permission Signal | Phase Detection | Pane Title |
-|---------|-----------|-------------------|-----------------|------------|
-| Claude  | Yes       | Yes (pane title)  | Yes (JSONL)     | Yes        |
-| Codex   | Yes       | Yes (JSONL event) | Yes (JSONL)     | No         |
-| Gemini  | No        | Yes (regex/title) | Yes (title icons)| Yes       |
-| Generic | No        | Heuristic only    | No              | No         |
+| Agent   | structured_logs | permission_detection | phase_detection | pane_title_signal |
+|---------|----------------|---------------------|-----------------|-------------------|
+| Claude  | Yes (JSONL)    | Yes (pane title)    | Yes (JSONL)     | Yes               |
+| Codex   | Yes (JSONL)    | Yes (JSONL event)   | Yes (JSONL)     | No                |
+| Gemini  | No             | Yes (regex/title)   | Yes (title icons)| Yes              |
+| Generic | No             | No (heuristic only) | No              | No                |
 
 The observability plane must normalize these uneven signals. Agent drivers
-therefore define **both** launch behavior and observation strategy.
+therefore define **both** launch behavior and observation strategy, grouped
+into Identity, Launch, and Observation sub-contracts on the Protocol.
 
 ---
 
@@ -251,7 +253,7 @@ intentionally out of scope — they're either pre-loop or read-only.
 
 `ProcessRuntime` Protocol + `TmuxRuntime` implementation in `runtime.py`.
 
-**Interface (25 methods):**
+**Interface (21 methods):**
 - **State:** `master_fd`, `child_pid`, `session_name`, `has_fd`
 - **PTY lifecycle:** `spawn()`, `terminate()`, `close_fd()`
 - **Direct PTY I/O:** `pty_write()` (never modifies bytes), `pty_read()`,
@@ -276,15 +278,80 @@ runner.py, preview.py, team_launcher.py (net -216 lines).
 
 ### Next Refactor Boundary
 
-The next pressure point is **observation normalization** — producing a
-stable activity model from uneven agent outputs. This seam is already partially
-addressed by the driver `observe()` + `capabilities()` pattern. The question
-is whether a separate `ObservationAdapter` layer is needed or whether keeping
-it driver-owned is sufficient.
+The observation normalization seam is partially addressed:
+
+- **Resolved:** `DriverCapabilities` (frozen dataclass, commit `8a71012`)
+  formalizes what each driver can expose. Protocol methods grouped into
+  Identity, Launch, Observation sub-contracts.
+- **Remaining:** `observe()` logic is still fully driver-owned. Each driver
+  reimplements phase caching, log file discovery, and permission signal
+  parsing independently. This works with 4 drivers but creates duplication
+  pressure as agents are added.
+
+**The architectural question is not** "should we build an ObservationAdapter
+layer?" **but** "can we reduce duplicated observation mechanics while keeping
+observation driver-owned?"
+
+This points toward incremental extraction of shared primitives, not a
+framework move.
 
 ---
 
-## 8. Architectural Principles
+## 8. Observation Ownership Model
+
+Observation data flows through three conceptual buckets. These are not
+separate modules today — they describe the seam so future extraction has
+a clear target.
+
+### 8.1 Driver-Specific Observation
+
+Logic that is inherently agent-specific and should stay in each driver's
+`observe()` method:
+
+- JSONL schema interpretation (Claude tool_use blocks vs Codex turn events)
+- Pane title icon mapping (Gemini Unicode → phase)
+- Context window token counting (Claude/Codex only)
+- Agent-specific process detection quirks (Gemini runs as `node`, not `gemini`)
+
+### 8.2 Shared Observation Helpers
+
+Mechanics that are duplicated across drivers today. These are candidates
+for extraction into shared utilities (e.g. `drivers/observation.py`):
+
+- **Permission detection** — sharpest first candidate. Three separate
+  implementations today: `ClaudePermissionDetector` (class), Gemini regex
+  fallback, Generic regex fallback. Clear output shape (`waiting_reason`,
+  `permission_tool`, `permission_target`), narrow scope, least entangled.
+- **Phase cache** — each driver maintains its own cache dict with
+  `{log_path, mtime, size, result}` keying. Pattern is identical; only
+  the parse function differs.
+- **Log file discovery** — `find_claude_log_file()` and
+  `find_codex_log_file()` both walk filesystem paths by date. Gemini and
+  Generic have no logs. Shareable shape: `(Path) -> Optional[Path]`.
+
+### 8.3 UI-Normalized Activity Output
+
+The final shape consumed by endpoints and the frontend:
+
+- `Observation` dataclass (15 fields) — already unified
+- Activity timeline events (10 fields) — already unified
+- `DriverCapabilities` — already unified
+
+This bucket is already clean. No action needed.
+
+### Extraction Triggers
+
+Do not extract shared helpers preemptively. Extract when:
+
+1. A 5th driver is added and pays the same tax (phase cache, permission
+   regex, log discovery)
+2. Permission detection UX needs to improve across all agents simultaneously
+3. Two drivers need to share an observation strategy (e.g. both use JSONL
+   but different schemas)
+
+---
+
+## 9. Architectural Principles
 
 1. **Mobile-first design** — all features must compress to phone-sized interaction
 2. **Local-first execution** — agents run on the same machine as the control server
@@ -295,10 +362,12 @@ it driver-owned is sufficient.
    acceptable until presented to users
 6. **Abstract only where duplication hurts** — build seams where code is already
    scattered or fragile, not speculatively
+7. **Extract incrementally** — shared helpers before adapter layers, narrow
+   scope before broad scope
 
 ---
 
-## 9. Summary
+## 10. Summary
 
 MTO is best understood as:
 

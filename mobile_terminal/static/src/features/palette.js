@@ -385,8 +385,13 @@ function setupHeaderLongPress() {
 
 function setupSwipeToDismiss() {
     let startY = 0;
-    overlay.addEventListener('touchstart', (e) => { startY = e.touches[0].clientY; }, { passive: true });
+    let startedOnBackdrop = false;
+    overlay.addEventListener('touchstart', (e) => {
+        startY = e.touches[0].clientY;
+        // Only track swipe if touch started on the backdrop, not inside scrollable content
+        startedOnBackdrop = (e.target === overlay);
+    }, { passive: true });
     overlay.addEventListener('touchend', (e) => {
-        if (startY - e.changedTouches[0].clientY > 80) closePalette();
+        if (startedOnBackdrop && startY - e.changedTouches[0].clientY > 80) closePalette();
     }, { passive: true });
 }

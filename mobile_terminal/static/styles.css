@@ -2657,23 +2657,34 @@ html, body {
     display: none;
 }
 
-/* Scrollbar styling */
+/* Scrollbar styling — wider + persistent on mobile for usability */
 ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 10px;
+    height: 10px;
 }
 
 ::-webkit-scrollbar-track {
-    background: transparent;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 5px;
 }
 
 ::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.25);
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.4);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
+/* Force scrollbars to stay visible on WebKit (iOS Safari, Chrome mobile) */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.25) rgba(255, 255, 255, 0.04);
 }
 
 /* Search button in header */

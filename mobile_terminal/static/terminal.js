@@ -4934,14 +4934,15 @@ function switchToTeamView() {
 }
 
 /**
- * Append standard action buttons (Drawer, Select, Stop, Compose) to a bar element.
+ * Append standard action buttons (Git, Stop, Compose, •••) to a bar element.
  */
 function appendStandardActionButtons(bar) {
-    const btn2 = document.createElement('button');
-    btn2.className = 'action-bar-btn';
-    btn2.textContent = 'Select';
-    btn2.addEventListener('click', () => { if (selectCopyBtn) selectCopyBtn.click(); });
-    bar.appendChild(btn2);
+    const gitBtn = document.createElement('button');
+    gitBtn.className = 'action-bar-btn';
+    gitBtn.textContent = 'Commit';
+    gitBtn.addEventListener('click', () => onGitButtonClick(gitBtn));
+    bar.appendChild(gitBtn);
+    updateGitButton(gitBtn);
 
     const btn3 = document.createElement('button');
     btn3.className = 'action-bar-btn action-bar-stop';
@@ -4963,6 +4964,88 @@ function appendStandardActionButtons(bar) {
     btn1.innerHTML = '&bull;&bull;&bull;';
     btn1.addEventListener('click', () => toggleFabMenu());
     bar.appendChild(btn1);
+}
+
+/**
+ * Check git status and update button label: "Commit" if dirty, "Push" if clean+ahead.
+ */
+async function updateGitButton(btn) {
+    if (!btn) return;
+    try {
+        const resp = await fetch(`/api/rollback/git/status?token=${ctx.token}`);
+        const data = await resp.json();
+        if (!data.has_repo) return;
+
+        if (data.is_dirty) {
+            btn.textContent = 'Commit';
+            btn.dataset.gitAction = 'commit';
+        } else if (data.ahead > 0) {
+            btn.textContent = `Push (${data.ahead})`;
+            btn.dataset.gitAction = 'push';
+        } else {
+            btn.textContent = 'Commit';
+            btn.dataset.gitAction = 'commit';
+        }
+    } catch {
+        // Leave as-is on error
+    }
+}
+
+/**
+ * Handle git button click — commit or push based on current state.
+ */
+async function onGitButtonClick(btn) {
+    if (btn.dataset.gitAction === 'push') {
+        await doGitPush();
+        updateGitButton(btn);
+    } else {
+        await promptGitCommit();
+        updateGitButton(btn);
+    }
+}
+
+/**
+ * Prompt for a commit message, then POST /api/git/commit.
+ */
+async function promptGitCommit() {
+    const message = prompt('Commit message:');
+    if (!message || !message.trim()) return;
+
+    try {
+        const resp = await fetch(`/api/git/commit?token=${ctx.token}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: message.trim() }),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast(`Committed ${data.hash}`, 'success');
+        } else {
+            showToast(data.error || 'Commit failed', 'error');
+        }
+    } catch (err) {
+        showToast('Commit failed: ' + err.message, 'error');
+    }
+}
+
+/**
+ * POST /api/git/push — push current branch.
+ */
+async function doGitPush() {
+    try {
+        showToast('Pushing...', 'success');
+        const resp = await fetch(`/api/git/push?token=${ctx.token}`, {
+            method: 'POST',
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast(`Pushed ${data.branch}`, 'success');
+        } else {
+            showToast(data.error || 'Push failed', 'error');
+        }
+    } catch (err) {
+        showToast('Push failed: ' + err.message, 'error');
+    }
 }
 
 /**
