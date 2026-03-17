@@ -504,6 +504,22 @@ html, body {
     animation: pulse 2s infinite;
 }
 
+.metrics-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    font-family: monospace;
+    line-height: 1;
+    white-space: nowrap;
+}
+.metrics-pill.hidden { display: none; }
+.metrics-pill.metrics-ok { color: var(--success); background: rgba(46, 160, 67, 0.1); }
+.metrics-pill.metrics-warn { color: var(--warning); background: rgba(227, 179, 65, 0.1); }
+.metrics-pill.metrics-critical { color: var(--error); background: rgba(248, 81, 73, 0.15); animation: pulse 2s infinite; }
+
 .header-phase {
     display: inline-flex;
     align-items: center;

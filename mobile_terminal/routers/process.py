@@ -140,6 +140,63 @@ def register(app: FastAPI, deps):
 
     # ========== End Process Management API ==========
 
+    # ========== System Metrics API ==========
+    _prev_cpu = {"values": None, "time": 0}
+
+    @app.get("/api/metrics")
+    async def system_metrics(_auth=Depends(deps.verify_token)):
+        """System resource metrics: CPU, memory, disk usage."""
+        import time as _time
+        metrics = {}
+
+        # CPU: delta from cached /proc/stat reading
+        try:
+            def _read_cpu():
+                with open("/proc/stat") as f:
+                    parts = f.readline().split()[1:]
+                return [int(x) for x in parts]
+
+            now_vals = _read_cpu()
+            prev = _prev_cpu["values"]
+            if prev and _time.time() - _prev_cpu["time"] < 30:
+                delta = [b - a for a, b in zip(prev, now_vals)]
+                total = sum(delta) or 1
+                idle = delta[3] if len(delta) > 3 else 0
+                metrics["cpu_pct"] = round((1 - idle / total) * 100, 1)
+            else:
+                metrics["cpu_pct"] = None
+            _prev_cpu["values"] = now_vals
+            _prev_cpu["time"] = _time.time()
+        except Exception:
+            metrics["cpu_pct"] = None
+
+        # Memory: /proc/meminfo
+        try:
+            meminfo = {}
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        meminfo[parts[0].rstrip(":")] = int(parts[1])
+            total = meminfo.get("MemTotal", 1)
+            available = meminfo.get("MemAvailable", total)
+            used = total - available
+            metrics["mem_pct"] = round(used / max(total, 1) * 100, 1)
+        except Exception:
+            metrics["mem_pct"] = None
+
+        # Disk: os.statvfs
+        try:
+            st = os.statvfs("/")
+            total = st.f_blocks * st.f_frsize
+            free = st.f_bavail * st.f_frsize
+            used = total - free
+            metrics["disk_pct"] = round(used / max(total, 1) * 100, 1)
+        except Exception:
+            metrics["disk_pct"] = None
+
+        return metrics
+
     @app.get("/api/health/agent")
     @app.get("/api/health/claude")  # permanent alias
     async def check_agent_health(

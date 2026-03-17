@@ -4373,6 +4373,45 @@ let isSelectMode = false;
 let selectStart = null;  // {row, col}
 
 /**
+ * Setup system metrics pill (CPU/RAM/Disk)
+ */
+function setupMetricsWidget() {
+    const pill = document.getElementById('metricsPill');
+    if (!pill) return;
+
+    let metricsTimer = null;
+
+    async function updateMetrics() {
+        try {
+            const resp = await fetch(`/api/metrics?token=${ctx.token}`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+
+            const parts = [];
+            if (data.cpu_pct != null) parts.push(`C${Math.round(data.cpu_pct)}%`);
+            if (data.mem_pct != null) parts.push(`M${Math.round(data.mem_pct)}%`);
+            if (data.disk_pct != null) parts.push(`D${Math.round(data.disk_pct)}%`);
+            if (parts.length === 0) { pill.classList.add('hidden'); return; }
+
+            pill.textContent = parts.join(' ');
+            pill.classList.remove('hidden', 'metrics-ok', 'metrics-warn', 'metrics-critical');
+
+            const maxPct = Math.max(data.cpu_pct || 0, data.mem_pct || 0, data.disk_pct || 0);
+            if (maxPct > 90) pill.classList.add('metrics-critical');
+            else if (maxPct > 70) pill.classList.add('metrics-warn');
+            else pill.classList.add('metrics-ok');
+        } catch (e) {
+            // Silently skip on error
+        }
+    }
+
+    updateMetrics();
+    metricsTimer = setInterval(() => {
+        if (!document.hidden) updateMetrics();
+    }, 15000);
+}
+
+/**
  * Setup terminal search bar (xterm SearchAddon)
  */
 function setupTerminalSearch() {
@@ -9061,6 +9100,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupTargetSelector();  // Non-blocking - applies saved target locally, syncs in background
     setupNewWindowModal();
     setupJumpToBottom();
+    setupMetricsWidget();
     setupTerminalSearch();
     setupCopyButton();
     setupCommandHistory();
