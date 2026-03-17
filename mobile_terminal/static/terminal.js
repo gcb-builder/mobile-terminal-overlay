@@ -378,6 +378,7 @@ const INITIAL_RECONNECT_DELAY = 300;  // Faster initial reconnect (was 500ms)
 const MIN_CONNECTION_INTERVAL = 300;  // Minimum ms between connection attempts
 const RECONNECT_OVERLAY_GRACE_MS = 2500;  // Don't show overlay for brief disconnects
 let intentionalClose = false;  // Track intentional closes to skip auto-reconnect
+let repoSwitchInProgress = false;  // Suppress 4003 auto-reconnect during switchRepo()
 let isConnecting = false;  // Prevent concurrent connection attempts
 let reconnectTimer = null;  // Track pending reconnect
 let reconnectOverlayTimer = null;  // Delayed overlay (grace period)
@@ -1226,12 +1227,17 @@ function startHeartbeat() {
     lastPongTime = Date.now();
 
     heartbeatTimer = setInterval(() => {
+        // Don't send heartbeats while tab is hidden — browser throttles timers
+        // and delayed pong responses cause false timeout disconnects
+        if (document.visibilityState === 'hidden') return;
+
         if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
             // Send ping
             ctx.socket.send(JSON.stringify({ type: 'ping' }));
 
             // Set timeout for pong response
             heartbeatTimeoutTimer = setTimeout(() => {
+                if (document.visibilityState === 'hidden') return;
                 console.log('Heartbeat timeout - no pong received, reconnecting');
                 // Connection is dead, force reconnect
                 if (ctx.socket) {
@@ -1269,6 +1275,9 @@ function startIdleCheck() {
     lastDataReceived = Date.now();
 
     idleCheckTimer = setInterval(() => {
+        // Skip idle checks while tab is hidden — timer drift causes false positives
+        if (document.visibilityState === 'hidden') return;
+
         if (!ctx.socket || ctx.socket.readyState !== WebSocket.OPEN) return;
 
         const idle = Date.now() - lastDataReceived;
@@ -1280,6 +1289,7 @@ function startIdleCheck() {
             // If we don't get a pong soon, heartbeat timeout will catch it
             // But also set a shorter timeout for this specific check
             setTimeout(() => {
+                if (document.visibilityState === 'hidden') return;
                 const stillIdle = Date.now() - lastDataReceived;
                 if (stillIdle > IDLE_THRESHOLD + HEARTBEAT_TIMEOUT) {
                     console.log('Connection appears stale, forcing reconnect');
@@ -1736,7 +1746,12 @@ function connect() {
         }
 
         if (event.code === 4003) {
-            // Target/repo switch - reconnect after rate limit window
+            if (repoSwitchInProgress) {
+                // switchRepo() manages its own reconnect — don't double-schedule
+                console.log('4003 during repo switch, suppressing auto-reconnect');
+                return;
+            }
+            // Target switch (not repo switch) - reconnect after rate limit window
             console.log('Target switch: server closed connection, reconnecting...');
             statusText.textContent = 'Switching target...';
             statusOverlay.classList.remove('hidden');
@@ -2385,8 +2400,9 @@ async function switchRepo(session) {
     statusOverlay.classList.remove('hidden');
     repoDropdown.classList.add('hidden');
 
-    // Set intentional close BEFORE API call - server will close WebSocket
+    // Set flags BEFORE API call - server will close WebSocket with 4003
     intentionalClose = true;
+    repoSwitchInProgress = true;
     if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -2436,6 +2452,7 @@ async function switchRepo(session) {
 
         // Server already closed WebSocket, reconnect after cleanup delay
         setTimeout(() => {
+            repoSwitchInProgress = false;
             connect();
             // Refresh log, ctx.targets, and queue after connection established
             setTimeout(async () => {
@@ -2451,6 +2468,7 @@ async function switchRepo(session) {
     } catch (error) {
         console.error('Error switching repo:', error);
         intentionalClose = false;  // Reset on error
+        repoSwitchInProgress = false;
         statusText.textContent = 'Switch failed';
         setTimeout(() => {
             statusOverlay.classList.add('hidden');
@@ -2670,13 +2688,8 @@ async function selectTarget(targetId, isInitialSync = false) {
             ctx.terminal.reset();
         }
 
-        // Force WebSocket reconnect to get fresh capture-pane from new target
-        if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN && !isInitialSync) {
-            console.log(`Target switch to ${targetId}, forcing reconnect`);
-            intentionalClose = false;  // Allow auto-reconnect
-            ctx.socket.close();
-            // Reconnect will happen automatically via onclose handler
-        }
+        // Server closes WebSocket with 4003 during target select —
+        // onclose handler will auto-reconnect. No client-side close needed.
 
         // Start health polling if visible
         if (document.visibilityState === 'visible') {
@@ -3455,6 +3468,11 @@ function setupViewportHandler() {
             repoDropdown.classList.add('hidden');
         }
         if (document.visibilityState === 'visible') {
+            // Reset timestamps so heartbeat/idle checks don't fire with stale values
+            // from when the tab was backgrounded
+            lastDataReceived = Date.now();
+            lastPongTime = Date.now();
+
             // Start Claude health polling when visible
             startAgentHealthPolling();
 
