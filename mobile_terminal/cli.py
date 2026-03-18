@@ -51,6 +51,11 @@ def parse_args() -> argparse.Namespace:
         help="Auth token (auto-generated if not set)",
     )
     parser.add_argument(
+        "--base-path",
+        default="",
+        help="URL prefix for reverse proxy (e.g., '/terminal')",
+    )
+    parser.add_argument(
         "--no-auth",
         action="store_true",
         help="Disable token authentication (only for trusted networks like Tailscale)",
@@ -118,6 +123,11 @@ def main() -> int:
         config.port = args.port
     if args.host:
         config.host = args.host
+    if args.base_path:
+        bp = args.base_path.strip()
+        if bp and not bp.startswith("/"):
+            bp = "/" + bp
+        config.base_path = bp.rstrip("/")
     if args.no_auth:
         config.no_auth = True
     if args.token:

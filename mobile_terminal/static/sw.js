@@ -1,5 +1,6 @@
 // Service Worker for Mobile Terminal PWA
-const CACHE_NAME = 'terminal-v118';
+// __BASE_PATH is injected by the server at the top of this file
+const CACHE_NAME = 'terminal-v119';
 
 // Install event - cache essential assets
 self.addEventListener('install', (event) => {
@@ -25,6 +26,7 @@ self.addEventListener('activate', (event) => {
 // Fetch event - network first, no caching for dynamic terminal content
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
+  const bp = (typeof __BASE_PATH !== 'undefined') ? __BASE_PATH : '';
 
   // Don't intercept other apps on the same origin (e.g. /brain/, /code/)
   if (url.pathname.startsWith('/brain/') || url.pathname.startsWith('/code/') || url.pathname.startsWith('/paperless/')) {
@@ -32,18 +34,18 @@ self.addEventListener('fetch', (event) => {
   }
 
   // Don't intercept API calls - let browser handle directly (no SW overhead)
-  if (url.pathname.startsWith('/api/')) {
+  if (url.pathname.startsWith(bp + '/api/')) {
     return;
   }
 
   // Don't intercept WebSocket connections
-  if (url.pathname.startsWith('/ws/')) {
+  if (url.pathname.startsWith(bp + '/ws/')) {
     return;
   }
 
   // Don't intercept static assets - server sets Cache-Control headers,
   // SW interception causes stale responses in PWA standalone mode
-  if (url.pathname.startsWith('/static/')) {
+  if (url.pathname.startsWith(bp + '/static/')) {
     return;
   }
 });
@@ -51,6 +53,7 @@ self.addEventListener('fetch', (event) => {
 // Push notification handler - per-type actions
 self.addEventListener('push', (event) => {
   const data = event.data ? event.data.json() : {};
+  const bp = (typeof __BASE_PATH !== 'undefined') ? __BASE_PATH : '';
   let actions = [];
   if (data.type === 'permission') {
     actions = [
@@ -69,12 +72,12 @@ self.addEventListener('push', (event) => {
   }
   const options = {
     body: data.body || 'Agent needs your attention',
-    icon: '/static/apple-touch-icon.png',
-    badge: '/static/apple-touch-icon.png',
+    icon: bp + '/static/apple-touch-icon.png',
+    badge: bp + '/static/apple-touch-icon.png',
     vibrate: [200, 100, 200],
     data: {
       type: data.type,
-      url: '/',
+      url: bp + '/',
       session: data.session || '',
       pane_id: data.pane_id || '',
     },
@@ -89,6 +92,7 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const notifData = event.notification.data || {};
+  const bp = (typeof __BASE_PATH !== 'undefined') ? __BASE_PATH : '';
 
   if (event.action === 'allow' || event.action === 'deny') {
     // Permission response
@@ -107,7 +111,7 @@ self.addEventListener('notificationclick', (event) => {
             pane_id: notifData.pane_id || '',
             session: notifData.session || '',
           });
-          clients.openWindow('/?' + params.toString());
+          clients.openWindow(bp + '/?' + params.toString());
         }
       })
     );
@@ -129,12 +133,12 @@ self.addEventListener('notificationclick', (event) => {
             pane_id: notifData.pane_id || '',
             session: notifData.session || '',
           });
-          clients.openWindow('/?' + params.toString());
+          clients.openWindow(bp + '/?' + params.toString());
         }
       })
     );
   } else {
     // Default tap or 'open' action
-    event.waitUntil(clients.openWindow('/'));
+    event.waitUntil(clients.openWindow(bp + '/'));
   }
 });

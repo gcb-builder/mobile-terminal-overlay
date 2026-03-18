@@ -105,6 +105,9 @@ class Config:
     agent_type: str = "claude"  # Driver to use: claude, codex, generic
     agent_display_name: Optional[str] = None  # Override display name (e.g. "Claude (Opus)")
 
+    # Reverse proxy
+    base_path: str = ""  # URL prefix for reverse proxy (e.g., "/terminal")
+
     # Project context (set by discovery)
     project_root: Optional[Path] = None
 
@@ -145,6 +148,7 @@ class Config:
             "context_alert_threshold": self.context_alert_threshold,
             "agent_type": self.agent_type,
             "agent_display_name": self.agent_display_name,
+            "base_path": self.base_path,
         }
 
     def to_yaml(self) -> str:
@@ -218,6 +222,11 @@ def load_config(path: Optional[Path] = None) -> Config:
         config.agent_type = str(data["agent_type"])
     if "agent_display_name" in data:
         config.agent_display_name = str(data["agent_display_name"]) if data["agent_display_name"] else None
+    if "base_path" in data:
+        bp = str(data["base_path"]).strip()
+        if bp and not bp.startswith("/"):
+            bp = "/" + bp
+        config.base_path = bp.rstrip("/")
 
     # Quick commands
     if "quick_commands" in data:

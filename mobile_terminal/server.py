@@ -43,7 +43,7 @@ from mobile_terminal.models import (
 from mobile_terminal.runtime import TmuxRuntime
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .config import Config, DeviceConfig, Repo
@@ -168,24 +168,49 @@ def create_app(config: Config) -> FastAPI:
             response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response
 
+    # Dynamic manifest — rewrite paths when base_path is set
+    if config.base_path:
+        @app.get("/static/manifest.json")
+        async def manifest():
+            manifest_path = STATIC_DIR / "manifest.json"
+            if not manifest_path.exists():
+                return HTMLResponse(status_code=404)
+            import json as _json
+            data = _json.loads(manifest_path.read_text(encoding="utf-8"))
+            bp = config.base_path
+            data["start_url"] = bp + "/"
+            data["scope"] = bp + "/"
+            data["id"] = bp
+            for icon in data.get("icons", []):
+                if icon.get("src", "").startswith("/"):
+                    icon["src"] = bp + icon["src"]
+            return JSONResponse(data, headers={"Cache-Control": "no-cache, must-revalidate"})
+
     # Mount static files
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.get("/sw.js")
     async def service_worker():
-        """Serve service worker from root with proper headers."""
+        """Serve service worker from root with proper headers.
+
+        When base_path is set, inject __BASE_PATH constant at the top
+        so the SW can prefix its hardcoded paths.
+        """
         sw_path = STATIC_DIR / "sw.js"
-        if sw_path.exists():
-            return FileResponse(
-                sw_path,
-                media_type="application/javascript",
-                headers={
-                    "Service-Worker-Allowed": "/",
-                    "Cache-Control": "no-cache, no-store, must-revalidate",
-                },
-            )
-        return HTMLResponse(status_code=404)
+        if not sw_path.exists():
+            return HTMLResponse(status_code=404)
+        content = sw_path.read_text(encoding="utf-8")
+        bp = config.base_path
+        content = f'const __BASE_PATH = "{bp}";\n' + content
+        return Response(
+            content,
+            media_type="application/javascript",
+            headers={
+                "Service-Worker-Allowed": (bp + "/") if bp else "/",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+            },
+        )
 
     @app.get("/")
     async def index(_auth=Depends(verify_token)):
@@ -194,6 +219,9 @@ def create_app(config: Config) -> FastAPI:
         When a built bundle exists (dist/terminal.min.js), rewrite the
         script tag to load it.  Otherwise switch to type="module" so raw
         ES imports in terminal.js work without a build step.
+
+        When base_path is configured, inject a fetch monkey-patch so all
+        84+ fetch() calls automatically prefix the reverse proxy path.
         """
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         dist_js = STATIC_DIR / "dist" / "terminal.min.js"
@@ -214,7 +242,38 @@ def create_app(config: Config) -> FastAPI:
                 html,
                 count=1,
             )
-        return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+        base_path = config.base_path
+        headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
+        if base_path:
+            # Rewrite static asset references
+            html = html.replace('href="/static/', f'href="{base_path}/static/')
+            html = html.replace('src="/static/', f'src="{base_path}/static/')
+
+            # Inject fetch monkey-patch with CSP nonce
+            nonce = secrets.token_urlsafe(16)
+            patch_script = (
+                f'<script nonce="{nonce}">'
+                f'window.__BASE_PATH="{base_path}";'
+                "(function(){var f=window.fetch;window.fetch=function(u,o){"
+                'if(typeof u==="string"&&u.startsWith("/"))u=window.__BASE_PATH+u;'
+                "return f.call(this,u,o)};})();"
+                "</script>"
+            )
+            html = html.replace(
+                '<meta charset="UTF-8">',
+                f'<meta charset="UTF-8">\n    {patch_script}',
+            )
+
+            # Add nonce to CSP for this response
+            csp_with_nonce = CSP_POLICY.replace(
+                "script-src 'self'",
+                f"script-src 'self' 'nonce-{nonce}'",
+            )
+            headers["Content-Security-Policy"] = csp_with_nonce
+
+        return HTMLResponse(html, headers=headers)
 
     @app.get("/config")
     async def get_config(request: Request, _auth=Depends(verify_token)):
@@ -1334,13 +1393,13 @@ def create_app(config: Config) -> FastAPI:
         print(f"Host:    {config.host}")
         if app.state.no_auth:
             print(f"Auth:    DISABLED (--no-auth)")
-            url = f"http://localhost:{config.port}/"
+            url = f"http://localhost:{config.port}{config.base_path}/"
             if config.host == "0.0.0.0":
                 print(f"WARNING: Listening on all interfaces without auth!")
                 print(f"         Use --no-auth only on trusted networks (e.g. Tailscale)")
         else:
             print(f"Token:   {app.state.token}")
-            url = f"http://localhost:{config.port}/?token={app.state.token}"
+            url = f"http://localhost:{config.port}{config.base_path}/?token={app.state.token}"
         print(f"URL:     {url}")
         print(f"{'=' * 60}\n")
 

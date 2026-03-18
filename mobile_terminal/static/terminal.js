@@ -1543,7 +1543,7 @@ function connect() {
 
     isConnecting = true;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/terminal?token=${ctx.token}`;
+    const wsUrl = `${protocol}//${window.location.host}${window.__BASE_PATH || ''}/ws/terminal?token=${ctx.token}`;
 
     statusText.textContent = 'Connecting...';
     statusOverlay.classList.remove('hidden');
@@ -9625,6 +9625,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // Register service worker for PWA standalone mode
 if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js?v=118', { scope: '/' })
+    const _bp = window.__BASE_PATH || '';
+    navigator.serviceWorker.register(_bp + '/sw.js?v=119', { scope: _bp + '/' })
         .catch(err => console.log('SW registration failed:', err));
 }
