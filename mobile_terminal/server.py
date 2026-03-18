@@ -159,7 +159,9 @@ def create_app(config: Config) -> FastAPI:
     @app.middleware("http")
     async def add_security_headers(request: Request, call_next):
         response = await call_next(request)
-        response.headers["Content-Security-Policy"] = CSP_POLICY
+        # Don't overwrite CSP if the handler already set a nonce-aware policy
+        if "Content-Security-Policy" not in response.headers:
+            response.headers["Content-Security-Policy"] = CSP_POLICY
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
