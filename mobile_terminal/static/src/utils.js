@@ -188,7 +188,8 @@ export function stripAnsi(text) {
         // Full ANSI CSI sequences: ESC [ (optional ?) ... letter
         .replace(/\x1b\[\??[0-9;]*[a-zA-Z]/g, '')
         // Orphaned CSI sequences (missing ESC): [?2026l, [0m, etc.
-        .replace(/\[\??[0-9;]*[a-zA-Z]/g, '')
+        // Require at least one digit or ? so we don't eat markdown links like [Q...
+        .replace(/\[(\?[0-9;]*|[0-9;]+)[a-zA-Z]/g, '')
         // Standalone DEC sequences: ?2026l, ?2026h, etc.
         .replace(/\?[0-9]+[a-zA-Z]/g, '')
         // RGB color codes that got split: 38;2;R;G;Bm or 48;2;R;G;Bm

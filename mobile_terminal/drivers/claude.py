@@ -96,9 +96,13 @@ class ClaudeDriver(BaseAgentDriver):
             self._parse_phase_and_permission(ctx, obs, log_file)
 
         # 6. Compute context percentage
+        # Claude Code can extend context to 1M; bump limit when usage exceeds 200k
         if obs.context_used is not None:
-            obs.context_limit = self._context_limit
-            obs.context_pct = round((obs.context_used / self._context_limit) * 100, 1)
+            limit = self._context_limit
+            if obs.context_used > limit * 0.95:
+                limit = 1_000_000
+            obs.context_limit = limit
+            obs.context_pct = min(round((obs.context_used / limit) * 100, 1), 100.0)
 
         return obs
 

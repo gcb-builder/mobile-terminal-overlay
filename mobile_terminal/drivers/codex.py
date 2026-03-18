@@ -132,8 +132,11 @@ class CodexDriver(BaseAgentDriver):
 
         # 6. Compute context percentage
         if obs.context_used is not None:
-            obs.context_limit = self._context_limit
-            obs.context_pct = round((obs.context_used / self._context_limit) * 100, 1)
+            limit = self._context_limit
+            if obs.context_used > limit * 0.95:
+                limit = 1_000_000
+            obs.context_limit = limit
+            obs.context_pct = min(round((obs.context_used / limit) * 100, 1), 100.0)
 
         return obs
 
