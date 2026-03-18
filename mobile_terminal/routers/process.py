@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import subprocess
+import time as _time
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Query, Request
@@ -11,6 +12,191 @@ from fastapi.responses import JSONResponse
 from mobile_terminal.drivers import Observation
 
 logger = logging.getLogger(__name__)
+
+# ── Pane descendant process helpers (Linux /proc) ────────────────────
+
+_CLK_TCK = 100  # default; overwritten at import time
+_PAGE_SIZE = 4096
+try:
+    _CLK_TCK = os.sysconf("SC_CLK_TCK")
+    _PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
+except (ValueError, OSError):
+    pass
+
+_NOISE_SHELLS = frozenset({"bash", "sh", "zsh", "fish", "dash", "login", "sshd"})
+
+
+def _read_boot_time() -> float:
+    """Read system boot time from /proc/stat (btime line)."""
+    try:
+        with open("/proc/stat") as f:
+            for line in f:
+                if line.startswith("btime "):
+                    return int(line.split()[1])
+    except Exception:
+        pass
+    return 0
+
+
+def _parse_proc_stat(pid: int):
+    """Parse /proc/{pid}/stat — returns (ppid, comm, state, utime, stime, starttime, rss_pages) or None."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            raw = f.read()
+        # comm can contain parens/spaces — find the last ')' to delimit it
+        i = raw.rfind(")")
+        if i < 0:
+            return None
+        comm = raw[raw.index("(") + 1:i]
+        fields = raw[i + 2:].split()
+        # fields index: 0=state, 1=ppid, ..., 11=utime, 12=stime, ..., 19=starttime, ..., 21=rss
+        return (
+            int(fields[1]),   # ppid
+            comm,
+            fields[0],        # state
+            int(fields[11]),  # utime
+            int(fields[12]),  # stime
+            int(fields[19]),  # starttime (clock ticks since boot)
+            int(fields[21]),  # rss (pages)
+        )
+    except Exception:
+        return None
+
+
+def _build_pid_map():
+    """Single pass over /proc — returns {pid: (ppid, comm, state, utime, stime, starttime, rss_pages)}."""
+    pid_map = {}
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            parsed = _parse_proc_stat(pid)
+            if parsed:
+                pid_map[pid] = parsed
+    except Exception:
+        pass
+    return pid_map
+
+
+def _descendants_bfs(shell_pid, pid_map):
+    """BFS from shell_pid. Returns [(pid, depth), ...] excluding noise shells that have children."""
+    # Build children-of index
+    children_of = {}
+    for pid, (ppid, *_) in pid_map.items():
+        children_of.setdefault(ppid, []).append(pid)
+
+    result = []
+    queue = [(shell_pid, 0)]
+    visited = {shell_pid}
+
+    while queue:
+        parent, depth = queue.pop(0)
+        for child in children_of.get(parent, []):
+            if child in visited:
+                continue
+            visited.add(child)
+            info = pid_map.get(child)
+            if not info:
+                continue
+            comm = info[1]
+            has_kids = child in children_of
+            # Skip intermediary shell wrappers (they have children to show instead)
+            if comm in _NOISE_SHELLS and has_kids:
+                queue.append((child, depth + 1))
+                continue
+            result.append((child, depth + 1))
+            queue.append((child, depth + 1))
+
+    return result, children_of
+
+
+def _enumerate_descendants(shell_pid: int) -> dict:
+    """Full descendant enumeration with per-process details. Runs in executor."""
+    now = _time.time()
+    boot_time = _read_boot_time()
+    pid_map = _build_pid_map()
+
+    if shell_pid not in pid_map:
+        return {"shell_pid": shell_pid, "processes": [], "count": 0}
+
+    desc_list, _ = _descendants_bfs(shell_pid, pid_map)
+
+    processes = []
+    for pid, depth in desc_list:
+        info = pid_map.get(pid)
+        if not info:
+            continue
+        ppid, comm, state, utime, stime, starttime, rss_pages = info
+
+        # Elapsed time
+        elapsed_s = now - boot_time - (starttime / _CLK_TCK)
+        if elapsed_s < 0:
+            elapsed_s = 0
+
+        # Skip very short-lived processes
+        if elapsed_s < 3:
+            continue
+
+        # Read full cmdline
+        cmdline = ""
+        try:
+            with open(f"/proc/{pid}/cmdline") as f:
+                cmdline = f.read().replace("\x00", " ").strip()
+        except Exception:
+            pass
+        if not cmdline:
+            cmdline = comm
+        if len(cmdline) > 200:
+            cmdline = cmdline[:200] + "..."
+
+        # Avg CPU% over lifetime
+        total_ticks = utime + stime
+        cpu_pct = round((total_ticks / _CLK_TCK) / max(elapsed_s, 0.1) * 100, 1)
+
+        mem_mb = round(rss_pages * _PAGE_SIZE / 1048576, 1)
+
+        processes.append({
+            "pid": pid,
+            "ppid": ppid,
+            "name": comm,
+            "command": cmdline,
+            "state": state,
+            "cpu_pct": cpu_pct,
+            "mem_mb": mem_mb,
+            "elapsed_s": round(elapsed_s),
+            "depth": depth,
+        })
+
+    # Stable sort: depth asc, then PID asc
+    processes.sort(key=lambda p: (p["depth"], p["pid"]))
+
+    return {"shell_pid": shell_pid, "processes": processes, "count": len(processes)}
+
+
+def _count_descendants(shell_pid: int) -> int:
+    """Fast descendant count — same filtering as _enumerate_descendants but no cmdline/CPU reads."""
+    now = _time.time()
+    boot_time = _read_boot_time()
+    pid_map = _build_pid_map()
+
+    if shell_pid not in pid_map:
+        return 0
+
+    desc_list, _ = _descendants_bfs(shell_pid, pid_map)
+
+    count = 0
+    for pid, depth in desc_list:
+        info = pid_map.get(pid)
+        if not info:
+            continue
+        starttime = info[5]
+        elapsed_s = now - boot_time - (starttime / _CLK_TCK)
+        if elapsed_s < 3:
+            continue
+        count += 1
+
+    return count
 
 
 def register(app: FastAPI, deps):
@@ -141,13 +327,41 @@ def register(app: FastAPI, deps):
 
     # ========== End Process Management API ==========
 
+    # ========== Pane Descendant Processes ==========
+
+    @app.get("/api/process/children")
+    async def process_children(
+        pane_id: str = Query(...),
+        _auth=Depends(deps.verify_token),
+    ):
+        """List descendant processes of the pane's shell PID.
+
+        Walks /proc to enumerate all descendants, filters noise (shell
+        wrappers, transient processes), returns meaningful background
+        processes with CPU/mem/elapsed info.  Linux-only; returns empty
+        list when /proc is unavailable.
+        """
+        ctx = await deps.build_observe_context(pane_id)
+        if ctx is None or ctx.shell_pid is None:
+            return {"shell_pid": None, "processes": [], "count": 0, "agent_pid": None}
+
+        loop = asyncio.get_event_loop()
+        # Detect agent PID so frontend can label it
+        obs = await loop.run_in_executor(None, app.state.driver.observe, ctx)
+        agent_pid = obs.pid if obs and obs.running else None
+
+        result = await loop.run_in_executor(
+            None, _enumerate_descendants, ctx.shell_pid
+        )
+        result["agent_pid"] = agent_pid
+        return result
+
     # ========== System Metrics API ==========
     _prev_cpu = {"values": None, "time": 0}
 
     @app.get("/api/metrics")
     async def system_metrics(_auth=Depends(deps.verify_token)):
         """System resource metrics: CPU, memory, disk usage."""
-        import time as _time
         metrics = {}
 
         # CPU: delta from cached /proc/stat reading
@@ -242,10 +456,12 @@ def register(app: FastAPI, deps):
                 "context_used": None,
                 "context_limit": None,
                 "context_pct": None,
+                "descendant_count": 0,
             }
 
         loop = asyncio.get_event_loop()
         obs = await loop.run_in_executor(None, app.state.driver.observe, ctx)
+        desc_count = _count_descendants(ctx.shell_pid) if ctx.shell_pid else 0
         return {
             "phase": obs.phase,
             "detail": obs.detail,
@@ -257,6 +473,7 @@ def register(app: FastAPI, deps):
             "context_used": obs.context_used,
             "context_limit": obs.context_limit,
             "context_pct": obs.context_pct,
+            "descendant_count": desc_count,
         }
 
     @app.post("/api/agent/start")

@@ -32,6 +32,7 @@
                 <span id="connectionIndicator" class="connection-indicator connected" title="Connected"></span>
                 <span id="contextPill" class="context-pill hidden"></span>
                 <span id="metricsPill" class="metrics-pill hidden" title="System resources"></span>
+                <span id="processesPill" class="processes-pill hidden" title="Background processes in this pane"></span>
                 <span id="headerPhaseIndicator" class="header-phase hidden">
                     <span id="headerPhaseDot" class="status-dot idle"></span>
                     <span id="headerPhaseLabel" class="header-phase-label">Idle</span>
@@ -147,6 +148,14 @@
                         <span id="sidebarQueueCount" class="sidebar-section-count hidden">0</span>
                     </button>
                     <div class="sidebar-section-body sidebar-section-flex" id="sidebarQueueBody"></div>
+                </div>
+                <div class="sidebar-section collapsed" id="sidebarProcessSection">
+                    <button class="sidebar-section-toggle" data-section="processes">
+                        <span class="sidebar-section-arrow">&#x25BC;</span>
+                        <span class="sidebar-section-label">Processes</span>
+                        <span id="sidebarProcessCount" class="sidebar-section-count hidden">0</span>
+                    </button>
+                    <div class="sidebar-section-body" id="sidebarProcessBody"></div>
                 </div>
             </div>
             <div id="sidebarToolContent" class="sidebar-tool-content hidden"></div>
@@ -756,20 +765,20 @@
             <div id="processTabContent" class="rollback-tab-content hidden">
                 <div id="processStatusBanner" class="process-status-banner">
                     <span id="processStatusText" class="process-status-text">Loading...</span>
-                </div>
-                <div class="process-tab-header">
-                    <span class="process-title">Process Management</span>
                     <button id="processRefreshBtn" class="process-refresh-btn">Refresh</button>
                 </div>
-                <div class="process-info">
-                    <p class="process-description">Manage the terminal PTY process. Use these controls when the process is stuck or unresponsive.</p>
+                <div id="descendantList" class="descendant-list">
+                    <div class="descendant-empty">No background processes in this pane</div>
                 </div>
-                <div class="process-actions">
-                    <button id="processTerminateBtn" class="process-action-btn warning">Terminate (SIGTERM)</button>
-                    <button id="processKillBtn" class="process-action-btn danger">Force Kill (SIGKILL)</button>
-                    <button id="processRespawnBtn" class="process-action-btn primary">Respawn Session</button>
-                </div>
-                <div id="processResult" class="process-result hidden"></div>
+                <details class="process-controls-details">
+                    <summary class="process-controls-summary">Process Controls</summary>
+                    <div class="process-actions">
+                        <button id="processTerminateBtn" class="process-action-btn warning">Terminate</button>
+                        <button id="processKillBtn" class="process-action-btn danger">Force Kill</button>
+                        <button id="processRespawnBtn" class="process-action-btn primary">Respawn</button>
+                    </div>
+                    <div id="processResult" class="process-result hidden"></div>
+                </details>
             </div>
             <!-- Plugins tab content -->
             <div id="pluginsTabContent" class="rollback-tab-content hidden">

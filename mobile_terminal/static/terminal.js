@@ -874,7 +874,7 @@ function updateContextFromBackend(data) {
     const pill = document.getElementById('contextPill');
     if (!pill) return;
 
-    const remaining = Math.round(100 - data.context_pct);
+    const remaining = Math.max(0, Math.min(100, Math.round(100 - data.context_pct)));
     if (remaining === lastContextPct) return;
     lastContextPct = remaining;
 
@@ -2749,8 +2749,11 @@ async function selectTarget(targetId, isInitialSync = false) {
             ctx.terminal.reset();
         }
 
-        // Server closes WebSocket with 4003 during target select —
-        // onclose handler will auto-reconnect. No client-side close needed.
+        // Server keeps WebSocket alive — PTY output naturally follows tmux pane switch.
+        // Hide status overlay since we're already connected.
+        if (statusOverlay && !isInitialSync) {
+            statusOverlay.classList.add('hidden');
+        }
 
         // Start health polling if visible
         if (document.visibilityState === 'visible') {
@@ -3035,6 +3038,7 @@ async function updateAgentPhase() {
 
         const data = await response.json();
         updateContextFromBackend(data);
+        updateProcessesPill(data.descendant_count);
         const prevPhase = lastPhase?.phase;
         lastPhase = data;
 
@@ -7381,7 +7385,10 @@ function setupPreviewHandlers() {
     // History tab — initialized via initHistory() in DOMContentLoaded
 
     // Process tab handlers
-    document.getElementById('processRefreshBtn')?.addEventListener('click', loadProcessStatus);
+    document.getElementById('processRefreshBtn')?.addEventListener('click', () => {
+        loadProcessStatus();
+        loadDescendantProcesses();
+    });
     document.getElementById('processTerminateBtn')?.addEventListener('click', () => terminateProcess(false));
     document.getElementById('processKillBtn')?.addEventListener('click', () => terminateProcess(true));
     document.getElementById('processRespawnBtn')?.addEventListener('click', respawnProcess);
@@ -7458,6 +7465,7 @@ function switchRollbackTab(tabName) {
         processContent?.classList.remove('hidden');
         processContent?.classList.add('active');
         loadProcessStatus();
+        loadDescendantProcesses();
     } else if (tabName === 'plugins') {
         pluginsContent?.classList.remove('hidden');
         pluginsContent?.classList.add('active');
@@ -7498,13 +7506,11 @@ async function loadProcessStatus() {
 
         let html = '';
         if (processStatus.is_running) {
-            html = `<span class="process-status-running">Running</span> PID: ${escapeHtml(String(processStatus.pid))}`;
-            if (processStatus.session) {
-                html += ` | Session: ${escapeHtml(processStatus.session)}`;
-            }
+            const session = processStatus.session ? escapeHtml(processStatus.session) : '';
+            html = `<span class="process-status-running">Running</span> ${session}`;
             banner.className = 'process-status-banner running';
         } else if (processStatus.pid) {
-            html = `<span class="process-status-dead">Dead</span> (was PID: ${escapeHtml(String(processStatus.pid))})`;
+            html = `<span class="process-status-dead">Stopped</span>`;
             banner.className = 'process-status-banner dead';
         } else {
             html = '<span class="process-status-none">No process</span>';
@@ -7542,6 +7548,175 @@ function updateProcessButtons() {
     if (respawnBtn) {
         respawnBtn.disabled = false;  // Always available
     }
+}
+
+// ── Pane Descendant Processes ─────────────────────────────────────────
+
+/**
+ * Load descendant processes for the active pane
+ */
+async function loadDescendantProcesses() {
+    const listDiv = document.getElementById('descendantList');
+    if (!listDiv) return;
+
+    if (!ctx.activeTarget) {
+        listDiv.innerHTML = '<div class="descendant-empty">No active pane</div>';
+        return;
+    }
+
+    listDiv.innerHTML = '<div class="descendant-empty">Scanning...</div>';
+
+    try {
+        const resp = await apiFetch(
+            `/api/process/children?token=${ctx.token}&pane_id=${encodeURIComponent(ctx.activeTarget)}`
+        );
+        if (!resp.ok) {
+            listDiv.innerHTML = '<div class="descendant-empty">Error loading</div>';
+            return;
+        }
+        const data = await resp.json();
+        renderDescendantList(data, listDiv);
+    } catch (e) {
+        console.error('Failed to load descendants:', e);
+        listDiv.innerHTML = '<div class="descendant-empty">Error loading</div>';
+    }
+}
+
+/**
+ * Render descendant process list
+ */
+function renderDescendantList(data, container) {
+    if (!data.processes || data.processes.length === 0) {
+        container.innerHTML = '<div class="descendant-empty">No background processes in this pane</div>';
+        return;
+    }
+
+    const agentPid = data.agent_pid;
+    // Separate agent runtime from background work
+    const agentProcs = agentPid ? data.processes.filter(p => p.pid === agentPid) : [];
+    const bgProcs = agentPid ? data.processes.filter(p => p.pid !== agentPid) : data.processes;
+
+    let html = '';
+
+    // Agent runtime (if detected)
+    if (agentProcs.length > 0) {
+        const proc = agentProcs[0];
+        const age = formatElapsed(proc.elapsed_s);
+        const cpuStr = proc.cpu_pct > 0 ? `${proc.cpu_pct}%` : '';
+        const memStr = proc.mem_mb > 0 ? `${proc.mem_mb}M` : '';
+        html += `<div class="descendant-item descendant-agent">` +
+            `<div class="descendant-main">` +
+            `<span class="descendant-label">Agent</span>` +
+            `<span class="descendant-name">${escapeHtml(proc.name)}</span>` +
+            `<span class="descendant-pid">${proc.pid}</span>` +
+            (cpuStr ? `<span class="descendant-cpu">${cpuStr}</span>` : '') +
+            (memStr ? `<span class="descendant-mem">${memStr}</span>` : '') +
+            `<span class="descendant-age">${age}</span>` +
+            `</div></div>`;
+    }
+
+    // Background processes
+    html += bgProcs.map(proc => {
+        const age = formatElapsed(proc.elapsed_s);
+        const cpuStr = proc.cpu_pct > 0 ? `${proc.cpu_pct}%` : '';
+        const memStr = proc.mem_mb > 0 ? `${proc.mem_mb}M` : '';
+        const stateClass = proc.state === 'R' ? 'state-running'
+            : proc.state === 'Z' ? 'state-zombie'
+            : proc.state === 'D' ? 'state-blocked'
+            : '';
+        const indent = proc.depth > 1 ? ` style="padding-left: ${12 + (proc.depth - 1) * 12}px;"` : '';
+        const shortCmd = proc.command.length > 60
+            ? proc.command.slice(0, 60) + '...'
+            : proc.command;
+
+        return `<div class="descendant-item"${indent}>` +
+            `<div class="descendant-main">` +
+            `<span class="descendant-name">${escapeHtml(proc.name)}</span>` +
+            `<span class="descendant-pid">${proc.pid}</span>` +
+            (stateClass ? `<span class="descendant-state ${stateClass}">${proc.state}</span>` : '') +
+            (cpuStr ? `<span class="descendant-cpu">${cpuStr}</span>` : '') +
+            (memStr ? `<span class="descendant-mem">${memStr}</span>` : '') +
+            `<span class="descendant-age">${age}</span>` +
+            `</div>` +
+            `<div class="descendant-cmd" title="${escapeHtml(proc.command)}">${escapeHtml(shortCmd)}</div>` +
+            `</div>`;
+    }).join('');
+
+    if (bgProcs.length === 0 && agentProcs.length > 0) {
+        html += '<div class="descendant-empty">No other background processes</div>';
+    }
+
+    container.innerHTML = html;
+}
+
+/**
+ * Format elapsed seconds to compact human-readable string
+ */
+function formatElapsed(seconds) {
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+    return `${Math.floor(seconds / 86400)}d`;
+}
+
+/**
+ * Load processes into the desktop sidebar section
+ */
+async function loadSidebarProcesses() {
+    const body = document.getElementById('sidebarProcessBody');
+    if (!body || !ctx.activeTarget) return;
+
+    body.innerHTML = '<div class="descendant-empty">Scanning...</div>';
+    try {
+        const resp = await apiFetch(
+            `/api/process/children?token=${ctx.token}&pane_id=${encodeURIComponent(ctx.activeTarget)}`
+        );
+        if (!resp.ok) { body.innerHTML = ''; return; }
+        const data = await resp.json();
+        renderSidebarProcessList(data, body);
+    } catch {
+        body.innerHTML = '';
+    }
+}
+
+/**
+ * Compact process list for the sidebar (no agent row — just background procs)
+ */
+function renderSidebarProcessList(data, container) {
+    const agentPid = data.agent_pid;
+    const procs = data.processes ? data.processes.filter(p => p.pid !== agentPid) : [];
+
+    if (procs.length === 0) {
+        container.innerHTML = '<div class="descendant-empty">No background processes</div>';
+        return;
+    }
+
+    container.innerHTML = procs.map(proc => {
+        const age = formatElapsed(proc.elapsed_s);
+        const cpuStr = proc.cpu_pct > 0 ? ` ${proc.cpu_pct}%` : '';
+        const memStr = proc.mem_mb > 0 ? ` ${proc.mem_mb}M` : '';
+        return `<div class="sidebar-process-item" title="${escapeHtml(proc.command)}">` +
+            `<span class="sidebar-proc-name">${escapeHtml(proc.name)}</span>` +
+            `<span class="sidebar-proc-meta">${age}${cpuStr}${memStr}</span>` +
+            `</div>`;
+    }).join('');
+}
+
+/**
+ * Update the processes pill in the header bar
+ */
+function updateProcessesPill(count) {
+    const pill = document.getElementById('processesPill');
+    if (!pill) return;
+
+    if (!count || count === 0) {
+        pill.classList.add('hidden');
+        return;
+    }
+
+    pill.textContent = `${count} proc${count !== 1 ? 's' : ''}`;
+    pill.classList.remove('hidden', 'procs-ok', 'procs-warn');
+    pill.classList.add(count > 5 ? 'procs-warn' : 'procs-ok');
 }
 
 /**
@@ -8437,14 +8612,15 @@ const TOOL_TITLES = {
 function openToolPanel(name) {
     if (ctx.uiMode !== 'desktop-multipane') return;
 
-    if (name === 'team' || name === 'queue') {
+    if (name === 'team' || name === 'queue' || name === 'process') {
         // Scroll to sidebar section + expand if collapsed
         restoreSidebarToolContent();
-        const sectionId = name === 'team' ? 'sidebarTeamSection' : 'sidebarQueueSection';
-        const section = document.getElementById(sectionId);
+        const sectionMap = { team: 'sidebarTeamSection', queue: 'sidebarQueueSection', process: 'sidebarProcessSection' };
+        const section = document.getElementById(sectionMap[name]);
         if (section) {
             section.classList.remove('collapsed');
             section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            if (name === 'process') loadSidebarProcesses();
         }
     } else {
         // Toggle: clicking same tool closes it
@@ -8741,6 +8917,18 @@ function updateSidebarCounts() {
     if (teamSection) {
         teamSection.style.display = '';
     }
+
+    // Process count — driven by descendant_count from health poll
+    const procCountEl = document.getElementById('sidebarProcessCount');
+    const procSection = document.getElementById('sidebarProcessSection');
+    if (procCountEl && lastPhase) {
+        const dCount = lastPhase.descendant_count || 0;
+        procCountEl.textContent = dCount.toString();
+        procCountEl.classList.toggle('hidden', dCount === 0);
+        if (procSection) {
+            procSection.classList.toggle('collapsed', dCount === 0);
+        }
+    }
 }
 
 /**
@@ -8815,7 +9003,13 @@ function setupDesktopLayout() {
     document.querySelectorAll('.sidebar-section-toggle').forEach(btn => {
         btn.addEventListener('click', () => {
             const section = btn.closest('.sidebar-section');
-            if (section) section.classList.toggle('collapsed');
+            if (section) {
+                section.classList.toggle('collapsed');
+                // Load processes when expanding the Processes section
+                if (!section.classList.contains('collapsed') && section.id === 'sidebarProcessSection') {
+                    loadSidebarProcesses();
+                }
+            }
         });
     });
 
@@ -9291,6 +9485,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupNewWindowModal();
     setupJumpToBottom();
     setupMetricsWidget();
+    document.getElementById('processesPill')?.addEventListener('click', () => openSurface('process'));
     setupTerminalSearch();
     setupCopyButton();
     setupCommandHistory();

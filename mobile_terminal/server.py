@@ -88,7 +88,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.snapshot_buffer = SnapshotBuffer()  # Preview snapshots ring buffer
     app.state.audit_log = AuditLog()  # Audit log for rollback operations
     app.state.git_op_lock = GitOpLock()  # Lock for git write operations
-    app.state.active_target = None  # Explicit target pane (window:pane like "0:0")
+    app.state.active_target = "0:0"  # Default to first pane so initial sync skips WS close
     app.state.target_log_mapping = {}  # Maps pane_id -> {"path": str, "pinned": bool}
     app.state.last_restart_time = 0.0  # Timestamp of last server restart request
     app.state.target_epoch = 0  # Incremented on each target switch for cache invalidation
@@ -451,28 +451,9 @@ def create_app(config: Config) -> FastAPI:
         app.state.output_buffer.clear()
         logger.info(f"Target switch epoch={app.state.target_epoch}, buffer cleared")
 
-        # Close existing PTY so next WebSocket connection respawns with new target
-        # This ensures the PTY attaches to the newly active pane
-        _t5 = time.time()
-        if app.state.runtime.has_fd:
-            try:
-                app.state.runtime.terminate()
-            except Exception:
-                pass
-            app.state.runtime.close_fd()
-            logger.info("Closed PTY for target switch")
-        logger.info(f"[TIMING] PTY/child cleanup took {time.time()-_t5:.3f}s")
-
-        # Close active WebSocket to force client reconnect
-        _t6 = time.time()
-        if app.state.active_websocket is not None:
-            try:
-                await app.state.active_websocket.close(code=4003, reason="Target switched")
-                logger.info("Closed WebSocket for target switch")
-            except Exception:
-                pass
-            app.state.active_websocket = None
-        logger.info(f"[TIMING] WebSocket close took {time.time()-_t6:.3f}s")
+        # PTY stays alive — it's attached to the tmux session, not a specific pane.
+        # select-window + select-pane already changed what the PTY displays.
+        # No need to kill PTY or close WebSocket; the stream naturally shows the new pane.
 
         # Start background file monitor to detect which log file this target uses
         asyncio.create_task(app.state._monitor_log_file_for_target(target_id))
