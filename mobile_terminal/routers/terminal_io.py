@@ -176,7 +176,7 @@ def register(app: FastAPI, deps):
         success = await app.state.input_queue.send(
             msg_id,
             data,
-            app.state.active_websocket
+            app.state.active_client
         )
 
         if success:
@@ -244,9 +244,9 @@ def register(app: FastAPI, deps):
             return JSONResponse({"error": str(e), "id": msg_id}, status_code=500)
 
         # Send ACK via WebSocket if connected
-        if app.state.active_websocket:
+        if app.state.active_client:
             try:
-                await app.state.active_websocket.send_json({
+                await app.state.active_client.send_json({
                     "type": "ack",
                     "id": msg_id
                 })
@@ -261,8 +261,23 @@ def register(app: FastAPI, deps):
         _ws_start = time.time()
         logger.info(f"[TIMING] WebSocket /ws/terminal START")
 
-        # Use lock to prevent concurrent connection setup
-        async with app.state.ws_connect_lock:
+        # Use lock with timeout to prevent concurrent connection setup.
+        # If the lock is stuck (previous accept() hung), time out and proceed.
+        try:
+            await asyncio.wait_for(app.state.ws_connect_lock.acquire(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.error("WS connect lock stuck for >5s — forcing release")
+            # Force-release the lock if it's held
+            if app.state.ws_connect_lock.locked():
+                try:
+                    app.state.ws_connect_lock.release()
+                except RuntimeError:
+                    pass
+                # Re-create the lock to clear any waiters
+                app.state.ws_connect_lock = asyncio.Lock()
+            await app.state.ws_connect_lock.acquire()
+
+        try:
             # Rate limit connections - minimum 500ms between accepts
             now = time.time()
             elapsed = now - app.state.last_ws_connect
@@ -276,9 +291,9 @@ def register(app: FastAPI, deps):
             logger.info("WebSocket connection accepted")
 
             # Close any existing connection (single client mode)
-            if app.state.active_websocket is not None:
+            if app.state.active_client is not None:
                 try:
-                    await app.state.active_websocket.close(code=4002)
+                    await app.state.active_client.close(code=4002)
                     logger.info("Closed previous WebSocket connection")
                 except Exception:
                     pass
@@ -286,7 +301,10 @@ def register(app: FastAPI, deps):
                 app.state.read_task.cancel()
                 app.state.read_task = None
 
-            app.state.active_websocket = websocket
+            app.state.active_client = websocket
+        finally:
+            if app.state.ws_connect_lock.locked():
+                app.state.ws_connect_lock.release()
         logger.info(f"[TIMING] WebSocket lock+accept took {time.time()-_ws_start:.3f}s")
 
         # Spawn tmux if not already running
@@ -348,6 +366,8 @@ def register(app: FastAPI, deps):
         # Shared PTY output batch (cleared on mode switch to prevent stale data)
         pty_batch = bytearray()
         pty_batch_flush_time = time.time()
+        # Track last pong for ghost connection detection
+        last_pong_time = time.time()
 
         # Create tasks for bidirectional I/O
         async def read_from_terminal():
@@ -367,7 +387,7 @@ def register(app: FastAPI, deps):
             FLUSH_INTERVAL = 0.200  # 200ms = 5 FPS max
             FLUSH_MAX_BYTES = 2048   # 2KB max per message (10KB/s total)
 
-            while app.state.active_websocket == websocket and not connection_closed:
+            while app.state.active_client == websocket and not connection_closed:
                 try:
                     # Non-blocking read with select-like behavior
                     # ALWAYS read - never pause PTY drain
@@ -409,7 +429,7 @@ def register(app: FastAPI, deps):
                         # This prevents flooding the client even if PTY is very active
                         now = time.time()
                         if (now - pty_batch_flush_time) >= FLUSH_INTERVAL:
-                            if app.state.active_websocket == websocket and pty_batch and not connection_closed:
+                            if app.state.active_client == websocket and pty_batch and not connection_closed:
                                 # Send at most FLUSH_MAX_BYTES per interval
                                 # Use UTF-8 safe boundary to avoid splitting multi-byte chars
                                 cut_pos = find_utf8_boundary(pty_batch, FLUSH_MAX_BYTES)
@@ -422,12 +442,12 @@ def register(app: FastAPI, deps):
                     # Ignore send-after-close errors (expected during disconnect)
                     if connection_closed or "after sending" in str(e) or "websocket.close" in str(e):
                         break
-                    if app.state.active_websocket == websocket:
+                    if app.state.active_client == websocket:
                         logger.error(f"Error reading from terminal: {e}")
                     break
 
             # Flush remaining data (only in full mode)
-            if client_mode == "full" and pty_batch and app.state.active_websocket == websocket and not connection_closed:
+            if client_mode == "full" and pty_batch and app.state.active_client == websocket and not connection_closed:
                 try:
                     await websocket.send_bytes(bytes(pty_batch))
                 except Exception:
@@ -436,7 +456,7 @@ def register(app: FastAPI, deps):
         async def write_to_terminal():
             """Read from WebSocket and write to terminal."""
             nonlocal client_mode, pty_batch, pty_batch_flush_time
-            while app.state.active_websocket == websocket and not connection_closed:
+            while app.state.active_client == websocket and not connection_closed:
                 try:
                     message = await websocket.receive()
 
@@ -476,7 +496,7 @@ def register(app: FastAPI, deps):
                                         await websocket.send_json({"type": "pong"})
                                 elif msg_type == "pong":
                                     # Client responding to server_ping - connection is alive
-                                    pass  # No action needed, connection confirmed alive
+                                    last_pong_time = time.time()
                                 elif msg_type == "text":
                                     # Atomic text send via tmux send-keys (not PTY write)
                                     # This avoids interleaving with PTY output stream
@@ -560,23 +580,34 @@ def register(app: FastAPI, deps):
                     break
                 except (OSError, IOError) as e:
                     # Terminal write errors are fatal (terminal closed, etc.)
-                    if app.state.active_websocket == websocket:
+                    if app.state.active_client == websocket:
                         logger.error(f"Error writing to terminal: {e}")
                     break
                 except Exception as e:
                     # Log but continue on other errors (malformed messages, etc.)
-                    if app.state.active_websocket == websocket:
+                    if app.state.active_client == websocket:
                         logger.warning(f"Ignoring malformed message: {e}")
                     continue
 
         async def server_keepalive():
-            """Send periodic pings from server to keep connection alive."""
-            SERVER_PING_INTERVAL = 20  # Send ping every 20s from server
-            while app.state.active_websocket == websocket and not connection_closed:
+            """Send periodic pings and detect ghost connections via pong timeout."""
+            nonlocal last_pong_time, connection_closed
+            SERVER_PING_INTERVAL = 15  # Send ping every 15s
+            PONG_TIMEOUT = 30  # Consider dead if no pong for 30s
+            while app.state.active_client == websocket and not connection_closed:
                 try:
                     await asyncio.sleep(SERVER_PING_INTERVAL)
-                    if app.state.active_websocket == websocket and not connection_closed:
-                        # Send server-initiated ping (client will respond with pong)
+                    if app.state.active_client == websocket and not connection_closed:
+                        # Check if client responded to previous ping
+                        pong_age = time.time() - last_pong_time
+                        if pong_age > PONG_TIMEOUT:
+                            logger.warning(f"Ghost WS detected: no pong for {pong_age:.0f}s — closing")
+                            connection_closed = True
+                            try:
+                                await websocket.close(code=4501)
+                            except Exception:
+                                pass
+                            break
                         await websocket.send_json({"type": "server_ping"})
                 except Exception:
                     break
@@ -590,7 +621,7 @@ def register(app: FastAPI, deps):
             """
             nonlocal tail_seq, connection_closed
             perm_check_counter = 0
-            while app.state.active_websocket == websocket and not connection_closed:
+            while app.state.active_client == websocket and not connection_closed:
                 try:
                     await asyncio.sleep(TAIL_INTERVAL)
                     if client_mode == "tail" and recent_buffer and not connection_closed:
@@ -640,7 +671,7 @@ def register(app: FastAPI, deps):
             last_hash = 0
             desktop_active = False
             desktop_since = 0
-            while app.state.active_websocket == websocket and not connection_closed:
+            while app.state.active_client == websocket and not connection_closed:
                 await asyncio.sleep(1.5)
                 try:
                     session = app.state.current_session
@@ -700,8 +731,8 @@ def register(app: FastAPI, deps):
             keepalive_task.cancel()
             tail_task.cancel()
             desktop_task.cancel()
-            if app.state.active_websocket == websocket:
-                app.state.active_websocket = None
+            if app.state.active_client == websocket:
+                app.state.active_client = None
                 app.state.read_task = None
 
             # Close with appropriate code

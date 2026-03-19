@@ -76,7 +76,7 @@ def create_app(config: Config) -> FastAPI:
     runtime = TmuxRuntime()
     app.state.runtime = runtime
 
-    app.state.active_websocket = None
+    app.state.active_client = None
     app.state.read_task = None
     app.state.current_session = config.session_name  # Track current session
     app.state.last_ws_connect = 0  # Timestamp of last WebSocket connection
@@ -148,7 +148,7 @@ def create_app(config: Config) -> FastAPI:
         "default-src 'self'",
         "script-src 'self' https://cdn.jsdelivr.net",
         "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
-        "connect-src 'self' ws: wss:",
+        "connect-src 'self' ws: wss: https://cdn.jsdelivr.net",
         "img-src 'self' data: blob:",
         "font-src 'self'",
         "frame-src *",  # dev preview iframes
@@ -191,6 +191,14 @@ def create_app(config: Config) -> FastAPI:
     # Mount static files
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.get("/favicon.ico")
+    async def favicon():
+        """Serve favicon from static dir."""
+        icon = STATIC_DIR / "apple-touch-icon.png"
+        if icon.exists():
+            return FileResponse(icon, media_type="image/png")
+        return Response(status_code=204)
 
     @app.get("/sw.js")
     async def service_worker():
@@ -295,6 +303,17 @@ def create_app(config: Config) -> FastAPI:
     async def health():
         """Health check endpoint."""
         return {"status": "ok", "version": "0.2.0"}
+
+    @app.get("/api/ws-debug")
+    async def ws_debug():
+        """Debug endpoint — returns WebSocket handler state."""
+        return {
+            "active_ws": app.state.active_client is not None,
+            "ws_lock_locked": app.state.ws_connect_lock.locked(),
+            "last_ws_connect": round(app.state.last_ws_connect, 2),
+            "seconds_ago": round(time.time() - app.state.last_ws_connect, 1) if app.state.last_ws_connect else None,
+            "read_task": app.state.read_task is not None and not app.state.read_task.done() if app.state.read_task else False,
+        }
 
     @app.get("/api/setup-status")
     async def setup_status(_auth=Depends(verify_token)):
@@ -1074,12 +1093,12 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": f"Unknown session: {session}"}, status_code=400)
 
         # Close current WebSocket connection
-        if app.state.active_websocket is not None:
+        if app.state.active_client is not None:
             try:
-                await app.state.active_websocket.close(code=4003)  # 4003 = switching repos
+                await app.state.active_client.close(code=4003)  # 4003 = switching repos
             except Exception:
                 pass
-            app.state.active_websocket = None
+            app.state.active_client = None
 
         # Cancel read task
         if app.state.read_task is not None:

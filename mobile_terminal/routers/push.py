@@ -36,7 +36,7 @@ def register(app: FastAPI, deps):
         """Send push only if no active client and cooldown expired."""
         if not app.state.config.push_enabled:
             return
-        if app.state.active_websocket is not None:
+        if app.state.active_client is not None:
             return
         cooldowns = {"permission": 30, "completed": 300, "crashed": 60, "context_warn": 600, "context_high": 300}
         min_interval = cooldowns.get(push_type, 30)
@@ -139,7 +139,7 @@ def register(app: FastAPI, deps):
                     _last_activity_time = time.time()
 
                 # === Permission push (existing) ===
-                if app.state.active_websocket is None:
+                if app.state.active_client is None:
                     detector = app.state.permission_detector
                     if detector.log_file:
                         perm = detector.check_sync(session, target, ctx.tmux_target)

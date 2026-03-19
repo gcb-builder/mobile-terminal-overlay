@@ -688,7 +688,7 @@ class CommandQueue:
 
         try:
             runtime = self._app.state.runtime
-            websocket = self._app.state.active_websocket
+            websocket = self._app.state.active_client
 
             if not runtime.has_fd:
                 item.status = "failed"

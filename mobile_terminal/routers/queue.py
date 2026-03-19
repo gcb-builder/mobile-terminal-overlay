@@ -36,9 +36,9 @@ def register(app: FastAPI, deps):
         item, is_new = app.state.command_queue.enqueue(session, text, policy, item_id=id, pane_id=pane_id)
 
         # Notify connected clients only for new items
-        if is_new and app.state.active_websocket:
+        if is_new and app.state.active_client:
             try:
-                await app.state.active_websocket.send_json({
+                await app.state.active_client.send_json({
                     "type": "queue_update",
                     "action": "add",
                     "item": asdict(item),
@@ -75,9 +75,9 @@ def register(app: FastAPI, deps):
 
         success = app.state.command_queue.dequeue(session, item_id, pane_id)
 
-        if success and app.state.active_websocket:
+        if success and app.state.active_client:
             try:
-                await app.state.active_websocket.send_json({
+                await app.state.active_client.send_json({
                     "type": "queue_update",
                     "action": "remove",
                     "item": {"id": item_id},
@@ -110,9 +110,9 @@ def register(app: FastAPI, deps):
 
         app.state.command_queue.pause(session, pane_id)
 
-        if app.state.active_websocket:
+        if app.state.active_client:
             try:
-                await app.state.active_websocket.send_json({
+                await app.state.active_client.send_json({
                     "type": "queue_state",
                     "paused": True,
                     "count": len(app.state.command_queue.list_items(session, pane_id)),
@@ -132,9 +132,9 @@ def register(app: FastAPI, deps):
 
         app.state.command_queue.resume(session, pane_id)
 
-        if app.state.active_websocket:
+        if app.state.active_client:
             try:
-                await app.state.active_websocket.send_json({
+                await app.state.active_client.send_json({
                     "type": "queue_state",
                     "paused": False,
                     "count": len(app.state.command_queue.list_items(session, pane_id)),
@@ -159,9 +159,9 @@ def register(app: FastAPI, deps):
 
         count = app.state.command_queue.flush(session, pane_id)
 
-        if app.state.active_websocket:
+        if app.state.active_client:
             try:
-                await app.state.active_websocket.send_json({
+                await app.state.active_client.send_json({
                     "type": "queue_state",
                     "paused": False,
                     "count": 0,
