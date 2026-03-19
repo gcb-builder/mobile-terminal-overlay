@@ -152,34 +152,37 @@ class TmuxRuntime:
     # -- PTY lifecycle ---------------------------------------------------------
 
     def spawn(self, session_name: str) -> tuple[int, int]:
-        """Fork + exec ``tmux new -A -s <session>``.
+        """Spawn ``tmux new -A -s <session>`` via subprocess.Popen.
+
+        Uses Popen instead of os.fork() to avoid segfaults caused by
+        forking inside an asyncio process with active threads/locks.
 
         Returns (master_fd, child_pid).
         """
+        import subprocess
+
         master_fd, slave_fd = pty.openpty()
 
-        pid = os.fork()
-        if pid == 0:
-            # Child process
-            os.setsid()
-            try:
-                fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
-            except Exception:
-                pass
-            os.dup2(slave_fd, 0)
-            os.dup2(slave_fd, 1)
-            os.dup2(slave_fd, 2)
-            os.close(master_fd)
+        env = os.environ.copy()
+        env["TERM"] = "xterm-256color"
+
+        try:
+            proc = subprocess.Popen(
+                ["tmux", "new", "-A", "-s", session_name],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                start_new_session=True,
+                env=env,
+                close_fds=True,
+            )
+        finally:
             os.close(slave_fd)
-            os.environ["TERM"] = "xterm-256color"
-            os.execvp("tmux", ["tmux", "new", "-A", "-s", session_name])
-        else:
-            # Parent process
-            os.close(slave_fd)
-            self._master_fd = master_fd
-            self._child_pid = pid
-            self._session_name = session_name
-            return master_fd, pid
+
+        self._master_fd = master_fd
+        self._child_pid = proc.pid
+        self._session_name = session_name
+        return master_fd, proc.pid
 
     def terminate(self, force: bool = False) -> str:
         """Send SIGTERM; optionally SIGKILL after 0.5 s.
