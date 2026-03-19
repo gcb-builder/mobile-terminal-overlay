@@ -16,6 +16,7 @@ from mobile_terminal.helpers import (
     get_tmux_target,
     get_cached_capture, set_cached_capture,
 )
+from mobile_terminal.transport import WebSocketSink
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +302,8 @@ def register(app: FastAPI, deps):
                 app.state.read_task.cancel()
                 app.state.read_task = None
 
-            app.state.active_client = websocket
+            sink = WebSocketSink(websocket)
+            app.state.active_client = sink
         finally:
             if app.state.ws_connect_lock.locked():
                 app.state.ws_connect_lock.release()
@@ -317,8 +319,8 @@ def register(app: FastAPI, deps):
                 logger.info(f"Spawned tmux session: {session_name}")
             except Exception as e:
                 logger.error(f"Failed to spawn tmux: {e}")
-                await websocket.send_json({"type": "error", "message": str(e)})
-                await websocket.close()
+                await sink.send_json({"type": "error", "message": str(e)})
+                await sink.close()
                 return
         logger.info(f"[TIMING] spawn_tmux took {time.time()-_spawn_start:.3f}s")
         output_buffer = app.state.output_buffer
@@ -333,11 +335,11 @@ def register(app: FastAPI, deps):
                 "pid": runtime.child_pid,
                 "started_at": int(time.time()),
             }
-            await websocket.send_json(hello_msg)
+            await sink.send_json(hello_msg)
             logger.info(f"Sent hello handshake: {hello_msg}")
         except Exception as e:
             logger.error(f"Failed to send hello: {e}")
-            await websocket.close(code=4500)
+            await sink.close(code=4500)
             return
         logger.info(f"[TIMING] hello handshake took {time.time()-_hello_start:.3f}s")
 
@@ -345,7 +347,7 @@ def register(app: FastAPI, deps):
         # Default mode is "tail" which uses lightweight JSON updates
         # History will be sent as catchup when client switches to "full" mode
         # Just send clear screen to trigger client overlay hide
-        await websocket.send_text("\x1b[2J\x1b[H")
+        await sink.send_text("\x1b[2J\x1b[H")
         logger.info(f"[TIMING] WebSocket setup TOTAL took {time.time()-_ws_start:.3f}s")
 
         # Track PTY death for proper close code
@@ -387,7 +389,7 @@ def register(app: FastAPI, deps):
             FLUSH_INTERVAL = 0.200  # 200ms = 5 FPS max
             FLUSH_MAX_BYTES = 2048   # 2KB max per message (10KB/s total)
 
-            while app.state.active_client == websocket and not connection_closed:
+            while app.state.active_client is sink and not connection_closed:
                 try:
                     # Non-blocking read with select-like behavior
                     # ALWAYS read - never pause PTY drain
@@ -429,34 +431,34 @@ def register(app: FastAPI, deps):
                         # This prevents flooding the client even if PTY is very active
                         now = time.time()
                         if (now - pty_batch_flush_time) >= FLUSH_INTERVAL:
-                            if app.state.active_client == websocket and pty_batch and not connection_closed:
+                            if app.state.active_client is sink and pty_batch and not connection_closed:
                                 # Send at most FLUSH_MAX_BYTES per interval
                                 # Use UTF-8 safe boundary to avoid splitting multi-byte chars
                                 cut_pos = find_utf8_boundary(pty_batch, FLUSH_MAX_BYTES)
                                 send_data = bytes(pty_batch[:cut_pos])
                                 pty_batch = pty_batch[cut_pos:]
-                                await websocket.send_bytes(send_data)
+                                await sink.send_bytes(send_data)
                                 pty_batch_flush_time = now
 
                 except Exception as e:
                     # Ignore send-after-close errors (expected during disconnect)
                     if connection_closed or "after sending" in str(e) or "websocket.close" in str(e):
                         break
-                    if app.state.active_client == websocket:
+                    if app.state.active_client is sink:
                         logger.error(f"Error reading from terminal: {e}")
                     break
 
             # Flush remaining data (only in full mode)
-            if client_mode == "full" and pty_batch and app.state.active_client == websocket and not connection_closed:
+            if client_mode == "full" and pty_batch and app.state.active_client is sink and not connection_closed:
                 try:
-                    await websocket.send_bytes(bytes(pty_batch))
+                    await sink.send_bytes(bytes(pty_batch))
                 except Exception:
                     pass
 
         async def write_to_terminal():
             """Read from WebSocket and write to terminal."""
             nonlocal client_mode, pty_batch, pty_batch_flush_time
-            while app.state.active_client == websocket and not connection_closed:
+            while app.state.active_client is sink and not connection_closed:
                 try:
                     message = await websocket.receive()
 
@@ -493,7 +495,7 @@ def register(app: FastAPI, deps):
                                 elif msg_type == "ping":
                                     # Respond to heartbeat ping with pong
                                     if not connection_closed:
-                                        await websocket.send_json({"type": "pong"})
+                                        await sink.send_json({"type": "pong"})
                                 elif msg_type == "pong":
                                     # Client responding to server_ping - connection is alive
                                     last_pong_time = time.time()
@@ -546,7 +548,7 @@ def register(app: FastAPI, deps):
                                                 )
                                                 if snapshot and not connection_closed:
                                                     # Clear screen + send snapshot for clean render
-                                                    await websocket.send_text("\x1b[2J\x1b[H" + snapshot)
+                                                    await sink.send_text("\x1b[2J\x1b[H" + snapshot)
                                                     logger.info(f"[MODE] Sent capture-pane snapshot ({len(snapshot)} bytes)")
                                             except Exception as e:
                                                 logger.warning(f"[MODE] capture-pane catchup failed: {e}")
@@ -580,12 +582,12 @@ def register(app: FastAPI, deps):
                     break
                 except (OSError, IOError) as e:
                     # Terminal write errors are fatal (terminal closed, etc.)
-                    if app.state.active_client == websocket:
+                    if app.state.active_client is sink:
                         logger.error(f"Error writing to terminal: {e}")
                     break
                 except Exception as e:
                     # Log but continue on other errors (malformed messages, etc.)
-                    if app.state.active_client == websocket:
+                    if app.state.active_client is sink:
                         logger.warning(f"Ignoring malformed message: {e}")
                     continue
 
@@ -594,21 +596,21 @@ def register(app: FastAPI, deps):
             nonlocal last_pong_time, connection_closed
             SERVER_PING_INTERVAL = 15  # Send ping every 15s
             PONG_TIMEOUT = 30  # Consider dead if no pong for 30s
-            while app.state.active_client == websocket and not connection_closed:
+            while app.state.active_client is sink and not connection_closed:
                 try:
                     await asyncio.sleep(SERVER_PING_INTERVAL)
-                    if app.state.active_client == websocket and not connection_closed:
+                    if app.state.active_client is sink and not connection_closed:
                         # Check if client responded to previous ping
                         pong_age = time.time() - last_pong_time
                         if pong_age > PONG_TIMEOUT:
                             logger.warning(f"Ghost WS detected: no pong for {pong_age:.0f}s — closing")
                             connection_closed = True
                             try:
-                                await websocket.close(code=4501)
+                                await sink.close(code=4501)
                             except Exception:
                                 pass
                             break
-                        await websocket.send_json({"type": "server_ping"})
+                        await sink.send_json({"type": "server_ping"})
                 except Exception:
                     break
 
@@ -621,7 +623,7 @@ def register(app: FastAPI, deps):
             """
             nonlocal tail_seq, connection_closed
             perm_check_counter = 0
-            while app.state.active_client == websocket and not connection_closed:
+            while app.state.active_client is sink and not connection_closed:
                 try:
                     await asyncio.sleep(TAIL_INTERVAL)
                     if client_mode == "tail" and recent_buffer and not connection_closed:
@@ -635,7 +637,7 @@ def register(app: FastAPI, deps):
                             lines = [l for l in lines if 'How is Claude doing this session' not in l]
                             tail_text = '\n'.join(lines)
                             tail_seq += 1
-                            await websocket.send_json({
+                            await sink.send_json({
                                 "type": "tail",
                                 "text": tail_text,
                                 "seq": tail_seq
@@ -660,7 +662,7 @@ def register(app: FastAPI, deps):
                                     None, detector.check_sync, session, target, tmux_t
                                 )
                                 if perm:
-                                    await deps.send_typed(websocket, "permission_request", perm, level="urgent")
+                                    await deps.send_typed(sink, "permission_request", perm, level="urgent")
                         except Exception as e:
                             logger.debug(f"Permission check error: {e}")
                 except Exception:
@@ -671,7 +673,7 @@ def register(app: FastAPI, deps):
             last_hash = 0
             desktop_active = False
             desktop_since = 0
-            while app.state.active_client == websocket and not connection_closed:
+            while app.state.active_client is sink and not connection_closed:
                 await asyncio.sleep(1.5)
                 try:
                     session = app.state.current_session
@@ -695,15 +697,15 @@ def register(app: FastAPI, deps):
                         if time_since_ws > 1.5 and not desktop_active:
                             desktop_active = True
                             desktop_since = time.time()
-                            await deps.send_typed(websocket, "device_state",
+                            await deps.send_typed(sink, "device_state",
                                              {"desktop_active": True}, level="info")
                         elif time_since_ws <= 1.5 and desktop_active:
                             desktop_active = False
-                            await deps.send_typed(websocket, "device_state",
+                            await deps.send_typed(sink, "device_state",
                                              {"desktop_active": False}, level="info")
                     if desktop_active and (time.time() - desktop_since) > 10:
                         desktop_active = False
-                        await deps.send_typed(websocket, "device_state",
+                        await deps.send_typed(sink, "device_state",
                                          {"desktop_active": False}, level="info")
                 except Exception:
                     pass
@@ -731,7 +733,7 @@ def register(app: FastAPI, deps):
             keepalive_task.cancel()
             tail_task.cancel()
             desktop_task.cancel()
-            if app.state.active_client == websocket:
+            if app.state.active_client is sink:
                 app.state.active_client = None
                 app.state.read_task = None
 
@@ -739,7 +741,7 @@ def register(app: FastAPI, deps):
             if pty_died:
                 logger.warning("Closing WebSocket with code 4500 (PTY died)")
                 try:
-                    await websocket.close(code=4500, reason="PTY died")
+                    await sink.close(code=4500, reason="PTY died")
                 except Exception:
                     pass
                 # Clear PTY state so next connection recreates it
