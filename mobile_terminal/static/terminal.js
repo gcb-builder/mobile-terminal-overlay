@@ -414,6 +414,39 @@ const _bp = window.__BASE_PATH || '';
 const _transportKey = `mto_transport_${location.origin}${_bp}`;
 const _urlTransport = new URLSearchParams(location.search).get('transport');
 let _preferSSE = _urlTransport === 'sse' || (!_urlTransport && sessionStorage.getItem(_transportKey) === 'sse');
+// ?transport=ws explicitly clears stored SSE preference so it doesn't reassert next load
+if (_urlTransport === 'ws') sessionStorage.removeItem(_transportKey);
+
+// SSE input batcher: coalesces rapid keystrokes into single POST requests
+const _sseEncoder = new TextEncoder();
+const SSE_BATCH_MS = 50;
+let _sseBatchBuf = [];
+let _sseBatchTimer = null;
+
+function _sseFlushInput() {
+    _sseBatchTimer = null;
+    if (_sseBatchBuf.length === 0) return;
+    // Merge all buffered Uint8Arrays into one
+    const total = _sseBatchBuf.reduce((n, b) => n + b.length, 0);
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const b of _sseBatchBuf) { merged.set(b, offset); offset += b.length; }
+    _sseBatchBuf = [];
+    apiFetch(`/api/terminal/input`, { method: 'POST', body: merged });
+}
+
+/** Queue raw input bytes for batched SSE POST. Immediate flush for special keys. */
+function sseSendInputBatched(data, immediate = false) {
+    const bytes = data instanceof Uint8Array ? data : _sseEncoder.encode(data);
+    _sseBatchBuf.push(bytes);
+    if (immediate || bytes.length === 1 && bytes[0] < 0x20) {
+        // Control chars (Ctrl-C, Enter, arrows) — flush now
+        if (_sseBatchTimer) { clearTimeout(_sseBatchTimer); _sseBatchTimer = null; }
+        _sseFlushInput();
+    } else if (!_sseBatchTimer) {
+        _sseBatchTimer = setTimeout(_sseFlushInput, SSE_BATCH_MS);
+    }
+}
 
 // Activity-based keepalive - detect stale connections
 const IDLE_THRESHOLD = 20000;  // If no data for 20s, send a ping to verify connection
@@ -697,7 +730,11 @@ function initTerminal() {
             if (isComposing) {
                 return;
             }
-            ctx.socket.send(encoder.encode(data));
+            if (ctx._transportType === 'sse') {
+                sseSendInputBatched(data);
+            } else {
+                ctx.socket.send(encoder.encode(data));
+            }
             // Reset interactive idle timer on each keystroke (if active)
             if (interactiveMode) resetInteractiveIdleTimer();
         }
@@ -1598,7 +1635,7 @@ function ssePostMessage(data) {
             } else if (msg.type === 'set_mode') {
                 apiFetch(`/api/terminal/mode?mode=${msg.mode}`, { method: 'POST' });
             } else if (msg.type === 'input') {
-                apiFetch(`/api/terminal/input`, { method: 'POST', body: msg.data });
+                sseSendInputBatched(msg.data);
             } else if (msg.type === 'text') {
                 apiFetch(`/api/terminal/text`, {
                     method: 'POST',
@@ -1615,10 +1652,10 @@ function ssePostMessage(data) {
             }
         } catch(e) {
             // Not JSON — raw text input
-            apiFetch(`/api/terminal/input`, { method: 'POST', body: data });
+            sseSendInputBatched(data);
         }
     } else if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
-        apiFetch(`/api/terminal/input`, { method: 'POST', body: data });
+        sseSendInputBatched(data);
     }
 }
 
@@ -1631,6 +1668,9 @@ function handleSSEClose() {
         try { ctx._sseReader.cancel(); } catch(e) {}
         ctx._sseReader = null;
     }
+    // Flush any pending input batch
+    if (_sseBatchTimer) { clearTimeout(_sseBatchTimer); _sseBatchTimer = null; }
+    _sseBatchBuf = [];
     ctx._transportType = null;
     if (ctx.socket) ctx.socket.readyState = WebSocket.CLOSED;
     updateConnectionIndicator('disconnected');
@@ -2205,7 +2245,11 @@ const inputEncoder = new TextEncoder();
 function sendInput(data) {
     if (isPreviewMode()) return;  // No input in preview mode
     if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
-        ctx.socket.send(inputEncoder.encode(data));
+        if (ctx._transportType === 'sse') {
+            sseSendInputBatched(data);
+        } else {
+            ctx.socket.send(inputEncoder.encode(data));
+        }
     }
 }
 
