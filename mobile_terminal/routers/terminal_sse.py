@@ -158,6 +158,7 @@ def register(app: FastAPI, deps):
         RECENT_BUFFER_MAX = 64 * 1024
         tail_seq = 0
         TAIL_INTERVAL = 0.2
+        last_target_epoch = app.state.target_epoch
         pty_batch = bytearray()
         pty_batch_flush_time = time.time()
 
@@ -232,11 +233,19 @@ def register(app: FastAPI, deps):
 
         async def tail_sender():
             """Send periodic tail updates when in tail mode."""
-            nonlocal tail_seq, connection_closed
+            nonlocal tail_seq, connection_closed, recent_buffer, last_target_epoch
             perm_check_counter = 0
             while app.state.active_client is sink and not connection_closed:
                 try:
                     await asyncio.sleep(TAIL_INTERVAL)
+
+                    # Clear stale output when pane switches
+                    current_epoch = app.state.target_epoch
+                    if current_epoch != last_target_epoch:
+                        recent_buffer = bytearray()
+                        last_target_epoch = current_epoch
+                        tail_seq = 0
+
                     if sink.client_mode == "tail" and recent_buffer and not connection_closed:
                         try:
                             text = bytes(recent_buffer[-8192:]).decode("utf-8", errors="replace")

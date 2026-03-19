@@ -365,6 +365,7 @@ def register(app: FastAPI, deps):
         # Tail state
         tail_seq = 0
         TAIL_INTERVAL = 0.2  # Send tail updates every 200ms
+        last_target_epoch = app.state.target_epoch  # Track pane switches
         # Shared PTY output batch (cleared on mode switch to prevent stale data)
         pty_batch = bytearray()
         pty_batch_flush_time = time.time()
@@ -621,11 +622,19 @@ def register(app: FastAPI, deps):
             and sends as JSON for lightweight Log view rendering.
             Also checks for pending permission requests (v2 messages).
             """
-            nonlocal tail_seq, connection_closed
+            nonlocal tail_seq, connection_closed, recent_buffer, last_target_epoch
             perm_check_counter = 0
             while app.state.active_client is sink and not connection_closed:
                 try:
                     await asyncio.sleep(TAIL_INTERVAL)
+
+                    # Clear stale output when pane switches
+                    current_epoch = app.state.target_epoch
+                    if current_epoch != last_target_epoch:
+                        recent_buffer = bytearray()
+                        last_target_epoch = current_epoch
+                        tail_seq = 0
+
                     if client_mode == "tail" and recent_buffer and not connection_closed:
                         # Extract last portion and decode
                         try:
