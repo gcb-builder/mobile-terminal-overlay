@@ -1322,6 +1322,7 @@ def create_app(config: Config) -> FastAPI:
     from mobile_terminal.routers import team_launcher as team_launcher_router
     from mobile_terminal.routers import push as push_router
     from mobile_terminal.routers import terminal_io as terminal_io_router
+    from mobile_terminal.routers import terminal_sse as terminal_sse_router
     from mobile_terminal.routers import scratch as scratch_router
 
     deps = AppDeps(
@@ -1352,6 +1353,7 @@ def create_app(config: Config) -> FastAPI:
     team_launcher_router.register(app, deps)
     push_router.register(app, deps)
     terminal_io_router.register(app, deps)
+    terminal_sse_router.register(app, deps)
     scratch_router.register(app, deps)
 
     @app.on_event("startup")

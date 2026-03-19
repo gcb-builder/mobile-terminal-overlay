@@ -38,8 +38,9 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC - if you see this in console, browser has v247 code
-console.log('=== TERMINAL.JS v285 ===');
+console.log('=== TERMINAL.JS v286 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
+console.log('SSE fallback transport available');
 
 // Global error boundary for debugging
 window.addEventListener('error', (e) => {
@@ -407,6 +408,12 @@ let heartbeatTimer = null;
 let heartbeatTimeoutTimer = null;
 let lastPongTime = 0;
 let lastDataReceived = 0;  // Track last data from server
+
+// Transport selection: WS preferred, SSE fallback for HTTP/2 proxies
+const _bp = window.__BASE_PATH || '';
+const _transportKey = `mto_transport_${location.origin}${_bp}`;
+const _urlTransport = new URLSearchParams(location.search).get('transport');
+let _preferSSE = _urlTransport === 'sse' || (!_urlTransport && sessionStorage.getItem(_transportKey) === 'sse');
 
 // Activity-based keepalive - detect stale connections
 const IDLE_THRESHOLD = 20000;  // If no data for 20s, send a ping to verify connection
@@ -1360,7 +1367,7 @@ function startConnectionWatchdog() {
             }
             ctx.socket = null;
             reconnectDelay = INITIAL_RECONNECT_DELAY;
-            connect();
+            if (_preferSSE) connectSSE(); else connect();
         }
     }, 10000);  // Check every 10s
 }
@@ -1477,7 +1484,7 @@ function manualReconnect() {
         reconnectTimer = null;
     }
     reconnectDelay = INITIAL_RECONNECT_DELAY;
-    connect();
+    if (_preferSSE) connectSSE(); else connect();
 }
 
 /**
@@ -1505,6 +1512,296 @@ async function hardRefresh() {
         console.error('Hard refresh failed:', e);
         location.reload(true);
     }
+}
+
+/**
+ * Handle a parsed JSON message from either WS or SSE transport.
+ * Returns true if the message was handled (caller should not process further).
+ */
+function handleJsonMessage(msg) {
+    // v2 typed message envelope — route to handler
+    if (msg.v === 2) {
+        handleTypedMessage(msg);
+        return true;
+    }
+
+    // Server hello handshake - confirms connection is fully established
+    if (msg.type === 'hello') {
+        console.log('Received hello:', msg);
+        helloReceived = true;
+        if (helloTimer) {
+            clearTimeout(helloTimer);
+            helloTimer = null;
+        }
+        // Hide overlay immediately on hello - connection is established
+        if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
+            statusOverlay.classList.add('hidden');
+        }
+        return true;
+    }
+
+    // Tail mode updates - lightweight text for Log view
+    if (msg.type === 'tail') {
+        return true;
+    }
+
+    if (msg.type === 'pong') {
+        handlePong();
+        return true;
+    }
+
+    // Server-initiated ping - respond with pong to keep connection alive
+    if (msg.type === 'server_ping') {
+        if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
+            ctx.socket.send(JSON.stringify({ type: 'pong' }));
+        }
+        return true;
+    }
+
+    // Handle queue messages
+    if (msg.type === 'queue_update' || msg.type === 'queue_sent' || msg.type === 'queue_state') {
+        handleQueueMessage(msg);
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * SSE transport: POST-based message routing for socket.send() calls
+ */
+function ssePostMessage(data) {
+    if (typeof data === 'string') {
+        try {
+            const msg = JSON.parse(data);
+            if (msg.type === 'resize') {
+                apiFetch(`/api/terminal/resize?cols=${msg.cols}&rows=${msg.rows}`, { method: 'POST' });
+            } else if (msg.type === 'ping') {
+                apiFetch(`/api/terminal/ping`, { method: 'POST' })
+                    .then(r => r.json())
+                    .then(() => handleJsonMessage({ type: 'pong' }))
+                    .catch(() => {});
+            } else if (msg.type === 'pong') {
+                // Response to server_ping — no POST endpoint needed, server tracks via stream
+            } else if (msg.type === 'set_mode') {
+                apiFetch(`/api/terminal/mode?mode=${msg.mode}`, { method: 'POST' });
+            } else if (msg.type === 'input') {
+                apiFetch(`/api/terminal/input`, { method: 'POST', body: msg.data });
+            } else if (msg.type === 'text') {
+                apiFetch(`/api/terminal/text`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: msg.text, enter: msg.enter || false })
+                });
+            } else {
+                // Generic JSON — send as text input
+                apiFetch(`/api/terminal/text`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: data
+                });
+            }
+        } catch(e) {
+            // Not JSON — raw text input
+            apiFetch(`/api/terminal/input`, { method: 'POST', body: data });
+        }
+    } else if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
+        apiFetch(`/api/terminal/input`, { method: 'POST', body: data });
+    }
+}
+
+/**
+ * Handle SSE stream close — cleanup and schedule reconnect
+ */
+function handleSSEClose() {
+    if (ctx._sseHeartbeat) { clearInterval(ctx._sseHeartbeat); ctx._sseHeartbeat = null; }
+    if (ctx._sseReader) {
+        try { ctx._sseReader.cancel(); } catch(e) {}
+        ctx._sseReader = null;
+    }
+    ctx._transportType = null;
+    if (ctx.socket) ctx.socket.readyState = WebSocket.CLOSED;
+    updateConnectionIndicator('disconnected');
+
+    // Reconnect after delay
+    if (!intentionalClose) {
+        reconnectTimer = setTimeout(() => {
+            if (_preferSSE) connectSSE();
+            else connect();
+        }, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 1.5, MAX_RECONNECT_DELAY);
+    }
+    intentionalClose = false;
+}
+
+/**
+ * Connect via SSE transport (fallback for HTTP/2 proxies that break WebSocket)
+ */
+function connectSSE() {
+    // Close existing WS or SSE
+    if (ctx.socket && ctx.socket.readyState !== WebSocket.CLOSED) {
+        intentionalClose = true;
+        ctx.socket.close();
+        ctx.socket = null;
+    }
+    if (ctx._sseReader) {
+        try { ctx._sseReader.cancel(); } catch(e) {}
+        ctx._sseReader = null;
+    }
+
+    isConnecting = true;
+    statusText.textContent = 'Connecting (SSE)...';
+    statusOverlay.classList.remove('hidden');
+
+    const streamUrl = `/api/terminal/stream?token=${ctx.token}`;
+
+    apiFetch(streamUrl).then(response => {
+        if (!response.ok) throw new Error(`SSE stream ${response.status}`);
+        if (!response.body) throw new Error('No response body for SSE');
+
+        isConnecting = false;
+        console.log('[SSE] Connected');
+
+        // Mark SSE as transport type
+        ctx._transportType = 'sse';
+
+        // Create a socket-like interface so existing code works unchanged
+        ctx.socket = {
+            readyState: WebSocket.OPEN,
+            send: function(data) { ssePostMessage(data); },
+            close: function() {
+                this.readyState = WebSocket.CLOSED;
+                if (ctx._sseReader) {
+                    try { ctx._sseReader.cancel(); } catch(e) {}
+                }
+            }
+        };
+
+        reconnectDelay = INITIAL_RECONNECT_DELAY;
+        reconnectAttempts = 0;
+        helloReceived = false;
+        hasConnectedOnce = true;
+
+        // Cancel overlay timer
+        if (reconnectOverlayTimer) {
+            clearTimeout(reconnectOverlayTimer);
+            reconnectOverlayTimer = null;
+        }
+
+        updateConnectionIndicator('connected');
+        startIdleCheck();
+
+        // SSE heartbeat via POST /ping
+        if (ctx._sseHeartbeat) clearInterval(ctx._sseHeartbeat);
+        ctx._sseHeartbeat = setInterval(() => {
+            if (ctx._transportType !== 'sse') return;
+            apiFetch(`/api/terminal/ping`, { method: 'POST' })
+                .catch(() => {
+                    console.warn('[SSE] Ping failed, reconnecting');
+                    if (ctx._sseReader) {
+                        try { ctx._sseReader.cancel(); } catch(e) {}
+                    }
+                });
+        }, 15000);
+
+        // Send initial resize
+        sendResize();
+
+        // Send initial mode
+        apiFetch(`/api/terminal/mode?mode=${ctx.outputMode}`, { method: 'POST' });
+
+        // Parse SSE stream
+        const reader = response.body.getReader();
+        ctx._sseReader = reader;
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function processSSE() {
+            reader.read().then(({ done, value }) => {
+                if (done) {
+                    console.log('[SSE] Stream ended');
+                    handleSSEClose();
+                    return;
+                }
+
+                // Track data for idle detection
+                lastDataReceived = Date.now();
+
+                buffer += decoder.decode(value, { stream: true });
+                const events = buffer.split('\n\n');
+                buffer = events.pop(); // Keep incomplete event in buffer
+
+                for (const eventStr of events) {
+                    if (!eventStr.trim()) continue;
+
+                    let eventType = 'message';
+                    let data = '';
+
+                    for (const line of eventStr.split('\n')) {
+                        if (line.startsWith('event: ')) eventType = line.slice(7);
+                        else if (line.startsWith('data: ')) data += (data ? '\n' : '') + line.slice(6);
+                        else if (line.startsWith(':')) continue; // comment/keepalive
+                    }
+
+                    if (!data) continue;
+
+                    if (eventType === 'message') {
+                        // JSON message — same as WS onmessage for JSON
+                        try {
+                            const msg = JSON.parse(data);
+                            if (!handleJsonMessage(msg)) {
+                                // Unhandled JSON — treat as terminal text in full mode
+                                if (ctx.outputMode === 'full' && ctx.terminal) {
+                                    queuedWrite(data);
+                                }
+                            }
+                        } catch(e) {
+                            // Not valid JSON
+                            if (ctx.outputMode === 'full' && ctx.terminal) {
+                                queuedWrite(data);
+                            }
+                        }
+                    } else if (eventType === 'text') {
+                        // Terminal text (escape sequences)
+                        if (ctx.outputMode !== 'full') continue;
+                        const text = data.replace(/\\n/g, '\n').replace(/\\r/g, '\r');
+                        if (ctx.terminal) queuedWrite(text);
+                        updateLastActivity();
+                        if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
+                            statusOverlay.classList.add('hidden');
+                        }
+                    } else if (eventType === 'binary') {
+                        // Base64-encoded PTY bytes
+                        if (ctx.outputMode !== 'full') continue;
+                        try {
+                            const bytes = atob(data);
+                            const arr = new Uint8Array(bytes.length);
+                            for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+                            if (ctx.terminal) queuedWrite(arr);
+                            updateLastActivity();
+                            if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
+                                statusOverlay.classList.add('hidden');
+                            }
+                        } catch(e) {}
+                    }
+                }
+
+                processSSE();
+            }).catch(err => {
+                if (err.name !== 'AbortError') {
+                    console.warn('[SSE] Read error:', err);
+                    handleSSEClose();
+                }
+            });
+        }
+
+        processSSE();
+
+    }).catch(err => {
+        console.error('[SSE] Connect failed:', err);
+        isConnecting = false;
+        handleSSEClose();
+    });
 }
 
 /**
@@ -1544,8 +1841,21 @@ async function connect() {
 
     isConnecting = true;
 
+    // Pre-flight: verify HTTP path to backend works before WS upgrade.
+    // If this fails, the proxy/tunnel is down — no point attempting WS.
+    try {
+        const preCheck = await fetch('/api/ws-debug');
+        if (preCheck.ok) {
+            const dbg = await preCheck.json();
+            console.log(`[WS pre-flight] server state:`, dbg);
+        } else {
+            console.warn(`[WS pre-flight] HTTP ${preCheck.status} — proxy may be down`);
+        }
+    } catch (e) {
+        console.warn(`[WS pre-flight] fetch failed:`, e.message);
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Cache-bust with timestamp to force a fresh HTTP/2 stream for each attempt
     const wsUrl = `${protocol}//${window.location.host}${window.__BASE_PATH || ''}/ws/terminal?token=${ctx.token}&_t=${Date.now()}`;
 
     statusText.textContent = 'Connecting...';
@@ -1557,7 +1867,22 @@ async function connect() {
 
     ctx.socket = new WebSocket(wsUrl);
 
+    // WS upgrade timeout: if onopen doesn't fire within 5s, the upgrade
+    // is hanging (common with Tailscale Serve HTTP/2→WS translation).
+    // Fall back to SSE transport.
+    let wsUpgradeTimer = setTimeout(() => {
+        if (ctx.socket && ctx.socket.readyState !== WebSocket.OPEN) {
+            console.warn('[WS] Timeout after 5s, falling back to SSE');
+            intentionalClose = true;
+            ctx.socket.close();
+            _preferSSE = true;
+            sessionStorage.setItem(_transportKey, 'sse');
+            connectSSE();
+        }
+    }, 5000);
+
     ctx.socket.onopen = () => {
+        clearTimeout(wsUpgradeTimer);
         console.log(`[v245] WebSocket connected (mode=${ctx.outputMode}, epoch=${ctx.modeEpoch})`);
         isConnecting = false;
 
@@ -1665,51 +1990,7 @@ async function connect() {
             if (event.data.startsWith('{')) {
                 try {
                     const msg = JSON.parse(event.data);
-
-                    // v2 typed message envelope — route to handler and return
-                    if (msg.v === 2) {
-                        handleTypedMessage(msg);
-                        return;
-                    }
-
-                    // Server hello handshake - confirms connection is fully established
-                    if (msg.type === 'hello') {
-                        console.log('Received hello:', msg);
-                        helloReceived = true;
-                        if (helloTimer) {
-                            clearTimeout(helloTimer);
-                            helloTimer = null;
-                        }
-                        // Hide overlay immediately on hello - connection is established
-                        // Don't wait for ctx.terminal data (which may not arrive in tail mode)
-                        if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
-                            statusOverlay.classList.add('hidden');
-                        }
-                        return;
-                    }
-
-                    // Tail mode updates - lightweight text for Log view
-                    // Log view uses its own API, so we just acknowledge and skip
-                    if (msg.type === 'tail') {
-                        // Could optionally update a tail strip here
-                        // For now, just ignore - Log view uses /api/log
-                        return;
-                    }
-
-                    if (msg.type === 'pong') {
-                        handlePong();
-                        return;
-                    }
-                    // Server-initiated ping - respond with pong to keep connection alive
-                    if (msg.type === 'server_ping') {
-                        ctx.socket.send(JSON.stringify({ type: 'pong' }));
-                        return;
-                    }
-                    // Handle queue messages
-                    if (msg.type === 'queue_update' || msg.type === 'queue_sent' || msg.type === 'queue_state') {
-                        handleQueueMessage(msg);
-                        return;
-                    }
+                    if (handleJsonMessage(msg)) return;
                 } catch (e) {
                     // Not JSON, treat as ctx.terminal data
                 }
@@ -1729,6 +2010,7 @@ async function connect() {
     };
 
     ctx.socket.onclose = (event) => {
+        clearTimeout(wsUpgradeTimer);
         console.log('WebSocket closed:', event.code, event.reason);
         isConnecting = false;
         stopHeartbeat();
@@ -1772,7 +2054,7 @@ async function connect() {
             // Wait 600ms to clear server's 500ms rate limit window
             reconnectDelay = INITIAL_RECONNECT_DELAY;
             reconnectTimer = setTimeout(() => {
-                connect();
+                if (_preferSSE) connectSSE(); else connect();
             }, 600);
             return;
         }
@@ -1790,6 +2072,13 @@ async function connect() {
             statusOverlay.classList.remove('hidden');
             // Reconnect immediately - server will recreate PTY
             reconnectDelay = INITIAL_RECONNECT_DELAY;
+        }
+
+        // Abnormal close (1006) — likely HTTP/2 proxy broke WS upgrade; switch to SSE
+        if (event.code === 1006 && !_preferSSE) {
+            console.warn('[WS] Abnormal close (1006), switching to SSE transport');
+            _preferSSE = true;
+            sessionStorage.setItem(_transportKey, 'sse');
         }
 
         // Track reconnect attempts
@@ -1833,12 +2122,13 @@ async function connect() {
         // Reconnect with exponential backoff (starts immediately, overlay is delayed)
         reconnectTimer = setTimeout(() => {
             updateConnectionBanner('reconnecting');
-            connect();
+            if (_preferSSE) connectSSE(); else connect();
         }, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
     };
 
     ctx.socket.onerror = (error) => {
+        clearTimeout(wsUpgradeTimer);
         console.error('WebSocket error:', error);
         isConnecting = false;
         statusText.textContent = `Connection error (readyState=${ctx.socket?.readyState})`;
@@ -2476,7 +2766,7 @@ async function switchRepo(session) {
             // Clear now, right before reconnect — minimizes blank-screen time
             if (ctx.terminal) ctx.terminal.clear();
             if (logContent) logContent.innerHTML = '<div class="loading">Switching session...</div>';
-            connect();
+            if (_preferSSE) connectSSE(); else connect();
             // Refresh log, ctx.targets, and queue after connection established
             setTimeout(async () => {
                 await loadTargets();
@@ -3576,7 +3866,7 @@ function setupViewportHandler() {
                 }
 
                 reconnectDelay = INITIAL_RECONNECT_DELAY;
-                connect();
+                if (_preferSSE) connectSSE(); else connect();
             } else {
                 // Socket reports OPEN — don't kill it just because we were backgrounded.
                 // Reset timestamps so heartbeat/idle checks start fresh, then let normal
@@ -3602,10 +3892,14 @@ function setupViewportHandler() {
     });
 
     // Handle network state changes (mobile networks are flaky)
-    window.addEventListener('online', () => {
-        console.log('Network online - checking connection');
+    // Tailscale needs ~2-3s to re-establish WireGuard tunnel after network switch
+    const NETWORK_RECONNECT_DELAY = 3000;
+
+    function reconnectAfterNetworkChange(reason) {
         if (!ctx.socket || (ctx.socket.readyState !== WebSocket.OPEN && ctx.socket.readyState !== WebSocket.CONNECTING)) {
-            console.log('Network back, reconnecting immediately');
+            console.log(`${reason} — waiting ${NETWORK_RECONNECT_DELAY}ms for VPN tunnel`);
+            statusText.textContent = 'Network changed, reconnecting...';
+            statusOverlay.classList.remove('hidden');
 
             // Clear any pending timers
             if (reconnectTimer) {
@@ -3617,17 +3911,32 @@ function setupViewportHandler() {
                 reconnectOverlayTimer = null;
             }
 
+            // Reset attempts — failures were due to network, not server
+            reconnectAttempts = 0;
             reconnectDelay = INITIAL_RECONNECT_DELAY;
-            connect();
+
+            // Delay to let Tailscale/WireGuard re-establish tunnel
+            reconnectTimer = setTimeout(() => connect(), NETWORK_RECONNECT_DELAY);
         }
+    }
+
+    window.addEventListener('online', () => {
+        reconnectAfterNetworkChange('Network online');
     });
 
     window.addEventListener('offline', () => {
         console.log('Network offline');
         updateConnectionIndicator('disconnected');
-        // Stop heartbeat to avoid timeout triggers while offline
         stopHeartbeat();
     });
+
+    // Detect network TYPE changes (WiFi↔cellular) which don't fire online/offline
+    if (navigator.connection) {
+        navigator.connection.addEventListener('change', () => {
+            console.log(`Network type changed: ${navigator.connection.type || navigator.connection.effectiveType}`);
+            reconnectAfterNetworkChange('Network type changed');
+        });
+    }
 }
 
 // Enable paste from clipboard
@@ -9588,7 +9897,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // CRITICAL: Connect IMMEDIATELY - don't block on any API calls
     // WebSocket connection is independent of ctx.config/session/queue
-    connect();
+    // SSE fallback: if previous session found WS broken, start with SSE
+    if (_preferSSE) { connectSSE(); } else { connect(); }
 
     // Start with log view as primary (desktop layout already handled in setupDesktopLayout)
     if (ctx.uiMode !== 'desktop-multipane') {
