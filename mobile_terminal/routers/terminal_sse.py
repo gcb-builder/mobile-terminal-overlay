@@ -60,6 +60,14 @@ class SSESink:
         await self._enqueue(f"event: text\ndata: {escaped}\n\n")
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
+        if not self._connected:
+            return
+        # Send close reason as final event before disconnecting
+        close_msg = json.dumps({"type": "close", "code": code, "reason": reason})
+        try:
+            self._queue.put_nowait(f"event: message\ndata: {close_msg}\n\n")
+        except asyncio.QueueFull:
+            pass
         self._connected = False
         # Push sentinel to unblock the generator
         try:

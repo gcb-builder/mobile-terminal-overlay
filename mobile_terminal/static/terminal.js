@@ -1550,6 +1550,18 @@ function handleJsonMessage(msg) {
         return true;
     }
 
+    // Server closing connection (SSE transport sends this before stream ends)
+    if (msg.type === 'close') {
+        if (msg.code === 4002) {
+            console.log('Connection replaced by another client (SSE close)');
+            intentionalClose = true;  // Prevent auto-reconnect
+            statusText.textContent = 'Replaced by another connection. Tap to reconnect.';
+            statusOverlay.classList.remove('hidden');
+            if (reconnectBtn) reconnectBtn.classList.remove('hidden');
+        }
+        return true;
+    }
+
     // Server-initiated ping - respond with pong to keep connection alive
     if (msg.type === 'server_ping') {
         if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
