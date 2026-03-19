@@ -385,6 +385,7 @@ let reconnectOverlayTimer = null;  // Delayed overlay (grace period)
 let lastConnectionAttempt = 0;  // Timestamp of last connection attempt
 let reconnectAttempts = 0;  // Track consecutive failed reconnects
 const SHOW_HARD_REFRESH_AFTER = 3;  // Show hard refresh button after N failures
+const AUTO_RELOAD_AFTER = 4;         // Auto-reload page after N failures (fixes stale proxy connections)
 let hasConnectedOnce = false;  // Track if we've ever connected (to detect reconnects)
 let reconcileInFlight = false;  // Prevent overlapping reconciliations
 
@@ -1509,7 +1510,7 @@ async function hardRefresh() {
 /**
  * Connect to WebSocket
  */
-function connect() {
+async function connect() {
     // Prevent concurrent connection attempts
     if (isConnecting) {
         console.log('Connection already in progress, skipping');
@@ -1542,8 +1543,10 @@ function connect() {
     }
 
     isConnecting = true;
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}${window.__BASE_PATH || ''}/ws/terminal?token=${ctx.token}`;
+    // Cache-bust with timestamp to force a fresh HTTP/2 stream for each attempt
+    const wsUrl = `${protocol}//${window.location.host}${window.__BASE_PATH || ''}/ws/terminal?token=${ctx.token}&_t=${Date.now()}`;
 
     statusText.textContent = 'Connecting...';
     statusOverlay.classList.remove('hidden');
@@ -1792,6 +1795,17 @@ function connect() {
         // Track reconnect attempts
         reconnectAttempts++;
 
+        // Auto-reload after repeated failures to force a fresh connection.
+        if (reconnectAttempts >= AUTO_RELOAD_AFTER) {
+            const lastReload = parseInt(sessionStorage.getItem('_mto_reload_ts') || '0', 10);
+            if (Date.now() - lastReload > 30000) {
+                console.log(`Auto-reload after ${reconnectAttempts} failed reconnects`);
+                sessionStorage.setItem('_mto_reload_ts', String(Date.now()));
+                location.reload();
+                return;
+            }
+        }
+
         // Clear any existing overlay timer before scheduling new one
         if (reconnectOverlayTimer) {
             clearTimeout(reconnectOverlayTimer);
@@ -1803,7 +1817,7 @@ function connect() {
         reconnectOverlayTimer = setTimeout(() => {
             // Guard: only show if still disconnected
             if (!ctx.socket || ctx.socket.readyState !== WebSocket.OPEN) {
-                statusText.textContent = `Reconnecting...`;
+                statusText.textContent = `Reconnecting... (code=${event.code}, attempt ${reconnectAttempts})`;
                 statusOverlay.classList.remove('hidden');
                 if (reconnectBtn) reconnectBtn.classList.remove('hidden');
 
@@ -1827,7 +1841,7 @@ function connect() {
     ctx.socket.onerror = (error) => {
         console.error('WebSocket error:', error);
         isConnecting = false;
-        statusText.textContent = 'Connection error';
+        statusText.textContent = `Connection error (readyState=${ctx.socket?.readyState})`;
     };
 }
 
@@ -9626,6 +9640,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 // Register service worker for PWA standalone mode
 if ('serviceWorker' in navigator) {
     const _bp = window.__BASE_PATH || '';
-    navigator.serviceWorker.register(_bp + '/sw.js?v=119', { scope: _bp + '/' })
+    const correctScope = _bp + '/';
+
+    // Unregister stale SWs from wrong scopes (e.g. old '/' after switching to '/terminal')
+    navigator.serviceWorker.getRegistrations().then(regs => {
+        for (const reg of regs) {
+            if (new URL(reg.scope).pathname !== correctScope) {
+                console.log('Unregistering stale SW at scope:', reg.scope);
+                reg.unregister();
+            }
+        }
+    });
+
+    navigator.serviceWorker.register(_bp + '/sw.js?v=120', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
