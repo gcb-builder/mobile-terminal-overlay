@@ -149,6 +149,14 @@
                     </button>
                     <div class="sidebar-section-body sidebar-section-flex" id="sidebarQueueBody"></div>
                 </div>
+                <div class="sidebar-section collapsed" id="sidebarBacklogSection">
+                    <button class="sidebar-section-toggle" data-section="backlog">
+                        <span class="sidebar-section-arrow">&#x25BC;</span>
+                        <span class="sidebar-section-label">Backlog</span>
+                        <span id="sidebarBacklogCount" class="sidebar-section-count hidden">0</span>
+                    </button>
+                    <div class="sidebar-section-body sidebar-section-flex" id="sidebarBacklogBody"></div>
+                </div>
                 <div class="sidebar-section collapsed" id="sidebarProcessSection">
                     <button class="sidebar-section-toggle" data-section="processes">
                         <span class="sidebar-section-arrow">&#x25BC;</span>
@@ -173,6 +181,10 @@
                     <button class="tools-rail-btn" data-tool="queue" title="Queue">
                         <span class="rail-icon">&#x25F7;</span>
                         <span class="rail-badge hidden" id="toolsQueueBadge">0</span>
+                    </button>
+                    <button class="tools-rail-btn" data-tool="backlog" title="Backlog">
+                        <span class="rail-icon">&#x2630;</span>
+                        <span class="rail-badge hidden" id="toolsBacklogBadge">0</span>
                     </button>
                     <button class="tools-rail-btn" data-tool="history" title="History">
                         <span class="rail-icon">&#x21BA;</span>
@@ -666,6 +678,7 @@
             <div class="rollback-drawer-header">
                 <div class="rollback-tabs">
                     <button class="rollback-tab active" data-tab="queue">Queue<span id="queueTabBadge" class="queue-tab-badge hidden">0</span></button>
+                    <button class="rollback-tab" data-tab="backlog">Backlog<span id="backlogTabBadge" class="queue-tab-badge hidden">0</span></button>
                     <button class="rollback-tab" data-tab="runner">Runner</button>
                     <button class="rollback-tab" data-tab="dev">Dev</button>
                     <button class="rollback-tab" data-tab="history">History</button>
@@ -688,6 +701,17 @@
                 <div class="queue-tab-footer">
                     <button id="queueSendNext" class="queue-action-btn primary">Run</button>
                     <button id="queueFlush" class="queue-action-btn secondary">Clear All</button>
+                </div>
+            </div>
+            <!-- Backlog tab content -->
+            <div id="backlogTabContent" class="rollback-tab-content hidden">
+                <div class="backlog-tab-header">
+                    <span class="backlog-title">Backlog</span>
+                    <span id="backlogCount" class="backlog-count">0</span>
+                </div>
+                <div id="backlogList" class="backlog-list"></div>
+                <div class="backlog-tab-footer">
+                    <button id="backlogAddBtn" class="backlog-action-btn secondary">+ Add Item</button>
                 </div>
             </div>
             <!-- Runner tab content -->

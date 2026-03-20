@@ -16,6 +16,8 @@ import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          reconcileQueue, reloadQueueForTarget, refreshQueueList,
          getQueueItems, isQueuePaused, saveQueueToStorage,
          popNextQueueItem, popNextQueueItemById, requeueItem } from './src/features/queue.js';
+import { initBacklog, handleBacklogMessage, refreshBacklogList,
+         reloadBacklogForProject } from './src/features/backlog.js';
 import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js';
 import { initDocs } from './src/features/docs.js';
 import { initToolOutput } from './src/features/tool-output.js';
@@ -1613,6 +1615,12 @@ function handleJsonMessage(msg) {
         return true;
     }
 
+    // Handle backlog messages
+    if (msg.type === 'backlog_update') {
+        handleBacklogMessage(msg);
+        return true;
+    }
+
     return false;
 }
 
@@ -1991,6 +1999,7 @@ async function connect() {
                 try {
                     console.log('Reconnect detected, syncing queue and log...');
                     await reconcileQueue();
+                    reloadBacklogForProject(ctx.currentSession || '');
                     await refreshLogContent();
                 } catch (e) {
                     console.warn('Post-reconnect sync failed:', e);
@@ -2828,6 +2837,7 @@ async function switchRepo(session) {
                 await loadTargets();
                 loadLogContent();  // Full reload, not incremental refresh
                 await reconcileQueue();  // Reconcile queue for new session
+                reloadBacklogForProject(ctx.currentSession || '');
                 // Refresh context banner for new repo
                 sessionStorage.removeItem(`mto_context_dismissed_${session}`);
                 loadContextBanner().catch(() => {});
@@ -3056,6 +3066,8 @@ async function selectTarget(targetId, isInitialSync = false) {
     reloadQueueForTarget();
     // Background reconcile with server for the new pane
     reconcileQueue();
+    // Reload backlog for current project (server resolves project path)
+    reloadBacklogForProject(ctx.currentSession || '');
 
     // Clear input box — stale content from previous target is irrelevant
     if (logInput) { logInput.value = ''; logInput.dataset.autoSuggestion = 'false'; }
@@ -7800,10 +7812,13 @@ function switchRollbackTab(tabName) {
     const mcpContent = document.getElementById('mcpTabContent');
     const envContent = document.getElementById('envTabContent');
     const activityContent = document.getElementById('activityTabContent');
+    const backlogContent = document.getElementById('backlogTabContent');
 
     // Hide all tabs
     queueContent?.classList.add('hidden');
     queueContent?.classList.remove('active');
+    backlogContent?.classList.add('hidden');
+    backlogContent?.classList.remove('active');
     runnerContent?.classList.add('hidden');
     runnerContent?.classList.remove('active');
     devContent?.classList.add('hidden');
@@ -7861,6 +7876,10 @@ function switchRollbackTab(tabName) {
         activityContent?.classList.remove('hidden');
         activityContent?.classList.add('active');
         loadActivity();
+    } else if (tabName === 'backlog') {
+        backlogContent?.classList.remove('hidden');
+        backlogContent?.classList.add('active');
+        refreshBacklogList();
     }
 }
 
@@ -8959,6 +8978,7 @@ function openSurface(name) {
  */
 const TOOL_TAB_MAP = {
     queue: 'queueTabContent',
+    backlog: 'backlogTabContent',
     runner: 'runnerTabContent',
     dev: 'devTabContent',
     history: 'historyTabContent',
@@ -8974,6 +8994,7 @@ const TOOL_TAB_MAP = {
  */
 const TOOL_TITLES = {
     queue: 'Queue',
+    backlog: 'Backlog',
     runner: 'Runner',
     dev: 'Dev Preview',
     history: 'History',
@@ -8991,10 +9012,10 @@ const TOOL_TITLES = {
 function openToolPanel(name) {
     if (ctx.uiMode !== 'desktop-multipane') return;
 
-    if (name === 'team' || name === 'queue' || name === 'process') {
+    if (name === 'team' || name === 'queue' || name === 'process' || name === 'backlog') {
         // Scroll to sidebar section + expand if collapsed
         restoreSidebarToolContent();
-        const sectionMap = { team: 'sidebarTeamSection', queue: 'sidebarQueueSection', process: 'sidebarProcessSection' };
+        const sectionMap = { team: 'sidebarTeamSection', queue: 'sidebarQueueSection', process: 'sidebarProcessSection', backlog: 'sidebarBacklogSection' };
         const section = document.getElementById(sectionMap[name]);
         if (section) {
             section.classList.remove('collapsed');
@@ -9125,6 +9146,20 @@ function populateDesktopSidebar() {
         queueContent.classList.add('active');
     }
 
+    // Reparent backlog tab content into sidebar
+    const backlogContent = document.getElementById('backlogTabContent');
+    const sidebarBacklogBody = document.getElementById('sidebarBacklogBody');
+    if (backlogContent && sidebarBacklogBody) {
+        sidebarOrigParents.set('backlogContent', {
+            element: backlogContent,
+            parent: backlogContent.parentElement,
+            nextSibling: backlogContent.nextElementSibling,
+        });
+        sidebarBacklogBody.appendChild(backlogContent);
+        backlogContent.classList.remove('hidden');
+        backlogContent.classList.add('active');
+    }
+
     // Build sessions list
     populateSidebarSessions();
 
@@ -9152,8 +9187,8 @@ function restoreDesktopSidebar() {
     for (const [, info] of sidebarOrigParents) {
         const { element, parent, nextSibling } = info;
         if (parent) {
-            // Reset queue classes before returning
-            if (element.id === 'queueTabContent') {
+            // Reset queue/backlog classes before returning
+            if (element.id === 'queueTabContent' || element.id === 'backlogTabContent') {
                 element.classList.add('hidden');
                 element.classList.remove('active');
             }
@@ -9877,6 +9912,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateViewSwitcher();  // Set initial view switcher state
     startActivityUpdates();
     initQueue();
+    initBacklog('');
     initCollapse(logContent);
     setupScrollTracking();
     setupLogFilterBar();
