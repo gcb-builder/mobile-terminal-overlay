@@ -10,6 +10,7 @@ import { enqueueCommand } from './queue.js';
 
 // Module-local state
 let backlogItems = [];
+let candidateItems = [];
 let currentProject = '';
 
 // DOM refs (set in initBacklog)
@@ -46,19 +47,20 @@ function loadFromStorage(project) {
 
 function updateBadges() {
     const pending = backlogItems.filter(i => i.status === 'pending').length;
+    const total = pending + candidateItems.length;
     if (backlogTabBadge) {
-        backlogTabBadge.textContent = pending.toString();
-        backlogTabBadge.classList.toggle('hidden', pending === 0);
+        backlogTabBadge.textContent = total.toString();
+        backlogTabBadge.classList.toggle('hidden', total === 0);
     }
     const sidebarCount = document.getElementById('sidebarBacklogCount');
     if (sidebarCount) {
-        sidebarCount.textContent = pending.toString();
-        sidebarCount.classList.toggle('hidden', pending === 0);
+        sidebarCount.textContent = total.toString();
+        sidebarCount.classList.toggle('hidden', total === 0);
     }
     const railBadge = document.getElementById('toolsBacklogBadge');
     if (railBadge) {
-        railBadge.textContent = pending.toString();
-        railBadge.classList.toggle('hidden', pending === 0);
+        railBadge.textContent = total.toString();
+        railBadge.classList.toggle('hidden', total === 0);
     }
 }
 
@@ -68,49 +70,94 @@ export function renderBacklogList() {
     if (!backlogList) return;
 
     updateBadges();
-    if (backlogCount) backlogCount.textContent = backlogItems.length.toString();
+    const totalCount = backlogItems.length + candidateItems.length;
+    if (backlogCount) backlogCount.textContent = totalCount.toString();
 
-    if (backlogItems.length === 0) {
+    let html = '';
+
+    // Candidate tray (suggestions from JSONL interception)
+    if (candidateItems.length > 0) {
+        html += '<div class="backlog-candidate-tray">';
+        html += '<div class="backlog-candidate-header">';
+        html += '<span class="backlog-candidate-title">Suggestions</span>';
+        html += `<span class="backlog-candidate-count">${candidateItems.length}</span>`;
+        html += '</div>';
+        html += candidateItems.map(c => {
+            const eid = escapeHtml(String(c.id));
+            const summary = (c.summary || '').length > 60
+                ? c.summary.slice(0, 60) + '\u2026' : c.summary;
+            const tool = escapeHtml(c.source_tool || '');
+            return `<div class="backlog-candidate-item" data-id="${eid}">
+                <div class="backlog-item-dot candidate"></div>
+                <div class="backlog-item-body">
+                    <div class="backlog-item-summary">${escapeHtml(summary)}</div>
+                    <div class="backlog-item-meta">
+                        <span class="backlog-origin-badge jsonl_candidate">${tool}</span>
+                    </div>
+                </div>
+                <div class="backlog-item-actions">
+                    <button class="backlog-keep-btn" data-id="${eid}">Keep</button>
+                    <button class="backlog-dismiss-btn" data-id="${eid}">&times;</button>
+                </div>
+            </div>`;
+        }).join('');
+        html += '</div>';
+    }
+
+    // Main backlog items
+    if (backlogItems.length === 0 && candidateItems.length === 0) {
         backlogList.innerHTML = '<div class="backlog-empty">Backlog is empty</div>';
         return;
     }
 
-    // Sort: pending first, then queued, then done/dismissed
-    const order = { pending: 0, queued: 1, done: 2, dismissed: 3 };
-    const sorted = [...backlogItems].sort((a, b) =>
-        (order[a.status] ?? 9) - (order[b.status] ?? 9)
-    );
+    if (backlogItems.length > 0) {
+        // Sort: pending first, then queued, then done/dismissed
+        const order = { pending: 0, queued: 1, done: 2, dismissed: 3 };
+        const sorted = [...backlogItems].sort((a, b) =>
+            (order[a.status] ?? 9) - (order[b.status] ?? 9)
+        );
 
-    backlogList.innerHTML = sorted.map(item => {
-        const eid = escapeHtml(String(item.id));
-        const summary = item.summary.length > 60
-            ? item.summary.slice(0, 60) + '\u2026'
-            : item.summary;
-        const isDone = item.status === 'done' || item.status === 'dismissed';
-        const isQueued = item.status === 'queued';
+        html += sorted.map(item => {
+            const eid = escapeHtml(String(item.id));
+            const summary = item.summary.length > 60
+                ? item.summary.slice(0, 60) + '\u2026'
+                : item.summary;
+            const isDone = item.status === 'done' || item.status === 'dismissed';
+            const isQueued = item.status === 'queued';
 
-        let actions = '';
-        if (!isDone && !isQueued) {
-            actions += `<button class="backlog-queue-btn" data-id="${eid}">Queue</button>`;
-            actions += `<button class="backlog-done-btn" data-id="${eid}" data-action="done">Done</button>`;
-        } else if (isQueued) {
-            actions += `<span style="font-size:10px;color:var(--warning);padding:4px 6px">Queued</span>`;
-        }
-        actions += `<button class="backlog-item-remove" data-id="${eid}" title="Remove">&times;</button>`;
+            let actions = '';
+            if (!isDone && !isQueued) {
+                actions += `<button class="backlog-queue-btn" data-id="${eid}">Queue</button>`;
+                actions += `<button class="backlog-done-btn" data-id="${eid}" data-action="done">Done</button>`;
+            } else if (isQueued) {
+                actions += `<span style="font-size:10px;color:var(--warning);padding:4px 6px">Queued</span>`;
+            }
+            actions += `<button class="backlog-item-remove" data-id="${eid}" title="Remove">&times;</button>`;
 
-        return `<div class="backlog-item" data-id="${eid}" data-status="${escapeHtml(item.status)}">
-            <div class="backlog-item-dot ${escapeHtml(item.status)}"></div>
-            <div class="backlog-item-body">
-                <div class="backlog-item-summary">${escapeHtml(summary)}</div>
-                <div class="backlog-item-meta">
-                    <span class="backlog-source-badge ${escapeHtml(item.source)}">${escapeHtml(item.source)}</span>
+            return `<div class="backlog-item" data-id="${eid}" data-status="${escapeHtml(item.status)}">
+                <div class="backlog-item-dot ${escapeHtml(item.status)}"></div>
+                <div class="backlog-item-body">
+                    <div class="backlog-item-summary">${escapeHtml(summary)}</div>
+                    <div class="backlog-item-meta">
+                        <span class="backlog-source-badge ${escapeHtml(item.source)}">${escapeHtml(item.source)}</span>
+                    </div>
                 </div>
-            </div>
-            <div class="backlog-item-actions">${actions}</div>
-        </div>`;
-    }).join('');
+                <div class="backlog-item-actions">${actions}</div>
+            </div>`;
+        }).join('');
+    }
 
-    // Bind events
+    backlogList.innerHTML = html;
+
+    // Bind candidate events
+    backlogList.querySelectorAll('.backlog-keep-btn').forEach(btn => {
+        btn.addEventListener('click', e => { e.stopPropagation(); keepCandidate(btn.dataset.id); });
+    });
+    backlogList.querySelectorAll('.backlog-dismiss-btn').forEach(btn => {
+        btn.addEventListener('click', e => { e.stopPropagation(); dismissCandidate(btn.dataset.id); });
+    });
+
+    // Bind backlog item events
     backlogList.querySelectorAll('.backlog-queue-btn').forEach(btn => {
         btn.addEventListener('click', e => { e.stopPropagation(); queueBacklogItem(btn.dataset.id); });
     });
@@ -122,7 +169,46 @@ export function renderBacklogList() {
     });
 }
 
-// ── Actions ────────────────────────────────────────────────────────────
+// ── Candidate Actions ─────────────────────────────────────────────────
+
+async function keepCandidate(candidateId) {
+    // Optimistic: remove from candidates
+    candidateItems = candidateItems.filter(c => c.id !== candidateId);
+    renderBacklogList();
+
+    try {
+        const params = new URLSearchParams({ id: candidateId, token: ctx.token });
+        if (currentProject) params.set('project', currentProject);
+        const resp = await fetch(`/api/backlog/candidates/keep?${params}`, { method: 'POST' });
+        if (resp.ok) {
+            const data = await resp.json();
+            if (data.status === 'ok' && data.item) {
+                if (!backlogItems.some(i => i.id === data.item.id)) {
+                    backlogItems.push(data.item);
+                }
+                saveToStorage();
+                renderBacklogList();
+            }
+        }
+    } catch (e) {
+        console.error('Failed to keep candidate:', e);
+    }
+}
+
+async function dismissCandidate(candidateId) {
+    candidateItems = candidateItems.filter(c => c.id !== candidateId);
+    renderBacklogList();
+
+    try {
+        const params = new URLSearchParams({ id: candidateId, token: ctx.token });
+        if (currentProject) params.set('project', currentProject);
+        await fetch(`/api/backlog/candidates/dismiss?${params}`, { method: 'POST' });
+    } catch (e) {
+        console.error('Failed to dismiss candidate:', e);
+    }
+}
+
+// ── Backlog Actions ───────────────────────────────────────────────────
 
 async function queueBacklogItem(itemId) {
     const item = backlogItems.find(i => i.id === itemId);
@@ -227,14 +313,31 @@ export async function refreshBacklogList() {
     }
 }
 
+export async function refreshCandidates() {
+    try {
+        const params = new URLSearchParams({ token: ctx.token });
+        if (currentProject) params.set('project', currentProject);
+        const resp = await fetch(`/api/backlog/candidates?${params}`);
+        if (resp.ok) {
+            const data = await resp.json();
+            candidateItems = data.candidates || [];
+            renderBacklogList();
+        }
+    } catch (e) {
+        console.error('Failed to refresh candidates:', e);
+    }
+}
+
 export function reloadBacklogForProject(project) {
     currentProject = project || '';
     backlogItems = loadFromStorage(currentProject);
+    candidateItems = [];  // candidates are ephemeral, don't persist
     renderBacklogList();
     refreshBacklogList();
+    refreshCandidates();
 }
 
-// ── WS Message Handler ─────────────────────────────────────────────────
+// ── WS Message Handlers ───────────────────────────────────────────────
 
 export function handleBacklogMessage(msg) {
     if (msg.type !== 'backlog_update') return;
@@ -255,6 +358,20 @@ export function handleBacklogMessage(msg) {
     renderBacklogList();
 }
 
+export function handleCandidateMessage(payload) {
+    if (!payload) return;
+
+    if (payload.action === 'new' && payload.candidate) {
+        if (!candidateItems.some(c => c.id === payload.candidate.id)) {
+            candidateItems.push(payload.candidate);
+            renderBacklogList();
+        }
+    } else if (payload.action === 'dismissed' && payload.candidate_id) {
+        candidateItems = candidateItems.filter(c => c.id !== payload.candidate_id);
+        renderBacklogList();
+    }
+}
+
 // ── Init ───────────────────────────────────────────────────────────────
 
 export function initBacklog(project) {
@@ -272,5 +389,6 @@ export function initBacklog(project) {
         backlogItems = loadFromStorage(currentProject);
         renderBacklogList();
         refreshBacklogList();
+        refreshCandidates();
     }
 }

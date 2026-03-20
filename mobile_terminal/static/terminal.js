@@ -16,8 +16,8 @@ import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          reconcileQueue, reloadQueueForTarget, refreshQueueList,
          getQueueItems, isQueuePaused, saveQueueToStorage,
          popNextQueueItem, popNextQueueItemById, requeueItem } from './src/features/queue.js';
-import { initBacklog, handleBacklogMessage, refreshBacklogList,
-         reloadBacklogForProject } from './src/features/backlog.js';
+import { initBacklog, handleBacklogMessage, handleCandidateMessage,
+         refreshBacklogList, reloadBacklogForProject } from './src/features/backlog.js';
 import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js';
 import { initDocs } from './src/features/docs.js';
 import { initToolOutput } from './src/features/tool-output.js';
@@ -8742,6 +8742,9 @@ function handleTypedMessage(msg) {
         case 'device_state':
             break;
         case 'push_config':
+            break;
+        case 'backlog_candidate':
+            handleCandidateMessage(msg.payload);
             break;
         default:
             console.debug('Unknown v2 type:', msg.type);
