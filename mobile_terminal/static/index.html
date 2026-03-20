@@ -22,7 +22,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=211">
+    <link rel="stylesheet" href="/static/styles.css?v=212">
 </head>
 <body>
     <div class="app">
@@ -657,6 +657,7 @@
         <!-- FAB menu (vertical list, opens drawer tabs) -->
         <div id="fabMenu" class="fab-menu hidden">
             <button class="fab-menu-item" data-tab="queue"><span class="fab-icon">&#x23F3;</span>Queue</button>
+            <button class="fab-menu-item" data-tab="backlog"><span class="fab-icon">&#x2630;</span>Backlog</button>
             <button class="fab-menu-item" data-tab="runner"><span class="fab-icon">&#x25B6;</span>Runner</button>
             <button class="fab-menu-item" data-tab="dev"><span class="fab-icon">&#x2699;</span>Dev</button>
             <button class="fab-menu-item" data-tab="history"><span class="fab-icon">&#x231A;</span>History</button>
@@ -939,6 +940,6 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script defer src="/static/terminal.js?v=290"></script>
+    <script defer src="/static/terminal.js?v=291"></script>
 </body>
 </html>
