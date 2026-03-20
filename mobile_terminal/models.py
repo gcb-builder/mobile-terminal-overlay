@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 # Directory for persistent command queue (survives server restart)
 QUEUE_DIR = Path.home() / ".cache" / "mobile-overlay" / "queue"
+# Directory for persistent backlog (project-scoped deferred work items)
+BACKLOG_DIR = Path.home() / ".cache" / "mobile-overlay" / "backlog"
 
 
 def get_queue_file(session: str, pane_id: Optional[str] = None) -> Path:
@@ -57,6 +59,165 @@ def save_queue_to_disk(session: str, items: list, pane_id: Optional[str] = None)
                 f.write(json.dumps(item) + "\n")
     except Exception as e:
         logger.error(f"Error saving queue for {session}: {e}")
+
+
+# ── Backlog persistence ────────────────────────────────────────────────
+
+
+@dataclass
+class BacklogItem:
+    """A unit of deferred/possible work, project-scoped."""
+    id: str
+    summary: str                         # what user sees
+    prompt: str                          # what gets queued (instruction text)
+    status: str                          # pending | queued | done | dismissed
+    source: str                          # human | agent
+    created_at: float
+    updated_at: float
+    project: str                         # repo path
+    queue_item_id: Optional[str] = None  # linked QueueItem.id when queued
+
+
+def _sanitize_project(project: str) -> str:
+    """Turn an absolute path into a safe filename stem."""
+    return project.replace("/", "_").replace(":", "_").lstrip("_") or "default"
+
+
+def get_backlog_file(project: str) -> Path:
+    """Get JSONL path for a project's backlog."""
+    BACKLOG_DIR.mkdir(parents=True, exist_ok=True)
+    return BACKLOG_DIR / f"{_sanitize_project(project)}.jsonl"
+
+
+def load_backlog_from_disk(project: str) -> list:
+    """Load backlog items from JSONL. Returns raw dicts."""
+    path = get_backlog_file(project)
+    items = []
+    if path.exists():
+        try:
+            with open(path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        items.append(json.loads(line))
+                    except Exception as e:
+                        logger.warning(f"Skipping invalid backlog line: {e}")
+        except Exception as e:
+            logger.warning(f"Error reading backlog for {project}: {e}")
+    return items
+
+
+def save_backlog_to_disk(project: str, items: list) -> None:
+    """Write backlog items to JSONL (full rewrite)."""
+    path = get_backlog_file(project)
+    try:
+        BACKLOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            for item in items:
+                f.write(json.dumps(item) + "\n")
+    except Exception as e:
+        logger.error(f"Error saving backlog for {project}: {e}")
+
+
+class BacklogStore:
+    """
+    Project-scoped backlog with JSONL persistence.
+
+    Lazy-loads items per project on first access. All access is on the
+    event loop (no locking needed).
+    """
+
+    VALID_STATUSES = {"pending", "queued", "done", "dismissed"}
+
+    def __init__(self):
+        self._items: Dict[str, List[BacklogItem]] = {}
+        self._loaded: set = set()
+        self._app = None
+
+    def set_app(self, app) -> None:
+        self._app = app
+
+    def _get_items(self, project: str) -> List[BacklogItem]:
+        if project not in self._loaded:
+            self._load(project)
+            self._loaded.add(project)
+        return self._items.setdefault(project, [])
+
+    def _load(self, project: str) -> None:
+        raw = load_backlog_from_disk(project)
+        items = []
+        for data in raw:
+            try:
+                items.append(BacklogItem(
+                    id=data["id"],
+                    summary=data["summary"],
+                    prompt=data["prompt"],
+                    status=data.get("status", "pending"),
+                    source=data.get("source", "human"),
+                    created_at=data.get("created_at", time.time()),
+                    updated_at=data.get("updated_at", time.time()),
+                    project=data.get("project", project),
+                    queue_item_id=data.get("queue_item_id"),
+                ))
+            except Exception as e:
+                logger.warning(f"Skipping invalid backlog item: {e}")
+        self._items[project] = items
+        if items:
+            logger.info(f"Loaded {len(items)} backlog items for {project}")
+
+    def _save(self, project: str) -> None:
+        items = self._items.get(project, [])
+        save_backlog_to_disk(project, [asdict(i) for i in items])
+
+    def add(self, project: str, summary: str, prompt: str,
+            source: str = "human") -> BacklogItem:
+        items = self._get_items(project)
+        now = time.time()
+        item = BacklogItem(
+            id=str(uuid.uuid4()),
+            summary=summary,
+            prompt=prompt,
+            status="pending",
+            source=source,
+            created_at=now,
+            updated_at=now,
+            project=project,
+        )
+        items.append(item)
+        self._save(project)
+        return item
+
+    def list_items(self, project: str) -> List[BacklogItem]:
+        return self._get_items(project).copy()
+
+    def update_status(self, project: str, item_id: str,
+                      status: str,
+                      queue_item_id: Optional[str] = None) -> Optional[BacklogItem]:
+        if status not in self.VALID_STATUSES:
+            return None
+        items = self._get_items(project)
+        for item in items:
+            if item.id == item_id:
+                if item.status == status and queue_item_id is None:
+                    return item  # redundant transition, no-op
+                item.status = status
+                item.updated_at = time.time()
+                if queue_item_id is not None:
+                    item.queue_item_id = queue_item_id
+                self._save(project)
+                return item
+        return None
+
+    def remove(self, project: str, item_id: str) -> bool:
+        items = self._get_items(project)
+        before = len(items)
+        self._items[project] = [i for i in items if i.id != item_id]
+        if len(self._items[project]) < before:
+            self._save(project)
+            return True
+        return False
 
 
 class RingBuffer:
@@ -399,6 +560,7 @@ class QueueItem:
     created_at: float
     sent_at: Optional[float] = None
     error: Optional[str] = None
+    backlog_id: Optional[str] = None
 
 
 class CommandQueue:
@@ -537,7 +699,7 @@ class CommandQueue:
         # Default to safe for short, simple commands
         return "safe"
 
-    def enqueue(self, session: str, text: str, policy: str = "auto", item_id: Optional[str] = None, pane_id: Optional[str] = None) -> tuple:
+    def enqueue(self, session: str, text: str, policy: str = "auto", item_id: Optional[str] = None, pane_id: Optional[str] = None, backlog_id: Optional[str] = None) -> tuple:
         """
         Add a command to the queue.
 
@@ -562,6 +724,7 @@ class CommandQueue:
             policy=policy,
             status="queued",
             created_at=time.time(),
+            backlog_id=backlog_id,
         )
         queue.append(item)
         self._save_to_disk(session, pane_id)

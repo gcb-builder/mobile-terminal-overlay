@@ -229,7 +229,7 @@ export async function refreshQueueList() {
  * Enqueue a command.
  * Generates client-side ID for idempotency and persists to localStorage.
  */
-export async function enqueueCommand(text, policy = 'auto') {
+export async function enqueueCommand(text, policy = 'auto', backlogId = null) {
     if (!ctx.currentSession) return false;
 
     const itemId = makeQueueId();
@@ -261,6 +261,7 @@ export async function enqueueCommand(text, policy = 'auto') {
             token: ctx.token
         });
         if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
+        if (backlogId) params.set('backlog_id', backlogId);
         const resp = await fetch(`/api/queue/enqueue?${params}`, { method: 'POST' });
 
         if (resp.ok) {

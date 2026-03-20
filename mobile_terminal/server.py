@@ -37,7 +37,7 @@ from mobile_terminal.helpers import (
 
 from mobile_terminal.models import (
     RingBuffer, SnapshotBuffer, AuditLog, GitOpLock, InputQueue,
-    QueueItem, CommandQueue,
+    QueueItem, CommandQueue, BacklogStore,
     QUEUE_DIR, get_queue_file, load_queue_from_disk, save_queue_to_disk,
 )
 from mobile_terminal.runtime import TmuxRuntime
@@ -85,6 +85,8 @@ def create_app(config: Config) -> FastAPI:
     app.state.input_queue = InputQueue(runtime=runtime)  # Serialized input queue with ACKs
     app.state.command_queue = CommandQueue()  # Deferred-send command queue
     app.state.command_queue.set_app(app)
+    app.state.backlog_store = BacklogStore()  # Project-scoped deferred work items
+    app.state.backlog_store.set_app(app)
     app.state.snapshot_buffer = SnapshotBuffer()  # Preview snapshots ring buffer
     app.state.audit_log = AuditLog()  # Audit log for rollback operations
     app.state.git_op_lock = GitOpLock()  # Lock for git write operations
@@ -1324,6 +1326,7 @@ def create_app(config: Config) -> FastAPI:
     from mobile_terminal.routers import terminal_io as terminal_io_router
     from mobile_terminal.routers import terminal_sse as terminal_sse_router
     from mobile_terminal.routers import scratch as scratch_router
+    from mobile_terminal.routers import backlog as backlog_router
 
     deps = AppDeps(
         verify_token=verify_token,
@@ -1355,6 +1358,7 @@ def create_app(config: Config) -> FastAPI:
     terminal_io_router.register(app, deps)
     terminal_sse_router.register(app, deps)
     scratch_router.register(app, deps)
+    backlog_router.register(app, deps)
 
     @app.on_event("startup")
     async def startup():

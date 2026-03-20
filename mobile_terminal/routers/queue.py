@@ -19,6 +19,7 @@ def register(app: FastAPI, deps):
         policy: str = Query("auto"),
         id: Optional[str] = Query(None),
         pane_id: Optional[str] = Query(None),
+        backlog_id: Optional[str] = Query(None),
         _auth=Depends(deps.verify_token),
     ):
         """
@@ -33,7 +34,7 @@ def register(app: FastAPI, deps):
         without creating a duplicate (idempotency).
         """
 
-        item, is_new = app.state.command_queue.enqueue(session, text, policy, item_id=id, pane_id=pane_id)
+        item, is_new = app.state.command_queue.enqueue(session, text, policy, item_id=id, pane_id=pane_id, backlog_id=backlog_id)
 
         # Notify connected clients only for new items
         if is_new and app.state.active_client:
