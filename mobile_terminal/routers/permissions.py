@@ -88,3 +88,39 @@ def register(app: FastAPI, deps):
         policy = app.state.permission_policy
         entries = policy.read_audit(limit=limit)
         return {"entries": entries}
+
+    @app.post("/api/permissions/test")
+    async def permissions_test(
+        tool: str = Query("Bash"),
+        target: str = Query("pytest tests/ -q"),
+        _auth=Depends(deps.verify_token),
+    ):
+        """Return a fake permission_request payload for the frontend to display.
+
+        The frontend polls this and shows the enhanced banner.
+        """
+        import uuid
+        repo = str(deps.get_current_repo_path() or "")
+        from mobile_terminal.permission_policy import classify_risk
+        perm = {
+            "id": str(uuid.uuid4()),
+            "tool": tool,
+            "target": target,
+            "repo": repo,
+            "risk": classify_risk(tool, target),
+        }
+        # Store for polling clients and try direct send
+        app.state._test_permission = perm
+        sink = app.state.active_client
+        if sink is not None:
+            await deps.send_typed(sink, "permission_request", perm, level="urgent")
+        return {"status": "ok", "perm": perm}
+
+    @app.get("/api/permissions/test")
+    async def permissions_test_poll(_auth=Depends(deps.verify_token)):
+        """Poll for pending test permission (for HTTP-polling clients)."""
+        perm = getattr(app.state, '_test_permission', None)
+        if perm:
+            app.state._test_permission = None
+            return {"perm": perm}
+        return {"perm": None}

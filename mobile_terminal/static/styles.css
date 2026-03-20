@@ -2981,12 +2981,17 @@ html, body {
 .backlog-dismiss-btn:active { background: var(--bg-tertiary); }
 
 /* ===== Permissions Tab ===== */
+#permissionsTabContent {
+    min-height: 200px;
+    overflow-y: auto;
+}
 .permissions-tab-header {
     display: flex;
     align-items: center;
     gap: 8px;
     padding: 8px 12px;
     flex-wrap: wrap;
+    flex-shrink: 0;
 }
 .permissions-title {
     font-weight: 600;
@@ -3099,6 +3104,11 @@ html, body {
 .perm-audit-reason {
     color: var(--text-secondary);
     font-size: 10px;
+}
+.permissions-test-section {
+    padding: 12px 8px;
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
 }
 
 /* Status overlay */

@@ -10004,6 +10004,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     initQueue();
     initBacklog('');
     initPermissions();
+    document.getElementById('permissionsTestBtn')?.addEventListener('click', () => {
+        handlePermissionRequest({
+            id: 'test-' + Date.now(),
+            tool: 'Bash',
+            target: 'pytest tests/ -q',
+            repo: '/home/gcbbuilder/dev/mobile-terminal-overlay',
+            risk: 'low',
+        });
+    });
     initCollapse(logContent);
     setupScrollTracking();
     setupLogFilterBar();

@@ -22,7 +22,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=214">
+    <link rel="stylesheet" href="/static/styles.css?v=216">
 </head>
 <body>
     <div class="app">
@@ -738,6 +738,9 @@
                 </div>
                 <div id="permissionsList" class="permissions-list"></div>
                 <div id="permissionsAudit" class="permissions-audit"></div>
+                <div class="permissions-test-section">
+                    <button id="permissionsTestBtn" class="perm-mode-btn">Test Banner</button>
+                </div>
             </div>
             <!-- Runner tab content -->
             <div id="runnerTabContent" class="rollback-tab-content hidden">
@@ -964,6 +967,6 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script defer src="/static/terminal.js?v=293"></script>
+    <script defer src="/static/terminal.js?v=294"></script>
 </body>
 </html>
