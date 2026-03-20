@@ -7147,12 +7147,12 @@ html, body {
     margin: 0;
 }
 .permission-actions {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 8px;
     margin-top: 8px;
 }
 .permission-btn {
-    flex: 1;
     min-height: 44px;
     border: none;
     border-radius: 8px;
@@ -7178,9 +7178,6 @@ html, body {
     background: var(--warning);
     color: #000;
     font-size: 12px;
-}
-.permission-actions {
-    flex-wrap: wrap;
 }
 
 /* ===== Inline Question Cards (Log View) ===== */
