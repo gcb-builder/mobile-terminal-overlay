@@ -35,6 +35,7 @@ def register(app: FastAPI, deps):
         summary: str = Query(...),
         prompt: str = Query(...),
         source: str = Query("human"),
+        origin: Optional[str] = Query(None),
         project: Optional[str] = Query(None),
         _auth=Depends(deps.verify_token),
     ):
@@ -42,7 +43,10 @@ def register(app: FastAPI, deps):
         project = _resolve_project(project)
         if not project:
             return {"status": "error", "message": "No project context"}
-        item = app.state.backlog_store.add(project, summary, prompt, source)
+        # Resolve origin: explicit param > auto-detect from source
+        if origin is None:
+            origin = "api_report" if source == "agent" else "manual"
+        item = app.state.backlog_store.add(project, summary, prompt, source, origin)
 
         if app.state.active_client:
             try:
@@ -105,3 +109,72 @@ def register(app: FastAPI, deps):
                 pass
 
         return {"status": "ok" if success else "not_found"}
+
+    # ── Candidate endpoints ────────────────────────────────────────────
+
+    @app.get("/api/backlog/candidates")
+    async def backlog_candidates(
+        project: Optional[str] = Query(None),
+        _auth=Depends(deps.verify_token),
+    ):
+        """List current backlog candidates (ephemeral, in-memory)."""
+        project = _resolve_project(project)
+        cstore = app.state.candidate_store
+        return {
+            "candidates": [asdict(c) for c in cstore.list_candidates(project)],
+            "project": project,
+        }
+
+    @app.post("/api/backlog/candidates/keep")
+    async def candidate_keep(
+        id: str = Query(...),
+        project: Optional[str] = Query(None),
+        _auth=Depends(deps.verify_token),
+    ):
+        """Promote a candidate to a durable backlog item."""
+        project = _resolve_project(project)
+        cstore = app.state.candidate_store
+        candidate = cstore.remove(project, id)
+        if not candidate:
+            return {"status": "not_found"}
+
+        store = app.state.backlog_store
+        item = store.add(
+            project, candidate.summary, candidate.prompt,
+            source="agent", origin="jsonl_candidate",
+        )
+
+        if app.state.active_client:
+            try:
+                await app.state.active_client.send_json({
+                    "type": "backlog_update",
+                    "action": "add",
+                    "item": asdict(item),
+                })
+            except Exception:
+                pass
+
+        return {"status": "ok", "item": asdict(item), "candidate_id": id}
+
+    @app.post("/api/backlog/candidates/dismiss")
+    async def candidate_dismiss(
+        id: str = Query(...),
+        project: Optional[str] = Query(None),
+        _auth=Depends(deps.verify_token),
+    ):
+        """Dismiss a candidate (remembers hash to prevent re-detection)."""
+        project = _resolve_project(project)
+        cstore = app.state.candidate_store
+        dismissed = cstore.dismiss(project, id)
+
+        if dismissed and app.state.active_client:
+            try:
+                await app.state.active_client.send_json({
+                    "type": "backlog_candidate",
+                    "action": "dismissed",
+                    "candidate_id": id,
+                })
+            except Exception:
+                pass
+
+        return {"status": "ok" if dismissed else "not_found"}
