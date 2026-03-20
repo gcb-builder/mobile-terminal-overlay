@@ -392,16 +392,14 @@ def register(app: FastAPI, deps):
 
             while app.state.active_client is sink and not connection_closed:
                 try:
-                    # Non-blocking read with select-like behavior
-                    # ALWAYS read - never pause PTY drain
+                    # select()-guarded read with 1s timeout — prevents
+                    # segfaults from blocking os.read() on closed fds
                     data = await loop.run_in_executor(
                         None, lambda: runtime.pty_read(4096)
                     )
                     if not data:
-                        # PTY returned EOF - terminal died
-                        logger.warning("PTY returned EOF - terminal process died")
-                        pty_died = True
-                        break
+                        # Timeout — no data available, loop again
+                        continue
 
                     # Update input queue timestamp (for quiet-wait logic)
                     app.state.input_queue.update_output_ts()
@@ -441,6 +439,10 @@ def register(app: FastAPI, deps):
                                 await sink.send_bytes(send_data)
                                 pty_batch_flush_time = now
 
+                except EOFError as e:
+                    logger.warning(f"PTY EOF: {e}")
+                    pty_died = True
+                    break
                 except Exception as e:
                     # Ignore send-after-close errors (expected during disconnect)
                     if connection_closed or "after sending" in str(e) or "websocket.close" in str(e):

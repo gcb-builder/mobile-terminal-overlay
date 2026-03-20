@@ -177,9 +177,8 @@ def register(app: FastAPI, deps):
                         None, lambda: runtime.pty_read(4096)
                     )
                     if not data:
-                        logger.warning("PTY returned EOF — terminal process died")
-                        pty_died = True
-                        break
+                        # Timeout — no data available, loop again
+                        continue
 
                     app.state.input_queue.update_output_ts()
                     output_buffer.write(data)
@@ -205,6 +204,10 @@ def register(app: FastAPI, deps):
                                 await sink.send_bytes(send_data)
                                 pty_batch_flush_time = now
 
+                except EOFError as e:
+                    logger.warning(f"PTY EOF: {e}")
+                    pty_died = True
+                    break
                 except Exception as e:
                     if connection_closed or "close" in str(e).lower():
                         break

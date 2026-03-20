@@ -162,6 +162,7 @@ def main() -> int:
         host=config.host,
         port=config.port,
         log_level=log_level,
+        loop="asyncio",  # Disable uvloop — crashes with PTY fd ops on WSL2
     )
 
     return 0

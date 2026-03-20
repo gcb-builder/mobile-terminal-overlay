@@ -9,10 +9,12 @@ tmux target format:
     session:window.pane — e.g. "main:0.1"
 """
 
+import errno
 import fcntl
 import logging
 import os
 import pty
+import select
 import signal
 import struct
 import termios
@@ -236,11 +238,37 @@ class TmuxRuntime:
             raise RuntimeError("No PTY fd — call spawn() first")
         os.write(self._master_fd, data)
 
-    def pty_read(self, bufsize: int = 4096) -> bytes:
-        """Read raw bytes from PTY."""
-        if self._master_fd is None:
+    def pty_read(self, bufsize: int = 4096, timeout: float = 1.0) -> bytes:
+        """Read raw bytes from PTY with select() guard.
+
+        Uses select() to wait for data with a timeout instead of blocking
+        indefinitely in os.read(). This prevents segfaults when the fd is
+        closed by another task while a thread-pool worker is blocked.
+
+        Returns empty bytes on timeout (caller should loop).
+        Raises RuntimeError if no fd is open.
+        """
+        fd = self._master_fd
+        if fd is None:
             raise RuntimeError("No PTY fd — call spawn() first")
-        return os.read(self._master_fd, bufsize)
+        try:
+            ready, _, _ = select.select([fd], [], [], timeout)
+        except (ValueError, OSError):
+            # fd closed between check and select — signal EOF
+            raise EOFError("PTY fd closed")
+        if not ready:
+            return b""  # Timeout — no data, caller should loop
+        try:
+            data = os.read(fd, bufsize)
+            if not data:
+                raise EOFError("PTY EOF")
+            return data
+        except OSError as e:
+            if e.errno == errno.EIO:
+                raise EOFError("PTY slave closed (EIO)")
+            if e.errno == errno.EBADF:
+                raise EOFError("PTY fd invalid (EBADF)")
+            raise
 
     def write_command(self, command: str) -> None:
         r"""Write *command* + ``\r`` to PTY.
