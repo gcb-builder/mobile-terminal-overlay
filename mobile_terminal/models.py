@@ -76,6 +76,24 @@ class BacklogItem:
     updated_at: float
     project: str                         # repo path
     queue_item_id: Optional[str] = None  # linked QueueItem.id when queued
+    origin: str = "manual"               # manual | jsonl_candidate | api_report
+
+
+@dataclass
+class BacklogCandidate:
+    """An inferred work item from agent output. In-memory only, not persisted.
+
+    Candidates are disposable suggestions extracted from JSONL tool_use blocks.
+    They become durable BacklogItems only when the user explicitly keeps them.
+    """
+    id: str                 # uuid
+    summary: str            # short display text (from subject)
+    prompt: str             # full instruction (from description or subject)
+    source_tool: str        # "TodoWrite" | "TaskCreate"
+    detected_at: float      # time.time()
+    session: str            # tmux session name
+    pane_id: str            # pane that produced it
+    content_hash: str       # md5 of normalized summary for dedup
 
 
 def _sanitize_project(project: str) -> str:
@@ -160,6 +178,7 @@ class BacklogStore:
                     updated_at=data.get("updated_at", time.time()),
                     project=data.get("project", project),
                     queue_item_id=data.get("queue_item_id"),
+                    origin=data.get("origin", "manual"),
                 ))
             except Exception as e:
                 logger.warning(f"Skipping invalid backlog item: {e}")
@@ -172,7 +191,7 @@ class BacklogStore:
         save_backlog_to_disk(project, [asdict(i) for i in items])
 
     def add(self, project: str, summary: str, prompt: str,
-            source: str = "human") -> BacklogItem:
+            source: str = "human", origin: str = "manual") -> BacklogItem:
         items = self._get_items(project)
         now = time.time()
         item = BacklogItem(
@@ -184,6 +203,7 @@ class BacklogStore:
             created_at=now,
             updated_at=now,
             project=project,
+            origin=origin,
         )
         items.append(item)
         self._save(project)
@@ -217,6 +237,56 @@ class BacklogStore:
         if len(self._items[project]) < before:
             self._save(project)
             return True
+        return False
+
+
+class CandidateStore:
+    """In-memory store for inferred backlog candidates. Not persisted.
+
+    Candidates are disposable suggestions from JSONL interception.
+    Dismissed hashes are remembered to prevent re-detection within session.
+    """
+
+    def __init__(self):
+        self._candidates: Dict[str, List[BacklogCandidate]] = {}  # project → list
+        self._dismissed_hashes: set = set()
+
+    def add(self, project: str, candidate: BacklogCandidate) -> Optional[BacklogCandidate]:
+        """Add candidate if hash not already present or dismissed. Returns added candidate or None."""
+        if candidate.content_hash in self._dismissed_hashes:
+            return None
+        items = self._candidates.setdefault(project, [])
+        if any(c.content_hash == candidate.content_hash for c in items):
+            return None
+        items.append(candidate)
+        return candidate
+
+    def list_candidates(self, project: str) -> List[BacklogCandidate]:
+        return list(self._candidates.get(project, []))
+
+    def remove(self, project: str, candidate_id: str) -> Optional[BacklogCandidate]:
+        """Remove and return candidate by id."""
+        items = self._candidates.get(project, [])
+        for i, c in enumerate(items):
+            if c.id == candidate_id:
+                return items.pop(i)
+        return None
+
+    def dismiss(self, project: str, candidate_id: str) -> bool:
+        """Remove candidate and remember hash to prevent re-detection."""
+        candidate = self.remove(project, candidate_id)
+        if candidate:
+            self._dismissed_hashes.add(candidate.content_hash)
+            return True
+        return False
+
+    def is_seen(self, content_hash: str) -> bool:
+        """Check if hash is in any project's candidates or dismissed."""
+        if content_hash in self._dismissed_hashes:
+            return True
+        for items in self._candidates.values():
+            if any(c.content_hash == content_hash for c in items):
+                return True
         return False
 
 
