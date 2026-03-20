@@ -160,6 +160,8 @@ def register(app: FastAPI, deps):
                         # File was modified - associate with this target (not pinned)
                         app.state.target_log_mapping[target_id] = {"path": str(f), "pinned": False}
                         app.state.permission_detector.set_log_file(f)
+                        if hasattr(app.state, 'candidate_detector'):
+                            app.state.candidate_detector.set_log_file(f)
                         logger.info(f"Monitor detected log file for target {target_id}: {f.name}")
                         return
                 except Exception:
@@ -361,6 +363,8 @@ def register(app: FastAPI, deps):
             # Update permission detector with discovered log file
             if not app.state.permission_detector.log_file:
                 app.state.permission_detector.set_log_file(log_file)
+                if hasattr(app.state, 'candidate_detector'):
+                    app.state.candidate_detector.set_log_file(log_file)
 
         # Check mtime-based cache - avoid re-parsing if file unchanged
         try:
@@ -783,6 +787,8 @@ def register(app: FastAPI, deps):
         # Pin the log file to this target
         app.state.target_log_mapping[target_id] = {"path": str(log_file), "pinned": True}
         app.state.permission_detector.set_log_file(log_file)
+        if hasattr(app.state, 'candidate_detector'):
+            app.state.candidate_detector.set_log_file(log_file)
         logger.info(f"Pinned log file for target {target_id}: {session_id}")
 
         return {

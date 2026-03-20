@@ -98,6 +98,10 @@ def create_app(config: Config) -> FastAPI:
     app.state.setup_result = None  # Result from ensure_tmux_setup()
     app.state.last_ws_input_time = 0  # Last time mobile client sent input (for desktop activity detection)
     app.state.permission_detector = ClaudePermissionDetector()  # JSONL-based permission prompt detector
+    from mobile_terminal.drivers.claude import BacklogCandidateDetector
+    from mobile_terminal.models import CandidateStore
+    app.state.candidate_detector = BacklogCandidateDetector()
+    app.state.candidate_store = CandidateStore()
     app.state.driver = get_driver(config.agent_type, config.agent_display_name)
 
     from mobile_terminal.scratch import ScratchStore

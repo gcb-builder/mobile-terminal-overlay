@@ -238,6 +238,7 @@ def register(app: FastAPI, deps):
             """Send periodic tail updates when in tail mode."""
             nonlocal tail_seq, connection_closed, recent_buffer, last_target_epoch
             perm_check_counter = 0
+            candidate_check_counter = 0
             while app.state.active_client is sink and not connection_closed:
                 try:
                     await asyncio.sleep(TAIL_INTERVAL)
@@ -284,6 +285,41 @@ def register(app: FastAPI, deps):
                                     await deps.send_typed(sink, "permission_request", perm, level="urgent")
                         except Exception as e:
                             logger.debug(f"Permission check error: {e}")
+
+                    # Check for backlog candidates every ~2s (10 ticks at 200ms)
+                    candidate_check_counter += 1
+                    if candidate_check_counter >= 10 and not connection_closed:
+                        candidate_check_counter = 0
+                        try:
+                            cdet = app.state.candidate_detector
+                            if cdet.log_file:
+                                session = app.state.current_session or ""
+                                pane_id = app.state.active_target or ""
+                                raw = await asyncio.get_event_loop().run_in_executor(
+                                    None, cdet.check_sync, session, pane_id
+                                )
+                                if raw:
+                                    from uuid import uuid4
+                                    from dataclasses import asdict
+                                    from mobile_terminal.models import BacklogCandidate
+                                    project = str(deps.get_current_repo_path() or "")
+                                    cstore = app.state.candidate_store
+                                    for c in raw:
+                                        candidate = BacklogCandidate(
+                                            id=str(uuid4()), summary=c["summary"],
+                                            prompt=c["prompt"], source_tool=c["source_tool"],
+                                            detected_at=time.time(), session=session,
+                                            pane_id=pane_id, content_hash=c["hash"],
+                                        )
+                                        added = cstore.add(project, candidate)
+                                        if added:
+                                            await deps.send_typed(
+                                                sink, "backlog_candidate",
+                                                {"action": "new", "candidate": asdict(added)},
+                                                level="info",
+                                            )
+                        except Exception as e:
+                            logger.debug(f"Candidate check error: {e}")
                 except Exception:
                     break
 
