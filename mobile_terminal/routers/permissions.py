@@ -18,6 +18,7 @@ def register(app: FastAPI, deps):
         return {
             "mode": policy.mode,
             "rules": [asdict(r) for r in rules],
+            "repo": str(deps.get_current_repo_path() or ""),
         }
 
     @app.post("/api/permissions/rules")

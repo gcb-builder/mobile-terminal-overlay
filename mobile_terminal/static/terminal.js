@@ -6476,6 +6476,7 @@ function extractPermissionPrompt(terminalContent) {
     const lines = terminalContent.split('\n');
 
     let questionLine = null;
+    let questionLineIdx = -1;
     let choices = [];
     let inOptions = false;
 
@@ -6486,6 +6487,7 @@ function extractPermissionPrompt(terminalContent) {
         // Detect question line (ends with ?)
         if (line.endsWith('?') && !line.startsWith('❯') && !line.match(/^\d+\./)) {
             questionLine = line;
+            questionLineIdx = i;
             choices = [];
             inOptions = true;
             continue;
@@ -6561,7 +6563,69 @@ function extractPermissionPrompt(terminalContent) {
         return;
     }
 
-    console.debug('[PermissionPrompt] Detected:', questionLine, choices);
+    // Extract tool name and target from lines preceding the question
+    // Claude Code TUI formats:
+    //   1. Box header: "╭─ Bash ──────╮" → after stripBox → "Bash"
+    //   2. Prose: "Claude wants to use Bash" or "use the Edit tool"
+    //   3. Standalone tool name on its own line
+    let permTool = null;
+    let permTarget = '';
+    const knownTools = ['Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Agent', 'NotebookEdit'];
+    const knownToolsLower = knownTools.map(t => t.toLowerCase());
+    const prosePattern = /\b(?:use|wants to use|using)\s+(?:the\s+)?(\w+?)(?:\s+tool)?\b/i;
+    if (questionLineIdx > 0) {
+        // Scan lines above the question for tool mention
+        for (let j = Math.max(0, questionLineIdx - 10); j < questionLineIdx; j++) {
+            const prevLine = stripBox(lines[j]);
+            if (!prevLine) continue;
+
+            let found = null;
+
+            // Method 1: Line IS a known tool name (box header after strip)
+            const trimmed = prevLine.trim();
+            const idx = knownToolsLower.indexOf(trimmed.toLowerCase());
+            if (idx !== -1) {
+                found = knownTools[idx];
+            }
+
+            // Method 2: Line starts with or contains a known tool name as standalone word
+            if (!found) {
+                for (let ti = 0; ti < knownTools.length; ti++) {
+                    const re = new RegExp('\\b' + knownTools[ti] + '\\b', 'i');
+                    if (re.test(prevLine)) {
+                        found = knownTools[ti];
+                        break;
+                    }
+                }
+            }
+
+            // Method 3: Prose pattern "wants to use <Tool>"
+            if (!found) {
+                const proseMatch = prevLine.match(prosePattern);
+                if (proseMatch) {
+                    const pi = knownToolsLower.indexOf(proseMatch[1].toLowerCase());
+                    if (pi !== -1) found = knownTools[pi];
+                }
+            }
+
+            if (found) {
+                permTool = found;
+                // Target is on following non-empty lines until question
+                const targetParts = [];
+                for (let k = j + 1; k < questionLineIdx; k++) {
+                    const tl = stripBox(lines[k]);
+                    // Skip lines that are just the tool name or empty
+                    if (tl && tl.toLowerCase() !== found.toLowerCase()) {
+                        targetParts.push(tl);
+                    }
+                }
+                permTarget = targetParts.join(' ').trim();
+                break;
+            }
+        }
+    }
+
+    console.debug('[PermissionPrompt] Detected:', questionLine, choices, 'tool:', permTool, 'target:', permTarget);
 
     pendingPrompt = {
         id: promptId,
@@ -6569,7 +6633,9 @@ function extractPermissionPrompt(terminalContent) {
         text: questionLine,
         choices: choices,
         answered: false,
-        sentChoice: null
+        sentChoice: null,
+        tool: permTool,
+        target: permTarget,
     };
 
     showPromptBanner();
@@ -6605,6 +6671,15 @@ function showPromptBanner() {
         </button>`;
     }
 
+    // Add "Always" buttons for permission prompts when tool is known
+    let alwaysHtml = '';
+    if (kind === 'permission' && pendingPrompt.tool) {
+        alwaysHtml = `
+            <button class="prompt-always-btn always-repo" data-scope="repo" title="Auto-allow for this repo">Always&middot;Repo</button>
+            <button class="prompt-always-btn always-global" data-scope="global" title="Auto-allow everywhere">Always</button>
+        `;
+    }
+
     // Add dismiss button
     choicesHtml += `<button class="prompt-dismiss-btn" title="Dismiss (won't ask again)">✕</button>`;
 
@@ -6613,10 +6688,11 @@ function showPromptBanner() {
     const choicesClass = manyChoices ? 'prompt-banner-choices many-choices' : 'prompt-banner-choices';
     promptBanner.innerHTML = `
         <div class="prompt-banner-content">
-            <span class="prompt-banner-icon">${kind === 'confirmation' ? '⚠️' : '❓'}</span>
+            <span class="prompt-banner-icon">${kind === 'confirmation' ? '⚠️' : kind === 'permission' ? '🔒' : '❓'}</span>
             <span class="prompt-banner-text">${escapeHtml(displayText)}</span>
         </div>
         <div class="${choicesClass}">${choicesHtml}</div>
+        ${alwaysHtml ? `<div class="prompt-banner-always">${alwaysHtml}</div>` : ''}
     `;
 
     promptBanner.classList.add('visible');
@@ -6673,6 +6749,36 @@ function setupPromptBannerHandlers() {
             promptBanner.classList.toggle('expanded');
         };
     }
+
+    // "Always" buttons for permission prompts
+    promptBanner.querySelectorAll('.prompt-always-btn').forEach(btn => {
+        btn.onclick = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const scope = btn.dataset.scope;
+            if (!pendingPrompt || !pendingPrompt.tool) return;
+            const perm = {
+                tool: pendingPrompt.tool,
+                target: pendingPrompt.target || '',
+                repo: '',
+            };
+            // Fetch current repo path from permissions API
+            try {
+                const resp = await fetch(`/api/permissions/rules?token=${ctx.token}`);
+                const data = await resp.json();
+                if (data.repo) perm.repo = data.repo;
+            } catch (_) {}
+            await createPermissionRule(perm, scope);
+            // Send "Yes" (first choice) to approve
+            if (pendingPrompt.choices.length > 0) {
+                sendPromptChoice(String(pendingPrompt.choices[0].num));
+            }
+            ctx.showToast(
+                scope === 'repo' ? 'Rule created for this repo' : 'Global rule created',
+                'success', 3000
+            );
+        };
+    });
 
     // Dismiss button
     const dismissBtn = promptBanner.querySelector('.prompt-dismiss-btn');
@@ -10012,6 +10118,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             repo: '/home/gcbbuilder/dev/mobile-terminal-overlay',
             risk: 'low',
         });
+    });
+    document.getElementById('permissionsTestPromptBtn')?.addEventListener('click', () => {
+        // Simulate real Claude Code TUI format (tool name in box header)
+        const fakeTerminal = [
+            '╭─ Bash ────────────────────────────────╮',
+            '│  git commit -m "Fix bug"              │',
+            '│                                       │',
+            '│  Allow this action?                   │',
+            '│  ❯ 1. Yes                             │',
+            '│    2. Yes, and don\'t ask again        │',
+            '│    3. Reject                          │',
+            '╰───────────────────────────────────────╯',
+        ].join('\n');
+        extractPermissionPrompt(fakeTerminal);
     });
     initCollapse(logContent);
     setupScrollTracking();
