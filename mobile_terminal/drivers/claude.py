@@ -8,6 +8,7 @@ Extracts Claude-specific logic from server.py:
 - PID detection via pgrep -f claude
 """
 
+import hashlib
 import json
 import logging
 import time
@@ -396,3 +397,114 @@ class ClaudePermissionDetector:
 
     def clear(self):
         self.last_sent_id = None
+
+
+class BacklogCandidateDetector:
+    """Detect potential backlog items from Claude JSONL output.
+
+    Incrementally reads new JSONL entries and extracts TaskCreate and
+    TodoWrite pending items as candidates. Content-hash dedup prevents
+    the same item from being surfaced twice.
+
+    Follows the ClaudePermissionDetector pattern: stateful, incremental,
+    called periodically from tail_sender() via run_in_executor.
+    """
+
+    def __init__(self):
+        self.last_log_size: int = 0
+        self.log_file: Optional[Path] = None
+        self._seen_hashes: set = set()
+
+    def set_log_file(self, path: Optional[Path]):
+        """Update log path. Reset position and seen hashes for new session."""
+        self.log_file = Path(path) if path else None
+        try:
+            self.last_log_size = (
+                self.log_file.stat().st_size
+                if self.log_file and self.log_file.exists() else 0
+            )
+        except Exception:
+            self.last_log_size = 0
+        self._seen_hashes.clear()
+
+    def check_sync(self, session: str, pane_id: str) -> list:
+        """Read new JSONL bytes, extract candidates, return unseen ones.
+
+        Returns list of dicts: {summary, prompt, source_tool, hash}
+        """
+        if not self.log_file or not self.log_file.exists():
+            return []
+
+        try:
+            current_size = self.log_file.stat().st_size
+        except Exception:
+            return []
+        if current_size <= self.last_log_size:
+            return []
+
+        new_text = self._read_new(current_size)
+        self.last_log_size = current_size
+
+        if not new_text:
+            return []
+
+        return self._extract_candidates(new_text)
+
+    def _read_new(self, current_size: int) -> str:
+        try:
+            with open(self.log_file, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(self.last_log_size)
+                return f.read()
+        except Exception:
+            return ""
+
+    def _extract_candidates(self, new_text: str) -> list:
+        candidates = []
+        for line in new_text.strip().split("\n"):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+                if entry.get("type") != "assistant":
+                    continue
+                content = entry.get("message", {}).get("content", [])
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    name = block.get("name", "")
+                    inp = block.get("input", {})
+
+                    if name == "TaskCreate":
+                        self._try_add(candidates, name, inp)
+                    elif name == "TodoWrite":
+                        todos = inp.get("todos", [])
+                        for todo in todos:
+                            if todo.get("status") == "pending":
+                                self._try_add(candidates, name, todo)
+            except json.JSONDecodeError:
+                continue
+        return candidates
+
+    def _try_add(self, candidates: list, source_tool: str, data: dict):
+        """Extract summary/prompt from tool data and add if unseen."""
+        subject = (data.get("subject") or "").strip()
+        description = (data.get("description") or "").strip()
+        if not subject:
+            return
+
+        summary = subject[:120]
+        prompt = description or subject
+        content_hash = hashlib.md5(summary.lower().encode()).hexdigest()
+
+        if content_hash in self._seen_hashes:
+            return
+        self._seen_hashes.add(content_hash)
+
+        candidates.append({
+            "summary": summary,
+            "prompt": prompt,
+            "source_tool": source_tool,
+            "hash": content_hash,
+        })
