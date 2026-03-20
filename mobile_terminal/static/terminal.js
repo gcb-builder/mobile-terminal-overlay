@@ -18,6 +18,7 @@ import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          popNextQueueItem, popNextQueueItemById, requeueItem } from './src/features/queue.js';
 import { initBacklog, handleBacklogMessage, handleCandidateMessage,
          refreshBacklogList, reloadBacklogForProject } from './src/features/backlog.js';
+import { initPermissions, loadPermissions } from './src/features/permissions.js';
 import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js';
 import { initDocs } from './src/features/docs.js';
 import { initToolOutput } from './src/features/tool-output.js';
@@ -7813,6 +7814,7 @@ function switchRollbackTab(tabName) {
     const envContent = document.getElementById('envTabContent');
     const activityContent = document.getElementById('activityTabContent');
     const backlogContent = document.getElementById('backlogTabContent');
+    const permissionsContent = document.getElementById('permissionsTabContent');
 
     // Hide all tabs
     queueContent?.classList.add('hidden');
@@ -7835,6 +7837,8 @@ function switchRollbackTab(tabName) {
     envContent?.classList.remove('active');
     activityContent?.classList.add('hidden');
     activityContent?.classList.remove('active');
+    permissionsContent?.classList.add('hidden');
+    permissionsContent?.classList.remove('active');
     stopActivity();
 
     // Show selected tab
@@ -7880,6 +7884,10 @@ function switchRollbackTab(tabName) {
         backlogContent?.classList.remove('hidden');
         backlogContent?.classList.add('active');
         refreshBacklogList();
+    } else if (tabName === 'permissions') {
+        permissionsContent?.classList.remove('hidden');
+        permissionsContent?.classList.add('active');
+        loadPermissions();
     }
 }
 
@@ -8729,6 +8737,7 @@ function setupDevPreview() {
 // ============================================================================
 
 let activePermissionId = null;
+let activePermissionPayload = null;
 let permissionShownAt = 0;
 
 /**
@@ -8746,6 +8755,14 @@ function handleTypedMessage(msg) {
         case 'backlog_candidate':
             handleCandidateMessage(msg.payload);
             break;
+        case 'permission_auto': {
+            const d = msg.payload;
+            const verb = d.decision === 'allow' ? 'Auto-approved' : 'Auto-denied';
+            const tgt = (d.target || '').slice(0, 40);
+            ctx.showToast(`${verb}: ${d.tool} ${tgt} (${d.reason})`,
+                d.decision === 'allow' ? 'info' : 'warning', 3000);
+            break;
+        }
         default:
             console.debug('Unknown v2 type:', msg.type);
     }
@@ -8759,6 +8776,7 @@ function handlePermissionRequest(payload) {
     if (!banner) return;
 
     activePermissionId = payload.id;
+    activePermissionPayload = payload;
     permissionShownAt = Date.now();
     document.getElementById('permissionTool').textContent = payload.tool || 'Tool';
     document.getElementById('permissionTarget').textContent = payload.target || '';
@@ -8777,6 +8795,7 @@ function hidePermissionBanner() {
     const banner = document.getElementById('permissionBanner');
     if (banner) banner.classList.add('hidden');
     activePermissionId = null;
+    activePermissionPayload = null;
     permissionShownAt = 0;
 }
 
@@ -8805,6 +8824,72 @@ function setupPermissionBanner() {
     document.getElementById('permissionMore')?.addEventListener('click', () => {
         document.getElementById('permissionContext')?.classList.toggle('hidden');
     });
+
+    document.getElementById('permissionAlwaysRepo')?.addEventListener('click', async () => {
+        if (activePermissionPayload) {
+            await createPermissionRule(activePermissionPayload, 'repo');
+        }
+        sendTextAtomic('y', true);
+        setTerminalBusy(true);
+        recentSentCommands.add('y');
+        lastSuggestion = '';
+        if (activePromptContent) activePromptContent.textContent = '';
+        hidePermissionBanner();
+        ctx.showToast('Rule created for this repo', 'success');
+    });
+
+    document.getElementById('permissionAlways')?.addEventListener('click', async () => {
+        if (activePermissionPayload) {
+            await createPermissionRule(activePermissionPayload, 'global');
+        }
+        sendTextAtomic('y', true);
+        setTerminalBusy(true);
+        recentSentCommands.add('y');
+        lastSuggestion = '';
+        if (activePromptContent) activePromptContent.textContent = '';
+        hidePermissionBanner();
+        ctx.showToast('Global rule created', 'success');
+    });
+}
+
+/**
+ * Extract base command for rule matching.
+ * "pytest tests/ -q" → "pytest"
+ * "npm run build" → "npm run build"
+ * "git status" → "git status"
+ */
+function extractBaseCommand(cmd) {
+    const parts = (cmd || '').trim().split(/\s+/);
+    if (['npm', 'npx', 'pnpm', 'yarn'].includes(parts[0]) && parts[1] === 'run') {
+        return parts.slice(0, 3).join(' ');
+    }
+    if (['git'].includes(parts[0]) && parts.length > 1) {
+        return parts.slice(0, 2).join(' ');
+    }
+    return parts[0] || cmd;
+}
+
+/**
+ * Create a permission rule via the API.
+ */
+async function createPermissionRule(perm, scope) {
+    const tool = perm.tool;
+    const isCommand = tool === 'Bash';
+    const params = new URLSearchParams({
+        tool,
+        matcher_type: isCommand ? 'command' : (perm.target ? 'path' : 'tool_only'),
+        matcher: isCommand ? extractBaseCommand(perm.target) : (perm.target || ''),
+        scope,
+        scope_value: scope === 'repo' ? (perm.repo || '') : '',
+        action: 'allow',
+        created_from: 'banner',
+        token: ctx.token,
+    });
+    try {
+        await fetch(`/api/permissions/rules?${params}`, { method: 'POST' });
+    } catch (e) {
+        console.error('Failed to create permission rule:', e);
+    }
 }
 
 /**
@@ -8990,6 +9075,7 @@ const TOOL_TAB_MAP = {
     mcp: 'mcpTabContent',
     env: 'envTabContent',
     activity: 'activityTabContent',
+    permissions: 'permissionsTabContent',
 };
 
 /**
@@ -9006,6 +9092,7 @@ const TOOL_TITLES = {
     env: 'Env',
     team: 'Team',
     activity: 'Activity',
+    permissions: 'Permissions',
 };
 
 /**
@@ -9916,6 +10003,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     startActivityUpdates();
     initQueue();
     initBacklog('');
+    initPermissions();
     initCollapse(logContent);
     setupScrollTracking();
     setupLogFilterBar();

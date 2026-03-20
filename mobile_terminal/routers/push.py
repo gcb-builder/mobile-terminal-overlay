@@ -138,21 +138,40 @@ def register(app: FastAPI, deps):
                 if obs.active:
                     _last_activity_time = time.time()
 
-                # === Permission push (existing) ===
+                # === Permission push (with policy auto-approval) ===
                 if app.state.active_client is None:
                     detector = app.state.permission_detector
                     if detector.log_file:
                         perm = detector.check_sync(session, target, ctx.tmux_target)
                         if perm:
-                            if _perm_pending_since == 0:
-                                _perm_pending_since = time.time()
-                            elif time.time() - _perm_pending_since > 10:
-                                await maybe_send_push(
-                                    f"{agent_name} needs approval",
-                                    f"Allow {perm['tool']}: {perm['target'][:80]}?",
-                                    "permission",
-                                    extra_data=extra,
-                                )
+                            # Evaluate policy before deciding to push
+                            from mobile_terminal.permission_policy import normalize_request
+                            policy = app.state.permission_policy
+                            req = normalize_request(perm, deps.get_current_repo_path())
+                            decision = policy.evaluate(req)
+                            policy.audit(req, decision)
+
+                            if decision.action == "allow":
+                                runtime = app.state.runtime
+                                await runtime.send_keys(ctx.tmux_target, "y", literal=True)
+                                await runtime.send_keys(ctx.tmux_target, "Enter")
+                                _perm_pending_since = 0
+                            elif decision.action == "deny":
+                                runtime = app.state.runtime
+                                await runtime.send_keys(ctx.tmux_target, "n", literal=True)
+                                await runtime.send_keys(ctx.tmux_target, "Enter")
+                                _perm_pending_since = 0
+                            else:
+                                # Needs human — send push notification after delay
+                                if _perm_pending_since == 0:
+                                    _perm_pending_since = time.time()
+                                elif time.time() - _perm_pending_since > 10:
+                                    await maybe_send_push(
+                                        f"{agent_name} needs approval",
+                                        f"Allow {perm['tool']}: {perm['target'][:80]}?",
+                                        "permission",
+                                        extra_data=extra,
+                                    )
                         else:
                             _perm_pending_since = 0
 

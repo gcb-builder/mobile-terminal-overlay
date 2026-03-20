@@ -290,6 +290,45 @@ class CandidateStore:
         return False
 
 
+# ── Permission policy data ─────────────────────────────────────────────
+
+
+@dataclass
+class PermissionRequest:
+    """Normalized permission request for policy evaluation."""
+    tool: str               # Bash, Edit, Write, Read, Glob, Grep, ...
+    target: str             # raw target from detector (command or path)
+    command: Optional[str]  # extracted command (Bash only)
+    path: Optional[str]     # extracted path (file ops only)
+    repo: str               # current repo path
+    risk: str               # high | medium | low
+    perm_id: str            # dedup id from detector
+
+
+@dataclass
+class PermissionRule:
+    """A single permission policy rule."""
+    id: str
+    tool: str               # Bash | Edit | Write | Read | * (wildcard)
+    matcher_type: str       # command | path | tool_only
+    matcher: str            # command prefix, path glob, or empty
+    scope: str              # global | repo | session
+    scope_value: Optional[str]  # repo path (for repo scope)
+    action: str             # allow | prompt | deny
+    created_at: float
+    created_from: str       # banner | menu | default
+    note: Optional[str] = None
+
+
+@dataclass
+class PermissionDecision:
+    """Structured result of policy evaluation."""
+    action: str             # allow | prompt | deny
+    reason: str             # default_rule | repo_rule | session_rule | hard_guard | mode_manual | no_match
+    rule_id: Optional[str]  # matched rule id (None for hard guard / mode)
+    risk: str               # from PermissionRequest
+
+
 class RingBuffer:
     """Thread-safe ring buffer for storing PTY output."""
 

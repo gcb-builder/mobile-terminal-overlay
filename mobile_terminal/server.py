@@ -87,6 +87,10 @@ def create_app(config: Config) -> FastAPI:
     app.state.command_queue.set_app(app)
     app.state.backlog_store = BacklogStore()  # Project-scoped deferred work items
     app.state.backlog_store.set_app(app)
+
+    from mobile_terminal.permission_policy import PermissionPolicy
+    app.state.permission_policy = PermissionPolicy()
+    app.state.permission_policy.load()
     app.state.snapshot_buffer = SnapshotBuffer()  # Preview snapshots ring buffer
     app.state.audit_log = AuditLog()  # Audit log for rollback operations
     app.state.git_op_lock = GitOpLock()  # Lock for git write operations
@@ -1331,6 +1335,7 @@ def create_app(config: Config) -> FastAPI:
     from mobile_terminal.routers import terminal_sse as terminal_sse_router
     from mobile_terminal.routers import scratch as scratch_router
     from mobile_terminal.routers import backlog as backlog_router
+    from mobile_terminal.routers import permissions as permissions_router
 
     deps = AppDeps(
         verify_token=verify_token,
@@ -1363,6 +1368,7 @@ def create_app(config: Config) -> FastAPI:
     terminal_sse_router.register(app, deps)
     scratch_router.register(app, deps)
     backlog_router.register(app, deps)
+    permissions_router.register(app, deps)
 
     @app.on_event("startup")
     async def startup():

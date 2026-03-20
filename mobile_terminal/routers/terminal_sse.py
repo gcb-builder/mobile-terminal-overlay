@@ -282,7 +282,30 @@ def register(app: FastAPI, deps):
                                     None, detector.check_sync, session, target, tmux_t
                                 )
                                 if perm:
-                                    await deps.send_typed(sink, "permission_request", perm, level="urgent")
+                                    from mobile_terminal.permission_policy import normalize_request
+                                    policy = app.state.permission_policy
+                                    req = normalize_request(perm, deps.get_current_repo_path())
+                                    decision = policy.evaluate(req)
+                                    policy.audit(req, decision)
+
+                                    if decision.action == "allow":
+                                        await runtime.send_keys(tmux_t, "y", literal=True)
+                                        await runtime.send_keys(tmux_t, "Enter")
+                                        await deps.send_typed(sink, "permission_auto",
+                                            {"decision": "allow", "tool": req.tool,
+                                             "target": req.target, "reason": decision.reason},
+                                            level="info")
+                                    elif decision.action == "deny":
+                                        await runtime.send_keys(tmux_t, "n", literal=True)
+                                        await runtime.send_keys(tmux_t, "Enter")
+                                        await deps.send_typed(sink, "permission_auto",
+                                            {"decision": "deny", "tool": req.tool,
+                                             "target": req.target, "reason": decision.reason},
+                                            level="warning")
+                                    else:
+                                        perm["repo"] = str(deps.get_current_repo_path() or "")
+                                        perm["risk"] = req.risk
+                                        await deps.send_typed(sink, "permission_request", perm, level="urgent")
                         except Exception as e:
                             logger.debug(f"Permission check error: {e}")
 

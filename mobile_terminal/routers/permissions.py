@@ -1,0 +1,90 @@
+"""Routes for permission policy management."""
+import logging
+from dataclasses import asdict
+
+from fastapi import Depends, FastAPI, Query
+
+logger = logging.getLogger(__name__)
+
+
+def register(app: FastAPI, deps):
+    """Register permission policy routes."""
+
+    @app.get("/api/permissions/rules")
+    async def permissions_rules(_auth=Depends(deps.verify_token)):
+        """List all rules and current mode."""
+        policy = app.state.permission_policy
+        rules = policy.list_rules()
+        return {
+            "mode": policy.mode,
+            "rules": [asdict(r) for r in rules],
+        }
+
+    @app.post("/api/permissions/rules")
+    async def permissions_add_rule(
+        tool: str = Query(...),
+        matcher_type: str = Query(...),
+        matcher: str = Query(""),
+        scope: str = Query(...),
+        scope_value: str = Query(""),
+        action: str = Query("allow"),
+        created_from: str = Query("banner"),
+        note: str = Query(""),
+        _auth=Depends(deps.verify_token),
+    ):
+        """Create a new permission rule."""
+        policy = app.state.permission_policy
+        if scope not in ("global", "repo", "session"):
+            return {"status": "error", "message": "Invalid scope"}
+        if action not in ("allow", "prompt", "deny"):
+            return {"status": "error", "message": "Invalid action"}
+        if matcher_type not in ("command", "path", "tool_only"):
+            return {"status": "error", "message": "Invalid matcher_type"}
+        rule = policy.add_rule(
+            tool=tool,
+            matcher_type=matcher_type,
+            matcher=matcher,
+            scope=scope,
+            scope_value=scope_value or None,
+            action=action,
+            created_from=created_from,
+            note=note or None,
+        )
+        return {"status": "ok", "rule": asdict(rule)}
+
+    @app.delete("/api/permissions/rules")
+    async def permissions_delete_rule(
+        id: str = Query(...),
+        _auth=Depends(deps.verify_token),
+    ):
+        """Delete a permission rule by ID."""
+        policy = app.state.permission_policy
+        if id.startswith("default_"):
+            return {"status": "error", "message": "Cannot delete default rules"}
+        removed = policy.remove_rule(id)
+        if not removed:
+            return {"status": "error", "message": "Rule not found"}
+        return {"status": "ok"}
+
+    @app.post("/api/permissions/mode")
+    async def permissions_set_mode(
+        mode: str = Query(...),
+        _auth=Depends(deps.verify_token),
+    ):
+        """Set the permission policy mode."""
+        policy = app.state.permission_policy
+        try:
+            policy.set_mode(mode)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+        return {"status": "ok", "mode": policy.mode}
+
+    @app.get("/api/permissions/audit")
+    async def permissions_audit(
+        limit: int = Query(50),
+        _auth=Depends(deps.verify_token),
+    ):
+        """Read recent audit log entries."""
+        policy = app.state.permission_policy
+        entries = policy.read_audit(limit=limit)
+        return {"entries": entries}
