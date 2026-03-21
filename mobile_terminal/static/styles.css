@@ -3102,6 +3102,16 @@ html, body {
     min-width: 40px;
     text-align: right;
 }
+.perm-rule-item.muted {
+    opacity: 0.5;
+}
+.perm-rule-repo {
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+.perm-group-header.perm-group-muted {
+    color: var(--text-muted);
+}
 .perm-rule-delete {
     background: none;
     border: none;

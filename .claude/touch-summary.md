@@ -4,6 +4,55 @@ Append-only log of implementation batches.
 
 ---
 
+## 2026-03-20: Permission Auto-Approval System
+
+### Files Changed
+- `mobile_terminal/models.py` — Added PermissionRequest, PermissionRule, PermissionDecision dataclasses
+- `mobile_terminal/server.py` — PermissionPolicy state init, permissions router registration
+- `mobile_terminal/routers/terminal_io.py` — Policy-aware permission interception in tail_sender (auto-approve/deny/prompt)
+- `mobile_terminal/routers/terminal_sse.py` — Same policy interception for SSE transport
+- `mobile_terminal/routers/push.py` — Policy interception in push_monitor (auto-approves when no client connected)
+- `mobile_terminal/static/index.html` — Enhanced permission banner (Always·Repo, Always buttons), permissions tab HTML, FAB entry, sidebar section, version bumps (CSS v214, JS v293)
+- `mobile_terminal/static/terminal.js` — Always button handlers, extractBaseCommand(), createPermissionRule(), permission_auto toast, permissions tab wiring, activePermissionPayload state
+- `mobile_terminal/static/styles.css` — Permission banner button styles (.always-repo, .always), full permissions tab styles (mode toggle, rule items, audit entries)
+- `mobile_terminal/static/sw.js` — Cache version bump to v124
+
+### New Files Created
+- `mobile_terminal/permission_policy.py` — Risk classifier (HIGH/MEDIUM/LOW patterns), PermissionPolicy class (evaluate, rule matching, defaults, storage, audit), normalize_request()
+- `mobile_terminal/routers/permissions.py` — API: GET/POST/DELETE rules, POST mode, GET audit
+- `mobile_terminal/static/src/features/permissions.js` — Permissions tab: mode toggle, rule list grouped by scope, delete, audit log
+
+### Risks / Follow-ups
+- Audit log grows unbounded (append-only JSONL) — may need rotation for long-running servers
+- `extractBaseCommand()` heuristic may not cover all command patterns (currently handles npm/git subcommands)
+- Unrestricted mode left as dead code (mode value accepted but not exposed in UI)
+- No rule editing in v1 (only create + delete)
+
+---
+
+## 2026-03-19: Backlog Candidate Pipeline (JSONL Interception)
+
+### Files Changed
+- `mobile_terminal/models.py` — BacklogCandidate dataclass, CandidateStore class, origin field on BacklogItem
+- `mobile_terminal/server.py` — candidate_detector + candidate_store state init
+- `mobile_terminal/routers/logs.py` — candidate_detector.set_log_file sync (3 locations)
+- `mobile_terminal/routers/terminal_io.py` — Candidate check in tail_sender (every ~2s)
+- `mobile_terminal/routers/terminal_sse.py` — Same candidate check for SSE transport
+- `mobile_terminal/routers/backlog.py` — Candidate API endpoints (list, keep, dismiss) + origin param on add
+- `mobile_terminal/static/src/features/backlog.js` — Candidate tray UI, keep/dismiss handlers, badge counts
+- `mobile_terminal/static/terminal.js` — WS routing for backlog_candidate messages
+- `mobile_terminal/static/styles.css` — Candidate tray styles (yellow border, slide-in animation)
+- `mobile_terminal/static/index.html` — FAB menu backlog entry, version bumps
+
+### New Files Created
+- `mobile_terminal/drivers/claude.py` — BacklogCandidateDetector (JSONL incremental reader, TodoWrite/TaskCreate extraction)
+
+### Risks / Follow-ups
+- Candidate detection depends on JSONL format stability
+- Content hash dedup may miss semantically similar but textually different items
+
+---
+
 ## 2026-03-10: Header Reorganization + Pane Quick-Switcher
 
 ### Files Changed

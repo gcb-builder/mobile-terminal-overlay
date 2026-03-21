@@ -8,6 +8,7 @@ import ctx from '../context.js';
 import { escapeHtml } from '../utils.js';
 
 let currentMode = 'safe_auto';
+let currentRepo = '';
 let rules = [];
 let auditEntries = [];
 
@@ -36,9 +37,12 @@ function renderRules() {
         return;
     }
 
-    // Group by scope
+    // Group by scope, filter repo rules to current repo
     const defaults = rules.filter(r => r.created_from === 'default');
-    const repoRules = rules.filter(r => r.scope === 'repo' && r.created_from !== 'default');
+    const thisRepoRules = rules.filter(r => r.scope === 'repo' && r.created_from !== 'default'
+        && r.scope_value === currentRepo);
+    const otherRepoRules = rules.filter(r => r.scope === 'repo' && r.created_from !== 'default'
+        && r.scope_value !== currentRepo);
     const globalRules = rules.filter(r => r.scope === 'global' && r.created_from !== 'default');
     const sessionRules = rules.filter(r => r.scope === 'session');
 
@@ -49,9 +53,15 @@ function renderRules() {
         html += defaults.map(r => ruleRow(r, false)).join('');
     }
 
-    if (repoRules.length > 0) {
-        html += '<div class="perm-group-header">REPO</div>';
-        html += repoRules.map(r => ruleRow(r, true)).join('');
+    if (thisRepoRules.length > 0) {
+        const repoName = currentRepo.split('/').pop() || 'repo';
+        html += `<div class="perm-group-header">REPO: ${escapeHtml(repoName)}</div>`;
+        html += thisRepoRules.map(r => ruleRow(r, true)).join('');
+    }
+
+    if (otherRepoRules.length > 0) {
+        html += '<div class="perm-group-header perm-group-muted">OTHER REPOS</div>';
+        html += otherRepoRules.map(r => ruleRow(r, true, true)).join('');
     }
 
     if (globalRules.length > 0) {
@@ -75,18 +85,24 @@ function renderRules() {
     });
 }
 
-function ruleRow(rule, canDelete) {
+function ruleRow(rule, canDelete, muted = false) {
     const eid = escapeHtml(rule.id);
     const tool = escapeHtml(rule.tool);
     const matcher = rule.matcher ? escapeHtml(rule.matcher) : '';
-    const label = rule.matcher_type === 'tool_only'
+    let label = rule.matcher_type === 'tool_only'
         ? tool
         : `${tool}: ${matcher}`;
+    // Show repo name for other-repo rules
+    if (muted && rule.scope_value) {
+        const repoName = rule.scope_value.split('/').pop() || '';
+        label += ` <span class="perm-rule-repo">(${escapeHtml(repoName)})</span>`;
+    }
     const action = escapeHtml(rule.action);
     const deleteBtn = canDelete
         ? `<button class="perm-rule-delete" data-id="${eid}">&times;</button>`
         : '';
-    return `<div class="perm-rule-item" data-id="${eid}">
+    const cls = muted ? 'perm-rule-item muted' : 'perm-rule-item';
+    return `<div class="${cls}" data-id="${eid}">
         <span class="perm-rule-dot ${action}"></span>
         <span class="perm-rule-label">${label}</span>
         <span class="perm-rule-action">${action}</span>
@@ -174,6 +190,7 @@ export async function loadPermissions() {
         if (rulesResp.ok) {
             const data = await rulesResp.json();
             currentMode = data.mode || 'safe_auto';
+            currentRepo = data.repo || '';
             rules = data.rules || [];
         }
         if (auditResp.ok) {

@@ -3,12 +3,80 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** CLI challenge providers + dev logging + architecture doc
-- **Last Updated:** 2026-03-16
-- **Server Version:** v280 (terminal.js), v200 (styles.css)
-- **Server Start:** `./venv/bin/mobile-terminal --session claude --no-auth --host 0.0.0.0 --verbose > /tmp/mto-server.log 2>&1 &`
+- **Stage:** Permission auto-approval system + backlog candidates
+- **Last Updated:** 2026-03-20
+- **Server Version:** v293 (terminal.js), v214 (styles.css), SW v124
+- **Server Start:** `./venv/bin/mobile-terminal --session claude --port 8080 --base-path /terminal --no-auth --host 0.0.0.0 --verbose &`
 
-## Recent: Team Launcher v1 + Repo-Scoped Team UI + Smooth Dismiss (2026-03-12)
+## Recent: Permission Auto-Approval System (2026-03-20)
+
+Graduated auto-approval for Claude Code tool permissions. Rules learned from real prompts (banner-first), managed centrally in a Permissions tab.
+
+### Architecture
+- **Policy engine**: `permission_policy.py` — PermissionPolicy class with evaluate(), risk classification, rule matching, storage, audit logging
+- **Data model**: PermissionRequest, PermissionRule, PermissionDecision dataclasses in `models.py`
+- **Risk classifier**: HIGH (sudo, rm -rf, git push --force) → always prompt; MEDIUM (git push, npm publish, docker); LOW (pytest, git status, reads)
+- **Evaluation order**: mode → hard guard → deny rules → allow rules → fallback (prompt)
+- **Rule scopes**: session (in-memory), repo (persisted), global (persisted)
+- **Built-in defaults**: Read/Glob/Grep auto-allowed, git status/diff/log auto-allowed
+- **Storage**: `~/.mobile-terminal/permission-policy.json` (rules) + `~/.cache/mobile-overlay/permission-audit.jsonl` (audit)
+
+### Interception
+- tail_sender (WS + SSE): policy evaluates detected permissions, injects y/n or prompts user
+- push_monitor: auto-approves even when no client connected (agent doesn't get stuck)
+- Enhanced permission banner: Allow | Deny | Always·Repo | Always buttons
+- Auto-approval/denial toast notifications via `permission_auto` typed message
+
+### Permissions Tab
+- Mode toggle: Manual / Safe Auto / Session Auto
+- Rule list grouped by scope (defaults, repo, global, session)
+- Delete button for user-created rules (defaults protected)
+- Recent audit log with tool/target/reason
+- FAB menu entry, drawer tab, sidebar section
+
+### API
+- `GET /api/permissions/rules` → mode + rules list
+- `POST /api/permissions/rules` → create rule
+- `DELETE /api/permissions/rules?id=` → delete rule
+- `POST /api/permissions/mode?mode=` → set mode
+- `GET /api/permissions/audit?limit=` → audit entries
+
+### Files
+- `mobile_terminal/permission_policy.py` — NEW: policy engine
+- `mobile_terminal/routers/permissions.py` — NEW: API endpoints
+- `mobile_terminal/static/src/features/permissions.js` — NEW: tab UI
+- `mobile_terminal/models.py` — PermissionRequest, PermissionRule, PermissionDecision
+- `mobile_terminal/server.py` — PermissionPolicy state init + router
+- `mobile_terminal/routers/terminal_io.py` — policy interception in tail_sender
+- `mobile_terminal/routers/terminal_sse.py` — policy interception in tail_sender
+- `mobile_terminal/routers/push.py` — policy interception in push_monitor
+- `mobile_terminal/static/index.html` — banner buttons, permissions tab, FAB entry
+- `mobile_terminal/static/terminal.js` — Always handlers, toast, tab wiring
+- `mobile_terminal/static/styles.css` — permission tab + banner styles
+
+## Previous: Backlog Candidate Pipeline (2026-03-19)
+
+JSONL interception extracts work items from Claude agent output as ephemeral candidates. User promotes to backlog via Keep/Dismiss.
+
+### Architecture
+- **BacklogCandidate** (in-memory, disposable) separate from **BacklogItem** (durable, persisted)
+- **CandidateStore**: in-memory, per-project, dismissed hashes remembered
+- **BacklogCandidateDetector**: follows ClaudePermissionDetector pattern, reads JSONL incrementally
+- **Provenance**: source (human|agent) + origin (manual|jsonl_candidate|api_report)
+- Content hash dedup (MD5 of normalized summary)
+
+### Files
+- `models.py` — BacklogCandidate, CandidateStore, origin field on BacklogItem
+- `drivers/claude.py` — BacklogCandidateDetector
+- `server.py` — candidate_detector + candidate_store state
+- `routers/logs.py` — candidate_detector.set_log_file sync
+- `routers/terminal_io.py` + `terminal_sse.py` — candidate check in tail_sender
+- `routers/backlog.py` — candidate API endpoints + origin param
+- `static/src/features/backlog.js` — candidate tray UI
+- `static/terminal.js` — WS routing for backlog_candidate
+- `static/styles.css` — candidate tray styles
+
+## Previous: Team Launcher v1 + Repo-Scoped Team UI + Smooth Dismiss (2026-03-12)
 
 ### Team Launcher
 - **Templates**: 6 built-in templates in `mobile_terminal/team_templates.py` (solo_reviewer, research_implement, feature_delivery, bug_hunt, review_swarm, refactor_validate)
