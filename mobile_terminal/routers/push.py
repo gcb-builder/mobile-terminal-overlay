@@ -416,7 +416,7 @@ def register(app: FastAPI, deps):
                             await deps.send_typed(sink, "permission_auto",
                                 {"decision": "allow", "tool": req.tool,
                                  "target": req.target, "reason": decision.reason,
-                                 "pane": target_id},
+                                 "pane": target_id, "repo": hit["repo_name"]},
                                 level="info")
                     elif decision.action == "deny":
                         runtime = app.state.runtime

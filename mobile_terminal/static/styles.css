@@ -3162,6 +3162,11 @@ html, body {
     color: var(--text-secondary);
     font-size: 10px;
 }
+.perm-audit-repo {
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 500;
+}
 .permissions-test-section {
     padding: 12px 8px;
     border-top: 1px solid var(--border);

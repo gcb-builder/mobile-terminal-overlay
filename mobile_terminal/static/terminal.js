@@ -1688,14 +1688,9 @@ function handleSSEClose() {
     if (ctx.socket) ctx.socket.readyState = WebSocket.CLOSED;
     updateConnectionIndicator('disconnected');
 
-    // Reconnect after delay — don't show overlay immediately (grace period)
+    // Reconnect after delay — connectionBanner handles the visual feedback,
+    // no need for statusOverlay (which duplicates the reconnecting indicator)
     if (!intentionalClose) {
-        // Delay overlay — if reconnect succeeds fast, user never sees it
-        if (reconnectOverlayTimer) clearTimeout(reconnectOverlayTimer);
-        reconnectOverlayTimer = setTimeout(() => {
-            statusText.textContent = 'Reconnecting...';
-            statusOverlay.classList.remove('hidden');
-        }, RECONNECT_OVERLAY_GRACE_MS);
 
         reconnectTimer = setTimeout(() => {
             if (_preferSSE) connectSSE();
@@ -2201,19 +2196,17 @@ async function connect() {
             reconnectOverlayTimer = null;
         }
 
-        // Grace period: delay showing overlay for brief disconnects
-        // This prevents flicker during background/foreground transitions
+        // Grace period: delay showing overlay only after repeated failures.
+        // connectionBanner handles the normal reconnecting indicator.
         reconnectOverlayTimer = setTimeout(() => {
-            // Guard: only show if still disconnected
             if (!ctx.socket || ctx.socket.readyState !== WebSocket.OPEN) {
-                statusText.textContent = `Reconnecting... (code=${event.code}, attempt ${reconnectAttempts})`;
-                statusOverlay.classList.remove('hidden');
-                if (reconnectBtn) reconnectBtn.classList.remove('hidden');
-
-                // Show hard refresh button after multiple failures
-                const hardRefreshBtn = document.getElementById('hardRefreshBtn');
-                if (hardRefreshBtn && reconnectAttempts >= SHOW_HARD_REFRESH_AFTER) {
-                    hardRefreshBtn.classList.remove('hidden');
+                // Only show heavy overlay after multiple failures (hard refresh option)
+                if (reconnectAttempts >= SHOW_HARD_REFRESH_AFTER) {
+                    statusText.textContent = `Reconnecting... (attempt ${reconnectAttempts})`;
+                    statusOverlay.classList.remove('hidden');
+                    if (reconnectBtn) reconnectBtn.classList.remove('hidden');
+                    const hardRefreshBtn = document.getElementById('hardRefreshBtn');
+                    if (hardRefreshBtn) hardRefreshBtn.classList.remove('hidden');
                 }
             }
             reconnectOverlayTimer = null;
@@ -4019,12 +4012,7 @@ function setupViewportHandler() {
                 reconnectOverlayTimer = null;
             }
 
-            // Don't show overlay immediately — grace period for fast reconnects
-            reconnectOverlayTimer = setTimeout(() => {
-                statusText.textContent = 'Network changed, reconnecting...';
-                statusOverlay.classList.remove('hidden');
-            }, RECONNECT_OVERLAY_GRACE_MS);
-
+            // connectionBanner handles the visual feedback for network reconnects
             // Reset attempts — failures were due to network, not server
             reconnectAttempts = 0;
             reconnectDelay = INITIAL_RECONNECT_DELAY;
@@ -8920,8 +8908,9 @@ function handleTypedMessage(msg) {
             const d = msg.payload;
             const verb = d.decision === 'allow' ? 'Auto-approved' : 'Auto-denied';
             const tgt = (d.target || '').slice(0, 40);
-            ctx.showToast(`${verb}: ${d.tool} ${tgt} (${d.reason})`,
-                d.decision === 'allow' ? 'info' : 'warning', 3000);
+            const repo = d.repo ? `[${d.repo}] ` : '';
+            ctx.showToast(`${repo}${verb}: ${d.tool} ${tgt}`,
+                d.decision === 'allow' ? 'info' : 'warning', 4000);
             break;
         }
         default:

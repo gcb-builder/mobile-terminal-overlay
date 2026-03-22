@@ -140,10 +140,12 @@ function renderAudit() {
         const tool = escapeHtml(e.tool || '');
         const target = escapeHtml((e.target || '').slice(0, 40));
         const reason = escapeHtml(e.reason || '');
+        const repo = e.repo ? escapeHtml(e.repo.split('/').pop()) : '';
+        const repoTag = repo ? `<span class="perm-audit-repo">${repo}</span> ` : '';
         return `<div class="perm-audit-item ${cls}">
             <span class="perm-audit-ago">${ago}</span>
             <span class="perm-audit-icon">${icon}</span>
-            <span class="perm-audit-label">${tool} ${target}</span>
+            <span class="perm-audit-label">${repoTag}${tool} ${target}</span>
             <span class="perm-audit-reason">${reason}</span>
         </div>`;
     }).join('');
