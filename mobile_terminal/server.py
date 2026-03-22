@@ -94,7 +94,15 @@ def create_app(config: Config) -> FastAPI:
     app.state.snapshot_buffer = SnapshotBuffer()  # Preview snapshots ring buffer
     app.state.audit_log = AuditLog()  # Audit log for rollback operations
     app.state.git_op_lock = GitOpLock()  # Lock for git write operations
-    app.state.active_target = "0:0"  # Default to first pane so initial sync skips WS close
+    # Restore last active target from disk, or default to None
+    _saved_target = None
+    try:
+        _target_file = Path.home() / ".cache" / "mobile-overlay" / "active_target.txt"
+        if _target_file.exists():
+            _saved_target = _target_file.read_text().strip() or None
+    except Exception:
+        pass
+    app.state.active_target = _saved_target
     app.state.target_log_mapping = {}  # Maps pane_id -> {"path": str, "pinned": bool}
     app.state.last_restart_time = 0.0  # Timestamp of last server restart request
     app.state.target_epoch = 0  # Incremented on each target switch for cache invalidation
@@ -495,6 +503,14 @@ def create_app(config: Config) -> FastAPI:
 
         app.state.active_target = target_id
         app.state.audit_log.log("target_select", {"target": target_id})
+
+        # Persist active target for restart recovery
+        try:
+            state_file = Path.home() / ".cache" / "mobile-overlay" / "active_target.txt"
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(target_id)
+        except Exception:
+            pass
 
         # Actually switch tmux to the selected pane so the PTY shows it
         switch_verified = False
@@ -1446,6 +1462,11 @@ def create_app(config: Config) -> FastAPI:
             if push_monitor_fn:
                 app.state.push_monitor_task = asyncio.create_task(push_monitor_fn())
 
+        # Start multi-pane permission scanner (always, independent of push)
+        perm_scanner_fn = getattr(app.state, '_permission_scanner', None)
+        if perm_scanner_fn:
+            app.state.permission_scanner_task = asyncio.create_task(perm_scanner_fn())
+
     @app.on_event("shutdown")
     async def shutdown():
         """Cleanup on shutdown."""
@@ -1455,6 +1476,9 @@ def create_app(config: Config) -> FastAPI:
         push_task = getattr(app.state, 'push_monitor_task', None)
         if push_task and not push_task.done():
             push_task.cancel()
+        perm_task = getattr(app.state, 'permission_scanner_task', None)
+        if perm_task and not perm_task.done():
+            perm_task.cancel()
 
         if app.state.runtime.has_fd:
             app.state.runtime.close_fd()

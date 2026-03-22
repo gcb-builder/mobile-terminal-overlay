@@ -148,8 +148,25 @@ def register(app: FastAPI, deps):
         await sink.send_json(hello_msg)
         logger.info(f"SSE hello sent: {hello_msg}")
 
-        # Clear screen trigger (same as WS handler)
-        await sink.send_text("\x1b[2J\x1b[H")
+        # Send capture-pane snapshot instead of clearing screen —
+        # client keeps last frame visible during reconnect, snapshot refreshes it
+        try:
+            session = app.state.current_session
+            target = app.state.active_target
+            tmux_t = get_tmux_target(session, target) if target else session
+            snapshot = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ["tmux", "capture-pane", "-p", "-e", "-t", tmux_t],
+                    capture_output=True, text=True, timeout=2,
+                ).stdout or ""
+            )
+            if snapshot:
+                await sink.send_text("\x1b[2J\x1b[H" + snapshot)
+        except Exception as e:
+            # Fallback to plain clear if capture fails
+            await sink.send_text("\x1b[2J\x1b[H")
+            logger.debug(f"capture-pane on SSE connect failed: {e}")
 
         # -- shared state for background tasks --
         pty_died = False

@@ -1,6 +1,8 @@
 """Routes for push notifications."""
 import json
 import logging
+import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -242,5 +244,194 @@ def register(app: FastAPI, deps):
             except Exception as e:
                 logger.debug(f"push_monitor error: {e}")
 
+    # ── Multi-pane permission auto-approval ─────────────────────────────
+    # Scans ALL panes for permission prompts and auto-approves based on
+    # policy, independent of which pane the client is viewing.
+
+    async def permission_scanner():
+        """Scan all panes for permission prompts and auto-approve."""
+        import asyncio
+        from mobile_terminal.drivers.claude import ClaudePermissionDetector
+        from mobile_terminal.permission_policy import normalize_request
+        from mobile_terminal.helpers import get_tmux_target, get_project_id
+
+        logger.info("[permission_scanner] Started — scanning all panes every 3s")
+
+        # Per-pane detectors keyed by target_id
+        detectors: dict[str, ClaudePermissionDetector] = {}
+        # Track last-seen prompt per pane to avoid re-processing
+        last_approved: dict[str, float] = {}
+
+        def _scan_panes_sync(session: str) -> list:
+            """Scan all panes for permission prompts. Runs in executor thread
+            to avoid SIGCHLD handler conflicts with subprocess.run."""
+            results = []
+            try:
+                list_result = subprocess.run(
+                    ["tmux", "list-panes", "-s", "-t", session, "-F",
+                     "#{window_index}:#{pane_index}|#{pane_current_path}|#{pane_id}"],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if list_result.returncode != 0 or not list_result.stdout.strip():
+                    return results
+
+                pane_lines = list_result.stdout.strip().split("\n")
+                for line in pane_lines:
+                    parts = line.split("|")
+                    if len(parts) < 3:
+                        continue
+                    target_id = parts[0]
+                    pane_cwd = parts[1]
+                    tmux_t = get_tmux_target(session, target_id)
+
+                    # Skip if recently approved (cooldown 5s)
+                    if time.time() - last_approved.get(target_id, 0) < 5:
+                        continue
+
+                    # Check for permission prompt in terminal
+                    try:
+                        cap = subprocess.run(
+                            ["tmux", "capture-pane", "-p", "-t", tmux_t, "-S", "-15"],
+                            capture_output=True, text=True, timeout=2,
+                        )
+                        pane_text = cap.stdout or ""
+                        has_prompt = "do you want to proceed?" in pane_text.lower()
+                        has_selector = re.search(r'[❯>]\s*\d+\.', pane_text) is not None
+                        if not (has_prompt and has_selector):
+                            continue
+                    except Exception as e:
+                        logger.debug(f"[permission_scanner] capture error {target_id}: {e}")
+                        continue
+
+                    logger.info(f"[permission_scanner] PROMPT DETECTED in {target_id} ({Path(pane_cwd).name})")
+
+                    # Resolve JSONL log
+                    repo_path = Path(pane_cwd)
+                    project_id = get_project_id(repo_path)
+                    claude_dir = Path.home() / ".claude" / "projects" / project_id
+                    if not claude_dir.exists():
+                        logger.info(f"[permission_scanner] no claude dir for {repo_path.name}: {claude_dir}")
+                        continue
+
+                    # Get or create per-pane detector
+                    if target_id not in detectors:
+                        detectors[target_id] = ClaudePermissionDetector()
+                    det = detectors[target_id]
+
+                    # Find log file
+                    detect_fn = getattr(app.state, '_detect_target_log_file', None)
+                    if not det.log_file and detect_fn:
+                        log_file = detect_fn(target_id, session, claude_dir)
+                        if log_file:
+                            det.set_log_file(log_file)
+                            logger.info(f"[permission_scanner] log file for {target_id}: {log_file.name}")
+                        else:
+                            logger.info(f"[permission_scanner] no log file found for {target_id}")
+                            continue
+
+                    # Extract tool info from JSONL
+                    perm = det.check_sync(session, target_id, tmux_t)
+                    if not perm:
+                        # Re-scan recent entries with fresh detector
+                        det2 = ClaudePermissionDetector()
+                        det2.set_log_file(det.log_file)
+                        try:
+                            fsize = det.log_file.stat().st_size
+                            det2.last_log_size = max(0, fsize - 10240)
+                        except Exception:
+                            pass
+                        perm = det2.check_sync(session, target_id, tmux_t)
+                        if perm:
+                            det.last_log_size = det2.last_log_size
+                            det.last_sent_id = det2.last_sent_id
+
+                    if not perm:
+                        # JSONL extraction failed — synthesize from terminal content.
+                        # We know a permission prompt is showing. Extract tool name
+                        # from the pane text (box header or prose).
+                        tool_name = "Bash"  # default — most permission prompts are Bash
+                        target_text = ""
+                        for tl in pane_text.split('\n'):
+                            stripped = tl.strip().replace('╭', '').replace('╮', '').replace('─', '').strip()
+                            if stripped in ('Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep',
+                                           'WebFetch', 'WebSearch', 'Agent', 'NotebookEdit'):
+                                tool_name = stripped
+                                break
+                        perm = {
+                            "tool": tool_name,
+                            "target": target_text,
+                            "context": "",
+                            "id": f"scan:{target_id}:{int(time.time())}",
+                        }
+                        logger.info(f"[permission_scanner] synthesized perm for {target_id}: {tool_name}")
+
+                    # Evaluate policy
+                    policy = app.state.permission_policy
+                    req = normalize_request(perm, repo_path)
+                    decision = policy.evaluate(req)
+                    policy.audit(req, decision)
+
+                    results.append({
+                        "target_id": target_id,
+                        "tmux_t": tmux_t,
+                        "repo_name": repo_path.name,
+                        "perm": perm,
+                        "req": req,
+                        "decision": decision,
+                    })
+            except Exception as e:
+                logger.warning(f"[permission_scanner] scan error: {e}", exc_info=True)
+            return results
+
+        scan_count = 0
+        while True:
+            await asyncio.sleep(3)
+            try:
+                session = app.state.current_session
+                if not session:
+                    continue
+                scan_count += 1
+                if scan_count <= 3 or scan_count % 100 == 0:
+                    logger.info(f"[permission_scanner] scan #{scan_count}")
+
+                loop = asyncio.get_event_loop()
+                hits = await loop.run_in_executor(None, _scan_panes_sync, session)
+
+                for hit in hits:
+                    target_id = hit["target_id"]
+                    tmux_t = hit["tmux_t"]
+                    decision = hit["decision"]
+                    perm = hit["perm"]
+                    req = hit["req"]
+
+                    if decision.action == "allow":
+                        runtime = app.state.runtime
+                        await runtime.send_keys(tmux_t, "y", literal=True)
+                        await runtime.send_keys(tmux_t, "Enter")
+                        last_approved[target_id] = time.time()
+                        logger.info(f"[permission_scanner] Auto-approved {perm['tool']} "
+                                    f"in {target_id} ({hit['repo_name']}): {decision.reason}")
+                        sink = app.state.active_client
+                        if sink:
+                            await deps.send_typed(sink, "permission_auto",
+                                {"decision": "allow", "tool": req.tool,
+                                 "target": req.target, "reason": decision.reason,
+                                 "pane": target_id},
+                                level="info")
+                    elif decision.action == "deny":
+                        runtime = app.state.runtime
+                        await runtime.send_keys(tmux_t, "n", literal=True)
+                        await runtime.send_keys(tmux_t, "Enter")
+                        last_approved[target_id] = time.time()
+                        logger.info(f"[permission_scanner] Auto-denied {perm['tool']} "
+                                    f"in {target_id}: {decision.reason}")
+                    else:
+                        logger.debug(f"[permission_scanner] Needs human: {perm['tool']} "
+                                     f"in {target_id}: {decision.reason}")
+
+            except Exception as e:
+                logger.warning(f"[permission_scanner] loop error: {e}", exc_info=True)
+
     # Expose for startup event to call
     app.state._push_monitor = push_monitor
+    app.state._permission_scanner = permission_scanner

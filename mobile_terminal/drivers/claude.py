@@ -341,15 +341,30 @@ class ClaudePermissionDetector:
         if not tool_info:
             return None
 
-        # Confirm Claude is actually waiting (pane_title check)
+        # Confirm Claude is actually waiting for permission approval.
+        # Check 1: pane title (older Claude Code sets "Signal Detection Pending")
+        # Check 2: terminal content contains the permission prompt pattern
         try:
             import subprocess
             title_result = subprocess.run(
                 ["tmux", "display-message", "-p", "-t", tmux_target, "#{pane_title}"],
                 capture_output=True, text=True, timeout=2,
             )
-            if "Signal Detection Pending" not in (title_result.stdout or ""):
-                return None
+            title_ok = "Signal Detection Pending" in (title_result.stdout or "")
+
+            if not title_ok:
+                # Fall back to checking terminal content for permission prompt
+                capture_result = subprocess.run(
+                    ["tmux", "capture-pane", "-p", "-t", tmux_target, "-S", "-20"],
+                    capture_output=True, text=True, timeout=2,
+                )
+                pane_text = capture_result.stdout or ""
+                # Claude Code permission prompt: "Do you want to proceed?" + numbered options with ❯
+                has_prompt = ("Do you want to proceed?" in pane_text
+                              or "do you want to proceed?" in pane_text.lower())
+                has_selector = re.search(r'[❯>]\s*\d+\.', pane_text) is not None
+                if not (has_prompt and has_selector):
+                    return None
         except Exception:
             return None
 

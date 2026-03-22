@@ -407,15 +407,28 @@ export function initDocs() {
                 const modified = modifiedTs ? formatTimeAgo(modifiedTs) : '';
                 const size = s.size ? formatFileSize(s.size) : '';
 
+                // Build action buttons
+                let buttons = '';
+                if (s.is_pinned) {
+                    buttons = `<button class="docs-session-unpin-btn" data-session="${escapeHtml(s.id)}">Unpin</button>`;
+                } else {
+                    buttons = `<div class="docs-session-buttons">`;
+                    if (!isCurrent) {
+                        buttons += `<button class="docs-session-view-btn" data-session="${escapeHtml(s.id)}">View</button>`;
+                    }
+                    buttons += `<button class="docs-session-pin-btn" data-session="${escapeHtml(s.id)}">Pin</button>`;
+                    buttons += `</div>`;
+                }
+
                 html += `
-                    <div class="docs-session-item ${isCurrent ? 'current' : ''}">
+                    <div class="docs-session-item ${isCurrent ? 'current' : ''} ${s.is_pinned ? 'pinned' : ''}">
                         <div class="docs-session-indicator"></div>
                         <div class="docs-session-info">
-                            <div class="docs-session-id">${escapeHtml(shortId)}${isCurrent ? ' (current)' : ''}</div>
+                            <div class="docs-session-id">${escapeHtml(shortId)}${isCurrent ? ' (current)' : ''}${s.is_pinned ? ' (pinned)' : ''}</div>
                             <div class="docs-session-preview">"${escapeHtml(preview)}"</div>
                             <div class="docs-session-meta">${modified}${size ? ' · ' + size : ''}</div>
                         </div>
-                        ${!isCurrent ? `<button class="docs-session-view-btn" data-session="${escapeHtml(s.id)}">View</button>` : ''}
+                        ${buttons}
                     </div>
                 `;
             }
@@ -427,6 +440,46 @@ export function initDocs() {
                 btn.addEventListener('click', () => {
                     viewingSessionId = btn.dataset.session;
                     loadSessionContent(viewingSessionId);
+                });
+            });
+
+            docsModalBody.querySelectorAll('.docs-session-pin-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const sid = btn.dataset.session;
+                    btn.disabled = true;
+                    btn.textContent = '...';
+                    try {
+                        const resp = await fetch(`/api/log/select?token=${ctx.token}&session_id=${encodeURIComponent(sid)}`, { method: 'POST' });
+                        if (resp.ok) {
+                            sessionsCache = null;
+                            loadSessionsTab();
+                        } else {
+                            const err = await resp.json();
+                            alert(err.error || 'Pin failed');
+                            btn.disabled = false;
+                            btn.textContent = 'Pin';
+                        }
+                    } catch (e) {
+                        console.error('Pin failed:', e);
+                        btn.disabled = false;
+                        btn.textContent = 'Pin';
+                    }
+                });
+            });
+
+            docsModalBody.querySelectorAll('.docs-session-unpin-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    btn.disabled = true;
+                    btn.textContent = '...';
+                    try {
+                        await fetch(`/api/log/unpin?token=${ctx.token}`, { method: 'POST' });
+                        sessionsCache = null;
+                        loadSessionsTab();
+                    } catch (e) {
+                        console.error('Unpin failed:', e);
+                        btn.disabled = false;
+                        btn.textContent = 'Unpin';
+                    }
                 });
             });
         } catch (e) {

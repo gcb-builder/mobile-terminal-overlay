@@ -163,6 +163,8 @@ def main() -> int:
         port=config.port,
         log_level=log_level,
         loop="asyncio",  # Disable uvloop — crashes with PTY fd ops on WSL2
+        ws_ping_interval=10,   # Detect dead WS connections faster (default 20)
+        ws_ping_timeout=5,     # Give up after 5s (default 20)
     )
 
     return 0

@@ -89,9 +89,23 @@ function ruleRow(rule, canDelete, muted = false) {
     const eid = escapeHtml(rule.id);
     const tool = escapeHtml(rule.tool);
     const matcher = rule.matcher ? escapeHtml(rule.matcher) : '';
-    let label = rule.matcher_type === 'tool_only'
-        ? tool
-        : `${tool}: ${matcher}`;
+
+    // Build descriptive label
+    let label;
+    if (rule.matcher_type === 'tool_only' || !matcher) {
+        // "Bash (any command)" or "Edit (any file)"
+        const desc = tool === 'Bash' ? 'any command'
+            : (tool === 'Read' || tool === 'Edit' || tool === 'Write' || tool === 'Glob' || tool === 'Grep')
+                ? 'any file' : 'any';
+        label = `${tool} <span class="perm-rule-desc">(${desc})</span>`;
+    } else if (rule.matcher_type === 'command') {
+        label = `${tool} <span class="perm-rule-desc">cmd:</span> <code>${matcher}</code>`;
+    } else if (rule.matcher_type === 'path') {
+        label = `${tool} <span class="perm-rule-desc">path:</span> <code>${matcher}</code>`;
+    } else {
+        label = `${tool}: ${matcher}`;
+    }
+
     // Show repo name for other-repo rules
     if (muted && rule.scope_value) {
         const repoName = rule.scope_value.split('/').pop() || '';

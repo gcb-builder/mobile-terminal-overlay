@@ -384,6 +384,7 @@ const RECONNECT_OVERLAY_GRACE_MS = 2500;  // Don't show overlay for brief discon
 let intentionalClose = false;  // Track intentional closes to skip auto-reconnect
 let repoSwitchInProgress = false;  // Suppress 4003 auto-reconnect during switchRepo()
 let isConnecting = false;  // Prevent concurrent connection attempts
+let reconnectInProgress = false;  // Global gate — prevents parallel reconnects across all triggers
 let reconnectTimer = null;  // Track pending reconnect
 let reconnectOverlayTimer = null;  // Delayed overlay (grace period)
 let lastConnectionAttempt = 0;  // Timestamp of last connection attempt
@@ -753,7 +754,7 @@ function initTerminal() {
  * Active Prompt - shows current screen state from tmux
  * Uses singleflight async loop pattern - only one request in flight at a time
  */
-const ACTIVE_PROMPT_LINES = 15;  // Lines to capture from current screen
+const ACTIVE_PROMPT_LINES = 25;  // Lines to capture from current screen
 const ACTIVE_PROMPT_INTERVAL = 1000;  // Wait 1s between requests
 let activePromptController = null;  // AbortController for singleflight loop
 
@@ -807,6 +808,10 @@ async function refreshActivePrompt(signal) {
         // Extract context usage before cleaning strips it
         extractContextUsage(content);
 
+        // Detect permission prompts from RAW terminal content (before cleaning
+        // strips box-drawing chars that contain the tool name)
+        extractPermissionPrompt(content);
+
         // Clean up clutter for display
         content = cleanTerminalOutput(content);
 
@@ -820,9 +825,6 @@ async function refreshActivePrompt(signal) {
         if (extracted !== null) {
             setTerminalBusy(false);
         }
-
-        // Detect permission prompts from ctx.terminal capture
-        extractPermissionPrompt(content);
 
     } catch (error) {
         if (error.name === 'AbortError') throw error;  // Re-throw abort
@@ -1519,6 +1521,7 @@ function updateConnectionBanner(status) {
  * Manual reconnect triggered by user
  */
 function manualReconnect() {
+    reconnectInProgress = false;  // User override — force through gate
     if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -1672,6 +1675,7 @@ function ssePostMessage(data) {
  * Handle SSE stream close — cleanup and schedule reconnect
  */
 function handleSSEClose() {
+    reconnectInProgress = false;  // Allow next reconnect attempt
     if (ctx._sseHeartbeat) { clearInterval(ctx._sseHeartbeat); ctx._sseHeartbeat = null; }
     if (ctx._sseReader) {
         try { ctx._sseReader.cancel(); } catch(e) {}
@@ -1684,8 +1688,15 @@ function handleSSEClose() {
     if (ctx.socket) ctx.socket.readyState = WebSocket.CLOSED;
     updateConnectionIndicator('disconnected');
 
-    // Reconnect after delay
+    // Reconnect after delay — don't show overlay immediately (grace period)
     if (!intentionalClose) {
+        // Delay overlay — if reconnect succeeds fast, user never sees it
+        if (reconnectOverlayTimer) clearTimeout(reconnectOverlayTimer);
+        reconnectOverlayTimer = setTimeout(() => {
+            statusText.textContent = 'Reconnecting...';
+            statusOverlay.classList.remove('hidden');
+        }, RECONNECT_OVERLAY_GRACE_MS);
+
         reconnectTimer = setTimeout(() => {
             if (_preferSSE) connectSSE();
             else connect();
@@ -1699,6 +1710,13 @@ function handleSSEClose() {
  * Connect via SSE transport (fallback for HTTP/2 proxies that break WebSocket)
  */
 function connectSSE() {
+    // Global reconnect gate
+    if (reconnectInProgress) {
+        console.log('[connectSSE] Reconnect already in progress, skipping');
+        return;
+    }
+    reconnectInProgress = true;
+
     // Close existing WS or SSE
     if (ctx.socket && ctx.socket.readyState !== WebSocket.CLOSED) {
         intentionalClose = true;
@@ -1711,8 +1729,11 @@ function connectSSE() {
     }
 
     isConnecting = true;
-    statusText.textContent = 'Connecting (SSE)...';
-    statusOverlay.classList.remove('hidden');
+    // Don't show overlay on reconnect — grace period handles it
+    if (!hasConnectedOnce) {
+        statusText.textContent = 'Connecting (SSE)...';
+        statusOverlay.classList.remove('hidden');
+    }
 
     const streamUrl = `/api/terminal/stream?token=${ctx.token}`;
 
@@ -1721,6 +1742,7 @@ function connectSSE() {
         if (!response.body) throw new Error('No response body for SSE');
 
         isConnecting = false;
+        reconnectInProgress = false;
         console.log('[SSE] Connected');
 
         // Mark SSE as transport type
@@ -1861,6 +1883,7 @@ function connectSSE() {
     }).catch(err => {
         console.error('[SSE] Connect failed:', err);
         isConnecting = false;
+        reconnectInProgress = false;
         handleSSEClose();
     });
 }
@@ -1869,9 +1892,17 @@ function connectSSE() {
  * Connect to WebSocket
  */
 async function connect() {
+    // Global reconnect gate — prevents parallel reconnects from competing triggers
+    if (reconnectInProgress) {
+        console.log('[connect] Reconnect already in progress, skipping');
+        return;
+    }
+    reconnectInProgress = true;
+
     // Prevent concurrent connection attempts
     if (isConnecting) {
         console.log('Connection already in progress, skipping');
+        reconnectInProgress = false;
         return;
     }
 
@@ -1880,6 +1911,7 @@ async function connect() {
     const elapsed = now - lastConnectionAttempt;
     if (elapsed < MIN_CONNECTION_INTERVAL) {
         console.log(`Throttling connection, waiting ${MIN_CONNECTION_INTERVAL - elapsed}ms`);
+        reconnectInProgress = false;  // Clear so throttle timer's call can proceed
         if (!reconnectTimer) {
             reconnectTimer = setTimeout(connect, MIN_CONNECTION_INTERVAL - elapsed);
         }
@@ -1919,8 +1951,11 @@ async function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}${window.__BASE_PATH || ''}/ws/terminal?token=${ctx.token}&_t=${Date.now()}`;
 
-    statusText.textContent = 'Connecting...';
-    statusOverlay.classList.remove('hidden');
+    // Only show overlay on first connect — reconnects use grace period
+    if (!hasConnectedOnce) {
+        statusText.textContent = 'Connecting...';
+        statusOverlay.classList.remove('hidden');
+    }
 
     // Hide reconnect button while connecting
     const reconnectBtn = document.getElementById('reconnectBtn');
@@ -1936,6 +1971,7 @@ async function connect() {
             console.warn('[WS] Timeout after 5s, falling back to SSE');
             intentionalClose = true;
             ctx.socket.close();
+            reconnectInProgress = false;  // Clear gate before SSE fallback
             _preferSSE = true;
             sessionStorage.setItem(_transportKey, 'sse');
             connectSSE();
@@ -1946,6 +1982,7 @@ async function connect() {
         clearTimeout(wsUpgradeTimer);
         console.log(`[v245] WebSocket connected (mode=${ctx.outputMode}, epoch=${ctx.modeEpoch})`);
         isConnecting = false;
+        reconnectInProgress = false;
 
         // Cancel overlay timer (but don't hide overlay yet - wait for ctx.terminal data)
         if (reconnectOverlayTimer) {
@@ -2075,6 +2112,7 @@ async function connect() {
         clearTimeout(wsUpgradeTimer);
         console.log('WebSocket closed:', event.code, event.reason);
         isConnecting = false;
+        reconnectInProgress = false;
         stopHeartbeat();
         updateConnectionIndicator('disconnected');
 
@@ -3904,6 +3942,10 @@ function setupViewportHandler() {
             // Close dropdown when backgrounded so returning taps can't
             // hit destructive buttons (e.g. kill-pane ×) via passthrough
             repoDropdown.classList.add('hidden');
+            // Stop all health-check timers — browser clamps them when hidden
+            // and they fire with stale timestamps, causing false reconnects
+            stopHeartbeat();
+            if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
         }
         if (document.visibilityState === 'visible') {
             // Reset timestamps so heartbeat/idle checks don't fire with stale values
@@ -3938,9 +3980,11 @@ function setupViewportHandler() {
                 if (_preferSSE) connectSSE(); else connect();
             } else {
                 // Socket reports OPEN — don't kill it just because we were backgrounded.
-                // Reset timestamps so heartbeat/idle checks start fresh, then let normal
-                // heartbeat (15s interval + 5s timeout) detect true death organically.
-                console.log('Page visible, socket OPEN — trusting connection, resetting timers');
+                // Restart timers with fresh baselines (they were stopped on hide).
+                console.log('Page visible, socket OPEN — restarting health timers');
+                startHeartbeat();
+                startIdleCheck();
+                startConnectionWatchdog();
 
                 // If any inbound data arrived while hidden, socket is definitely alive
                 // If not, normal heartbeat will probe within 15s
@@ -3961,14 +4005,9 @@ function setupViewportHandler() {
     });
 
     // Handle network state changes (mobile networks are flaky)
-    // Tailscale needs ~2-3s to re-establish WireGuard tunnel after network switch
-    const NETWORK_RECONNECT_DELAY = 3000;
-
     function reconnectAfterNetworkChange(reason) {
         if (!ctx.socket || (ctx.socket.readyState !== WebSocket.OPEN && ctx.socket.readyState !== WebSocket.CONNECTING)) {
-            console.log(`${reason} — waiting ${NETWORK_RECONNECT_DELAY}ms for VPN tunnel`);
-            statusText.textContent = 'Network changed, reconnecting...';
-            statusOverlay.classList.remove('hidden');
+            console.log(`${reason} — reconnecting immediately`);
 
             // Clear any pending timers
             if (reconnectTimer) {
@@ -3980,12 +4019,20 @@ function setupViewportHandler() {
                 reconnectOverlayTimer = null;
             }
 
+            // Don't show overlay immediately — grace period for fast reconnects
+            reconnectOverlayTimer = setTimeout(() => {
+                statusText.textContent = 'Network changed, reconnecting...';
+                statusOverlay.classList.remove('hidden');
+            }, RECONNECT_OVERLAY_GRACE_MS);
+
             // Reset attempts — failures were due to network, not server
             reconnectAttempts = 0;
             reconnectDelay = INITIAL_RECONNECT_DELAY;
 
-            // Delay to let Tailscale/WireGuard re-establish tunnel
-            reconnectTimer = setTimeout(() => connect(), NETWORK_RECONNECT_DELAY);
+            // Always use SSE after network change — WS upgrades often fail
+            // through Tailscale after network switches, and SSE reconnects faster
+            _preferSSE = true;
+            connectSSE();
         }
     }
 
@@ -6408,33 +6455,41 @@ function extractPendingPrompt(content) {
 
     console.debug('[PromptDetect] textBlocks:', textBlocks.length, textBlocks.map(b => b.slice(0, 50)));
 
-    for (const block of textBlocks) {
-        for (const pattern of confirmPatterns) {
-            if (pattern.test(block)) {
-                const promptId = simpleHash(block);
+    // Only show confirmation banners if the agent appears idle (not mid-output).
+    // If the agent is still working, these patterns often match mid-conversation text.
+    const agentIdle = !terminalBusy;
 
-                if (dismissedPrompts.has(promptId)) {
-                    continue;  // Check other blocks
+    if (agentIdle) {
+        // Only check the LAST text block — mid-conversation blocks are not prompts
+        const lastBlock = textBlocks[textBlocks.length - 1];
+        if (lastBlock) {
+            for (const pattern of confirmPatterns) {
+                if (pattern.test(lastBlock)) {
+                    const promptId = simpleHash(lastBlock);
+
+                    if (dismissedPrompts.has(promptId)) {
+                        break;
+                    }
+
+                    if (pendingPrompt && pendingPrompt.id === promptId) {
+                        return;  // Same prompt already showing
+                    }
+
+                    pendingPrompt = {
+                        id: promptId,
+                        kind: 'confirmation',
+                        text: lastBlock.slice(0, 200),
+                        choices: [
+                            { num: '1', label: 'Yes', description: '' },
+                            { num: '2', label: 'No', description: '' }
+                        ],
+                        answered: false,
+                        sentChoice: null
+                    };
+
+                    showPromptBanner();
+                    return;
                 }
-
-                if (pendingPrompt && pendingPrompt.id === promptId) {
-                    return;  // Same prompt already showing
-                }
-
-                pendingPrompt = {
-                    id: promptId,
-                    kind: 'confirmation',
-                    text: block.slice(0, 200),  // Truncate for display
-                    choices: [
-                        { num: '1', label: 'Yes', description: '' },
-                        { num: '2', label: 'No', description: '' }
-                    ],
-                    answered: false,
-                    sentChoice: null
-                };
-
-                showPromptBanner();
-                return;
             }
         }
     }
@@ -6671,9 +6726,9 @@ function showPromptBanner() {
         </button>`;
     }
 
-    // Add "Always" buttons for permission prompts when tool is known
+    // Add "Always" buttons for permission prompts (fall back to Bash if tool unknown)
     let alwaysHtml = '';
-    if (kind === 'permission' && pendingPrompt.tool) {
+    if (kind === 'permission') {
         alwaysHtml = `
             <button class="prompt-always-btn always-repo" data-scope="repo" title="Auto-allow for this repo">Always&middot;Repo</button>
             <button class="prompt-always-btn always-global" data-scope="global" title="Auto-allow everywhere">Always</button>
@@ -6756,9 +6811,9 @@ function setupPromptBannerHandlers() {
             e.preventDefault();
             e.stopPropagation();
             const scope = btn.dataset.scope;
-            if (!pendingPrompt || !pendingPrompt.tool) return;
+            if (!pendingPrompt) return;
             const perm = {
-                tool: pendingPrompt.tool,
+                tool: pendingPrompt.tool || 'Bash',
                 target: pendingPrompt.target || '',
                 repo: '',
             };
@@ -8963,16 +9018,27 @@ function setupPermissionBanner() {
  * "pytest tests/ -q" → "pytest"
  * "npm run build" → "npm run build"
  * "git status" → "git status"
+ * Returns empty string for garbage input (TUI artifacts, comments, etc.)
  */
 function extractBaseCommand(cmd) {
-    const parts = (cmd || '').trim().split(/\s+/);
+    const raw = (cmd || '').trim();
+    if (!raw) return '';
+
+    // Reject obvious garbage from terminal scraping
+    // TUI artifacts, box-drawing leftovers, comment-only text
+    if (/^[⎿╭╮╰╯│─┌┐└┘#]/.test(raw)) return '';
+    if (raw.length > 200) return '';           // captured command body
+    if (/\n/.test(raw)) return '';             // multiline = not a command name
+    if (/^(Command |Contains |Running)/.test(raw)) return '';  // Claude warning text
+
+    const parts = raw.split(/\s+/);
     if (['npm', 'npx', 'pnpm', 'yarn'].includes(parts[0]) && parts[1] === 'run') {
         return parts.slice(0, 3).join(' ');
     }
     if (['git'].includes(parts[0]) && parts.length > 1) {
         return parts.slice(0, 2).join(' ');
     }
-    return parts[0] || cmd;
+    return parts[0] || '';
 }
 
 /**
@@ -8981,10 +9047,21 @@ function extractBaseCommand(cmd) {
 async function createPermissionRule(perm, scope) {
     const tool = perm.tool;
     const isCommand = tool === 'Bash';
+    const baseCmd = isCommand ? extractBaseCommand(perm.target) : '';
+    // For file tools, validate the target looks like an actual path
+    let pathTarget = '';
+    if (!isCommand && perm.target) {
+        const t = perm.target.trim();
+        // Reject if it looks like terminal garbage (too long, has TUI chars, spaces without path separators)
+        if (t.length < 200 && !(/[⎿╭╮╰╯│─]/.test(t)) && (t.startsWith('/') || t.startsWith('.') || !t.includes(' '))) {
+            pathTarget = t;
+        }
+    }
+    const hasMatcher = isCommand ? !!baseCmd : !!pathTarget;
     const params = new URLSearchParams({
         tool,
-        matcher_type: isCommand ? 'command' : (perm.target ? 'path' : 'tool_only'),
-        matcher: isCommand ? extractBaseCommand(perm.target) : (perm.target || ''),
+        matcher_type: hasMatcher ? (isCommand ? 'command' : 'path') : 'tool_only',
+        matcher: isCommand ? baseCmd : pathTarget,
         scope,
         scope_value: scope === 'repo' ? (perm.repo || '') : '',
         action: 'allow',

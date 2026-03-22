@@ -189,7 +189,8 @@ class PermissionPolicy:
                     continue
                 if rule.tool != "*" and rule.tool != req.tool:
                     continue
-                if rule.matcher_type == "tool_only":
+                if rule.matcher_type == "tool_only" or not rule.matcher:
+                    # Empty matcher = match any use of this tool
                     yield rule
                 elif rule.matcher_type == "command" and req.command:
                     if req.command == rule.matcher or req.command.startswith(rule.matcher + " "):
@@ -204,7 +205,33 @@ class PermissionPolicy:
                  scope: str, scope_value: Optional[str], action: str,
                  created_from: str = "banner",
                  note: Optional[str] = None) -> PermissionRule:
-        """Create and persist a new rule."""
+        """Create and persist a new rule. Deduplicates against existing rules."""
+        # Normalize empty matcher to tool_only
+        if not matcher:
+            matcher_type = "tool_only"
+            matcher = ""
+
+        # Check for existing duplicate
+        all_rules = self._session_rules if scope == "session" else self._rules
+        for existing in all_rules:
+            if (existing.tool == tool and existing.matcher_type == matcher_type
+                    and existing.matcher == matcher and existing.scope == scope
+                    and existing.scope_value == scope_value
+                    and existing.action == action):
+                logger.debug("Duplicate rule skipped: %s %s:%s", tool, matcher_type, matcher)
+                return existing
+
+        # Also skip command/path rules if a broader tool_only rule already exists
+        if matcher_type != "tool_only":
+            for existing in all_rules + DEFAULT_RULES:
+                if (existing.tool == tool and existing.matcher_type == "tool_only"
+                        and existing.action == action
+                        and (existing.scope == scope and existing.scope_value == scope_value
+                             or existing.scope == "global")):
+                    logger.debug("Redundant rule skipped (tool_only exists): %s %s:%s",
+                                 tool, matcher_type, matcher)
+                    return existing
+
         rule = PermissionRule(
             id=str(uuid.uuid4()),
             tool=tool,

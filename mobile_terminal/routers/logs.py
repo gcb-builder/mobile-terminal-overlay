@@ -206,8 +206,9 @@ def register(app: FastAPI, deps):
         logger.info(f"Using newest log file: {newest_file.name} (mtime-based, {len(claimed_paths)} claimed by others)")
         return newest_file
 
-    # Expose monitor function for use by target/select route in server.py
+    # Expose functions for use by other modules
     app.state._monitor_log_file_for_target = monitor_log_file_for_target
+    app.state._detect_target_log_file = detect_target_log_file
 
     # --- Routes ---
 
