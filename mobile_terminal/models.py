@@ -896,13 +896,13 @@ class CommandQueue:
                 return item
         return None
 
-    async def _check_ready(self, session: str) -> bool:
+    async def _check_ready(self, session: str, pane_id: Optional[str] = None) -> bool:
         """
         Check if terminal is ready to receive input:
         1. Output has been quiet for QUIET_MS
         2. Prompt is visible
         """
-        from mobile_terminal.helpers import run_subprocess
+        from mobile_terminal.helpers import run_subprocess, get_tmux_target
 
         if not self._app:
             return False
@@ -913,10 +913,13 @@ class CommandQueue:
         if since_output < self.QUIET_MS:
             return False
 
+        # Build proper tmux target for the active pane
+        tmux_target = get_tmux_target(session, pane_id) if pane_id else session
+
         # Check for prompt via tmux capture-pane
         try:
             result = await run_subprocess(
-                ["tmux", "capture-pane", "-t", session, "-p", "-S", "-5"],
+                ["tmux", "capture-pane", "-t", tmux_target, "-p", "-S", "-5"],
                 capture_output=True,
                 text=True,
                 timeout=2,
@@ -938,12 +941,16 @@ class CommandQueue:
 
             # Check pane title for Claude Code waiting state
             title_result = await run_subprocess(
-                ["tmux", "display-message", "-p", "-t", session, "#{pane_title}"],
+                ["tmux", "display-message", "-p", "-t", tmux_target, "#{pane_title}"],
                 capture_output=True,
                 text=True,
                 timeout=2,
             )
-            if "Signal Detection Pending" in title_result.stdout:
+            pane_title = title_result.stdout or ""
+            if "Signal Detection Pending" in pane_title:
+                return True
+            # Claude Code idle prompt: title starts with ❯ or ✳
+            if pane_title.strip().startswith("❯") or pane_title.strip().startswith("✳"):
                 return True
 
         except Exception as e:
@@ -1067,7 +1074,7 @@ class CommandQueue:
                 continue
 
             # Check ready gate
-            if not await self._check_ready(current_session):
+            if not await self._check_ready(current_session, pane_id):
                 continue
 
             # Send the item

@@ -3101,8 +3101,16 @@ async function selectTarget(targetId, isInitialSync = false) {
     // Reload backlog for current project (server resolves project path)
     reloadBacklogForProject(ctx.currentSession || '');
 
-    // Clear input box — stale content from previous target is irrelevant
-    if (logInput) { logInput.value = ''; logInput.dataset.autoSuggestion = 'false'; }
+    // Save draft for previous pane, restore draft for new pane
+    if (logInput) {
+        if (previousTarget && logInput.value && logInput.dataset.autoSuggestion !== 'true') {
+            sessionStorage.setItem(`mto_draft_${previousTarget}`, logInput.value);
+        }
+        const saved = sessionStorage.getItem(`mto_draft_${targetId}`) || '';
+        logInput.value = saved;
+        logInput.dataset.autoSuggestion = 'false';
+        if (saved) sessionStorage.removeItem(`mto_draft_${targetId}`);
+    }
     lastSuggestion = '';
     recentSentCommands.clear();
     lastContextPct = -1;
