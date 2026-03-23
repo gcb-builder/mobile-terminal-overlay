@@ -128,7 +128,6 @@ export function renderBacklogList() {
             let actions = '';
             if (!isDone && !isQueued) {
                 actions += `<button class="backlog-queue-btn" data-id="${eid}">Queue</button>`;
-                actions += `<button class="backlog-done-btn" data-id="${eid}" data-action="done">Done</button>`;
             } else if (isQueued) {
                 actions += `<span style="font-size:10px;color:var(--warning);padding:4px 6px">Queued</span>`;
             }
@@ -160,9 +159,6 @@ export function renderBacklogList() {
     // Bind backlog item events
     backlogList.querySelectorAll('.backlog-queue-btn').forEach(btn => {
         btn.addEventListener('click', e => { e.stopPropagation(); queueBacklogItem(btn.dataset.id); });
-    });
-    backlogList.querySelectorAll('.backlog-done-btn').forEach(btn => {
-        btn.addEventListener('click', e => { e.stopPropagation(); updateBacklogStatus(btn.dataset.id, 'done'); });
     });
     backlogList.querySelectorAll('.backlog-item-remove').forEach(btn => {
         btn.addEventListener('click', e => { e.stopPropagation(); removeBacklogItem(btn.dataset.id); });
@@ -273,7 +269,7 @@ function openAddDialog() {
     addBacklogItem(summary, promptText || summary, 'human');
 }
 
-async function addBacklogItem(summary, promptText, source = 'human') {
+export async function addBacklogItem(summary, promptText, source = 'human') {
     try {
         const params = new URLSearchParams({
             summary, prompt: promptText, source, token: ctx.token

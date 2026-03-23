@@ -335,6 +335,67 @@ html, body {
     background: var(--bg-tertiary);
 }
 
+.nav-resume-list {
+    max-height: 200px;
+    overflow-y: auto;
+    background: var(--bg-primary);
+}
+.nav-resume-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    padding: 8px 14px 8px 24px;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    cursor: pointer;
+    color: var(--text-primary);
+    font-size: 12px;
+}
+.nav-resume-item:active {
+    background: var(--bg-tertiary);
+}
+.nav-resume-label {
+    font-weight: 500;
+    font-family: monospace;
+    font-size: 11px;
+}
+.nav-resume-preview {
+    color: var(--text-muted);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.selection-backlog-fab {
+    position: absolute;
+    z-index: 1000;
+    padding: 6px 14px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 16px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    transition: opacity 0.15s;
+    touch-action: manipulation;
+}
+.selection-backlog-fab.hidden {
+    display: none;
+}
+.selection-backlog-fab:active {
+    opacity: 0.8;
+}
+.nav-restart-btn {
+    color: var(--warning, #f59e0b);
+}
+.nav-restart-btn.confirm {
+    color: var(--danger, #ef4444);
+}
 .target-name-hint {
     display: inline-block;
     margin-left: 4px;
@@ -8067,7 +8128,6 @@ html, body {
     }
 
     .sidebar-section { display: flex; flex-direction: column; border-bottom: 1px solid var(--border); min-height: 0; flex-shrink: 0; }
-    #sidebarQueueSection { flex: 1; flex-shrink: 1; border-bottom: none; }
     .sidebar-section-toggle {
         display: flex; align-items: center; gap: 6px; padding: 6px 12px;
         background: var(--bg-secondary); border: none; color: var(--text-secondary);
@@ -8084,7 +8144,7 @@ html, body {
         text-align: center; border-radius: 8px; padding: 0 4px;
     }
     .sidebar-section-body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
-    .sidebar-section-flex { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .sidebar-section-flex { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; }
 
     /* Queue in sidebar: override scroll container so flex chain resolves heights */
     #sidebarQueueBody { overflow: hidden; }

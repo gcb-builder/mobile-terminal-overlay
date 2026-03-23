@@ -22,7 +22,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=221">
+    <link rel="stylesheet" href="/static/styles.css?v=226">
 </head>
 <body>
     <div class="app">
@@ -183,25 +183,13 @@
             <!-- Tools panel: desktop icon rail + content panel -->
             <div id="toolsPanel" class="tools-panel hidden">
                 <div class="tools-rail">
-                    <!-- Workspace tools -->
-                    <button class="tools-rail-btn" data-tool="team" title="Team (1)">
-                        <span class="rail-icon">&#x2261;</span>
-                    </button>
-                    <button class="tools-rail-btn" data-tool="queue" title="Queue">
-                        <span class="rail-icon">&#x25F7;</span>
-                        <span class="rail-badge hidden" id="toolsQueueBadge">0</span>
-                    </button>
-                    <button class="tools-rail-btn" data-tool="backlog" title="Backlog">
-                        <span class="rail-icon">&#x2630;</span>
-                        <span class="rail-badge hidden" id="toolsBacklogBadge">0</span>
-                    </button>
+                    <!-- Tools that open as panels (not in sidebar) -->
                     <button class="tools-rail-btn" data-tool="history" title="History">
                         <span class="rail-icon">&#x21BA;</span>
                     </button>
-                    <button class="tools-rail-btn" data-tool="process" title="Process">
-                        <span class="rail-icon">&#x2338;</span>
+                    <button class="tools-rail-btn" data-tool="activity" title="Activity">
+                        <span class="rail-icon">&#x23F1;</span>
                     </button>
-                    <!-- Dev tools -->
                     <button class="tools-rail-btn" data-tool="runner" title="Runner">
                         <span class="rail-icon">&#x25B7;</span>
                     </button>
@@ -210,6 +198,12 @@
                     </button>
                     <button class="tools-rail-btn" data-tool="plugins" title="Plugins">
                         <span class="rail-icon">&#x1F9E9;</span>
+                    </button>
+                    <button class="tools-rail-btn" data-tool="mcp" title="MCP">
+                        <span class="rail-icon">&#x2699;</span>
+                    </button>
+                    <button class="tools-rail-btn" data-tool="env" title="Env">
+                        <span class="rail-icon">&#x1F511;</span>
                     </button>
                     <button class="tools-rail-btn" data-tool="mcp" title="MCP">
                         <span class="rail-icon">&#x2699;</span>
@@ -968,6 +962,6 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script defer src="/static/terminal.js?v=302"></script>
+    <script defer src="/static/terminal.js?v=307"></script>
 </body>
 </html>

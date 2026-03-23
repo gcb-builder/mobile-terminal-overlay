@@ -899,24 +899,25 @@ def create_app(config: Config) -> FastAPI:
             """Perform restart after response flushes."""
             await asyncio.sleep(0.3)  # Let response flush
 
-            # Try systemd first
-            try:
-                result = await run_subprocess(
-                    ["systemctl", "--user", "is-active", "mobile-terminal.service"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2,
-                )
-                if result.returncode == 0:
-                    logger.info(f"Restarting via systemd (requested by {client_ip})")
-                    subprocess.Popen(
-                        ["systemctl", "--user", "restart", "mobile-terminal.service"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
+            # Try systemd first (check both service names)
+            for svc in ["mto.service", "mobile-terminal.service"]:
+                try:
+                    result = await run_subprocess(
+                        ["systemctl", "--user", "is-active", svc],
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
                     )
-                    return
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                pass
+                    if result.returncode == 0:
+                        logger.info(f"Restarting via systemd {svc} (requested by {client_ip})")
+                        subprocess.Popen(
+                            ["systemctl", "--user", "restart", svc],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        return
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
 
             # Fallback: execv (replaces process in-place)
             # Note: Not compatible with uvicorn --reload or multiple workers

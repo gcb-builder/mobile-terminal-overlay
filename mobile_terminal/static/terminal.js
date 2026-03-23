@@ -17,7 +17,7 @@ import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          getQueueItems, isQueuePaused, saveQueueToStorage,
          popNextQueueItem, popNextQueueItemById, requeueItem } from './src/features/queue.js';
 import { initBacklog, handleBacklogMessage, handleCandidateMessage,
-         refreshBacklogList, reloadBacklogForProject } from './src/features/backlog.js';
+         refreshBacklogList, reloadBacklogForProject, addBacklogItem } from './src/features/backlog.js';
 import { initPermissions, loadPermissions } from './src/features/permissions.js';
 import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js';
 import { initDocs } from './src/features/docs.js';
@@ -2797,6 +2797,138 @@ function populateRepoDropdown() {
             });
         }
     }
+
+    // Section: Agent actions (Claude only, when agent is idle)
+    if (ctx.agentType === 'claude') {
+        const actionsDivider = document.createElement('div');
+        actionsDivider.className = 'nav-section-divider';
+        repoDropdown.appendChild(actionsDivider);
+
+        const actionsHeader = document.createElement('div');
+        actionsHeader.className = 'nav-section-header';
+        actionsHeader.textContent = 'Agent';
+        repoDropdown.appendChild(actionsHeader);
+
+        // Continue (most recent session) — one tap
+        const continueBtn = document.createElement('button');
+        continueBtn.className = 'nav-action-option';
+        continueBtn.textContent = 'Continue Last Session';
+        continueBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const paneId = ctx.activeTarget;
+            continueBtn.textContent = 'Starting...';
+            try {
+                await apiFetch('/api/agent/start?pane_id=' + encodeURIComponent(paneId) + '&token=' + ctx.token, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ startup_command: 'claude --continue' }),
+                });
+                repoDropdown.classList.add('hidden');
+                ctx.showToast('Continuing last session', 'success');
+            } catch (err) {
+                ctx.showToast(err.message || 'Failed', 'warning');
+                continueBtn.textContent = 'Continue Last Session';
+            }
+        });
+        repoDropdown.appendChild(continueBtn);
+
+        // Resume Session — expandable picker
+        const resumeBtn = document.createElement('button');
+        resumeBtn.className = 'nav-action-option';
+        resumeBtn.textContent = 'Resume Session...';
+        let resumeExpanded = false;
+        let resumeContainer = null;
+        resumeBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (resumeExpanded && resumeContainer) {
+                resumeContainer.remove();
+                resumeContainer = null;
+                resumeExpanded = false;
+                resumeBtn.textContent = 'Resume Session...';
+                return;
+            }
+            resumeBtn.textContent = 'Loading...';
+            try {
+                const resp = await apiFetch('/api/log/sessions?token=' + ctx.token);
+                const data = await resp.json();
+                const sessions = (data.sessions || []).slice(0, 8);
+                if (sessions.length === 0) {
+                    resumeBtn.textContent = 'No sessions found';
+                    setTimeout(() => { resumeBtn.textContent = 'Resume Session...'; }, 2000);
+                    return;
+                }
+                resumeBtn.textContent = 'Resume Session...';
+                resumeExpanded = true;
+                resumeContainer = document.createElement('div');
+                resumeContainer.className = 'nav-resume-list';
+                sessions.forEach(s => {
+                    const sBtn = document.createElement('button');
+                    sBtn.className = 'nav-resume-item';
+                    const shortId = s.id.substring(0, 8);
+                    const preview = (s.preview || '').substring(0, 50);
+                    const label = document.createElement('span');
+                    label.className = 'nav-resume-label';
+                    label.textContent = shortId + (s.is_current ? ' (current)' : '');
+                    const desc = document.createElement('span');
+                    desc.className = 'nav-resume-preview';
+                    desc.textContent = preview;
+                    sBtn.appendChild(label);
+                    sBtn.appendChild(desc);
+                    sBtn.addEventListener('click', async (ev) => {
+                        ev.stopPropagation();
+                        sBtn.textContent = 'Starting...';
+                        const paneId = ctx.activeTarget;
+                        try {
+                            await apiFetch('/api/agent/start?pane_id=' + encodeURIComponent(paneId) + '&token=' + ctx.token, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ startup_command: 'claude --resume ' + s.id }),
+                            });
+                            repoDropdown.classList.add('hidden');
+                            ctx.showToast('Resuming session ' + shortId, 'success');
+                        } catch (err) {
+                            ctx.showToast(err.message || 'Failed', 'warning');
+                            sBtn.textContent = shortId;
+                        }
+                    });
+                    resumeContainer.appendChild(sBtn);
+                });
+                resumeBtn.after(resumeContainer);
+            } catch (err) {
+                resumeBtn.textContent = 'Error loading sessions';
+                setTimeout(() => { resumeBtn.textContent = 'Resume Session...'; }, 2000);
+            }
+        });
+        repoDropdown.appendChild(resumeBtn);
+    }
+
+    const restartBtn = document.createElement('button');
+    restartBtn.className = 'nav-action-option nav-restart-btn';
+    restartBtn.textContent = 'Restart Server';
+    let restartConfirmState = false;
+    let restartConfirmTimer = null;
+    restartBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!restartConfirmState) {
+            restartConfirmState = true;
+            restartBtn.textContent = 'Tap again to confirm';
+            restartBtn.classList.add('confirm');
+            restartConfirmTimer = setTimeout(() => {
+                restartConfirmState = false;
+                restartBtn.textContent = 'Restart Server';
+                restartBtn.classList.remove('confirm');
+            }, 3000);
+            return;
+        }
+        clearTimeout(restartConfirmTimer);
+        restartBtn.textContent = 'Restarting...';
+        restartBtn.disabled = true;
+        repoDropdown.classList.add('hidden');
+        try {
+            await apiFetch('/api/restart?token=' + ctx.token, { method: 'POST' });
+        } catch (_) {}
+    });
+    repoDropdown.appendChild(restartBtn);
 }
 
 /**
@@ -7023,6 +7155,84 @@ function sendOtherFeedback(choiceNum, text) {
 
 /**
  * Setup scroll tracking for log view
+ * Show floating "Backlog" action when text is selected in log view.
+ */
+function setupSelectionBacklog(container) {
+    if (!container) return;
+
+    // Create floating action button
+    const fab = document.createElement('button');
+    fab.className = 'selection-backlog-fab hidden';
+    fab.textContent = '+ Backlog';
+    document.body.appendChild(fab);
+
+    let hideTimer = null;
+
+    function showFab(rect) {
+        // Mobile: position below selection (avoids OS selection handles at top)
+        // Desktop: position above selection
+        const isMobile = window.innerWidth < 768;
+        const top = isMobile
+            ? rect.bottom + window.scrollY + 6
+            : rect.top + window.scrollY - 36;
+        fab.style.top = top + 'px';
+        fab.style.left = Math.min(rect.left + rect.width / 2 - 40, window.innerWidth - 100) + 'px';
+        fab.classList.remove('hidden');
+        clearTimeout(hideTimer);
+    }
+
+    function hideFab() {
+        hideTimer = setTimeout(() => fab.classList.add('hidden'), 200);
+    }
+
+    document.addEventListener('selectionchange', () => {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+            hideFab();
+            return;
+        }
+        // Only show if selection is inside the log view
+        const anchor = sel.anchorNode;
+        if (!anchor || !container.contains(anchor)) {
+            hideFab();
+            return;
+        }
+        const text = sel.toString().trim();
+        if (text.length < 5 || text.length > 2000) {
+            hideFab();
+            return;
+        }
+        try {
+            const range = sel.getRangeAt(0);
+            const rect = range.getBoundingClientRect();
+            showFab(rect);
+        } catch (_) {
+            hideFab();
+        }
+    });
+
+    fab.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const sel = window.getSelection();
+        const text = sel ? sel.toString().trim() : '';
+        if (!text) return;
+
+        // Use first line (up to 120 chars) as summary, full text as prompt
+        const firstLine = text.split('\n')[0].slice(0, 120);
+        addBacklogItem(firstLine, text, 'human');
+        ctx.showToast('Added to backlog', 'success');
+
+        // Clear selection and hide fab
+        sel.removeAllRanges();
+        fab.classList.add('hidden');
+    });
+
+    // Hide on scroll
+    container.addEventListener('scroll', () => hideFab(), { passive: true });
+}
+
+/**
  * Tracks if user is at bottom to control auto-scroll
  */
 function setupScrollTracking() {
@@ -9282,15 +9492,22 @@ const TOOL_TITLES = {
 function openToolPanel(name) {
     if (ctx.uiMode !== 'desktop-multipane') return;
 
-    if (name === 'team' || name === 'queue' || name === 'process' || name === 'backlog') {
+    const sidebarSections = {
+        team: 'sidebarTeamSection',
+        queue: 'sidebarQueueSection',
+        process: 'sidebarProcessSection',
+        backlog: 'sidebarBacklogSection',
+        permissions: 'sidebarPermissionsSection',
+    };
+    if (sidebarSections[name]) {
         // Scroll to sidebar section + expand if collapsed
         restoreSidebarToolContent();
-        const sectionMap = { team: 'sidebarTeamSection', queue: 'sidebarQueueSection', process: 'sidebarProcessSection', backlog: 'sidebarBacklogSection' };
-        const section = document.getElementById(sectionMap[name]);
+        const section = document.getElementById(sidebarSections[name]);
         if (section) {
             section.classList.remove('collapsed');
             section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             if (name === 'process') loadSidebarProcesses();
+            if (name === 'permissions') loadPermissions();
         }
     } else {
         // Toggle: clicking same tool closes it
@@ -9428,6 +9645,20 @@ function populateDesktopSidebar() {
         sidebarBacklogBody.appendChild(backlogContent);
         backlogContent.classList.remove('hidden');
         backlogContent.classList.add('active');
+    }
+
+    // Reparent permissions tab content into sidebar
+    const permContent = document.getElementById('permissionsTabContent');
+    const sidebarPermBody = document.getElementById('sidebarPermissionsBody');
+    if (permContent && sidebarPermBody) {
+        sidebarOrigParents.set('permContent', {
+            element: permContent,
+            parent: permContent.parentElement,
+            nextSibling: permContent.nextElementSibling,
+        });
+        sidebarPermBody.appendChild(permContent);
+        permContent.classList.remove('hidden');
+        permContent.classList.add('active');
     }
 
     // Build sessions list
@@ -10208,6 +10439,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         extractPermissionPrompt(fakeTerminal);
     });
     initCollapse(logContent);
+    setupSelectionBacklog(logContent);
     setupScrollTracking();
     setupLogFilterBar();
     initMarkdown(logContent);
