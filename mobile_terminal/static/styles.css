@@ -1581,8 +1581,44 @@ html, body {
 
 .log-text.assistant-text {
     color: var(--text-primary);
+    white-space: pre-wrap;
     word-break: break-word;
     overflow-wrap: break-word;
+}
+
+/* After markdown parsing, reset white-space for HTML content */
+.log-text.assistant-text p,
+.log-text.assistant-text ul,
+.log-text.assistant-text ol,
+.log-text.assistant-text h1,
+.log-text.assistant-text h2,
+.log-text.assistant-text h3 {
+    white-space: normal;
+}
+
+/* Markdown tables in log view */
+.log-text.assistant-text table {
+    white-space: normal;
+    border-collapse: collapse;
+    font-size: 11px;
+    margin: 6px 0;
+    width: 100%;
+    overflow-x: auto;
+    display: block;
+}
+.log-text.assistant-text th,
+.log-text.assistant-text td {
+    border: 1px solid var(--border);
+    padding: 3px 8px;
+    text-align: left;
+    white-space: nowrap;
+}
+.log-text.assistant-text th {
+    background: var(--bg-tertiary);
+    font-weight: 600;
+}
+.log-text.assistant-text tr:nth-child(even) {
+    background: var(--bg-secondary);
 }
 
 /* Markdown rendering in assistant messages */

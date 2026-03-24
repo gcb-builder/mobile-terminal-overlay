@@ -195,7 +195,8 @@ export function stripAnsi(text) {
         // RGB color codes that got split: 38;2;R;G;Bm or 48;2;R;G;Bm
         .replace(/\b[34]8;2;[0-9;]+m/g, '')
         // Simple color codes: 0m, 1m, 32m, etc.
-        .replace(/\b[0-9;]+m\b/g, '')
+        // Negative lookbehind: don't strip if preceded by @ or letter (e.g. P@100m, 500ms)
+        .replace(/(?<![a-zA-Z@])\b[0-9;]+m\b/g, '')
         // OSC sequences (ESC ] ... BEL)
         .replace(/\x1b\][^\x07]*\x07/g, '')
         // OSC sequences with ST terminator
