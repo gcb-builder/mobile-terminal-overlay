@@ -31,11 +31,23 @@ def register(app: FastAPI, deps):
     ):
         """Get current git status: branch, dirty, ahead/behind, lock status."""
 
-        # If pane_id provided, verify it matches the active target
-        if pane_id and app.state.active_target and pane_id != app.state.active_target:
-            return {"has_repo": False, "error": "Pane mismatch"}
-
-        repo_path = deps.get_current_repo_path()
+        # Resolve repo from pane's cwd (not active_target, which may be stale)
+        repo_path = None
+        if pane_id:
+            try:
+                from mobile_terminal.helpers import get_tmux_target
+                session = app.state.current_session
+                tmux_t = get_tmux_target(session, pane_id)
+                result = await run_subprocess(
+                    ["tmux", "display-message", "-p", "-t", tmux_t, "#{pane_current_path}"],
+                    capture_output=True, text=True, timeout=2,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    repo_path = Path(result.stdout.strip())
+            except Exception:
+                pass
+        if not repo_path:
+            repo_path = deps.get_current_repo_path()
         if not repo_path:
             return {
                 "has_repo": False,
