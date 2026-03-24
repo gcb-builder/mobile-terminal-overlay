@@ -17,7 +17,8 @@ import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          getQueueItems, isQueuePaused, saveQueueToStorage,
          popNextQueueItem, popNextQueueItemById, requeueItem } from './src/features/queue.js';
 import { initBacklog, handleBacklogMessage, handleCandidateMessage,
-         refreshBacklogList, reloadBacklogForProject, addBacklogItem } from './src/features/backlog.js';
+         refreshBacklogList, reloadBacklogForProject, addBacklogItem,
+         updateBacklogStatus } from './src/features/backlog.js';
 import { initPermissions, loadPermissions } from './src/features/permissions.js';
 import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js';
 import { initDocs } from './src/features/docs.js';
@@ -526,6 +527,9 @@ let targetLocked = true;         // Lock mode (true = locked, false = follow act
 let pendingPrompt = null;        // { id, kind, text, choices, answered, sentChoice }
 let dismissedPrompts = new Set(); // Prompt IDs user dismissed without answering
 let promptBanner = null;         // DOM reference for sticky banner
+let _permAutoApprovedAt = 0;     // Timestamp of last auto-approval (suppresses banner flash)
+let _lastLogContentHash = '';    // Hash of last log content (for change detection)
+let _logSettledAt = 0;           // When log content stopped changing
 
 // Agent health polling state (singleflight async loop)
 let agentHealthController = null;  // AbortController for singleflight loop
@@ -1616,6 +1620,10 @@ function handleJsonMessage(msg) {
     // Handle queue messages
     if (msg.type === 'queue_update' || msg.type === 'queue_sent' || msg.type === 'queue_state') {
         handleQueueMessage(msg);
+        // Auto-complete linked backlog item when queue item is sent
+        if (msg.type === 'queue_sent' && msg.backlog_id) {
+            updateBacklogStatus(msg.backlog_id, 'done');
+        }
         return true;
     }
 
@@ -2032,7 +2040,7 @@ async function connect() {
                 try {
                     console.log('Reconnect detected, syncing queue and log...');
                     await reconcileQueue();
-                    reloadBacklogForProject(ctx.currentSession || '');
+                    reloadBacklogForProject('');
                     await refreshLogContent();
                 } catch (e) {
                     console.warn('Post-reconnect sync failed:', e);
@@ -2307,6 +2315,8 @@ function sendTextAtomic(text, enter = true) {
         ctx.socket.send(JSON.stringify({ type: 'text', text: text, enter: enter }));
     }
 }
+// Expose for feature modules (backlog send-now)
+ctx.sendTextAtomic = sendTextAtomic;
 
 /**
  * Toggle control lock
@@ -2929,6 +2939,20 @@ function populateRepoDropdown() {
         } catch (_) {}
     });
     repoDropdown.appendChild(restartBtn);
+
+    // High-contrast toggle
+    const hcBtn = document.createElement('button');
+    hcBtn.className = 'nav-action-option';
+    const isHC = document.documentElement.classList.contains('high-contrast');
+    hcBtn.textContent = isHC ? 'Normal Contrast' : 'High Contrast';
+    hcBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const on = document.documentElement.classList.toggle('high-contrast');
+        localStorage.setItem('mto_high_contrast', on ? '1' : '');
+        hcBtn.textContent = on ? 'Normal Contrast' : 'High Contrast';
+        repoDropdown.classList.add('hidden');
+    });
+    repoDropdown.appendChild(hcBtn);
 }
 
 /**
@@ -3001,7 +3025,7 @@ async function switchRepo(session) {
                 await loadTargets();
                 loadLogContent();  // Full reload, not incremental refresh
                 await reconcileQueue();  // Reconcile queue for new session
-                reloadBacklogForProject(ctx.currentSession || '');
+                reloadBacklogForProject('');
                 // Refresh context banner for new repo
                 sessionStorage.removeItem(`mto_context_dismissed_${session}`);
                 loadContextBanner().catch(() => {});
@@ -3231,7 +3255,7 @@ async function selectTarget(targetId, isInitialSync = false) {
     // Background reconcile with server for the new pane
     reconcileQueue();
     // Reload backlog for current project (server resolves project path)
-    reloadBacklogForProject(ctx.currentSession || '');
+    reloadBacklogForProject('');
 
     // Save draft for previous pane, restore draft for new pane
     if (logInput) {
@@ -4241,8 +4265,25 @@ function setupJumpToBottom() {
  * Setup compose mode (predictive text + file upload)
  */
 function setupComposeMode() {
+    // Pane selector
+    const composePaneSelect = document.getElementById('composePaneSelect');
+
+    function populateComposePaneSelect() {
+        if (!composePaneSelect) return;
+        composePaneSelect.innerHTML = '';
+        const targets = ctx.targets || [];
+        for (const t of targets) {
+            const opt = document.createElement('option');
+            opt.value = t.id;
+            opt.textContent = t.project || t.window_name || t.id;
+            if (t.id === ctx.activeTarget) opt.selected = true;
+            composePaneSelect.appendChild(opt);
+        }
+    }
+
     // Open compose modal
     composeBtn.addEventListener('click', () => {
+        populateComposePaneSelect();
         composeModal.classList.remove('hidden');
         composeInput.value = composeDraft;
         // Restore saved attachments
@@ -4250,7 +4291,6 @@ function setupComposeMode() {
         renderAttachments();
         setTimeout(() => {
             composeInput.focus();
-            // Place cursor at end
             composeInput.setSelectionRange(composeInput.value.length, composeInput.value.length);
         }, 100);
     });
@@ -4299,20 +4339,36 @@ function setupComposeMode() {
         });
     }
 
-    // Send to ctx.terminal (text + attachment paths)
-    // Insert: insert text only (no Enter)
-    // Run: insert text + Enter (execute command)
+    // Get selected pane from compose selector (falls back to active target)
+    function getComposeTargetPane() {
+        return (composePaneSelect && composePaneSelect.value) || ctx.activeTarget;
+    }
+
+    // Send to terminal (text + attachment paths)
+    // If a different pane is selected, use the text API with pane_id
     function sendComposedText(withEnter = false) {
         let text = composeInput.value;
 
-        // Append attachment paths to the message
         if (pendingAttachments.length > 0) {
             const paths = pendingAttachments.map(a => a.path).join(' ');
             text = text ? `${text} ${paths}` : paths;
         }
 
-        if (text && ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
-            // Atomic send via tmux send-keys
+        if (!text) return;
+
+        const targetPane = getComposeTargetPane();
+        if (targetPane && targetPane !== ctx.activeTarget) {
+            // Send to a different pane via API
+            apiFetch('/api/terminal/text', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, enter: withEnter, pane_id: targetPane, token: ctx.token }),
+            }).then(() => {
+                closeComposeModal(true);
+            }).catch(() => {
+                ctx.showToast('Failed to send to pane', 'warning');
+            });
+        } else if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
             sendTextAtomic(text, withEnter);
             closeComposeModal(true);
         }
@@ -4351,6 +4407,28 @@ function setupComposeMode() {
     if (composeQueue) {
         composeQueue.addEventListener('click', () => {
             queueComposedText();
+        });
+    }
+
+    // Backlog button - add to backlog (split on lines if multi-line)
+    const composeBacklog = document.getElementById('composeBacklog');
+    if (composeBacklog) {
+        composeBacklog.addEventListener('click', () => {
+            const text = composeInput.value.trim();
+            if (!text) return;
+            const lines = splitBacklogLines(text);
+            if (lines.length <= 1) {
+                // Single item
+                const summary = text.split('\n')[0].slice(0, 120);
+                addBacklogItem(summary, text, 'human');
+                ctx.showToast('Added to backlog', 'success');
+            } else {
+                for (const line of lines) {
+                    addBacklogItem(line.slice(0, 120), line, 'human');
+                }
+                ctx.showToast(`Added ${lines.length} items to backlog`, 'success');
+            }
+            closeComposeModal(true);
         });
     }
 
@@ -6341,6 +6419,18 @@ function createLogCard(msg) {
 function prefillCompose(text) {
     composeDraft = text;
     composeInput.value = text;
+    // Populate pane selector
+    const ps = document.getElementById('composePaneSelect');
+    if (ps) {
+        ps.innerHTML = '';
+        for (const t of (ctx.targets || [])) {
+            const opt = document.createElement('option');
+            opt.value = t.id;
+            opt.textContent = t.project || t.window_name || t.id;
+            if (t.id === ctx.activeTarget) opt.selected = true;
+            ps.appendChild(opt);
+        }
+    }
     composeModal.classList.remove('hidden');
     setTimeout(() => {
         composeInput.focus();
@@ -6372,6 +6462,13 @@ function askAIAboutError(msg) {
  * Updates pendingPrompt state and shows/hides banner
  */
 function extractPendingPrompt(content) {
+    // Track when log content last changed (for confirmation settling)
+    const contentTail = content.slice(-200);
+    if (contentTail !== _lastLogContentHash) {
+        _lastLogContentHash = contentTail;
+        _logSettledAt = Date.now();
+    }
+
     // Check if last message is from assistant (not user)
     const blocks = content.split('\n\n').filter(b => b.trim());
     if (blocks.length === 0) {
@@ -6583,9 +6680,11 @@ function extractPendingPrompt(content) {
 
     console.debug('[PromptDetect] textBlocks:', textBlocks.length, textBlocks.map(b => b.slice(0, 50)));
 
-    // Only show confirmation banners if the agent appears idle (not mid-output).
-    // If the agent is still working, these patterns often match mid-conversation text.
-    const agentIdle = !terminalBusy;
+    // Only show confirmation banners when agent is truly idle:
+    // 1. Terminal not busy (prompt visible)
+    // 2. Log content settled for 2+ seconds (no new output)
+    // This prevents false positives on mid-conversation questions.
+    const agentIdle = !terminalBusy && (Date.now() - _logSettledAt > 2000);
 
     if (agentIdle) {
         // Only check the LAST text block — mid-conversation blocks are not prompts
@@ -6646,6 +6745,9 @@ function clearPendingPrompt() {
  */
 function extractPermissionPrompt(terminalContent) {
     if (!terminalContent) return;
+
+    // Suppress for 5s after auto-approval (terminal still shows old prompt briefly)
+    if (Date.now() - _permAutoApprovedAt < 5000) return;
 
     // Skip Claude's session rating prompt — not actionable
     if (ctx.agentType === 'claude' && /How is Claude doing/i.test(terminalContent)) return;
@@ -7160,29 +7262,45 @@ function sendOtherFeedback(choiceNum, text) {
 function setupSelectionBacklog(container) {
     if (!container) return;
 
-    // Create floating action button
-    const fab = document.createElement('button');
-    fab.className = 'selection-backlog-fab hidden';
-    fab.textContent = '+ Backlog';
-    document.body.appendChild(fab);
+    // Create floating action container
+    const fabContainer = document.createElement('div');
+    fabContainer.className = 'selection-backlog-fab hidden';
+
+    const fabSingle = document.createElement('button');
+    fabSingle.className = 'selection-fab-btn';
+    fabSingle.textContent = '+ Backlog';
+    fabContainer.appendChild(fabSingle);
+
+    const fabSplit = document.createElement('button');
+    fabSplit.className = 'selection-fab-btn split';
+    fabSplit.textContent = '+ Split';
+    fabContainer.appendChild(fabSplit);
+
+    document.body.appendChild(fabContainer);
 
     let hideTimer = null;
+    let currentText = '';
 
-    function showFab(rect) {
-        // Mobile: position below selection (avoids OS selection handles at top)
-        // Desktop: position above selection
+    function showFab(rect, text) {
+        currentText = text;
+        const lines = splitBacklogLines(text);
+        // Show split button only for multi-line selections (3+ items)
+        fabSplit.classList.toggle('hidden', lines.length < 3);
+        fabSplit.textContent = lines.length >= 3 ? `+ Split (${lines.length})` : '+ Split';
+
+        // Mobile: below selection; Desktop: above
         const isMobile = window.innerWidth < 768;
         const top = isMobile
             ? rect.bottom + window.scrollY + 6
             : rect.top + window.scrollY - 36;
-        fab.style.top = top + 'px';
-        fab.style.left = Math.min(rect.left + rect.width / 2 - 40, window.innerWidth - 100) + 'px';
-        fab.classList.remove('hidden');
+        fabContainer.style.top = top + 'px';
+        fabContainer.style.left = Math.min(rect.left + rect.width / 2 - 60, window.innerWidth - 160) + 'px';
+        fabContainer.classList.remove('hidden');
         clearTimeout(hideTimer);
     }
 
     function hideFab() {
-        hideTimer = setTimeout(() => fab.classList.add('hidden'), 200);
+        hideTimer = setTimeout(() => fabContainer.classList.add('hidden'), 200);
     }
 
     document.addEventListener('selectionchange', () => {
@@ -7191,45 +7309,80 @@ function setupSelectionBacklog(container) {
             hideFab();
             return;
         }
-        // Only show if selection is inside the log view
         const anchor = sel.anchorNode;
         if (!anchor || !container.contains(anchor)) {
             hideFab();
             return;
         }
         const text = sel.toString().trim();
-        if (text.length < 5 || text.length > 2000) {
+        if (text.length < 5 || text.length > 5000) {
             hideFab();
             return;
         }
         try {
             const range = sel.getRangeAt(0);
             const rect = range.getBoundingClientRect();
-            showFab(rect);
+            showFab(rect, text);
         } catch (_) {
             hideFab();
         }
     });
 
-    fab.addEventListener('click', (e) => {
+    // Single item add
+    fabSingle.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const sel = window.getSelection();
-        const text = sel ? sel.toString().trim() : '';
-        if (!text) return;
-
-        // Use first line (up to 120 chars) as summary, full text as prompt
-        const firstLine = text.split('\n')[0].slice(0, 120);
-        addBacklogItem(firstLine, text, 'human');
+        if (!currentText) return;
+        const firstLine = currentText.split('\n')[0].slice(0, 120);
+        addBacklogItem(firstLine, currentText, 'human');
         ctx.showToast('Added to backlog', 'success');
-
-        // Clear selection and hide fab
-        sel.removeAllRanges();
-        fab.classList.add('hidden');
+        clearSelectionAndHide();
     });
 
-    // Hide on scroll
+    // Split into multiple items
+    fabSplit.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!currentText) return;
+        const lines = splitBacklogLines(currentText);
+        let count = 0;
+        for (const line of lines) {
+            addBacklogItem(line.slice(0, 120), line, 'human');
+            count++;
+        }
+        ctx.showToast(`Added ${count} items to backlog`, 'success');
+        clearSelectionAndHide();
+    });
+
+    function clearSelectionAndHide() {
+        const sel = window.getSelection();
+        if (sel) sel.removeAllRanges();
+        fabContainer.classList.add('hidden');
+        currentText = '';
+    }
+
     container.addEventListener('scroll', () => hideFab(), { passive: true });
+}
+
+/**
+ * Split text into individual backlog items.
+ * Handles: "- item", "* item", "N. item", "N) item", plain lines.
+ * Skips empty lines and markdown headers used as context.
+ */
+function splitBacklogLines(text) {
+    const lines = text.split('\n');
+    const items = [];
+    for (const raw of lines) {
+        // Strip list prefixes: "- ", "* ", "1. ", "1) "
+        const stripped = raw.replace(/^\s*[-*]\s+/, '').replace(/^\s*\d+[.)]\s+/, '').trim();
+        if (!stripped) continue;
+        // Skip markdown headers and horizontal rules
+        if (/^#{1,4}\s/.test(stripped) || /^[-=]{3,}$/.test(stripped)) continue;
+        // Skip lines that are just bold headers like "**Something**"
+        if (/^\*\*[^*]+\*\*$/.test(stripped)) continue;
+        items.push(stripped);
+    }
+    return items;
 }
 
 /**
@@ -9129,6 +9282,13 @@ function handleTypedMessage(msg) {
             const repo = d.repo ? `[${d.repo}] ` : '';
             ctx.showToast(`${repo}${verb}: ${d.tool} ${tgt}`,
                 d.decision === 'allow' ? 'info' : 'warning', 4000);
+            // Suppress permission banner for a few seconds (terminal still shows old prompt)
+            _permAutoApprovedAt = Date.now();
+            // Clear any existing permission banner that was shown before auto-approve
+            if (pendingPrompt && pendingPrompt.kind === 'permission') {
+                clearPendingPrompt();
+            }
+            hidePermissionBanner();
             break;
         }
         default:
@@ -10372,6 +10532,11 @@ function toggleShortcutHelp() {
 document.addEventListener('DOMContentLoaded', async () => {
     initDOMElements();
 
+    // Restore high-contrast mode
+    if (localStorage.getItem('mto_high_contrast') === '1') {
+        document.documentElement.classList.add('high-contrast');
+    }
+
     // Configure marked.js to not convert single newlines to <br>
     // This prevents garbled output when ctx.terminal content has hard line breaks
     if (typeof marked !== 'undefined') {
@@ -10546,6 +10711,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const cleanUrl = window.location.pathname + (ctx.token ? `?token=${ctx.token}` : '');
                 window.history.replaceState({}, '', cleanUrl);
             }, 2000);
+        } else if (urlParams.get('share')) {
+            // Web Share Target: retrieve shared content and open compose
+            const shareId = urlParams.get('share');
+            setTimeout(async () => {
+                try {
+                    const resp = await apiFetch('/api/share/pending?share_id=' + encodeURIComponent(shareId) + '&token=' + ctx.token);
+                    const data = await resp.json();
+                    if (data.found && data.text) {
+                        prefillCompose(data.text);
+                        showToast('Shared content loaded', 'success');
+                    }
+                } catch (_) {}
+                const cleanUrl = window.location.pathname + (ctx.token ? '?token=' + ctx.token : '');
+                window.history.replaceState({}, '', cleanUrl);
+            }, 1000);
         } else if (deepAction === 'allow' || deepAction === 'deny') {
             // Permission response from push notification when no client was open
             const choice = deepAction === 'allow' ? 'y' : 'n';

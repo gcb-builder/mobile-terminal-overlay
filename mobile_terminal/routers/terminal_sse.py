@@ -505,7 +505,7 @@ def register(app: FastAPI, deps):
 
         runtime = app.state.runtime
         session = app.state.current_session
-        target = app.state.active_target
+        target = data.get("pane_id") or app.state.active_target
         tmux_t = get_tmux_target(session, target)
 
         if text_data:

@@ -929,6 +929,67 @@ def create_app(config: Config) -> FastAPI:
 
         return JSONResponse({"status": "restarting"}, status_code=202)
 
+    @app.post("/share")
+    async def receive_share(request: Request):
+        """
+        Web Share Target endpoint. Receives shared text/files from mobile OS.
+        Stores content and redirects to the app with share params.
+        """
+        from fastapi.responses import RedirectResponse
+        import uuid
+
+        form = await request.form()
+        title = form.get("title", "")
+        text = form.get("text", "")
+        url = form.get("url", "")
+        files = form.getlist("files")
+
+        # Combine shared text
+        shared_text = " ".join(filter(None, [str(title), str(text), str(url)])).strip()
+
+        # Save files if any
+        saved_paths = []
+        share_dir = Path.home() / ".cache" / "mobile-overlay" / "shares"
+        share_dir.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            if hasattr(f, 'filename') and f.filename:
+                dest = share_dir / f"{uuid.uuid4().hex[:8]}_{f.filename}"
+                content = await f.read()
+                dest.write_bytes(content)
+                saved_paths.append(str(dest))
+                logger.info(f"Share: saved file {f.filename} -> {dest}")
+
+        if saved_paths:
+            shared_text += " " + " ".join(saved_paths)
+
+        logger.info(f"Share received: text={shared_text[:100]}")
+
+        # Store in session for the client to pick up
+        share_id = uuid.uuid4().hex[:12]
+        if not hasattr(app.state, '_pending_shares'):
+            app.state._pending_shares = {}
+        app.state._pending_shares[share_id] = {
+            "text": shared_text,
+            "files": saved_paths,
+            "ts": time.time(),
+        }
+
+        # Redirect to app with share ID
+        base = config.base_path or ""
+        return RedirectResponse(f"{base}/?share={share_id}", status_code=303)
+
+    @app.get("/api/share/pending")
+    async def get_pending_share(
+        share_id: str = Query(...),
+        _auth=Depends(verify_token),
+    ):
+        """Retrieve a pending share by ID."""
+        shares = getattr(app.state, '_pending_shares', {})
+        share = shares.pop(share_id, None)
+        if not share:
+            return {"found": False}
+        return {"found": True, **share}
+
     @app.post("/api/reload-env")
     async def reload_env(_auth=Depends(verify_token)):
         """

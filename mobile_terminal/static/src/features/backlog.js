@@ -127,6 +127,7 @@ export function renderBacklogList() {
 
             let actions = '';
             if (!isDone && !isQueued) {
+                actions += `<button class="backlog-send-btn" data-id="${eid}">Send</button>`;
                 actions += `<button class="backlog-queue-btn" data-id="${eid}">Queue</button>`;
             } else if (isQueued) {
                 actions += `<span style="font-size:10px;color:var(--warning);padding:4px 6px">Queued</span>`;
@@ -157,6 +158,9 @@ export function renderBacklogList() {
     });
 
     // Bind backlog item events
+    backlogList.querySelectorAll('.backlog-send-btn').forEach(btn => {
+        btn.addEventListener('click', e => { e.stopPropagation(); sendBacklogItem(btn.dataset.id); });
+    });
     backlogList.querySelectorAll('.backlog-queue-btn').forEach(btn => {
         btn.addEventListener('click', e => { e.stopPropagation(); queueBacklogItem(btn.dataset.id); });
     });
@@ -188,6 +192,7 @@ async function keepCandidate(candidateId) {
         }
     } catch (e) {
         console.error('Failed to keep candidate:', e);
+        ctx.showToast('Failed to keep candidate', 'warning');
     }
 }
 
@@ -201,10 +206,22 @@ async function dismissCandidate(candidateId) {
         await fetch(`/api/backlog/candidates/dismiss?${params}`, { method: 'POST' });
     } catch (e) {
         console.error('Failed to dismiss candidate:', e);
+        ctx.showToast('Failed to dismiss', 'warning');
     }
 }
 
 // ── Backlog Actions ───────────────────────────────────────────────────
+
+function sendBacklogItem(itemId) {
+    const item = backlogItems.find(i => i.id === itemId);
+    if (!item || item.status === 'done') return;
+
+    if (ctx.sendTextAtomic) {
+        ctx.sendTextAtomic(item.prompt, true);
+        updateBacklogStatus(itemId, 'done');
+        ctx.showToast('Sent to terminal', 'success');
+    }
+}
 
 async function queueBacklogItem(itemId) {
     const item = backlogItems.find(i => i.id === itemId);
@@ -218,7 +235,7 @@ async function queueBacklogItem(itemId) {
     await updateBacklogStatus(itemId, 'queued');
 }
 
-async function updateBacklogStatus(itemId, status) {
+export async function updateBacklogStatus(itemId, status) {
     // Optimistic update
     const idx = backlogItems.findIndex(i => i.id === itemId);
     if (idx >= 0) {
@@ -244,6 +261,7 @@ async function updateBacklogStatus(itemId, status) {
         }
     } catch (e) {
         console.error('Failed to update backlog item:', e);
+        ctx.showToast('Failed to update item', 'warning');
     }
 }
 
@@ -258,6 +276,7 @@ async function removeBacklogItem(itemId) {
         await fetch(`/api/backlog/remove?${params}`, { method: 'POST' });
     } catch (e) {
         console.error('Failed to remove backlog item:', e);
+        ctx.showToast('Failed to remove item', 'warning');
     }
 }
 
@@ -288,18 +307,22 @@ export async function addBacklogItem(summary, promptText, source = 'human') {
         }
     } catch (e) {
         console.error('Failed to add backlog item:', e);
+        ctx.showToast('Failed to add item', 'warning');
     }
 }
 
 // ── Server Refresh ─────────────────────────────────────────────────────
 
 export async function refreshBacklogList() {
-    if (!currentProject) return;
     try {
-        const params = new URLSearchParams({ project: currentProject, token: ctx.token });
+        const params = new URLSearchParams({ token: ctx.token });
+        if (currentProject) params.set('project', currentProject);
+        if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
         const resp = await fetch(`/api/backlog/list?${params}`);
         if (resp.ok) {
             const data = await resp.json();
+            // Update currentProject from server response (server resolves from pane cwd)
+            if (data.project) currentProject = data.project;
             backlogItems = data.items || [];
             saveToStorage();
             renderBacklogList();

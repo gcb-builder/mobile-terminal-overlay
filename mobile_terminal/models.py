@@ -993,6 +993,7 @@ class CommandQueue:
                             "type": "queue_sent",
                             "id": item.id,
                             "sent_at": item.sent_at,
+                            "backlog_id": item.backlog_id,
                         })
                     except Exception:
                         pass

@@ -22,7 +22,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=227">
+    <link rel="stylesheet" href="/static/styles.css?v=234">
 </head>
 <body>
     <div class="app">
@@ -388,7 +388,7 @@
         <div id="composeModal" class="compose-modal hidden">
             <div class="compose-modal-content">
                 <div class="compose-header">
-                    <span class="compose-title">Compose Message</span>
+                    <select id="composePaneSelect" class="compose-pane-select" aria-label="Target pane"></select>
                     <select id="composeThinkMode" class="compose-think-select" aria-label="Think mode">
                         <option value="">Mode</option>
                         <option value="ultrathink">Ultrathink</option>
@@ -420,6 +420,7 @@
                     <button id="composeInsert" class="compose-action secondary">Insert</button>
                 </div>
                 <div class="compose-run-footer">
+                    <button id="composeBacklog" class="compose-backlog-btn">Backlog</button>
                     <button id="composeQueue" class="compose-queue-btn">Queue</button>
                     <button id="composeRun" class="compose-run-btn">Run</button>
                 </div>
@@ -701,6 +702,7 @@
                 <div class="queue-tab-header">
                     <span class="queue-title">Command Queue</span>
                     <span id="queueCount" class="queue-count">0</span>
+                    <button id="queueAutoToggle" class="queue-auto-toggle active" title="Toggle auto-send">Auto</button>
                     <button id="queuePauseBtn" class="queue-pause-btn">Pause</button>
                 </div>
                 <div id="queueList" class="queue-list"></div>
@@ -962,6 +964,6 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script defer src="/static/terminal.js?v=307"></script>
+    <script defer src="/static/terminal.js?v=317"></script>
 </body>
 </html>

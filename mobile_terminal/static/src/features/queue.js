@@ -12,6 +12,7 @@ import { escapeHtml } from '../utils.js';
 // Module-local state
 let queueItems = [];
 let queuePaused = false;
+let queueAutoSend = sessionStorage.getItem('mto_queue_autosend') === 'true'; // default: off (manual)
 
 // Queue persistence constants
 const QUEUE_STORAGE_PREFIX = 'mto_queue_';
@@ -20,7 +21,7 @@ const SENT_RETAIN_MS = 60000; // Keep sent items visible for 60s
 
 // DOM refs (set in initQueue)
 let queueList, queueCount, queueBadge, queueTabBadge;
-let queuePauseBtn, queueSendNext, queueFlush;
+let queuePauseBtn, queueSendNext, queueFlush, queueAutoToggle;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -89,6 +90,12 @@ function updatePauseButton() {
     queuePauseBtn.classList.toggle('paused', queuePaused);
 }
 
+function updateAutoToggle() {
+    if (!queueAutoToggle) return;
+    queueAutoToggle.textContent = queueAutoSend ? 'Auto' : 'Manual';
+    queueAutoToggle.classList.toggle('active', queueAutoSend);
+}
+
 // ── Core functions ───────────────────────────────────────────────────
 
 /**
@@ -118,11 +125,7 @@ export function renderQueueList() {
         const escapedId = escapeHtml(String(item.id));
         let actionsHtml = '';
         if (isQueued) {
-            actionsHtml = `
-                <div class="queue-item-reorder">
-                    <button class="queue-reorder-btn up" data-id="${escapedId}" data-dir="up"${idx === firstQueued ? ' style="visibility:hidden"' : ''}>&#x25B2;</button>
-                    <button class="queue-reorder-btn down" data-id="${escapedId}" data-dir="down"${idx === lastQueued ? ' style="visibility:hidden"' : ''}>&#x25BC;</button>
-                </div>`;
+            actionsHtml = `<span class="queue-drag-handle" data-id="${escapedId}">&#x2261;</span>`;
         } else if (isSent) {
             actionsHtml = `<button class="queue-item-requeue" data-id="${escapedId}" title="Re-queue">&#x21BA;</button>`;
         }
@@ -166,12 +169,7 @@ export function renderQueueList() {
         });
     });
 
-    queueList.querySelectorAll('.queue-reorder-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            reorderQueueItem(btn.dataset.id, btn.dataset.dir);
-        });
-    });
+    setupQueueDragReorder();
 
     queueList.querySelectorAll('.queue-item-requeue').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -179,6 +177,111 @@ export function renderQueueList() {
             requeueSentItem(btn.dataset.id);
         });
     });
+}
+
+/**
+ * Touch/mouse drag reorder for queue items.
+ */
+function setupQueueDragReorder() {
+    if (!queueList) return;
+
+    let dragEl = null;
+    let dragId = null;
+    let startY = 0;
+    let placeholder = null;
+
+    function getY(e) {
+        return e.touches ? e.touches[0].clientY : e.clientY;
+    }
+
+    function onStart(e) {
+        const handle = e.target.closest('.queue-drag-handle');
+        if (!handle) return;
+        e.preventDefault();
+
+        dragId = handle.dataset.id;
+        dragEl = handle.closest('.queue-item');
+        if (!dragEl) return;
+
+        startY = getY(e);
+
+        // Create placeholder
+        placeholder = document.createElement('div');
+        placeholder.className = 'queue-drag-placeholder';
+        placeholder.style.height = dragEl.offsetHeight + 'px';
+        dragEl.parentNode.insertBefore(placeholder, dragEl);
+
+        // Float the dragged element
+        dragEl.classList.add('dragging');
+        dragEl.style.width = dragEl.offsetWidth + 'px';
+
+        document.addEventListener('touchmove', onMove, { passive: false });
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('touchend', onEnd);
+        document.addEventListener('mouseup', onEnd);
+    }
+
+    function onMove(e) {
+        if (!dragEl) return;
+        e.preventDefault();
+
+        const y = getY(e);
+        const dy = y - startY;
+        dragEl.style.transform = `translateY(${dy}px)`;
+
+        // Find which item we're over
+        const items = [...queueList.querySelectorAll('.queue-item:not(.dragging)')];
+        for (const item of items) {
+            const rect = item.getBoundingClientRect();
+            const mid = rect.top + rect.height / 2;
+            if (y < mid) {
+                queueList.insertBefore(placeholder, item);
+                return;
+            }
+        }
+        // Past all items — put at end
+        queueList.appendChild(placeholder);
+    }
+
+    function onEnd() {
+        if (!dragEl) return;
+
+        document.removeEventListener('touchmove', onMove);
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('touchend', onEnd);
+        document.removeEventListener('mouseup', onEnd);
+
+        dragEl.classList.remove('dragging');
+        dragEl.style.transform = '';
+        dragEl.style.width = '';
+
+        // Insert dragEl where placeholder is
+        if (placeholder && placeholder.parentNode) {
+            placeholder.parentNode.insertBefore(dragEl, placeholder);
+            placeholder.remove();
+        }
+
+        // Rebuild queueItems order from DOM
+        const newOrder = [];
+        queueList.querySelectorAll('.queue-item').forEach(el => {
+            const item = queueItems.find(i => i.id === el.dataset.id);
+            if (item) newOrder.push(item);
+        });
+        // Add any items not in DOM (shouldn't happen but safety)
+        for (const item of queueItems) {
+            if (!newOrder.some(i => i.id === item.id)) newOrder.push(item);
+        }
+        queueItems.length = 0;
+        queueItems.push(...newOrder);
+        saveQueueToStorage();
+
+        dragEl = null;
+        dragId = null;
+        placeholder = null;
+    }
+
+    queueList.addEventListener('touchstart', onStart, { passive: false });
+    queueList.addEventListener('mousedown', onStart);
 }
 
 /**
@@ -229,7 +332,11 @@ export async function refreshQueueList() {
  * Enqueue a command.
  * Generates client-side ID for idempotency and persists to localStorage.
  */
+export function isQueueAutoSend() { return queueAutoSend; }
+
 export async function enqueueCommand(text, policy = 'auto', backlogId = null) {
+    // In auto-send mode, override 'auto' policy to 'safe' so items send without manual Run
+    if (policy === 'auto' && queueAutoSend) policy = 'safe';
     if (!ctx.currentSession) return false;
 
     const itemId = makeQueueId();
@@ -637,10 +744,20 @@ export function initQueue() {
     queuePauseBtn = document.getElementById('queuePauseBtn');
     queueSendNext = document.getElementById('queueSendNext');
     queueFlush = document.getElementById('queueFlush');
+    queueAutoToggle = document.getElementById('queueAutoToggle');
 
     if (queuePauseBtn) queuePauseBtn.addEventListener('click', toggleQueuePause);
     // queueSendNext ("Run") is wired in terminal.js to call sendNextUnsafe()
     if (queueFlush) queueFlush.addEventListener('click', flushQueue);
+
+    if (queueAutoToggle) {
+        updateAutoToggle();
+        queueAutoToggle.addEventListener('click', () => {
+            queueAutoSend = !queueAutoSend;
+            sessionStorage.setItem('mto_queue_autosend', queueAutoSend);
+            updateAutoToggle();
+        });
+    }
 
     refreshQueueList();
 }
