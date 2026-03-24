@@ -536,7 +536,11 @@ export async function reconcileQueue() {
     const toEnqueue = [];
     for (const local of localItems) {
         if (!serverMap.has(local.id)) {
-            toEnqueue.push(local);
+            // Only re-enqueue items still in "queued" status.
+            // Sent/completed items not on server = already processed, drop them.
+            if (local.status === 'queued') {
+                toEnqueue.push(local);
+            }
         }
     }
 

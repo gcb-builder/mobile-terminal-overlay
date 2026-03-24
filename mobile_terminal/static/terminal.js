@@ -3331,6 +3331,11 @@ async function selectTarget(targetId, isInitialSync = false) {
         // Reload ctx.targets to check cwd mismatch (background, don't await)
         loadTargets();
 
+        // Re-fetch queue and backlog now that server has confirmed the target switch
+        reconcileQueue();
+        reloadBacklogForProject('');
+        if (ctx.uiMode === 'desktop-multipane') updateSidebarCounts();
+
         // Reset log state so the new pane gets a fresh load
         if (!isInitialSync) {
             logLoaded = false;
@@ -7735,6 +7740,12 @@ function setupLogInput() {
 
     // Send on Enter, navigate history on ArrowUp/Down
     logInput.addEventListener('keydown', (e) => {
+        // Escape → send ESC to terminal (interrupt agent)
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            sendTextAtomic('\x1b', false);
+            return;
+        }
         if ((e.key === 'Enter' || e.keyCode === 13) && !e.shiftKey) {
             e.preventDefault();
             sendLogCommand();
@@ -10536,6 +10547,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (localStorage.getItem('mto_high_contrast') === '1') {
         document.documentElement.classList.add('high-contrast');
     }
+
+    // Global Escape key → send ESC to terminal (unless a modal/compose is open)
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        // Don't intercept if compose modal or other modals are open
+        const composeEl = document.getElementById('composeModal');
+        if (composeEl && !composeEl.classList.contains('hidden')) return;
+        const newWindowEl = document.getElementById('newWindowModal');
+        if (newWindowEl && !newWindowEl.classList.contains('hidden')) return;
+        // Don't intercept if focus is in an input/textarea (handled by their own keydown)
+        const tag = document.activeElement?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        // Send ESC to terminal
+        e.preventDefault();
+        sendTextAtomic('\x1b', false);
+    });
 
     // Configure marked.js to not convert single newlines to <br>
     // This prevents garbled output when ctx.terminal content has hard line breaks
