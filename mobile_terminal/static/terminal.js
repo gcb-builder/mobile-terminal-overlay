@@ -7293,11 +7293,8 @@ function setupSelectionBacklog(container) {
         fabSplit.classList.toggle('hidden', lines.length < 3);
         fabSplit.textContent = lines.length >= 3 ? `+ Split (${lines.length})` : '+ Split';
 
-        // Mobile: below selection; Desktop: above
-        const isMobile = window.innerWidth < 768;
-        const top = isMobile
-            ? rect.bottom + window.scrollY + 6
-            : rect.top + window.scrollY - 36;
+        // Always below selection (bottom of selected range)
+        const top = rect.bottom + window.scrollY + 6;
         fabContainer.style.top = top + 'px';
         fabContainer.style.left = Math.min(rect.left + rect.width / 2 - 60, window.innerWidth - 160) + 'px';
         fabContainer.classList.remove('hidden');

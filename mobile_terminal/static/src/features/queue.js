@@ -117,31 +117,33 @@ export function renderQueueList() {
     const firstQueued = queuedIndices[0];
     const lastQueued = queuedIndices[queuedIndices.length - 1];
 
-    queueList.innerHTML = queueItems.map((item, idx) => {
-        const displayText = item.text.length > 40 ? item.text.slice(0, 40) + '...' : item.text;
+    // All values are escaped via escapeHtml before interpolation
+    queueList.innerHTML = queueItems.map((item) => {
+        const displayText = item.text.length > 60 ? item.text.slice(0, 60) + '...' : item.text;
         const escapedText = escapeHtml(displayText);
         const isQueued = item.status === 'queued';
         const isSent = item.status === 'sent';
-        const escapedId = escapeHtml(String(item.id));
-        let actionsHtml = '';
+        const eid = escapeHtml(String(item.id));
+
+        let actions = '';
         if (isQueued) {
-            actionsHtml = `<span class="queue-drag-handle" data-id="${escapedId}">&#x2261;</span>`;
+            actions += '<button class="queue-send-btn" data-id="' + eid + '">Send</button>';
+            actions += '<button class="queue-edit-btn" data-id="' + eid + '">Edit</button>';
         } else if (isSent) {
-            actionsHtml = `<button class="queue-item-requeue" data-id="${escapedId}" title="Re-queue">&#x21BA;</button>`;
+            actions += '<button class="queue-item-requeue" data-id="' + eid + '" title="Re-queue">&#x21BA;</button>';
         }
-        return `
-            <div class="queue-item" data-id="${escapedId}" data-status="${escapeHtml(item.status)}">
-                <span class="queue-item-status ${escapeHtml(item.status)}"></span>${actionsHtml}
-                <div class="queue-item-content">
-                    <div class="queue-item-text">${escapedText || '(Enter)'}</div>
-                    <div class="queue-item-meta">
-                        <span class="queue-item-policy ${escapeHtml(item.policy)}">${escapeHtml(item.policy)}</span>
-                        ${isSent ? '<span class="queue-item-sent-label">sent</span>' : ''}
-                    </div>
-                </div>
-                <button class="queue-item-remove" data-id="${escapedId}">&times;</button>
-            </div>
-        `;
+        actions += '<button class="queue-item-remove" data-id="' + eid + '">&times;</button>';
+
+        const dragHandle = isQueued ? '<span class="queue-drag-handle" data-id="' + eid + '">&#x2261;</span>' : '';
+
+        return '<div class="queue-item" data-id="' + eid + '" data-status="' + escapeHtml(item.status) + '">'
+            + dragHandle
+            + '<span class="queue-item-status ' + escapeHtml(item.status) + '"></span>'
+            + '<div class="queue-item-content">'
+            + '<div class="queue-item-text">' + (escapedText || '(Enter)') + '</div>'
+            + '</div>'
+            + '<div class="queue-item-actions">' + actions + '</div>'
+            + '</div>';
     }).join('');
 
     const queuedCount = queueItems.filter(i => i.status === 'queued').length;
@@ -163,9 +165,16 @@ export function renderQueueList() {
         });
     });
 
-    queueList.querySelectorAll('.queue-item[data-status="queued"]').forEach(el => {
-        el.addEventListener('click', () => {
-            insertNextToInput(el.dataset.id);
+    queueList.querySelectorAll('.queue-send-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            sendQueueItemNow(btn.dataset.id);
+        });
+    });
+    queueList.querySelectorAll('.queue-edit-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            insertNextToInput(btn.dataset.id);
         });
     });
 
@@ -432,6 +441,19 @@ async function toggleQueuePause() {
         console.error('Failed to toggle pause:', e);
         queuePaused = !queuePaused;
         updatePauseButton();
+    }
+}
+
+function sendQueueItemNow(itemId) {
+    const item = queueItems.find(i => i.id === itemId && i.status === 'queued');
+    if (!item) return;
+    if (ctx.sendTextAtomic) {
+        ctx.sendTextAtomic(item.text, true);
+        item.status = 'sent';
+        item.sentAt = Date.now();
+        saveQueueToStorage();
+        renderQueueList();
+        scheduleSentPurge();
     }
 }
 
