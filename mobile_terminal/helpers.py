@@ -518,35 +518,49 @@ def _get_pane_command(pane_id: str) -> Optional[str]:
         return None
 
 
-def _create_tmux_window(session: str, window_name: str, path: str) -> dict:
+def _create_tmux_window(session: str, window_name: str, path: str,
+                        retries: int = 3, retry_delay: float = 2.0) -> dict:
     """Create a new tmux window in a session.
 
     Returns dict with target_id and pane_id.
-    Raises RuntimeError on failure.
+    Retries on transient failures (empty output, session not ready).
+    Raises RuntimeError on persistent failure.
     """
-    result = subprocess.run(
-        [
-            "tmux", "new-window",
-            "-t", f"{session}:",
-            "-n", window_name,
-            "-c", path,
-            "-P", "-F", "#{window_index}:#{pane_index}|#{pane_id}"
-        ],
-        capture_output=True, text=True, timeout=10,
-    )
+    last_error = None
+    for attempt in range(retries):
+        result = subprocess.run(
+            [
+                "tmux", "new-window",
+                "-t", f"{session}:",
+                "-n", window_name,
+                "-c", path,
+                "-P", "-F", "#{window_index}:#{pane_index}|#{pane_id}"
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
 
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "Failed to create window")
+        if result.returncode != 0:
+            last_error = result.stderr.strip() or "Failed to create window"
+            if attempt < retries - 1:
+                time.sleep(retry_delay)
+                continue
+            raise RuntimeError(last_error)
 
-    output = result.stdout.strip()
-    if "|" not in output:
-        raise RuntimeError(f"Unexpected tmux output format: '{output}'")
+        output = result.stdout.strip()
+        if "|" in output:
+            parts = output.split("|")
+            return {
+                "target_id": parts[0],
+                "pane_id": parts[1] if len(parts) > 1 else None,
+            }
 
-    parts = output.split("|")
-    return {
-        "target_id": parts[0],
-        "pane_id": parts[1] if len(parts) > 1 else None,
-    }
+        # Empty or malformed output — transient; retry
+        last_error = f"Unexpected tmux output format: '{output}'"
+        if attempt < retries - 1:
+            logger.warning(f"_create_tmux_window: {last_error}, retrying ({attempt + 1}/{retries})")
+            time.sleep(retry_delay)
+
+    raise RuntimeError(last_error)
 
 
 async def _send_startup_command(pane_id: str, command: str, delay_seconds: float = 0.3):
@@ -728,13 +742,18 @@ async def ensure_tmux_setup(config) -> dict:
 # ---------------------------------------------------------------------------
 
 def _sigchld_handler(signum, frame):
-    """Reap zombie child processes."""
+    """Reap zombie child processes.
+
+    IMPORTANT: Signal handlers must be async-signal-safe.  logger.debug()
+    acquires a lock internally and can cause a reentrant deadlock / segfault
+    when the signal fires while another log write is in progress.  We avoid
+    ALL non-reentrant calls here — just waitpid in a loop.
+    """
     try:
         while True:
             pid, status = os.waitpid(-1, os.WNOHANG)
             if pid == 0:
                 break
-            logger.debug(f"Reaped child process {pid} with status {status}")
     except ChildProcessError:
         pass  # No child processes
 
