@@ -420,6 +420,18 @@ New listing arrives
 **Batch optimization:** For N listings, load 7B once → embed all → unload → start 9B once →
 run all pipelines. One model swap total, not N swaps.
 
+### Future: TurboQuant KV Cache Compression
+
+[github.com/0xSero/turboquant](https://github.com/0xSero/turboquant) — 3-bit key / 2-bit value
+KV cache quantization with vLLM integration (ICLR 2026).
+
+- RTX 5090 + Qwen3.5-27B-AWQ: **2x token capacity**, +5.7% prefill, 30GB KV freed
+- Requires vLLM 0.18.0 (we're on 0.17.0)
+- Only compresses full-attention layers — Mamba/linear-attention layers unaffected
+- For Qwen3.5-9B (Mamba hybrid, ~50% attention): ~15-30% VRAM savings
+- Could enable 27B + 9B coexistence if KV savings free enough VRAM
+- Won't fix Mamba state degradation (different issue)
+
 ### Known Fixes Applied
 
 - `KillMode=control-group` on all vLLM services (2026-03-26) — prevents orphaned EngineCore VRAM leaks.

@@ -419,6 +419,40 @@ html, body {
 .selection-fab-btn:active {
     opacity: 0.8;
 }
+
+/* Card-tap selection mode */
+.card-select-active .log-card {
+    cursor: pointer;
+}
+.log-card.card-selected {
+    border: 2px solid var(--accent);
+    background: rgba(55, 148, 255, 0.18);
+    outline: 2px solid rgba(55, 148, 255, 0.3);
+    outline-offset: 1px;
+}
+.card-select-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    z-index: 500;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.3);
+}
+.card-select-bar.hidden {
+    display: none;
+}
+.card-select-count {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-right: auto;
+}
 .nav-restart-btn {
     color: var(--warning, #f59e0b);
 }

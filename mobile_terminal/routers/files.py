@@ -99,9 +99,9 @@ def register(app: FastAPI, deps):
             return {"files": [], "directories": [], "root": None}
 
         try:
-            # Get list of tracked files using git ls-files
+            # Get tracked + untracked files (excluding ignored)
             result = await run_subprocess(
-                ["git", "ls-files"],
+                ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -119,7 +119,7 @@ def register(app: FastAPI, deps):
                 )
                 files = sorted([f.lstrip("./") for f in result.stdout.strip().split("\n") if f])
             else:
-                files = sorted(result.stdout.strip().split("\n"))
+                files = sorted(set(result.stdout.strip().split("\n")))
 
             # Build directory structure
             directories = set()

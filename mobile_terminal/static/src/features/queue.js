@@ -463,10 +463,9 @@ function insertNextToInput(specificId) {
         : queueItems.find(i => i.status === 'queued');
     if (!item) return;
 
-    const logInput = document.getElementById('logInput');
-    if (logInput) {
-        logInput.value = item.text;
-        logInput.focus();
+    // Open in compose modal for full editing
+    if (window.prefillCompose) {
+        window.prefillCompose(item.text);
     }
 
     removeQueueItem(item.id);

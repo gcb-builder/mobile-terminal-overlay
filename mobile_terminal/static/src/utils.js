@@ -194,9 +194,10 @@ export function stripAnsi(text) {
         .replace(/\?[0-9]+[a-zA-Z]/g, '')
         // RGB color codes that got split: 38;2;R;G;Bm or 48;2;R;G;Bm
         .replace(/\b[34]8;2;[0-9;]+m/g, '')
-        // Simple color codes: 0m, 1m, 32m, etc.
-        // Negative lookbehind: don't strip if preceded by @ or letter (e.g. P@100m, 500ms)
-        .replace(/(?<![a-zA-Z@])\b[0-9;]+m\b/g, '')
+        // Orphaned compound SGR codes only: "1;31m", "38;5;196m" etc.
+        // Single bare "Nm" (0m, 32m, 100m) is NOT stripped — too ambiguous
+        // with distance/metric values. The CSI regex above handles ESC[Nm.
+        .replace(/\b[0-9]{1,3}(?:;[0-9]{1,3})+m\b/g, '')
         // OSC sequences (ESC ] ... BEL)
         .replace(/\x1b\][^\x07]*\x07/g, '')
         // OSC sequences with ST terminator

@@ -7364,6 +7364,134 @@ function setupSelectionBacklog(container) {
     }
 
     container.addEventListener('scroll', () => hideFab(), { passive: true });
+
+    // === Card-tap selection mode (long-press to enter, tap to toggle) ===
+    let cardSelectMode = false;
+    let selectedCards = new Set();
+    let longPressTimer = null;
+
+    // Action bar (fixed at bottom)
+    const cardBar = document.createElement('div');
+    cardBar.className = 'card-select-bar hidden';
+    const cardBarCount = document.createElement('span');
+    cardBarCount.className = 'card-select-count';
+    cardBar.appendChild(cardBarCount);
+    const cardBarBacklog = document.createElement('button');
+    cardBarBacklog.className = 'selection-fab-btn';
+    cardBarBacklog.textContent = '+ Backlog';
+    cardBar.appendChild(cardBarBacklog);
+    const cardBarSplit = document.createElement('button');
+    cardBarSplit.className = 'selection-fab-btn split';
+    cardBarSplit.textContent = '+ Split';
+    cardBar.appendChild(cardBarSplit);
+    const cardBarDone = document.createElement('button');
+    cardBarDone.className = 'selection-fab-btn';
+    cardBarDone.textContent = 'Done';
+    cardBarDone.style.background = 'var(--bg-tertiary)';
+    cardBarDone.style.color = 'var(--text-secondary)';
+    cardBar.appendChild(cardBarDone);
+    document.body.appendChild(cardBar);
+
+    function enterCardSelect(card) {
+        cardSelectMode = true;
+        selectedCards.clear();
+        toggleCard(card);
+        container.classList.add('card-select-active');
+    }
+
+    function exitCardSelect() {
+        cardSelectMode = false;
+        selectedCards.forEach(c => c.classList.remove('card-selected'));
+        selectedCards.clear();
+        container.classList.remove('card-select-active');
+        cardBar.classList.add('hidden');
+    }
+
+    function toggleCard(card) {
+        if (selectedCards.has(card)) {
+            selectedCards.delete(card);
+            card.classList.remove('card-selected');
+        } else {
+            selectedCards.add(card);
+            card.classList.add('card-selected');
+        }
+        updateCardBar();
+    }
+
+    function getSelectedText() {
+        const texts = [];
+        // Iterate in DOM order
+        container.querySelectorAll('.log-card.card-selected').forEach(card => {
+            const body = card.querySelector('.log-card-body');
+            if (body) texts.push(body.textContent.trim());
+        });
+        return texts.join('\n\n');
+    }
+
+    function updateCardBar() {
+        const count = selectedCards.size;
+        if (count === 0) {
+            exitCardSelect();
+            return;
+        }
+        cardBarCount.textContent = count + ' selected';
+        const text = getSelectedText();
+        const lines = splitBacklogLines(text);
+        cardBarSplit.classList.toggle('hidden', lines.length < 3);
+        cardBarSplit.textContent = lines.length >= 3 ? '+ Split (' + lines.length + ')' : '+ Split';
+        cardBar.classList.remove('hidden');
+    }
+
+    // Long-press detection on log cards
+    container.addEventListener('touchstart', (e) => {
+        if (cardSelectMode) return;
+        const card = e.target.closest('.log-card');
+        if (!card) return;
+        longPressTimer = setTimeout(() => {
+            longPressTimer = null;
+            enterCardSelect(card);
+            // Prevent text selection
+            window.getSelection()?.removeAllRanges();
+        }, 500);
+    }, { passive: true });
+
+    container.addEventListener('touchend', () => {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    });
+    container.addEventListener('touchmove', () => {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    });
+
+    // Tap to toggle in card-select mode
+    container.addEventListener('click', (e) => {
+        if (!cardSelectMode) return;
+        const card = e.target.closest('.log-card');
+        if (!card) return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggleCard(card);
+    }, true);
+
+    // Action bar buttons
+    cardBarBacklog.addEventListener('click', () => {
+        const text = getSelectedText();
+        if (!text) return;
+        const firstLine = text.split('\n')[0].slice(0, 120);
+        addBacklogItem(firstLine, text, 'human');
+        ctx.showToast('Added to backlog', 'success');
+        exitCardSelect();
+    });
+
+    cardBarSplit.addEventListener('click', () => {
+        const text = getSelectedText();
+        if (!text) return;
+        const lines = splitBacklogLines(text);
+        for (const line of lines) addBacklogItem(line.slice(0, 120), line, 'human');
+        ctx.showToast('Added ' + lines.length + ' items to backlog', 'success');
+        exitCardSelect();
+    });
+
+    cardBarDone.addEventListener('click', () => exitCardSelect());
 }
 
 /**
