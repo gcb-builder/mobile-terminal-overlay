@@ -1195,3 +1195,36 @@ Unified single button showing "repo • pane" format with sectioned dropdown:
 - Old .status-phase, .status-detail, .status-action-btn CSS styles are dead (no HTML/JS refs) — can be cleaned up
 - View dots have 8px hit targets — may be hard to tap; consider adding padding for touch area
 - phaseIdleShowHistoryTimer variable declared but no longer used after updateAgentPhase simplification
+
+
+---
+
+## 2026-04-13: Compose attachments, multiline send, log scroll-jam, candidate flood (commit da34018)
+
+**Goal:** Fix four user-reported regressions in one batch — image attachment dropping silently from compose, multiline messages getting split mid-send, log view scrolling to the top during refresh (especially when tools collapsed), and SecondBrain backlog Suggestions tray flooded with TodoWrite items.
+
+**Files Changed:**
+- `mobile_terminal/drivers/claude.py` — `BacklogCandidateDetector._extract_candidates` now skips TodoWrite (Claude's in-session scratchpad — many items per call, rewritten constantly, flooded the tray). Only TaskCreate is extracted. Docstring updated to explain the rationale.
+- `mobile_terminal/models.py` — `CandidateStore.add` enforces `MAX_PER_PROJECT = 30` cap. New adds are silently dropped once cap is reached; user must dismiss/keep before fresh ones appear.
+- `mobile_terminal/helpers.py` — new `send_text_to_pane(runtime, target, text)` wraps multiline text in bracketed paste escape codes (`\x1b[200~...\x1b[201~`) so `\n` is treated as pasted content, not Enter. Single-line text passes through unchanged.
+- `mobile_terminal/routers/terminal_sse.py` — `/api/terminal/text` POST handler uses `send_text_to_pane` instead of raw `runtime.send_keys(literal=True)`.
+- `mobile_terminal/routers/terminal_io.py` — WS `type:"text"` handler uses `send_text_to_pane` similarly.
+- `mobile_terminal/static/terminal.js`:
+  - `uploadAttachment` no longer inserts the path into `composeInput.value` — the path lives only in the attachment preview card. Switched from raw `fetch` to `apiFetch`, replaced `alert()` with `showToast()`, added 0-byte file guard, surfaces HTTP status code in error messages, distinguishes network vs server errors.
+  - `uploadAndInsertPath` (desktop command-bar paste/drop): same treatment — `apiFetch`, 0-byte guard, HTTP status in errors, network-error distinction. Also fixed `selectionStart === 0` falsy-fallback bug.
+  - New `withAttachmentPaths(text)` helper used by `sendComposedText` and `queueComposedText` — appends any pendingAttachment paths missing from the text so the file is never silently dropped on send.
+  - `renderLogEntriesChunked` rebuilt: builds new content in an off-DOM `DocumentFragment` (preserving the user's view during chunked yields), runs `applyCollapseSync(staging)` to apply collapse passes BEFORE the swap (so post-render idle callbacks can't shrink content out from under the pin-to-bottom), then atomic `replaceChildren` swap, then pin to bottom. `scrollLockUntil` set during swap to prevent transient scroll events from flipping `userAtBottom`. `LOG_MAX_ENTRIES` cap moved to BEFORE rendering via `messages.slice(-LOG_MAX_ENTRIES)`.
+- `mobile_terminal/static/src/features/collapse.js` — `collapseRepeatedTools` and `applySuperCollapse` now accept optional `container` (defaults to `logContentEl`). New `applyCollapseSync(container)` export runs both passes synchronously against any container, including a `DocumentFragment`.
+- `mobile_terminal/static/index.html` — script src cache-bust bumped from v=322 → v=326 (multiple bumps during session).
+- `mobile_terminal/static/dist/terminal.min.js` + `.map` — rebuilt.
+
+**New Files:** None
+
+**Risks/Follow-ups:**
+- Bracketed paste requires the receiving terminal app to support `\x1b[200~`. Claude Code, bash, zsh, vim, and tmux (paste-aware mode) all do; raw programs that don't will display the escape sequence as garbled chars. No issue observed in MTO's use cases.
+- `applyCollapseSync` doesn't update `lastCollapseHash`/`lastSuperCollapseHash` (intentional — fragments are ephemeral). Click-driven re-collapse via `scheduleCollapse` still runs once after a render, but is a no-op if structure unchanged.
+- `removeAttachment` (× button on preview card) only removes from `pendingAttachments`, but since the path is no longer in the textarea, that's consistent.
+- Refresh still fetches the full log on every change. `renderLogEntries` rebuild is now visually smooth, but on very large logs the off-DOM build cost is real. Proper fix would be incremental fetch + append.
+- TaskCreate may not be the right signal long-term. If users want NO automatic detection, the `BacklogCandidateDetector` can be disabled at server boot (currently always-on via `app.state.candidate_detector = BacklogCandidateDetector()` in `server.py:115`).
+- `CandidateStore` cap is in-memory; a server restart wipes it (intended — candidates are ephemeral by design).
+- Server-side changes (`helpers.py`, two routers, `claude.py`, `models.py`) require an MTO server restart to take effect. JS/HTML changes need a hard browser refresh (cache `v=326`).

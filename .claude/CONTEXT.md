@@ -3,12 +3,23 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Permission auto-approval system + backlog candidates
-- **Last Updated:** 2026-03-20
-- **Server Version:** v293 (terminal.js), v214 (styles.css), SW v124
+- **Stage:** Polish on compose attachments, multiline send, log scroll, candidate filtering
+- **Last Updated:** 2026-04-13
+- **Server Version:** v326 (terminal.js), v214 (styles.css), SW v128
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --port 8080 --base-path /terminal --no-auth --host 0.0.0.0 --verbose &`
 
-## Recent: Permission Auto-Approval System (2026-03-20)
+## Recent: 2026-04-13 — Bug-fix batch (commit da34018)
+
+Four user-reported regressions resolved in one batch. See touch-summary for detail.
+
+- **Compose image attachments**: path no longer injected into the textarea — lives only in the preview card. `withAttachmentPaths` re-appends paths from `pendingAttachments` at send time so the file is never lost. `apiFetch` + `showToast` + 0-byte guard make failures actually visible. Same treatment for desktop command-bar paste/drop (`uploadAndInsertPath`).
+- **Multiline send via tmux**: new `helpers.send_text_to_pane` wraps multiline text in bracketed paste escape codes (`\x1b[200~...\x1b[201~`) so `\n` inside the prompt no longer triggers premature submission in Claude Code. Wired into both SSE POST and WS text handlers.
+- **Log scroll-to-top jump**: `renderLogEntriesChunked` now builds in a `DocumentFragment` off-DOM, applies collapse synchronously on the fragment via new `applyCollapseSync`, then atomic `replaceChildren` swap. Final layout is settled before the pin-to-bottom — no async collapse can shrink content out from under the pin.
+- **Backlog candidate flood**: `BacklogCandidateDetector` no longer scans `TodoWrite` (Claude's in-session scratchpad). Only `TaskCreate` is extracted. `CandidateStore.MAX_PER_PROJECT = 30` cap as safety valve.
+
+Server restart required for Python changes; hard browser refresh for `v=326` bundle.
+
+## Earlier: Permission Auto-Approval System (2026-03-20)
 
 Graduated auto-approval for Claude Code tool permissions. Rules learned from real prompts (banner-first), managed centrally in a Permissions tab.
 
