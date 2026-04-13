@@ -15,6 +15,7 @@ from mobile_terminal.helpers import (
     strip_ansi, find_utf8_boundary,
     get_tmux_target,
     get_cached_capture, set_cached_capture,
+    send_text_to_pane,
 )
 from mobile_terminal.transport import WebSocketSink
 
@@ -512,7 +513,7 @@ def register(app: FastAPI, deps):
                                     tmux_t = get_tmux_target(session, target)
                                     if text_data:
                                         try:
-                                            await runtime.send_keys(tmux_t, text_data, literal=True)
+                                            await send_text_to_pane(runtime, tmux_t, text_data)
                                         except Exception as e:
                                             logger.warning(f"tmux send-keys failed: {e}")
                                     if send_enter:

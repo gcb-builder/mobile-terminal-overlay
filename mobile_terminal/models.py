@@ -245,7 +245,14 @@ class CandidateStore:
 
     Candidates are disposable suggestions from JSONL interception.
     Dismissed hashes are remembered to prevent re-detection within session.
+
+    A per-project cap (MAX_PER_PROJECT) prevents runaway growth if the
+    detector ever picks up a noisy tool — new adds are silently dropped
+    once the cap is reached. The user must dismiss or keep existing
+    candidates before fresh ones can appear.
     """
+
+    MAX_PER_PROJECT = 30
 
     def __init__(self):
         self._candidates: Dict[str, List[BacklogCandidate]] = {}  # project → list
@@ -257,6 +264,8 @@ class CandidateStore:
             return None
         items = self._candidates.setdefault(project, [])
         if any(c.content_hash == candidate.content_hash for c in items):
+            return None
+        if len(items) >= self.MAX_PER_PROJECT:
             return None
         items.append(candidate)
         return candidate

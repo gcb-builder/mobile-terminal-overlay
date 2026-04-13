@@ -105,6 +105,21 @@ async def run_subprocess(*args, **kwargs):
 # tmux target helpers
 # ---------------------------------------------------------------------------
 
+async def send_text_to_pane(runtime, target: str, text: str) -> None:
+    """Send text to a tmux pane, wrapping multiline content in bracketed
+    paste escape codes so \\n is treated as pasted content by the receiving
+    terminal app (Claude Code, shell, vim, etc.) rather than an Enter
+    keypress that would prematurely submit the first line.
+
+    Single-line text is sent as-is via ``tmux send-keys -l``.
+    """
+    if "\n" in text:
+        wrapped = f"\x1b[200~{text}\x1b[201~"
+        await runtime.send_keys(target, wrapped, literal=True)
+    else:
+        await runtime.send_keys(target, text, literal=True)
+
+
 def get_tmux_target(session_name: str, active_target: str) -> str:
     """
     Convert active_target to tmux target format.

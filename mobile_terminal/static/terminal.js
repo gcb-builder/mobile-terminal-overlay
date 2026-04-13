@@ -11,7 +11,7 @@ import { deriveUIState, deriveSystemSummary } from './src/ui-state.js';
 import ctx from './src/context.js';
 import { initMcp, loadMcp, loadPluginsTab } from './src/features/mcp.js';
 import { initEnv, loadEnv } from './src/features/env.js';
-import { initCollapse, scheduleCollapse, scheduleSuperCollapse } from './src/features/collapse.js';
+import { initCollapse, scheduleCollapse, scheduleSuperCollapse, applyCollapseSync } from './src/features/collapse.js';
 import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          reconcileQueue, reloadQueueForTarget, refreshQueueList,
          getQueueItems, isQueuePaused, saveQueueToStorage,
@@ -4349,16 +4349,24 @@ function setupComposeMode() {
         return (composePaneSelect && composePaneSelect.value) || ctx.activeTarget;
     }
 
+    // Ensure all pending attachment paths are present in the composed text.
+    // Paths are normally inserted into the textarea on upload, but the user
+    // can accidentally delete or overwrite them while editing — append any
+    // missing ones here so the file is never silently dropped on send.
+    function withAttachmentPaths(text) {
+        if (pendingAttachments.length === 0) return text;
+        const missing = pendingAttachments
+            .map(a => a.path)
+            .filter(p => p && !text.includes(p));
+        if (missing.length === 0) return text;
+        const paths = missing.join(' ');
+        return text ? `${text} ${paths}` : paths;
+    }
+
     // Send to terminal (text + attachment paths)
     // If a different pane is selected, use the text API with pane_id
     function sendComposedText(withEnter = false) {
-        let text = composeInput.value;
-
-        if (pendingAttachments.length > 0) {
-            const paths = pendingAttachments.map(a => a.path).join(' ');
-            text = text ? `${text} ${paths}` : paths;
-        }
-
+        let text = withAttachmentPaths(composeInput.value);
         if (!text) return;
 
         const targetPane = getComposeTargetPane();
@@ -4380,14 +4388,7 @@ function setupComposeMode() {
     }
 
     function queueComposedText() {
-        let text = composeInput.value;
-
-        // Append attachment paths to the message
-        if (pendingAttachments.length > 0) {
-            const paths = pendingAttachments.map(a => a.path).join(' ');
-            text = text ? `${text} ${paths}` : paths;
-        }
-
+        let text = withAttachmentPaths(composeInput.value);
         if (text) {
             enqueueCommand(text).then(success => {
                 if (success) {
@@ -5008,21 +5009,43 @@ async function uploadAttachment(file, triggerBtn) {
         triggerBtn.classList.add('uploading');
     }
 
+    // Guard against completely empty files — mobile browsers sometimes
+    // hand back a 0-byte File object when a paste fails to marshal the
+    // image data. Surface this instead of POSTing an empty upload.
+    if (!file || file.size === 0) {
+        showToast('Paste produced an empty file — try again', 'error');
+        if (triggerBtn) {
+            triggerBtn.classList.remove('uploading');
+            triggerBtn.textContent = originalContent;
+        }
+        return;
+    }
+
     try {
         const formData = new FormData();
         formData.append('file', file);
 
-        const response = await fetch(`/api/upload?token=${ctx.token}`, {
+        // Use apiFetch so auth header (X-MTO-Token + X-Client-ID) is sent
+        // alongside the query-string token — fixes token-only configs and
+        // anything behind base_path.
+        const response = await apiFetch('/api/upload', {
             method: 'POST',
             body: formData,
         });
 
         if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || 'Upload failed');
+            let errMsg = `HTTP ${response.status}`;
+            try {
+                const err = await response.json();
+                if (err && err.error) errMsg = err.error;
+            } catch (_) { /* body was not JSON */ }
+            throw new Error(errMsg);
         }
 
         const data = await response.json();
+        if (!data || !data.path) {
+            throw new Error('Server returned no path');
+        }
 
         // Add to pending attachments
         pendingAttachments.push({
@@ -5033,11 +5056,23 @@ async function uploadAttachment(file, triggerBtn) {
             localUrl: URL.createObjectURL(file),
         });
 
+        // The path is NOT inserted into the textarea — it lives only in
+        // the attachment preview card below. This keeps the compose text
+        // clean (no accidental edits, no stray newlines around the path).
+        // sendComposedText / queueComposedText will append the attachment
+        // paths from pendingAttachments at send time via withAttachmentPaths.
+
         renderAttachments();
+        showToast(`Attached ${data.filename}`, 'success');
 
     } catch (error) {
-        console.error('Upload error:', error);
-        alert(`Upload failed: ${error.message}`);
+        console.error('[uploadAttachment] failed:', error);
+        // Distinguish network error from server error so the user knows
+        // whether to retry immediately or check server logs.
+        const msg = (error && error.name === 'TypeError')
+            ? `Network error: ${error.message}`
+            : `Upload failed: ${error.message}`;
+        showToast(msg, 'error');
     } finally {
         if (triggerBtn) {
             triggerBtn.classList.remove('uploading');
@@ -6243,50 +6278,89 @@ function renderLogEntries(contentOrMessages, cached = false) {
 }
 
 /**
- * Chunked DOM insertion with yielding - prevents main thread blocking
+ * Chunked DOM insertion with yielding - prevents main thread blocking.
+ *
+ * Builds new content in a DocumentFragment OFF-DOM so the user's existing
+ * view (and scroll position) is untouched during the chunked build. Only
+ * at the end do we atomically swap old children for new via
+ * ``replaceChildren``. This avoids the "log jumps to the top then snaps
+ * back to bottom" flash that happens when you clear innerHTML first,
+ * append chunks over multiple paints, and then re-pin to bottom.
  */
 async function renderLogEntriesChunked(messages, cached, signal, contentOrMessages) {
-    // Clear existing content once
-    logContent.innerHTML = '';
+    // Remember whether the user was pinned to the bottom before the swap,
+    // so we can restore that state after replaceChildren. refreshLogContent
+    // only calls in here when userAtBottom was true, but full (re)loads
+    // come through here too and may happen mid-scroll.
+    const wasAtBottom = userAtBottom;
+
+    // Build everything off-DOM. The existing logContent children remain
+    // visible (and scrollable) until we swap them out.
+    const staging = document.createDocumentFragment();
 
     // Add cached banner if needed
     if (cached) {
         const banner = document.createElement('div');
         banner.className = 'log-cached-banner';
         banner.textContent = 'Showing cached log (session was cleared)';
-        logContent.appendChild(banner);
+        staging.appendChild(banner);
     }
 
-    // Process messages in chunks with yielding
-    for (let i = 0; i < messages.length; i += LOG_CHUNK_SIZE) {
+    // Cap message count up front so we don't build DOM we're about to drop.
+    const startIdx = Math.max(0, messages.length - LOG_MAX_ENTRIES);
+    const visibleMessages = startIdx > 0 ? messages.slice(startIdx) : messages;
+
+    // Process messages in chunks with yielding. Appending to a fragment
+    // does no layout/paint — the yield just lets other work interleave.
+    for (let i = 0; i < visibleMessages.length; i += LOG_CHUNK_SIZE) {
         if (signal.aborted) return;
 
-        const chunk = messages.slice(i, i + LOG_CHUNK_SIZE);
-        const fragment = document.createDocumentFragment();
-
+        const chunk = visibleMessages.slice(i, i + LOG_CHUNK_SIZE);
         for (const msg of chunk) {
-            const card = createLogCard(msg);
-            fragment.appendChild(card);
+            staging.appendChild(createLogCard(msg));
         }
 
-        logContent.appendChild(fragment);
-
         // Yield to browser after each chunk (let UI breathe)
-        if (i + LOG_CHUNK_SIZE < messages.length) {
+        if (i + LOG_CHUNK_SIZE < visibleMessages.length) {
             await yieldToMain();
         }
     }
 
     if (signal.aborted) return;
 
-    // Cap DOM entries to prevent unbounded growth
-    while (logContent.children.length > LOG_MAX_ENTRIES) {
-        logContent.removeChild(logContent.firstChild);
+    // Apply collapse passes on the off-DOM fragment BEFORE the swap.
+    // This is the critical step: if we collapse after inserting, the
+    // async idle callback shrinks the content and the pin-to-bottom we
+    // did moments ago is wrong — the user sees the log "jump up". By
+    // pre-collapsing, the fragment's final layout is settled before it
+    // becomes visible.
+    applyCollapseSync(staging);
+
+    // Lock scroll-tracking briefly so the DOM swap and the pin-to-bottom
+    // that follows don't fire scroll handlers that flip userAtBottom off.
+    scrollLockUntil = Date.now() + 300;
+
+    // Atomic swap: old children (which the user was looking at) are
+    // replaced in one shot by the freshly-built tree. The scroll position
+    // resets to 0 here because the referenced nodes are gone, but the
+    // very next line re-pins it — the user never sees the top.
+    logContent.replaceChildren(staging);
+
+    // Restore scroll position. If the user was at the bottom before, pin
+    // to the new bottom. Otherwise keep them where they were (handled by
+    // refreshLogContent, which won't call us unless they're at bottom).
+    if (wasAtBottom) {
+        logContent.scrollTop = logContent.scrollHeight;
+        // RAF one more time in case layout is still pending after paint
+        requestAnimationFrame(() => {
+            logContent.scrollTop = logContent.scrollHeight;
+        });
     }
 
-    // Schedule post-render work for idle time
-    scheduleCollapse();
-    scheduleSuperCollapse();
+    // Plan previews still run async (they fetch + parse markdown), and
+    // scheduleCollapse/scheduleSuperCollapse are kept for click handlers
+    // that re-collapse after toggling expansion — they're harmless on
+    // already-collapsed content (hash check short-circuits).
     schedulePlanPreviews();
 
     // Extract prompts
@@ -6294,11 +6368,6 @@ async function renderLogEntriesChunked(messages, cached, signal, contentOrMessag
         ? contentOrMessages.join('\n\n')
         : (contentOrMessages || '');
     extractPendingPrompt(contentString);
-
-    // Scroll to bottom
-    requestAnimationFrame(() => {
-        logContent.scrollTop = logContent.scrollHeight;
-    });
 }
 
 /**
@@ -7968,29 +8037,50 @@ function setupLogInput() {
  * Upload a file and insert its server path into an input element.
  */
 async function uploadAndInsertPath(file, inputEl) {
+    // Guard against empty files — mobile browsers sometimes hand back a
+    // 0-byte File when a paste fails to marshal the image data.
+    if (!file || file.size === 0) {
+        showToast('Paste produced an empty file — try again', 'error');
+        return;
+    }
+
     const placeholder = `[uploading ${file.name}...]`;
-    const start = inputEl.selectionStart || inputEl.value.length;
+    const sel = inputEl.selectionStart;
+    const start = (sel == null) ? inputEl.value.length : sel;
+    const endSel = inputEl.selectionEnd;
+    const end = (endSel == null) ? start : endSel;
     const before = inputEl.value.substring(0, start);
-    const after = inputEl.value.substring(inputEl.selectionEnd || start);
+    const after = inputEl.value.substring(end);
     inputEl.value = before + placeholder + after;
 
     try {
         const formData = new FormData();
         formData.append('file', file);
-        const response = await fetch(`/api/upload?token=${ctx.token}`, {
+        const response = await apiFetch('/api/upload', {
             method: 'POST',
             body: formData,
         });
         if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err.error || 'Upload failed');
+            let errMsg = `HTTP ${response.status}`;
+            try {
+                const err = await response.json();
+                if (err && err.error) errMsg = err.error;
+            } catch (_) { /* body was not JSON */ }
+            throw new Error(errMsg);
         }
         const data = await response.json();
+        if (!data || !data.path) {
+            throw new Error('Server returned no path');
+        }
         inputEl.value = inputEl.value.replace(placeholder, data.path);
         showToast(`Uploaded ${data.filename}`, 'success');
     } catch (error) {
+        console.error('[uploadAndInsertPath] failed:', error);
         inputEl.value = inputEl.value.replace(placeholder, '');
-        showToast(`Upload failed: ${error.message}`, 'error');
+        const msg = (error && error.name === 'TypeError')
+            ? `Network error: ${error.message}`
+            : `Upload failed: ${error.message}`;
+        showToast(msg, 'error');
     }
     inputEl.focus();
 }

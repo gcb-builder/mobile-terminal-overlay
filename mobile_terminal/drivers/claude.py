@@ -417,9 +417,14 @@ class ClaudePermissionDetector:
 class BacklogCandidateDetector:
     """Detect potential backlog items from Claude JSONL output.
 
-    Incrementally reads new JSONL entries and extracts TaskCreate and
-    TodoWrite pending items as candidates. Content-hash dedup prevents
-    the same item from being surfaced twice.
+    Incrementally reads new JSONL entries and extracts ``TaskCreate``
+    invocations as candidates. ``TodoWrite`` is deliberately NOT scanned:
+    it is Claude's in-session planning scratchpad (rewritten many times
+    per session, 5–15 items per call) and produced a flood of low-signal
+    suggestions that drowned out real ones. ``TaskCreate`` is an explicit
+    sub-agent spawn which maps cleanly to "backlog item" semantics.
+
+    Content-hash dedup prevents the same item from being surfaced twice.
 
     Follows the ClaudePermissionDetector pattern: stateful, incremental,
     called periodically from tail_sender() via run_in_executor.
@@ -493,11 +498,7 @@ class BacklogCandidateDetector:
 
                     if name == "TaskCreate":
                         self._try_add(candidates, name, inp)
-                    elif name == "TodoWrite":
-                        todos = inp.get("todos", [])
-                        for todo in todos:
-                            if todo.get("status") == "pending":
-                                self._try_add(candidates, name, todo)
+                    # TodoWrite intentionally skipped — see class docstring.
             except json.JSONDecodeError:
                 continue
         return candidates

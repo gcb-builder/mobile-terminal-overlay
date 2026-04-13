@@ -46,14 +46,21 @@ export function scheduleCollapse() {
 /**
  * Single-pass collapse of consecutive duplicate tools.
  * Adds badge to first, hides rest unless expanded.
+ *
+ * Operates on ``container`` (defaults to ``logContentEl``). Accepting a
+ * container lets callers pre-collapse an off-DOM ``DocumentFragment``
+ * before inserting it, so the final scrollHeight is correct at paint time
+ * and the log can be pinned to the bottom without a later re-layout.
  */
-function collapseRepeatedTools(hash) {
-    const tools = logContentEl.querySelectorAll('.log-tool');
+function collapseRepeatedTools(hash, container) {
+    container = container || logContentEl;
+    if (!container) return;
+    const tools = container.querySelectorAll('.log-tool');
     if (tools.length < 2) return;
 
     // Clean previous collapse state
-    logContentEl.querySelectorAll('.collapse-count').forEach(b => b.remove());
-    logContentEl.querySelectorAll('.collapsed-duplicate').forEach(t =>
+    container.querySelectorAll('.collapse-count').forEach(b => b.remove());
+    container.querySelectorAll('.collapsed-duplicate').forEach(t =>
         t.classList.remove('collapsed-duplicate'));
 
     let i = 0;
@@ -88,12 +95,10 @@ function collapseRepeatedTools(hash) {
         i = j;
     }
 
-    // Verify hash still valid
-    const tools2 = logContentEl.querySelectorAll('.log-tool');
-    const lastTool = tools2[tools2.length - 1];
-    const currentHash = `${tools2.length}:${lastTool?.dataset.toolKey || ''}:${logContentEl.innerHTML.length}`;
-
-    if (currentHash === hash) {
+    // Hash tracking only applies to the live element — fragments get a
+    // fresh pass each time, which is fine because they're built and
+    // collapsed once per render.
+    if (hash && container === logContentEl) {
         lastCollapseHash = hash;
     }
 }
@@ -124,14 +129,15 @@ export function scheduleSuperCollapse() {
     }, 150);
 }
 
-function applySuperCollapse(hash) {
-    if (!logContentEl) return;
+function applySuperCollapse(hash, container) {
+    container = container || logContentEl;
+    if (!container) return;
 
-    logContentEl.querySelectorAll('.tool-supergroup').forEach(g => g.remove());
-    logContentEl.querySelectorAll('.super-collapsed').forEach(t =>
+    container.querySelectorAll('.tool-supergroup').forEach(g => g.remove());
+    container.querySelectorAll('.super-collapsed').forEach(t =>
         t.classList.remove('super-collapsed'));
 
-    const cards = logContentEl.querySelectorAll('.log-card');
+    const cards = container.querySelectorAll('.log-card');
 
     for (const card of cards) {
         const cardBody = card.querySelector('.log-card-body');
@@ -158,9 +164,8 @@ function applySuperCollapse(hash) {
         }
     }
 
-    const tools = logContentEl.querySelectorAll('.log-tool');
-    const currentHash = `super:${tools.length}:${logContentEl.innerHTML.length}`;
-    if (currentHash === hash) {
+    // Only persist hash when operating on the live log container.
+    if (hash && container === logContentEl) {
         lastSuperCollapseHash = hash;
     }
 }
@@ -247,4 +252,33 @@ export function initCollapse(logContent) {
     logContentEl = logContent;
     setupCollapseHandler();
     setupSuperCollapseHandler();
+}
+
+/**
+ * Apply both collapse passes synchronously against an arbitrary container
+ * (typically a DocumentFragment being built off-DOM before an atomic swap).
+ *
+ * This is the anti-jump path: by collapsing BEFORE the fragment is inserted
+ * into ``logContent``, the fragment's final scrollHeight is known at paint
+ * time, so ``scrollTop = scrollHeight`` actually pins to the real bottom
+ * and no subsequent idle callback can shrink the content out from under
+ * the pin.
+ *
+ * @param {DocumentFragment|HTMLElement} container
+ */
+export function applyCollapseSync(container) {
+    if (!container) return;
+    try {
+        collapseRepeatedTools(null, container);
+    } catch (e) {
+        console.warn('applyCollapseSync: collapse failed:', e);
+    }
+    try {
+        const tools = container.querySelectorAll('.log-tool');
+        if (tools.length >= SUPER_COLLAPSE_THRESHOLD) {
+            applySuperCollapse(null, container);
+        }
+    } catch (e) {
+        console.warn('applyCollapseSync: super-collapse failed:', e);
+    }
 }

@@ -22,6 +22,7 @@ from mobile_terminal.helpers import (
     strip_ansi,
     find_utf8_boundary,
     get_tmux_target,
+    send_text_to_pane,
 )
 
 logger = logging.getLogger(__name__)
@@ -510,7 +511,7 @@ def register(app: FastAPI, deps):
 
         if text_data:
             try:
-                await runtime.send_keys(tmux_t, text_data, literal=True)
+                await send_text_to_pane(runtime, tmux_t, text_data)
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)
 
