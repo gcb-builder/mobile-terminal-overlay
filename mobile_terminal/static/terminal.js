@@ -1703,6 +1703,10 @@ function connectSSE() {
         statusOverlay.classList.remove('hidden');
     }
 
+    // SSE stream goes through apiFetch (NOT EventSource), so the
+    // X-MTO-Token header is set normally. URL token not required here.
+    // If we ever switch back to EventSource, restore ?token=… because
+    // EventSource can't set custom headers.
     const streamUrl = `/api/terminal/stream`;
 
     apiFetch(streamUrl).then(response => {
@@ -1917,7 +1921,10 @@ async function connect() {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}${window.__BASE_PATH || ''}/ws/terminal?_t=${Date.now()}`;
+    // Token MUST be in the URL: new WebSocket() can't set custom
+    // headers, so X-MTO-Token isn't sent on the upgrade request. PR2's
+    // bulk strip removed this and broke auth-enabled deployments.
+    const wsUrl = `${protocol}//${window.location.host}${window.__BASE_PATH || ''}/ws/terminal?token=${ctx.token}&_t=${Date.now()}`;
 
     // Only show overlay on first connect — reconnects use grace period
     if (!hasConnectedOnce) {
@@ -11013,6 +11020,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=339', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=340', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
