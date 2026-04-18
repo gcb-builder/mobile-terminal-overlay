@@ -258,7 +258,7 @@ def register(app: FastAPI, deps):
                     app.state.active_client = None
                     app.state.read_task = None
 
-                if pty_died:
+                if state.pty_died:
                     logger.warning("SSE stream ended — PTY died")
                     runtime.close_fd()
 
