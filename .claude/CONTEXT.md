@@ -3,12 +3,22 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Queue cross-pane bleed + scheduling rewrite + candidate detector off
+- **Stage:** Stop+Esc, queue Previous section, docs no-cache (small UX polish)
 - **Last Updated:** 2026-04-13
-- **Server Version:** v327 (terminal.js), v214 (styles.css), SW v128
+- **Server Version:** v330 (terminal.js), v239 (styles.css), SW v128
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --port 8080 --base-path /terminal --no-auth --host 0.0.0.0 --verbose &`
 
-## Recent: 2026-04-13 (later) — Queue + candidate fixes (commit 8e669f8)
+## Recent: 2026-04-13 (later still) — Stop+Esc, queue Previous, docs no-cache (commit 435a804)
+
+Three small unrelated UX fixes. See touch-summary for detail.
+
+- **Stop preserves "ghost" messages**: Ctrl+C in Claude Code preserves the previously-submitted prompt in the input buffer for editing — typing after a Stop appended to it and the next submit looked like the previous message was being re-sent. New `sendStopInterrupt()` sends Ctrl+C, then 100ms later Esc (clears Claude Code's input buffer; no-op in bash/zsh). Wired into all four Stop call sites.
+- **Queue "Previous" section**: queue list split into Active (queued/sending) and Previous (sent). Previous is collapsible with Clear button, default collapsed, persists state per-tab. Sidebar queue badge now counts only active items. Existing 60s auto-purge of sent items still runs.
+- **Docs always fetches fresh**: every docs-tab fetch uses `cache: 'no-store'`; Plans tab refetches on every entry, not only on first open — so plan files Claude writes in the background show up immediately.
+
+No server restart needed; hard browser refresh for `v=330` JS + `v=239` CSS.
+
+## Earlier: 2026-04-13 (later) — Queue + candidate fixes (commit 8e669f8)
 
 Three related issues fixed together. See touch-summary for detail.
 

@@ -1273,3 +1273,39 @@ Unified single button showing "repo • pane" format with sectioned dropdown:
 - `BacklogCandidateDetector` no-op means CandidateStore never receives anything new. The store remains in `server.py:116` for code parity but is functionally dead; can be removed later if no detection signal is added.
 - `reconcileQueue` race with WS messages and `pendingPrompt` stuck-state are NOT addressed in this batch — independent and lower-priority.
 - Server restart required for all Python changes; hard browser refresh for `v=327` bundle.
+
+
+---
+
+## 2026-04-13 (later still): Stop+Esc, queue Previous section, docs no-cache (commit 435a804)
+
+**Goal:** Three small unrelated UX fixes that surfaced during the same session.
+
+**Files Changed:**
+- `mobile_terminal/static/terminal.js`:
+  - New `sendStopInterrupt()` helper at `terminal.js:1224-1242`. Sends `\x03` (Ctrl+C) immediately, then 100ms later sends `\x1b` (Esc). Replaces four call sites that previously sent only Ctrl+C: action-bar Stop button, tools-rail Stop action, Ctrl+C-on-empty-input shortcut, palette `sendInterrupt`. Reason: in Claude Code, Ctrl+C interrupts the agent but preserves the previously-submitted prompt in the input buffer for editing — typing after a Stop appended to the preserved text and the next submit re-sent the previous message + new content. Esc clears Claude Code's input buffer, no-op in bash/zsh, exits insert mode in vim.
+- `mobile_terminal/static/src/features/queue.js`:
+  - `renderQueueList` rewritten. Items now split into two sections — Active (queued/sending) and Previous (sent). Previous renders below Active, has a collapsible header with item count and a Clear button, default collapsed, expansion state persisted per-tab (`mto_queue_prev_expanded` in sessionStorage).
+  - Sidebar queue count badge (`sidebarQueueCount`) now reflects only active items, not sent+active. Drawer total count (`queueCount`) keeps old behavior.
+  - "All caught up" placeholder shown in Active when only Previous has items.
+  - Extracted `renderQueueRowHtml(item)` so both sections share row markup. New `buildPreviousSection(items)` builds the section chrome via DOM APIs (createElement/textContent/appendChild) — body rows still use innerHTML with escapeHtml-sanitized content (same pattern as before).
+  - WS `queue_sent` triggers re-render → item flips from Active to Previous.
+  - Existing 60s `SENT_RETAIN_MS` auto-purge unchanged.
+- `mobile_terminal/static/styles.css` — new `.queue-section-previous`, `.queue-section-header`, `.queue-section-toggle`, `.queue-section-title`, `.queue-section-count`, `.queue-section-clear`, `.queue-section-body`, `.queue-active-empty` rules.
+- `mobile_terminal/static/src/features/docs.js`:
+  - `const NO_CACHE = { cache: 'no-store' }` at module top.
+  - Applied to every docs-tab fetch: `/api/plans`, `/api/plan?filename=`, `/api/docs/context`, `/api/docs/touch`, `/api/log/sessions`, `/api/log?session_id=`, `/api/files/tree`, `/api/file?path=`. Bypasses browser HTTP cache so the modal always shows current disk state.
+  - `loadPlansTab` always fetches now (the `if (!plansCache)` short-circuit removed) — switching to another tab and back inside an open modal re-hits the server, so plan files written between tab switches show up immediately.
+- `mobile_terminal/static/index.html` — cache-bust v=327 → v=330 for JS, v=238 → v=239 for CSS.
+- `mobile_terminal/static/dist/terminal.min.js` + `.map` — rebuilt.
+
+**New Files:** None
+
+**Risks/Follow-ups:**
+- Stop+Esc 100ms gap is a guess. If the interrupt is sometimes still in flight when the Esc lands, the Esc could be eaten — symptom would be "sometimes the prompt isn't cleared." Bump to 200ms or sequence via callback if observed.
+- Double-tapping Stop sends two Ctrl+C+Esc pairs. Claude Code's Ctrl+C-twice-exits behavior is unchanged (pre-existing).
+- Previous section's 60s auto-purge stays. If users want a longer history (e.g. last 50 sends or last hour), bump `SENT_RETAIN_MS` and add a per-render cap. Risk of "never purge" is unbounded localStorage growth; mitigated by the cap.
+- Drag-reorder handle only renders for queued items; previous items can't be dragged (correct, they're already sent).
+- Docs no-store costs slightly more server load on tab switching (one disk read per tab entry). Plan dir + 200-char preview is cheap; not a concern.
+- File tree fetch is the heaviest of the docs no-cache fetches. If repo trees become huge, switch just that one back to caching with a manual Refresh button.
+- Server restart NOT required for any of this — all client-side changes. Hard browser refresh for `v=330` bundle + `v=239` styles.
