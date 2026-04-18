@@ -5,7 +5,7 @@
  * DOM owned: #permissionsList, #permissionsAudit, #permissionsModeToggle
  */
 import ctx from '../context.js';
-import { escapeHtml } from '../utils.js';
+import { escapeHtml, formatTimeAgo } from '../utils.js';
 
 let currentMode = 'safe_auto';
 let currentRepo = '';
@@ -134,7 +134,9 @@ function renderAudit() {
 
     let html = '<div class="perm-group-header">RECENT</div>';
     html += auditEntries.slice(0, 20).map(e => {
-        const ago = formatAgo(e.ts);
+        // e.ts is Unix epoch SECONDS (server-side audit log uses seconds);
+        // formatTimeAgo expects ms, hence the *1000.
+        const ago = formatTimeAgo(e.ts * 1000);
         const icon = e.decision === 'allow' ? '&#x2713;' : (e.decision === 'deny' ? '&#x2717;' : '&#x2026;');
         const cls = e.decision === 'allow' ? 'allow' : (e.decision === 'deny' ? 'deny' : 'prompt');
         const tool = escapeHtml(e.tool || '');
@@ -153,13 +155,10 @@ function renderAudit() {
     permissionsAudit.innerHTML = html;
 }
 
-function formatAgo(ts) {
-    const secs = Math.floor(Date.now() / 1000 - ts);
-    if (secs < 60) return `${secs}s`;
-    if (secs < 3600) return `${Math.floor(secs / 60)}m`;
-    if (secs < 86400) return `${Math.floor(secs / 3600)}h`;
-    return `${Math.floor(secs / 86400)}d`;
-}
+// formatAgo removed — was a duplicate of utils.js formatTimeAgo with
+// a different unit (seconds vs ms), creating a silent unit-mismatch
+// bug surface. Use formatTimeAgo(ms) directly. Convert seconds-based
+// timestamps with `* 1000` at the call site.
 
 // ── Actions ────────────────────────────────────────────────────────────
 

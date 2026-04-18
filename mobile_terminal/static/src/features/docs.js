@@ -471,7 +471,7 @@ export function initDocs() {
                             loadSessionsTab();
                         } else {
                             const err = await resp.json();
-                            alert(err.error || 'Pin failed');
+                            ctx.showToast?.(err.error || 'Pin failed', 'error');
                             btn.disabled = false;
                             btn.textContent = 'Pin';
                         }
