@@ -693,14 +693,24 @@ class CommandQueue:
     COOLDOWN_MS = 250        # Between sends
     CHECK_INTERVAL_MS = 100  # How often to check ready state
 
-    # Patterns indicating terminal is ready for input (shell prompts only).
+    # Patterns indicating terminal is ready for input (shell/REPL prompts).
     # Excludes interactive prompts like [y/n] and [1-9] — those indicate
     # the agent is waiting for user input, not ready for queued commands.
+    #
+    # Goal: match the broadest reasonable set of "your turn now" indicators
+    # so the queue drains for users on zsh/fish/node/etc., not just bash +
+    # Claude Code. ``BUSY_PATTERNS`` below is the safety override.
     PROMPT_PATTERNS = [
-        r'❯\s*$',            # Claude Code prompt
-        r'\$\s*$',           # Bash prompt
-        r'#\s*$',            # Root prompt
+        r'❯\s*$',            # Claude Code, starship, fish
+        r'\$\s*$',           # Bash, zsh, sh
+        r'#\s*$',            # Root
         r'>>>\s*$',          # Python REPL
+        r'\.\.\.\s*$',       # Python continuation
+        r'>\s*$',            # Node, fish, generic single-char prompt
+        r'▶\s*$',            # alt prompt char
+        r'»\s*$',            # alt prompt char
+        r'➜\s*$',            # oh-my-zsh
+        r'λ\s*$',            # haskell-ish, some custom
     ]
 
     # Patterns indicating agent is waiting for user input — NOT ready for queue
@@ -737,10 +747,35 @@ class CommandQueue:
         self._processor_task = None
         self._app = None  # Set during startup
         self._loaded_sessions: set = set()  # Track which sessions loaded from disk
+        # Wakeup signal for the processor loop. Set by enqueue() so the
+        # processor doesn't have to wait up to its idle timeout to notice
+        # that there's work to do. Created lazily to avoid binding to a
+        # specific event loop at __init__ time (CommandQueue is constructed
+        # before uvicorn starts the loop).
+        self._wakeup_event: Optional[asyncio.Event] = None
 
     def set_app(self, app):
         """Set the FastAPI app reference for accessing state."""
         self._app = app
+
+    def _wake(self) -> None:
+        """Signal the processor loop to run a pass immediately."""
+        if self._wakeup_event is not None:
+            try:
+                self._wakeup_event.set()
+            except Exception:
+                # Different event loop or shutting down — silent ignore is
+                # fine because the processor's polling fallback will catch
+                # the work on its next tick.
+                pass
+
+    @staticmethod
+    def _parse_key(key: str) -> tuple:
+        """Inverse of _queue_key: split 'session:pane' back to (session, pane_id)."""
+        if ":" in key:
+            session, pane_id = key.split(":", 1)
+            return (session, pane_id)
+        return (key, None)
 
     @staticmethod
     def _queue_key(session: str, pane_id: Optional[str] = None) -> str:
@@ -846,6 +881,9 @@ class CommandQueue:
         )
         queue.append(item)
         self._save_to_disk(session, pane_id)
+        # Kick the processor so a freshly-queued safe item doesn't have to
+        # wait for the next idle poll to be drained.
+        self._wake()
         return (item, True)
 
     def dequeue(self, session: str, item_id: str, pane_id: Optional[str] = None) -> bool:
@@ -883,6 +921,7 @@ class CommandQueue:
         """Resume queue processing for a session+pane."""
         key = self._queue_key(session, pane_id)
         self._paused[key] = False
+        self._wake()
 
     def is_paused(self, session: str, pane_id: Optional[str] = None) -> bool:
         """Check if queue is paused."""
@@ -968,7 +1007,16 @@ class CommandQueue:
         return False
 
     async def _send_item(self, session: str, item: QueueItem, pane_id: Optional[str] = None) -> bool:
-        """Send a single item to the terminal."""
+        """Send a single item to the terminal.
+
+        Uses ``send_text_to_pane`` (tmux send-keys -l with bracketed-paste
+        wrapping for multiline text) followed by an explicit Enter, instead
+        of writing raw bytes to the PTY. This matches how the manual /text
+        endpoints send so the queue benefits from the same multi-line and
+        atomicity guarantees.
+        """
+        from mobile_terminal.helpers import send_text_to_pane, get_tmux_target
+
         if not self._app:
             return False
 
@@ -983,36 +1031,47 @@ class CommandQueue:
                 item.error = "No PTY available"
                 return False
 
-            # Send via InputQueue for proper serialization
-            success = await self._app.state.input_queue.send(
-                msg_id=item.id,
-                data=(item.text + '\r').encode('utf-8'),
-                websocket=websocket,
-            )
+            tmux_t = get_tmux_target(session, pane_id) if pane_id else session
 
-            if success:
-                item.status = "sent"
-                item.sent_at = time.time()
-                self._save_to_disk(session, pane_id)  # Persist sent status
-
-                # Notify client
-                if websocket:
-                    try:
-                        await websocket.send_json({
-                            "type": "queue_sent",
-                            "id": item.id,
-                            "sent_at": item.sent_at,
-                            "backlog_id": item.backlog_id,
-                        })
-                    except Exception:
-                        pass
-
-                return True
-            else:
+            try:
+                if item.text:
+                    await send_text_to_pane(runtime, tmux_t, item.text)
+                # Always send Enter — empty text + Enter is a valid "submit
+                # current prompt" action and matches sendTextAtomic(text, true).
+                await runtime.send_keys(tmux_t, "Enter")
+            except Exception as send_err:
                 item.status = "failed"
-                item.error = "Send timeout"
-                self._save_to_disk(session, pane_id)  # Persist failed status
+                item.error = f"send-keys failed: {send_err}"
+                self._save_to_disk(session, pane_id)
                 return False
+
+            item.status = "sent"
+            item.sent_at = time.time()
+            self._save_to_disk(session, pane_id)  # Persist sent status
+
+            # Update PTY-input bookkeeping so other code (e.g. desktop
+            # activity detector) doesn't think this came from outside MTO.
+            try:
+                self._app.state.last_ws_input_time = time.time()
+            except Exception:
+                pass
+
+            # Notify client. Include session+pane so views for other panes
+            # can ignore it (prevents queue list cross-pollination).
+            if websocket:
+                try:
+                    await websocket.send_json({
+                        "type": "queue_sent",
+                        "id": item.id,
+                        "sent_at": item.sent_at,
+                        "backlog_id": item.backlog_id,
+                        "session": session,
+                        "pane_id": pane_id,
+                    })
+                except Exception:
+                    pass
+
+            return True
 
         except Exception as e:
             item.status = "failed"
@@ -1049,11 +1108,30 @@ class CommandQueue:
         return item
 
     async def _process_loop(self) -> None:
-        """Main processing loop - runs continuously."""
+        """Main processing loop — drains every pane of the current session.
+
+        Wakes immediately on enqueue/resume via ``_wakeup_event``; otherwise
+        falls back to a 2s idle poll so transient terminal state changes
+        (e.g. an agent finishing a tool call) get noticed.
+
+        Per pass: iterate every queue belonging to the current tmux session,
+        and for each non-paused queue, send the first ``queued`` item with
+        policy ``safe`` *if* the ready gate passes. Items targeted at a
+        different session are skipped — the runtime is bound to one tmux
+        session at a time, so we can't drive panes that aren't there.
+        """
         self._running = True
+        # Bind the event to the running loop now that we're inside it.
+        self._wakeup_event = asyncio.Event()
 
         while self._running:
-            await asyncio.sleep(self.CHECK_INTERVAL_MS / 1000)
+            # Wait until either someone signals work, or our 2s idle poll
+            # ticks (so prompt transitions outside our control are caught).
+            try:
+                await asyncio.wait_for(self._wakeup_event.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
+            self._wakeup_event.clear()
 
             if not self._app:
                 continue
@@ -1062,36 +1140,40 @@ class CommandQueue:
             if not current_session:
                 continue
 
-            # Use active_target as pane_id for per-pane queue scoping
-            pane_id = getattr(self._app.state, 'active_target', None)
+            # Snapshot keys — _send_item may mutate _queues during the pass
+            # (saves, status updates), and we don't want to iterate a moving
+            # dict.
+            keys = list(self._queues.keys())
 
-            # Process only current session+pane
-            if self.is_paused(current_session, pane_id):
-                continue
-
-            queue = self._get_queue(current_session, pane_id)
-            if not queue:
-                continue
-
-            # Get first queued safe item
-            item = None
-            for i in queue:
-                if i.status == "queued" and i.policy == "safe":
-                    item = i
+            for key in keys:
+                if not self._running:
                     break
+                session, pane_id = self._parse_key(key)
+                # Runtime is bound to one tmux session — skip foreign queues.
+                if session != current_session:
+                    continue
+                if self.is_paused(session, pane_id):
+                    continue
 
-            if not item:
-                continue
+                queue = self._queues.get(key) or []
+                if not queue:
+                    continue
 
-            # Check ready gate
-            if not await self._check_ready(current_session, pane_id):
-                continue
+                # First safe queued item, if any
+                item = next(
+                    (i for i in queue if i.status == "queued" and i.policy == "safe"),
+                    None,
+                )
+                if not item:
+                    continue
 
-            # Send the item
-            await self._send_item(current_session, item, pane_id)
+                # Ready gate per-pane (different panes can be busy
+                # independently; e.g. one waiting at a [y/n], another idle).
+                if not await self._check_ready(session, pane_id):
+                    continue
 
-            # Cooldown
-            await asyncio.sleep(self.COOLDOWN_MS / 1000)
+                await self._send_item(session, item, pane_id)
+                await asyncio.sleep(self.COOLDOWN_MS / 1000)
 
     def start(self):
         """Start the processor loop."""

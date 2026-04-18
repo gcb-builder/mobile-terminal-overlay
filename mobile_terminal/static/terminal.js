@@ -15,7 +15,7 @@ import { initCollapse, scheduleCollapse, scheduleSuperCollapse, applyCollapseSyn
 import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          reconcileQueue, reloadQueueForTarget, refreshQueueList,
          getQueueItems, isQueuePaused, saveQueueToStorage,
-         popNextQueueItem, popNextQueueItemById, requeueItem } from './src/features/queue.js';
+         popNextQueueItem, requeueItem } from './src/features/queue.js';
 import { initBacklog, handleBacklogMessage, handleCandidateMessage,
          refreshBacklogList, reloadBacklogForProject, addBacklogItem,
          updateBacklogStatus } from './src/features/backlog.js';
@@ -1088,78 +1088,18 @@ async function syncPromptToInput() {
 }
 
 /**
- * Set ctx.terminal busy state and update send button accordingly
+ * Set ctx.terminal busy state and update send button accordingly.
+ *
+ * Note: this used to schedule a client-side queue drain after a 3-second
+ * idle. That logic has been removed — the server's CommandQueue is now
+ * the single auto-drainer, which avoids the double-send race where both
+ * sides popped the same item. The client just observes via WS messages
+ * (queue_sent updates the local item to 'sent'). Manual "Run" still
+ * works via sendNextUnsafe().
  */
-let queueDrainTimer = null;
 function setTerminalBusy(busy) {
     terminalBusy = busy;
     updateSendButton();
-
-    // Auto-drain queue when ctx.terminal becomes idle
-    // Use 3s delay to avoid firing during transient prompt appearances
-    if (!busy) {
-        if (!queueDrainTimer) {
-            queueDrainTimer = setTimeout(tryDrainQueue, 3000);
-        }
-    } else {
-        if (queueDrainTimer) { clearTimeout(queueDrainTimer); queueDrainTimer = null; }
-    }
-}
-
-/**
- * Auto-send next queued command if conditions are met.
- * Only sends "safe" items — unsafe items require manual "Run" click.
- */
-function tryDrainQueue() {
-    queueDrainTimer = null;
-    if (terminalBusy || isQueuePaused()) return;
-
-    // Don't auto-send if there's an active prompt/permission banner
-    // (user needs to answer the question, not have queue inject commands)
-    if (pendingPrompt) return;
-    const permBanner = document.getElementById('permissionBanner');
-    if (permBanner && !permBanner.classList.contains('hidden')) return;
-
-    // Don't auto-send if agent is running in any non-idle phase
-    const phase = lastPhase?.phase;
-    const agentRunning = lastPhase?.agent_running ?? lastPhase?.claude_running;
-    if (agentRunning && phase && phase !== 'idle') return;
-
-    // Only auto-send safe items; unsafe items wait for manual "Run"
-    const safePending = getQueueItems().filter(i => i.status === 'queued' && i.policy === 'safe');
-    if (safePending.length === 0) return;
-    showToast(`Sending queued command (${safePending.length} safe left)`, 'info', 1500);
-    sendNextSafe();
-}
-
-/**
- * Pop the next safe queued command and send it.
- * Unlike sendNextUnsafe, only pops items with policy === 'safe'.
- */
-function sendNextSafe() {
-    const items = getQueueItems();
-    const safeItem = items.find(i => i.status === 'queued' && i.policy === 'safe');
-    if (!safeItem) return;
-
-    // Mark as sent via popNextQueueItem (finds first queued item)
-    // To ensure we pop the right one, we need to send the safe item specifically
-    const item = popNextQueueItemById(safeItem.id);
-    if (!item) return;
-
-    if (terminalBusy) {
-        requeueItem(item);
-        return;
-    }
-
-    dequeueFromServer(item.id);
-    sendTextAtomic(item.text, true);
-    setTerminalBusy(true);
-    captureSnapshot('queue_send');
-    recentSentCommands.add(item.text);
-    if (recentSentCommands.size > 20) {
-        recentSentCommands.delete(recentSentCommands.values().next().value);
-    }
-    if (item.text) addToHistory(item.text);
 }
 
 /**

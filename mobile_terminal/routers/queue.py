@@ -36,12 +36,18 @@ def register(app: FastAPI, deps):
 
         item, is_new = app.state.command_queue.enqueue(session, text, policy, item_id=id, pane_id=pane_id, backlog_id=backlog_id)
 
-        # Notify connected clients only for new items
+        # Notify connected clients only for new items. Stamp session+pane
+        # so views for other panes can ignore the message — without this,
+        # any connected client picks up every queue change in every pane
+        # and writes them into the currently-visible queue, causing the
+        # cross-pane bleed users have been seeing.
         if is_new and app.state.active_client:
             try:
                 await app.state.active_client.send_json({
                     "type": "queue_update",
                     "action": "add",
+                    "session": session,
+                    "pane_id": pane_id,
                     "item": asdict(item),
                 })
             except Exception:
@@ -81,6 +87,8 @@ def register(app: FastAPI, deps):
                 await app.state.active_client.send_json({
                     "type": "queue_update",
                     "action": "remove",
+                    "session": session,
+                    "pane_id": pane_id,
                     "item": {"id": item_id},
                 })
             except Exception:
@@ -115,6 +123,8 @@ def register(app: FastAPI, deps):
             try:
                 await app.state.active_client.send_json({
                     "type": "queue_state",
+                    "session": session,
+                    "pane_id": pane_id,
                     "paused": True,
                     "count": len(app.state.command_queue.list_items(session, pane_id)),
                 })
@@ -137,6 +147,8 @@ def register(app: FastAPI, deps):
             try:
                 await app.state.active_client.send_json({
                     "type": "queue_state",
+                    "session": session,
+                    "pane_id": pane_id,
                     "paused": False,
                     "count": len(app.state.command_queue.list_items(session, pane_id)),
                 })
@@ -164,6 +176,8 @@ def register(app: FastAPI, deps):
             try:
                 await app.state.active_client.send_json({
                     "type": "queue_state",
+                    "session": session,
+                    "pane_id": pane_id,
                     "paused": False,
                     "count": 0,
                 })

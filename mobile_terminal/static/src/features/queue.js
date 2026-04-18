@@ -4,7 +4,7 @@
  * Reads: ctx.token, ctx.currentSession, ctx.activeTarget
  * DOM owned: #queueList, #queueCount, #queueBadge, #queueTabBadge,
  *            #queuePauseBtn, #queueSendNext, #queueFlush
- * Timers: none (scheduling is done by terminal.js via tryDrainQueue)
+ * Timers: none (scheduling is done server-side in CommandQueue._process_loop)
  */
 import ctx from '../context.js';
 import { escapeHtml } from '../utils.js';
@@ -36,8 +36,12 @@ function makeQueueId() {
 }
 
 function getQueueStorageKey(session) {
-    const pane = ctx.activeTarget || 'default';
-    return QUEUE_STORAGE_PREFIX + (session || 'default') + ':' + pane;
+    // Match the server's keying: with a pane it's "session:pane", without
+    // a pane it's just "session". The previous `'default'` fallback meant
+    // a no-pane queue lived under "session:default" on the client and
+    // "session" on the server — items written then never reconciled.
+    const sessKey = session || 'default';
+    return QUEUE_STORAGE_PREFIX + sessKey + (ctx.activeTarget ? ':' + ctx.activeTarget : '');
 }
 
 export function saveQueueToStorage() {
@@ -384,6 +388,10 @@ export async function enqueueCommand(text, policy = 'auto', backlogId = null) {
             const data = await resp.json();
             const idx = queueItems.findIndex(i => i.id === itemId);
             if (idx >= 0) {
+                // Server is authoritative for status. If the server says
+                // the item is already 'sent' or 'failed' (idempotency
+                // collision with a prior submission), keep that — don't
+                // overwrite back to 'queued' from our local state.
                 queueItems[idx] = { ...queueItems[idx], ...data.item };
                 saveQueueToStorage();
                 renderQueueList();
@@ -596,10 +604,32 @@ export async function reconcileQueue() {
 }
 
 /**
+ * Does this message target the queue we're currently displaying?
+ *
+ * Server-side broadcasts now stamp every queue_* message with `session`
+ * and `pane_id`. Older builds may omit them — accept those for backward
+ * compatibility (better to show a possibly-extra item than to drop a real
+ * one). When both sides are stamped, we silently ignore messages for
+ * other panes/sessions so the visible list stays consistent.
+ */
+function messageTargetsCurrentView(msg) {
+    if (msg.session != null && msg.session !== ctx.currentSession) return false;
+    // pane_id can legitimately be null on either side ("session-level
+    // queue, no specific pane"). Treat null/undefined as equal to the
+    // current activeTarget being null/undefined.
+    const msgPane = msg.pane_id ?? null;
+    const myPane = ctx.activeTarget ?? null;
+    if (msg.pane_id !== undefined && msgPane !== myPane) return false;
+    return true;
+}
+
+/**
  * Handle queue WebSocket messages.
  * Persists changes to localStorage.
  */
 export function handleQueueMessage(msg) {
+    if (!messageTargetsCurrentView(msg)) return;
+
     switch (msg.type) {
         case 'queue_update':
             if (msg.action === 'add') {
@@ -645,7 +675,7 @@ export function reloadQueueForTarget() {
     renderQueueList();
 }
 
-// ── Getters for terminal.js (tryDrainQueue) ──────────────────────────
+// ── Getters used by terminal.js (manual Run path) ───────────────────
 
 /** Get current queue items (read-only snapshot). */
 export function getQueueItems() {
@@ -676,7 +706,7 @@ export function popNextQueueItem() {
 
 /**
  * Mark a specific queued item as "sent" by ID and return it.
- * Used by sendNextSafe to pop a specific safe item.
+ * Kept exported for any future "send specific item" UI affordance.
  */
 export function popNextQueueItemById(itemId) {
     const idx = queueItems.findIndex(i => i.id === itemId && i.status === 'queued');

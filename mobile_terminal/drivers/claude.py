@@ -415,19 +415,28 @@ class ClaudePermissionDetector:
 
 
 class BacklogCandidateDetector:
-    """Detect potential backlog items from Claude JSONL output.
+    """Disabled by default — scanning produced more noise than signal.
 
-    Incrementally reads new JSONL entries and extracts ``TaskCreate``
-    invocations as candidates. ``TodoWrite`` is deliberately NOT scanned:
-    it is Claude's in-session planning scratchpad (rewritten many times
-    per session, 5–15 items per call) and produced a flood of low-signal
-    suggestions that drowned out real ones. ``TaskCreate`` is an explicit
-    sub-agent spawn which maps cleanly to "backlog item" semantics.
+    History:
+    - v1 scanned ``TodoWrite`` and ``TaskCreate``. ``TodoWrite`` flooded
+      the Suggestions tray (Claude rewrites it many times per session,
+      5–15 items per call) so it was removed.
+    - v2 scanned only ``TaskCreate``. In modern Claude Code (2026)
+      ``TaskCreate`` has effectively replaced ``TodoWrite`` for ordinary
+      planning — a single SecondBrain orchestration session was observed
+      to invoke ``TaskCreate`` 413 times with 411 unique subjects, all
+      sub-agent spawns that were *currently being executed*, not "things
+      to remember later". The Suggestions tray filled up immediately.
 
-    Content-hash dedup prevents the same item from being surfaced twice.
+    The detector is now a no-op: ``check_sync`` always returns ``[]``.
+    The class, the JSONL position bookkeeping, and the public API are
+    kept so callers (logs router, tail_sender) don't have to change, and
+    so a future smarter signal can plug in here. ``CandidateStore`` is
+    likewise kept in case it gets repurposed.
 
-    Follows the ClaudePermissionDetector pattern: stateful, incremental,
-    called periodically from tail_sender() via run_in_executor.
+    To bring detection back, restore the body of ``_extract_candidates``
+    below — start narrow (e.g. only items the agent explicitly tags as
+    follow-up) rather than blanket tool scanning.
     """
 
     def __init__(self):
@@ -448,27 +457,19 @@ class BacklogCandidateDetector:
         self._seen_hashes.clear()
 
     def check_sync(self, session: str, pane_id: str) -> list:
-        """Read new JSONL bytes, extract candidates, return unseen ones.
+        """No-op. Detection is disabled — see class docstring.
 
-        Returns list of dicts: {summary, prompt, source_tool, hash}
+        We still advance ``last_log_size`` so that if detection is ever
+        re-enabled we don't suddenly process the entire backfill from
+        whenever the server started.
         """
         if not self.log_file or not self.log_file.exists():
             return []
-
         try:
-            current_size = self.log_file.stat().st_size
+            self.last_log_size = self.log_file.stat().st_size
         except Exception:
-            return []
-        if current_size <= self.last_log_size:
-            return []
-
-        new_text = self._read_new(current_size)
-        self.last_log_size = current_size
-
-        if not new_text:
-            return []
-
-        return self._extract_candidates(new_text)
+            pass
+        return []
 
     def _read_new(self, current_size: int) -> str:
         try:
