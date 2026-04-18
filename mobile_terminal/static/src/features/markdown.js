@@ -158,7 +158,7 @@ function setupPlanPreviewHandler() {
 
         planRef.classList.add('loading');
         try {
-            const response = await fetch(`/api/plan?token=${ctx.token}&filename=${encodeURIComponent(filename)}&preview=true`);
+            const response = await ctx.apiFetch(`/api/plan?filename=${encodeURIComponent(filename)}&preview=true`);
             const data = await response.json();
 
             if (data.exists && data.content) {

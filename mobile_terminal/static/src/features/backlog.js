@@ -179,7 +179,7 @@ async function keepCandidate(candidateId) {
     try {
         const params = new URLSearchParams({ id: candidateId, token: ctx.token });
         if (currentProject) params.set('project', currentProject);
-        const resp = await fetch(`/api/backlog/candidates/keep?${params}`, { method: 'POST' });
+        const resp = await ctx.apiFetch(`/api/backlog/candidates/keep?${params}`, { method: 'POST' });
         if (resp.ok) {
             const data = await resp.json();
             if (data.status === 'ok' && data.item) {
@@ -203,7 +203,7 @@ async function dismissCandidate(candidateId) {
     try {
         const params = new URLSearchParams({ id: candidateId, token: ctx.token });
         if (currentProject) params.set('project', currentProject);
-        await fetch(`/api/backlog/candidates/dismiss?${params}`, { method: 'POST' });
+        await ctx.apiFetch(`/api/backlog/candidates/dismiss?${params}`, { method: 'POST' });
     } catch (e) {
         console.error('Failed to dismiss candidate:', e);
         ctx.showToast('Failed to dismiss', 'warning');
@@ -249,7 +249,7 @@ export async function updateBacklogStatus(itemId, status) {
             id: itemId, status, token: ctx.token
         });
         if (currentProject) params.set('project', currentProject);
-        const resp = await fetch(`/api/backlog/update?${params}`, { method: 'POST' });
+        const resp = await ctx.apiFetch(`/api/backlog/update?${params}`, { method: 'POST' });
         if (resp.ok) {
             const data = await resp.json();
             if (data.status === 'ok' && data.item) {
@@ -273,7 +273,7 @@ async function removeBacklogItem(itemId) {
     try {
         const params = new URLSearchParams({ id: itemId, token: ctx.token });
         if (currentProject) params.set('project', currentProject);
-        await fetch(`/api/backlog/remove?${params}`, { method: 'POST' });
+        await ctx.apiFetch(`/api/backlog/remove?${params}`, { method: 'POST' });
     } catch (e) {
         console.error('Failed to remove backlog item:', e);
         ctx.showToast('Failed to remove item', 'warning');
@@ -294,7 +294,7 @@ export async function addBacklogItem(summary, promptText, source = 'human') {
             summary, prompt: promptText, source, token: ctx.token
         });
         if (currentProject) params.set('project', currentProject);
-        const resp = await fetch(`/api/backlog/add?${params}`, { method: 'POST' });
+        const resp = await ctx.apiFetch(`/api/backlog/add?${params}`, { method: 'POST' });
         if (resp.ok) {
             const data = await resp.json();
             if (data.status === 'ok' && data.item) {
@@ -318,7 +318,7 @@ export async function refreshBacklogList() {
         const params = new URLSearchParams({ token: ctx.token });
         if (currentProject) params.set('project', currentProject);
         if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-        const resp = await fetch(`/api/backlog/list?${params}`);
+        const resp = await ctx.apiFetch(`/api/backlog/list?${params}`);
         if (resp.ok) {
             const data = await resp.json();
             // Update currentProject from server response (server resolves from pane cwd)
@@ -336,7 +336,7 @@ export async function refreshCandidates() {
     try {
         const params = new URLSearchParams({ token: ctx.token });
         if (currentProject) params.set('project', currentProject);
-        const resp = await fetch(`/api/backlog/candidates?${params}`);
+        const resp = await ctx.apiFetch(`/api/backlog/candidates?${params}`);
         if (resp.ok) {
             const data = await resp.json();
             candidateItems = data.candidates || [];

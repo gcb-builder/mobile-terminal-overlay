@@ -78,7 +78,7 @@ async function loadTemplates() {
 
     if (!templatesCache) {
         try {
-            const resp = await fetch(`/api/team/templates?token=${ctx.token}`);
+            const resp = await ctx.apiFetch(`/api/team/templates`);
             if (!resp.ok) throw new Error('Failed');
             templatesCache = await resp.json();
         } catch {
@@ -127,7 +127,7 @@ async function loadPlans() {
     if (!select) return;
 
     try {
-        const resp = await fetch(`/api/plans?token=${ctx.token}`);
+        const resp = await ctx.apiFetch(`/api/plans`);
         if (!resp.ok) return;
         const data = await resp.json();
         const plans = data.plans || [];
@@ -155,7 +155,7 @@ async function onPlanSelect() {
 
     // Try to read plan content to extract goal
     try {
-        const resp = await fetch(`/api/plans/${encodeURIComponent(filename)}?token=${ctx.token}`);
+        const resp = await ctx.apiFetch(`/api/plans/${encodeURIComponent(filename)}`);
         if (resp.ok) {
             const data = await resp.json();
             const content = data.content || '';
@@ -303,7 +303,7 @@ async function executeLaunch() {
     if (launchBtn) launchBtn.disabled = true;
 
     try {
-        const resp = await fetch(`/api/team/launch?token=${ctx.token}`, {
+        const resp = await ctx.apiFetch(`/api/team/launch`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -353,7 +353,7 @@ async function killTeam() {
     setStatus('Killing team...', 'info');
 
     try {
-        const resp = await fetch(`/api/team/kill?token=${ctx.token}`, {
+        const resp = await ctx.apiFetch(`/api/team/kill`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ session: ctx.currentSession || '' }),
@@ -380,7 +380,7 @@ async function checkExistingTeam() {
     if (!killBtn) return;
 
     try {
-        const resp = await fetch(`/api/team/state?token=${ctx.token}`);
+        const resp = await ctx.apiFetch(`/api/team/state`);
         if (resp.ok) {
             const data = await resp.json();
             if (data.has_team) {

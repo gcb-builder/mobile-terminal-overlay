@@ -166,7 +166,7 @@ function formatAgo(ts) {
 async function setMode(mode) {
     try {
         const params = new URLSearchParams({ mode, token: ctx.token });
-        const resp = await fetch(`/api/permissions/mode?${params}`, { method: 'POST' });
+        const resp = await ctx.apiFetch(`/api/permissions/mode?${params}`, { method: 'POST' });
         if (resp.ok) {
             const data = await resp.json();
             if (data.status === 'ok') {
@@ -183,7 +183,7 @@ async function setMode(mode) {
 async function deleteRule(ruleId) {
     try {
         const params = new URLSearchParams({ id: ruleId, token: ctx.token });
-        const resp = await fetch(`/api/permissions/rules?${params}`, { method: 'DELETE' });
+        const resp = await ctx.apiFetch(`/api/permissions/rules?${params}`, { method: 'DELETE' });
         if (resp.ok) {
             rules = rules.filter(r => r.id !== ruleId);
             renderRules();
@@ -200,8 +200,8 @@ export async function loadPermissions() {
     try {
         const params = new URLSearchParams({ token: ctx.token });
         const [rulesResp, auditResp] = await Promise.all([
-            fetch(`/api/permissions/rules?${params}`),
-            fetch(`/api/permissions/audit?${params}&limit=30`),
+            ctx.apiFetch(`/api/permissions/rules?${params}`),
+            ctx.apiFetch(`/api/permissions/audit?${params}&limit=30`),
         ]);
         if (rulesResp.ok) {
             const data = await rulesResp.json();

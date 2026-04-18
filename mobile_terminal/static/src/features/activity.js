@@ -58,7 +58,7 @@ async function fetchAndRender() {
 
     try {
         const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
-        const resp = await fetch(`/api/activity?token=${ctx.token}${paneParam}&limit=150`);
+        const resp = await ctx.apiFetch(`/api/activity${paneParam}&limit=150`);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
 
@@ -250,7 +250,7 @@ async function updatePhaseBanner() {
 
     try {
         const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
-        const resp = await fetch(`/api/health/agent?token=${ctx.token}${paneParam}`);
+        const resp = await ctx.apiFetch(`/api/health/agent${paneParam}`);
         if (!resp.ok) { banner.classList.add('hidden'); return; }
         const data = await resp.json();
 

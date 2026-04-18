@@ -443,7 +443,7 @@ export async function refreshQueueList() {
     try {
         const listParams = new URLSearchParams({ session: ctx.currentSession, token: ctx.token });
         if (ctx.activeTarget) listParams.set('pane_id', ctx.activeTarget);
-        const resp = await fetch(`/api/queue/list?${listParams}`);
+        const resp = await ctx.apiFetch(`/api/queue/list?${listParams}`);
         if (resp.ok) {
             const data = await resp.json();
             queueItems = data.items || [];
@@ -497,7 +497,7 @@ export async function enqueueCommand(text, policy = 'auto', backlogId = null) {
         });
         if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
         if (backlogId) params.set('backlog_id', backlogId);
-        const resp = await fetch(`/api/queue/enqueue?${params}`, { method: 'POST' });
+        const resp = await ctx.apiFetch(`/api/queue/enqueue?${params}`, { method: 'POST' });
 
         if (resp.ok) {
             const data = await resp.json();
@@ -533,7 +533,7 @@ async function removeQueueItem(itemId) {
             token: ctx.token
         });
         if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-        await fetch(`/api/queue/remove?${params}`, { method: 'POST' });
+        await ctx.apiFetch(`/api/queue/remove?${params}`, { method: 'POST' });
     } catch (e) {
         console.error('Failed to remove queue item from server:', e);
     }
@@ -554,7 +554,7 @@ async function toggleQueuePause() {
     if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
 
     try {
-        const resp = await fetch(`${endpoint}?${params}`, { method: 'POST' });
+        const resp = await ctx.apiFetch(`${endpoint}?${params}`, { method: 'POST' });
         if (!resp.ok) {
             // Revert on failure
             queuePaused = !queuePaused;
@@ -615,7 +615,7 @@ async function reorderQueueItem(itemId, direction) {
             token: ctx.token
         });
         if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-        await fetch(`/api/queue/reorder?${params}`, { method: 'POST' });
+        await ctx.apiFetch(`/api/queue/reorder?${params}`, { method: 'POST' });
     } catch (e) {
         console.error('Failed to reorder queue item:', e);
         const tmp2 = queueItems[idx];
@@ -638,7 +638,7 @@ async function flushQueue() {
             token: ctx.token
         });
         if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-        const resp = await fetch(`/api/queue/flush?${params}`, { method: 'POST' });
+        const resp = await ctx.apiFetch(`/api/queue/flush?${params}`, { method: 'POST' });
 
         if (resp.ok) {
             queueItems = [];
@@ -662,7 +662,7 @@ export async function reconcileQueue() {
     try {
         const listParams = new URLSearchParams({ session: ctx.currentSession, token: ctx.token });
         if (ctx.activeTarget) listParams.set('pane_id', ctx.activeTarget);
-        const resp = await fetch(`/api/queue/list?${listParams}`);
+        const resp = await ctx.apiFetch(`/api/queue/list?${listParams}`);
         if (resp.ok) {
             const data = await resp.json();
             serverItems = data.items || [];
@@ -698,7 +698,7 @@ export async function reconcileQueue() {
                 token: ctx.token
             });
             if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-            const resp = await fetch(`/api/queue/enqueue?${params}`, { method: 'POST' });
+            const resp = await ctx.apiFetch(`/api/queue/enqueue?${params}`, { method: 'POST' });
             if (resp.ok) {
                 const data = await resp.json();
                 if (data.is_new) {
@@ -898,7 +898,7 @@ function requeueSentItem(itemId) {
         token: ctx.token,
     });
     if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-    fetch(`/api/queue/enqueue?${params}`, { method: 'POST' }).catch(() => {});
+    ctx.apiFetch(`/api/queue/enqueue?${params}`, { method: 'POST' }).catch(() => {});
 }
 
 // ── Public API ───────────────────────────────────────────────────────

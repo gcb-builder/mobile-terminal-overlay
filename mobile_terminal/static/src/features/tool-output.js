@@ -70,7 +70,7 @@ async function loadToolOutput(details, toolUseId) {
 
     try {
         const params = new URLSearchParams({ token: ctx.token, tool_use_id: toolUseId });
-        const resp = await fetch(`/api/log/tool-output?${params}`);
+        const resp = await ctx.apiFetch(`/api/log/tool-output?${params}`);
 
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({ error: resp.statusText }));

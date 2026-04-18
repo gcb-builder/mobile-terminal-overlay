@@ -25,7 +25,7 @@ async function loadEnvVars() {
     envValueMaskState = {};
 
     try {
-        const response = await ctx.apiFetch(`/api/env?scope=${envCurrentScope}&token=${ctx.token}`);
+        const response = await ctx.apiFetch(`/api/env?scope=${envCurrentScope}`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
 
@@ -113,7 +113,7 @@ async function addEnvVar() {
     }
 
     try {
-        const response = await ctx.apiFetch(`/api/env?token=${ctx.token}`, {
+        const response = await ctx.apiFetch(`/api/env`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ scope: envCurrentScope, key, value }),
@@ -143,7 +143,7 @@ async function removeEnvVar(key) {
 
     try {
         const response = await ctx.apiFetch(
-            `/api/env/${encodeURIComponent(key)}?scope=${envCurrentScope}&token=${ctx.token}`,
+            `/api/env/${encodeURIComponent(key)}?scope=${envCurrentScope}`,
             { method: 'DELETE' }
         );
 
@@ -175,7 +175,7 @@ async function envReload() {
     if (btn) btn.disabled = true;
 
     try {
-        const response = await ctx.apiFetch(`/api/reload-env?token=${ctx.token}`, { method: 'POST' });
+        const response = await ctx.apiFetch(`/api/reload-env`, { method: 'POST' });
         const data = await response.json();
 
         if (response.ok) {

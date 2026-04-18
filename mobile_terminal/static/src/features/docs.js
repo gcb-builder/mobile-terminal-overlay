@@ -85,7 +85,7 @@ export function initDocs() {
         docsModalBody.innerHTML = '<div class="docs-loading">Loading files...</div>';
 
         try {
-            const resp = await fetch(`/api/files/tree?token=${ctx.token}`, NO_CACHE);
+            const resp = await ctx.apiFetch(`/api/files/tree`, NO_CACHE);
             if (!resp.ok) throw new Error('Failed to load files');
             fileTreeCache = await resp.json();
         } catch (e) {
@@ -223,7 +223,7 @@ export function initDocs() {
     async function openFileInModal(filePath) {
         docsModalBody.innerHTML = '<div class="docs-loading">Loading file...</div>';
         try {
-            const resp = await fetch(`/api/file?path=${encodeURIComponent(filePath)}&token=${ctx.token}`, NO_CACHE);
+            const resp = await ctx.apiFetch(`/api/file?path=${encodeURIComponent(filePath)}`, NO_CACHE);
             if (!resp.ok) throw new Error('Failed to load file');
             const data = await resp.json();
 
@@ -258,7 +258,7 @@ export function initDocs() {
             // Plan files are usually authored by Claude in the background;
             // you want the dropdown to show whatever's on disk RIGHT NOW.
             // No conditional cache — every entry hits disk.
-            const response = await fetch(`/api/plans?token=${ctx.token}`, NO_CACHE);
+            const response = await ctx.apiFetch(`/api/plans`, NO_CACHE);
             const data = await response.json();
             plansCache = data.plans || [];
 
@@ -307,7 +307,7 @@ export function initDocs() {
         lastPlanRawContent = '';
 
         try {
-            const response = await fetch(`/api/plan?token=${ctx.token}&filename=${encodeURIComponent(filename)}&preview=false`, NO_CACHE);
+            const response = await ctx.apiFetch(`/api/plan?filename=${encodeURIComponent(filename)}&preview=false`, NO_CACHE);
             const data = await response.json();
 
             if (data.exists && data.content) {
@@ -352,7 +352,7 @@ export function initDocs() {
     // Context tab
     async function loadContextTab() {
         try {
-            const response = await fetch(`/api/docs/context?token=${ctx.token}`, NO_CACHE);
+            const response = await ctx.apiFetch(`/api/docs/context`, NO_CACHE);
             const data = await response.json();
 
             if (data.exists && data.content) {
@@ -373,7 +373,7 @@ export function initDocs() {
     // Touch summary tab
     async function loadTouchTab() {
         try {
-            const response = await fetch(`/api/docs/touch?token=${ctx.token}`, NO_CACHE);
+            const response = await ctx.apiFetch(`/api/docs/touch`, NO_CACHE);
             const data = await response.json();
 
             if (data.exists && data.content) {
@@ -399,7 +399,7 @@ export function initDocs() {
         }
 
         try {
-            const response = await fetch(`/api/log/sessions?token=${ctx.token}`, NO_CACHE);
+            const response = await ctx.apiFetch(`/api/log/sessions`, NO_CACHE);
             const data = await response.json();
             sessionsCache = data.sessions || [];
 
@@ -459,7 +459,7 @@ export function initDocs() {
                     btn.disabled = true;
                     btn.textContent = '...';
                     try {
-                        const resp = await fetch(`/api/log/select?token=${ctx.token}&session_id=${encodeURIComponent(sid)}`, { method: 'POST' });
+                        const resp = await ctx.apiFetch(`/api/log/select?session_id=${encodeURIComponent(sid)}`, { method: 'POST' });
                         if (resp.ok) {
                             sessionsCache = null;
                             loadSessionsTab();
@@ -482,7 +482,7 @@ export function initDocs() {
                     btn.disabled = true;
                     btn.textContent = '...';
                     try {
-                        await fetch(`/api/log/unpin?token=${ctx.token}`, { method: 'POST' });
+                        await ctx.apiFetch(`/api/log/unpin`, { method: 'POST' });
                         sessionsCache = null;
                         loadSessionsTab();
                     } catch (e) {
@@ -502,7 +502,7 @@ export function initDocs() {
         docsModalBody.innerHTML = '<div class="docs-loading">Loading session...</div>';
 
         try {
-            const response = await fetch(`/api/log?token=${ctx.token}&session_id=${encodeURIComponent(sessionId)}`, NO_CACHE);
+            const response = await ctx.apiFetch(`/api/log?session_id=${encodeURIComponent(sessionId)}`, NO_CACHE);
             const data = await response.json();
 
             const shortId = sessionId.substring(0, 8) + '...';

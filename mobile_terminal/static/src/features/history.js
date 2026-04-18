@@ -47,7 +47,7 @@ function showToast(msg, type, duration) {
  */
 async function clearSnapshots() {
     try {
-        await fetch(`/api/rollback/preview/clear?token=${ctx.token}`, { method: 'POST' });
+        await ctx.apiFetch(`/api/rollback/preview/clear`, { method: 'POST' });
     } catch (e) {
         console.error('Failed to clear snapshots:', e);
     }
@@ -63,7 +63,7 @@ export async function loadHistory() {
     list.innerHTML = '<div class="history-empty">Loading...</div>';
 
     try {
-        const resp = await fetch(`/api/history?token=${ctx.token}&limit=40`);
+        const resp = await ctx.apiFetch(`/api/history?limit=40`);
         if (!resp.ok) throw new Error('Failed to load history');
 
         const data = await resp.json();
@@ -77,7 +77,7 @@ export async function loadHistory() {
                 await clearSnapshots();
                 showToast('Snapshots cleared (new commit)', 'info', 2000);
                 // Reload to get updated list
-                const resp2 = await fetch(`/api/history?token=${ctx.token}&limit=40`);
+                const resp2 = await ctx.apiFetch(`/api/history?limit=40`);
                 const data2 = await resp2.json();
                 historyItems = data2.items || [];
             }
@@ -179,7 +179,7 @@ function renderHistoryList() {
             const existing = historyItems.find(i => i.id === snapId)?.note || '';
             const note = prompt('Add note (max 500 chars):', existing);
             if (note !== null) {
-                fetch(`/api/rollback/preview/${snapId}/annotate?token=${ctx.token}`, {
+                ctx.apiFetch(`/api/rollback/preview/${snapId}/annotate`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ note: note.substring(0, 500) }),
@@ -227,7 +227,7 @@ function showHistoryCommitDetail(hash) {
         revertBtn.title = 'Run dry-run first';
     }
 
-    fetch(`/api/rollback/git/commit/${hash}?token=${ctx.token}`)
+    ctx.apiFetch(`/api/rollback/git/commit/${hash}`)
         .then(resp => {
             if (!resp.ok) throw new Error('Failed to load commit');
             return resp.json();
@@ -282,7 +282,7 @@ async function historyDryRunRevert() {
     }
 
     try {
-        const resp = await fetch(`/api/rollback/git/revert/dry-run?commit_hash=${selectedHistoryCommit}&token=${ctx.token}`, {
+        const resp = await ctx.apiFetch(`/api/rollback/git/revert/dry-run?commit_hash=${selectedHistoryCommit}`, {
             method: 'POST'
         });
         if (!resp.ok) {
@@ -338,7 +338,7 @@ async function historyExecuteRevert() {
     }
 
     try {
-        const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedHistoryCommit}&token=${ctx.token}&${getTargetParams()}`, {
+        const resp = await ctx.apiFetch(`/api/rollback/git/revert/execute?commit_hash=${selectedHistoryCommit}&${getTargetParams()}`, {
             method: 'POST'
         });
         if (!resp.ok) {
@@ -374,7 +374,7 @@ async function historyExecuteRevert() {
  */
 export async function loadGitStatus() {
     try {
-        const resp = await fetch(`/api/rollback/git/status?token=${ctx.token}`);
+        const resp = await ctx.apiFetch(`/api/rollback/git/status`);
         gitStatus = await resp.json();
 
         // Update DOM if elements exist
@@ -498,7 +498,7 @@ async function handleStashChoice() {
     showToast('Stashing changes...', 'info');
 
     try {
-        const resp = await fetch(`/api/git/stash/push?token=${ctx.token}`, { method: 'POST' });
+        const resp = await ctx.apiFetch(`/api/git/stash/push`, { method: 'POST' });
         const data = await resp.json();
 
         if (!resp.ok || data.error) {
@@ -577,8 +577,8 @@ async function handleDiscardConfirm() {
     showToast('Discarding changes...', 'info');
 
     try {
-        const resp = await fetch(
-            `/api/git/discard?include_untracked=${includeUntracked}&token=${ctx.token}&${getTargetParams()}`,
+        const resp = await ctx.apiFetch(
+            `/api/git/discard?include_untracked=${includeUntracked}&${getTargetParams()}`,
             { method: 'POST' }
         );
         const data = await resp.json();
@@ -622,7 +622,7 @@ async function historyExecuteRevertWithStash() {
     }
 
     try {
-        const resp = await fetch(`/api/rollback/git/revert/execute?commit_hash=${selectedHistoryCommit}&token=${ctx.token}&${getTargetParams()}`, {
+        const resp = await ctx.apiFetch(`/api/rollback/git/revert/execute?commit_hash=${selectedHistoryCommit}&${getTargetParams()}`, {
             method: 'POST'
         });
         if (!resp.ok) {
@@ -676,7 +676,7 @@ async function applyStash() {
     showToast('Applying stash...', 'info');
 
     try {
-        const resp = await fetch(`/api/git/stash/apply?ref=${encodeURIComponent(ref)}&token=${ctx.token}`, {
+        const resp = await ctx.apiFetch(`/api/git/stash/apply?ref=${encodeURIComponent(ref)}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -708,7 +708,7 @@ async function dropStash() {
     const ref = lastStashRef || 'stash@{0}';
 
     try {
-        const resp = await fetch(`/api/git/stash/drop?ref=${encodeURIComponent(ref)}&token=${ctx.token}`, {
+        const resp = await ctx.apiFetch(`/api/git/stash/drop?ref=${encodeURIComponent(ref)}`, {
             method: 'POST'
         });
         const data = await resp.json();

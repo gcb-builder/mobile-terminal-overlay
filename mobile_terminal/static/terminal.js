@@ -366,7 +366,7 @@ async function fetchTerminalSnapshot() {
     try {
         const params = new URLSearchParams({ token: ctx.token });
         if (ctx.activeTarget) params.set('target', ctx.activeTarget);
-        const resp = await fetch(`/api/terminal/snapshot?${params}`);
+        const resp = await apiFetch(`/api/terminal/snapshot?${params}`);
         if (!resp.ok) throw new Error(`Snapshot failed: ${resp.status}`);
         const data = await resp.json();
         return data.content || '';
@@ -777,7 +777,7 @@ function scheduleEarlyBusyCheck(attempt = 0) {
     setTimeout(async () => {
         if (!terminalBusy) return;  // Already cleared by normal poll
         try {
-            const resp = await apiFetch(`/api/terminal/capture?token=${ctx.token}&lines=${ACTIVE_PROMPT_LINES}`);
+            const resp = await apiFetch(`/api/terminal/capture?lines=${ACTIVE_PROMPT_LINES}`);
             if (!resp.ok) return;
             const data = await resp.json();
             if (!data.content) return;
@@ -805,7 +805,7 @@ async function refreshActivePrompt(signal) {
 
     try {
         // Use capture endpoint with small line count (current screen, not scrollback)
-        const response = await apiFetch(`/api/terminal/capture?token=${ctx.token}&lines=${ACTIVE_PROMPT_LINES}`, { signal });
+        const response = await apiFetch(`/api/terminal/capture?lines=${ACTIVE_PROMPT_LINES}`, { signal });
         if (!response.ok) return;
 
         const data = await response.json();
@@ -1067,7 +1067,7 @@ async function syncPromptToInput() {
     if (!logInput) return;
 
     try {
-        const response = await fetch(`/api/terminal/capture?token=${ctx.token}&lines=5`);
+        const response = await apiFetch(`/api/terminal/capture?lines=5`);
         if (!response.ok) return;
 
         const data = await response.json();
@@ -1147,7 +1147,7 @@ function dequeueFromServer(itemId) {
         token: ctx.token,
     });
     if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-    fetch(`/api/queue/remove?${params}`, { method: 'POST' }).catch(() => {});
+    apiFetch(`/api/queue/remove?${params}`, { method: 'POST' }).catch(() => {});
 }
 
 /**
@@ -1704,7 +1704,7 @@ function connectSSE() {
         statusOverlay.classList.remove('hidden');
     }
 
-    const streamUrl = `/api/terminal/stream?token=${ctx.token}`;
+    const streamUrl = `/api/terminal/stream`;
 
     apiFetch(streamUrl).then(response => {
         if (!response.ok) throw new Error(`SSE stream ${response.status}`);
@@ -1906,7 +1906,7 @@ async function connect() {
     // Pre-flight: verify HTTP path to backend works before WS upgrade.
     // If this fails, the proxy/tunnel is down — no point attempting WS.
     try {
-        const preCheck = await fetch('/api/ws-debug');
+        const preCheck = await apiFetch('/api/ws-debug');
         if (preCheck.ok) {
             const dbg = await preCheck.json();
             console.log(`[WS pre-flight] server state:`, dbg);
@@ -1918,7 +1918,7 @@ async function connect() {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}${window.__BASE_PATH || ''}/ws/terminal?token=${ctx.token}&_t=${Date.now()}`;
+    const wsUrl = `${protocol}//${window.location.host}${window.__BASE_PATH || ''}/ws/terminal?_t=${Date.now()}`;
 
     // Only show overlay on first connect — reconnects use grace period
     if (!hasConnectedOnce) {
@@ -2402,7 +2402,7 @@ function setupTerminalFocus() {
  */
 async function loadConfig() {
     try {
-        const response = await fetchWithTimeout(`/config?token=${ctx.token}`, {}, 5000);
+        const response = await fetchWithTimeout(`/config`, {}, 5000);
         if (!response.ok) {
             console.error('Failed to load config');
             return;
@@ -2439,7 +2439,7 @@ async function loadConfig() {
  */
 async function loadCurrentSession() {
     try {
-        const response = await fetchWithTimeout(`/current-session?token=${ctx.token}`, {}, 3000);
+        const response = await fetchWithTimeout(`/current-session`, {}, 3000);
         if (response.ok) {
             const data = await response.json();
             ctx.currentSession = data.session;
@@ -2476,7 +2476,7 @@ async function loadContextBanner() {
     try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 3000);
-        const response = await fetch(`/api/docs/context?token=${ctx.token}`, {
+        const response = await apiFetch(`/api/docs/context`, {
             signal: controller.signal,
         });
         clearTimeout(timeout);
@@ -2602,7 +2602,7 @@ function updateNavLabel() {
  */
 async function killPane(targetId) {
     try {
-        const resp = await apiFetch(`/api/pane/kill?token=${ctx.token}`, {
+        const resp = await apiFetch(`/api/pane/kill`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ target_id: targetId })
@@ -2825,7 +2825,7 @@ function populateRepoDropdown() {
             }
             resumeBtn.textContent = 'Loading...';
             try {
-                const resp = await apiFetch('/api/log/sessions?token=' + ctx.token);
+                const resp = await apiFetch('/api/log/sessions');
                 const data = await resp.json();
                 const sessions = (data.sessions || []).slice(0, 8);
                 if (sessions.length === 0) {
@@ -2901,7 +2901,7 @@ function populateRepoDropdown() {
         restartBtn.disabled = true;
         repoDropdown.classList.add('hidden');
         try {
-            await apiFetch('/api/restart?token=' + ctx.token, { method: 'POST' });
+            await apiFetch('/api/restart', { method: 'POST' });
         } catch (_) {}
     });
     repoDropdown.appendChild(restartBtn);
@@ -2944,7 +2944,7 @@ async function switchRepo(session) {
     reconnectDelay = INITIAL_RECONNECT_DELAY;
 
     try {
-        const response = await fetch(`/switch-repo?session=${encodeURIComponent(session)}&token=${ctx.token}`, {
+        const response = await apiFetch(`/switch-repo?session=${encodeURIComponent(session)}`, {
             method: 'POST',
         });
 
@@ -3091,7 +3091,7 @@ function setupRepoDropdown() {
  */
 async function loadTargets() {
     try {
-        const response = await fetchWithTimeout(`/api/targets?token=${ctx.token}`, {}, 5000);
+        const response = await fetchWithTimeout(`/api/targets`, {}, 5000);
         if (!response.ok) return;
 
         const data = await response.json();
@@ -3254,7 +3254,7 @@ async function selectTarget(targetId, isInitialSync = false) {
     // === BACKGROUND: Sync with server (don't block on this) ===
     try {
         const response = await fetchWithTimeout(
-            `/api/target/select?target_id=${encodeURIComponent(targetId)}&token=${ctx.token}`,
+            `/api/target/select?target_id=${encodeURIComponent(targetId)}`,
             { method: 'POST', signal: targetSelectController.signal },
             8000  // 8s timeout for target select
         );
@@ -3351,7 +3351,7 @@ async function checkAgentHealth() {
     if (document.visibilityState !== 'visible') return;
 
     try {
-        const response = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(ctx.activeTarget)}&token=${ctx.token}`);
+        const response = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(ctx.activeTarget)}`);
         if (!response.ok) return;
 
         const health = await response.json();
@@ -3400,7 +3400,7 @@ async function checkAgentHealthAndShowBanner() {
     if (!ctx.activeTarget) return;
 
     try {
-        const response = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(ctx.activeTarget)}&token=${ctx.token}`);
+        const response = await apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(ctx.activeTarget)}`);
         if (!response.ok) return;
 
         const health = await response.json();
@@ -3452,7 +3452,7 @@ async function respawnAgent() {
 
         const body = repoLabel ? JSON.stringify({ repo_label: repoLabel }) : '{}';
 
-        const response = await fetch(`/api/agent/start?pane_id=${encodeURIComponent(ctx.activeTarget)}&token=${ctx.token}`, {
+        const response = await apiFetch(`/api/agent/start?pane_id=${encodeURIComponent(ctx.activeTarget)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: body,
@@ -3489,7 +3489,7 @@ async function updateTeamState() {
     try {
         const sessParam = ctx.currentSession ? `&session=${encodeURIComponent(ctx.currentSession)}` : '';
         const resp = await fetchWithTimeout(
-            `/api/team/state?token=${ctx.token}${sessParam}`, {}, 5000
+            `/api/team/state${sessParam}`, {}, 5000
         );
         if (!resp.ok) { ctx.teamState = null; return; }
         ctx.teamState = await resp.json();
@@ -3572,7 +3572,7 @@ async function updateAgentPhase() {
 
     try {
         const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
-        const response = await apiFetch(`/api/status/phase?token=${ctx.token}${paneParam}`);
+        const response = await apiFetch(`/api/status/phase${paneParam}`);
         if (!response.ok) return;
 
         const data = await response.json();
@@ -3619,8 +3619,8 @@ async function updateAgentPhase() {
 async function loadRepos() {
     try {
         const [reposResp, wsDirsResp] = await Promise.all([
-            fetch(`/api/repos?token=${ctx.token}`),
-            fetch(`/api/workspace/dirs?token=${ctx.token}`)
+            apiFetch(`/api/repos`),
+            apiFetch(`/api/workspace/dirs`)
         ]);
         if (reposResp.ok) {
             const data = await reposResp.json();
@@ -3739,7 +3739,7 @@ async function createNewWindow() {
     newWindowCreate.textContent = 'Creating...';
 
     try {
-        const response = await fetch(`/api/window/new?token=${ctx.token}`, {
+        const response = await apiFetch(`/api/window/new`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(bodyObj)
@@ -4558,7 +4558,7 @@ function setupComposeMode() {
 
     async function fetchMentionResults(query) {
         try {
-            const resp = await fetch(`/api/files/search?token=${ctx.token}&q=${encodeURIComponent(query)}&limit=10`);
+            const resp = await apiFetch(`/api/files/search?q=${encodeURIComponent(query)}&limit=10`);
             if (!resp.ok) return;
             const data = await resp.json();
             renderMentionDropdown(data.files || []);
@@ -4641,7 +4641,7 @@ function setupChallenge() {
         if (modelsLoaded) return;
 
         try {
-            const response = await fetch(`/api/challenge/models?token=${ctx.token}`);
+            const response = await apiFetch(`/api/challenge/models`);
             if (!response.ok) {
                 throw new Error('Failed to load models');
             }
@@ -4676,7 +4676,7 @@ function setupChallenge() {
         if (!challengePlanSelect) return;
 
         try {
-            const response = await fetch(`/api/plans?token=${ctx.token}`);
+            const response = await apiFetch(`/api/plans`);
             if (!response.ok) throw new Error('Failed to load plans');
             const data = await response.json();
 
@@ -4713,7 +4713,7 @@ function setupChallenge() {
         // Terminal content
         if (challengeIncludeTerminal?.checked) {
             try {
-                const response = await fetch(`/api/terminal/capture?token=${ctx.token}&lines=50`);
+                const response = await apiFetch(`/api/terminal/capture?lines=50`);
                 const data = await response.json();
                 if (data.content) {
                     preview += `## Terminal (last 50 lines)\n${data.content.slice(-2000)}\n\n`;
@@ -4732,7 +4732,7 @@ function setupChallenge() {
         const selectedPlan = challengePlanSelect?.value;
         if (selectedPlan) {
             try {
-                const response = await fetch(`/api/plan?token=${ctx.token}&filename=${encodeURIComponent(selectedPlan)}`);
+                const response = await apiFetch(`/api/plan?filename=${encodeURIComponent(selectedPlan)}`);
                 const data = await response.json();
                 if (data.content) {
                     const planTitle = plansCache.find(p => p.filename === selectedPlan)?.title || selectedPlan;
@@ -4850,7 +4850,7 @@ function setupChallenge() {
                 params.set('plan_filename', selectedPlanFile);
             }
 
-            const response = await fetch(`/api/challenge?${params}`, {
+            const response = await apiFetch(`/api/challenge?${params}`, {
                 method: 'POST',
             });
 
@@ -5182,7 +5182,7 @@ function setupMetricsWidget() {
 
     async function updateMetrics() {
         try {
-            const resp = await fetch(`/api/metrics?token=${ctx.token}`);
+            const resp = await apiFetch(`/api/metrics`);
             if (!resp.ok) return;
             const data = await resp.json();
 
@@ -5899,7 +5899,7 @@ async function updateGitButton(btn) {
     if (!btn) return;
     try {
         const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
-        const resp = await fetch(`/api/rollback/git/status?token=${ctx.token}${paneParam}`);
+        const resp = await apiFetch(`/api/rollback/git/status${paneParam}`);
         const data = await resp.json();
         if (!data.has_repo) return;
 
@@ -5943,7 +5943,7 @@ async function promptGitCommit() {
         if (ctx.currentSession) params.set('session', ctx.currentSession);
         if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
 
-        const resp = await fetch(`/api/git/commit?${params}`, {
+        const resp = await apiFetch(`/api/git/commit?${params}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message: message.trim() }),
@@ -5969,7 +5969,7 @@ async function doGitPush() {
         if (ctx.currentSession) params.set('session', ctx.currentSession);
         if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
 
-        const resp = await fetch(`/api/git/push?${params}`, {
+        const resp = await apiFetch(`/api/git/push?${params}`, {
             method: 'POST',
         });
         const data = await resp.json();
@@ -6164,7 +6164,7 @@ async function loadLogContent() {
     try {
         // Include pane_id to avoid race condition with other tabs
         const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
-        const response = await apiFetch(`/api/log?token=${ctx.token}${paneParam}`);
+        const response = await apiFetch(`/api/log${paneParam}`);
         if (!response.ok) {
             throw new Error('Failed to fetch log');
         }
@@ -7125,7 +7125,7 @@ function setupPromptBannerHandlers() {
             };
             // Fetch current repo path from permissions API
             try {
-                const resp = await fetch(`/api/permissions/rules?token=${ctx.token}`);
+                const resp = await apiFetch(`/api/permissions/rules`);
                 const data = await resp.json();
                 if (data.repo) perm.repo = data.repo;
             } catch (_) {}
@@ -7880,7 +7880,7 @@ async function refreshLogContent(signal) {
     try {
         // Include pane_id to avoid race condition with other tabs
         const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
-        const response = await apiFetch(`/api/log?token=${ctx.token}${paneParam}`, { signal });
+        const response = await apiFetch(`/api/log${paneParam}`, { signal });
         if (!response.ok) return;
 
         const data = await response.json();
@@ -8203,7 +8203,7 @@ async function captureSnapshot(label = 'manual') {
     if (previewMode) return;  // Don't capture while previewing
 
     try {
-        const resp = await fetch(`/api/rollback/preview/capture?label=${label}&token=${ctx.token}`, {
+        const resp = await apiFetch(`/api/rollback/preview/capture?label=${label}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -8221,7 +8221,7 @@ async function captureSnapshot(label = 'manual') {
 async function loadSnapshotList() {
     try {
         console.log('Loading snapshot list...');
-        const resp = await fetch(`/api/rollback/previews?token=${ctx.token}`);
+        const resp = await apiFetch(`/api/rollback/previews`);
         const data = await resp.json();
         console.log('Snapshots response:', data);
         previewSnapshots = data.snapshots || [];
@@ -8237,14 +8237,14 @@ async function loadSnapshotList() {
 async function enterPreviewMode(snapId) {
     try {
         // Fetch full snapshot
-        const resp = await fetch(`/api/rollback/preview/${snapId}?token=${ctx.token}`);
+        const resp = await apiFetch(`/api/rollback/preview/${snapId}`);
         if (!resp.ok) throw new Error('Snapshot not found');
 
         previewSnapshot = await resp.json();
         previewMode = snapId;
 
         // Notify server
-        await fetch(`/api/rollback/preview/select?snap_id=${snapId}&token=${ctx.token}`, {
+        await apiFetch(`/api/rollback/preview/select?snap_id=${snapId}`, {
             method: 'POST'
         });
 
@@ -8274,7 +8274,7 @@ async function exitPreviewMode() {
     previewSnapshot = null;
 
     // Notify server
-    await fetch(`/api/rollback/preview/select?token=${ctx.token}`, { method: 'POST' });
+    await apiFetch(`/api/rollback/preview/select`, { method: 'POST' });
 
     // Hide banner, re-enable inputs
     hidePreviewBanner();
@@ -8405,7 +8405,7 @@ function closePreviewDrawer() {
  */
 async function toggleSnapshotPin(snapId, pinned) {
     try {
-        const resp = await fetch(`/api/rollback/preview/${snapId}/pin?pinned=${pinned}&token=${ctx.token}`, {
+        const resp = await apiFetch(`/api/rollback/preview/${snapId}/pin?pinned=${pinned}`, {
             method: 'POST'
         });
         if (resp.ok) {
@@ -8423,7 +8423,7 @@ async function toggleSnapshotPin(snapId, pinned) {
  */
 async function exportSnapshot(snapId) {
     try {
-        const url = `/api/rollback/preview/${snapId}/export?token=${ctx.token}`;
+        const url = `/api/rollback/preview/${snapId}/export`;
         // Trigger download by opening in new window or using anchor
         const a = document.createElement('a');
         a.href = url;
@@ -8681,7 +8681,7 @@ async function loadProcessStatus() {
     if (!banner || !statusText) return;
 
     try {
-        const resp = await fetch(`/api/process/status?token=${ctx.token}`);
+        const resp = await apiFetch(`/api/process/status`);
         processStatus = await resp.json();
 
         let html = '';
@@ -8748,7 +8748,7 @@ async function loadDescendantProcesses() {
 
     try {
         const resp = await apiFetch(
-            `/api/process/children?token=${ctx.token}&pane_id=${encodeURIComponent(ctx.activeTarget)}`
+            `/api/process/children?pane_id=${encodeURIComponent(ctx.activeTarget)}`
         );
         if (!resp.ok) {
             listDiv.innerHTML = '<div class="descendant-empty">Error loading</div>';
@@ -8849,7 +8849,7 @@ async function loadSidebarProcesses() {
     body.innerHTML = '<div class="descendant-empty">Scanning...</div>';
     try {
         const resp = await apiFetch(
-            `/api/process/children?token=${ctx.token}&pane_id=${encodeURIComponent(ctx.activeTarget)}`
+            `/api/process/children?pane_id=${encodeURIComponent(ctx.activeTarget)}`
         );
         if (!resp.ok) { body.innerHTML = ''; return; }
         const data = await resp.json();
@@ -8915,7 +8915,7 @@ async function terminateProcess(force = false) {
     resultDiv.innerHTML = `<pre>${force ? 'Force killing' : 'Terminating'}...</pre>`;
 
     try {
-        const resp = await fetch(`/api/process/terminate?token=${ctx.token}&force=${force}&${getTargetParams()}`, {
+        const resp = await apiFetch(`/api/process/terminate?force=${force}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -8953,7 +8953,7 @@ async function respawnProcess() {
     resultDiv.innerHTML = '<pre>Respawning...</pre>';
 
     try {
-        const resp = await fetch(`/api/process/respawn?token=${ctx.token}&${getTargetParams()}`, {
+        const resp = await apiFetch(`/api/process/respawn?${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -9013,7 +9013,7 @@ async function loadRunnerCommands() {
     container.innerHTML = '<div class="runner-loading">Loading commands...</div>';
 
     try {
-        const resp = await fetch(`/api/runner/commands?token=${ctx.token}`);
+        const resp = await apiFetch(`/api/runner/commands`);
         const data = await resp.json();
         runnerCommands = data.commands;
         renderRunnerCommands();
@@ -9053,7 +9053,7 @@ function renderRunnerCommands() {
  */
 async function executeRunnerCommand(commandId) {
     try {
-        const resp = await fetch(`/api/runner/execute?command_id=${commandId}&token=${ctx.token}&${getTargetParams()}`, {
+        const resp = await apiFetch(`/api/runner/execute?command_id=${commandId}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -9085,7 +9085,7 @@ async function executeCustomCommand() {
     if (!command) return;
 
     try {
-        const resp = await fetch(`/api/runner/custom?command=${encodeURIComponent(command)}&token=${ctx.token}&${getTargetParams()}`, {
+        const resp = await apiFetch(`/api/runner/custom?command=${encodeURIComponent(command)}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -9142,7 +9142,7 @@ const DEV_STATUS_POLL_INTERVAL = 5000;
  */
 async function loadDevPreviewConfig() {
     try {
-        const resp = await fetch(`/api/preview/config?token=${ctx.token}`);
+        const resp = await apiFetch(`/api/preview/config`);
         const data = await resp.json();
         devPreviewConfig = data.exists ? data : null;
         renderDevServices();
@@ -9296,7 +9296,7 @@ async function refreshDevStatus() {
     if (document.visibilityState !== 'visible') return;
 
     try {
-        const resp = await apiFetch(`/api/preview/status?token=${ctx.token}`);
+        const resp = await apiFetch(`/api/preview/status`);
         const data = await resp.json();
         devPreviewStatus = {};
         data.services?.forEach(s => {
@@ -9332,7 +9332,7 @@ async function startDevService() {
     }
 
     try {
-        const resp = await fetch(`/api/preview/start?service_id=${activeDevService}&token=${ctx.token}&${getTargetParams()}`, {
+        const resp = await apiFetch(`/api/preview/start?service_id=${activeDevService}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -9358,7 +9358,7 @@ async function stopDevService() {
     }
 
     try {
-        const resp = await fetch(`/api/preview/stop?service_id=${activeDevService}&token=${ctx.token}&${getTargetParams()}`, {
+        const resp = await apiFetch(`/api/preview/stop?service_id=${activeDevService}&${getTargetParams()}`, {
             method: 'POST'
         });
         const data = await resp.json();
@@ -9440,7 +9440,7 @@ async function toggleDevLogs() {
 
     try {
         const resp = await apiFetch(
-            `/api/preview/logs?service_id=${activeDevService}&tail=500&token=${ctx.token}`
+            `/api/preview/logs?service_id=${activeDevService}&tail=500`
         );
         const data = await resp.json();
 
@@ -9690,7 +9690,7 @@ async function createPermissionRule(perm, scope) {
         token: ctx.token,
     });
     try {
-        await fetch(`/api/permissions/rules?${params}`, { method: 'POST' });
+        await apiFetch(`/api/permissions/rules?${params}`, { method: 'POST' });
     } catch (e) {
         console.error('Failed to create permission rule:', e);
     }
@@ -9760,7 +9760,7 @@ function urlBase64ToUint8Array(base64String) {
 async function setupPushNotifications() {
     if (!('PushManager' in window) || !('serviceWorker' in navigator)) return;
     try {
-        const resp = await fetch('/api/push/vapid-key?token=' + ctx.token);
+        const resp = await apiFetch('/api/push/vapid-key');
         if (!resp.ok) return;
         const data = await resp.json();
         vapidPublicKey = data.key;
@@ -9789,7 +9789,7 @@ async function togglePushSubscription() {
         const sub = await reg.pushManager.getSubscription();
         if (sub) {
             await sub.unsubscribe();
-            await fetch('/api/push/subscribe?token=' + ctx.token, {
+            await apiFetch('/api/push/subscribe', {
                 method: 'DELETE',
                 body: JSON.stringify(sub.toJSON()),
                 headers: {'Content-Type': 'application/json'}
@@ -9800,7 +9800,7 @@ async function togglePushSubscription() {
                 userVisibleOnly: true,
                 applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
             });
-            await fetch('/api/push/subscribe?token=' + ctx.token, {
+            await apiFetch('/api/push/subscribe', {
                 method: 'POST',
                 body: JSON.stringify(newSub.toJSON()),
                 headers: {'Content-Type': 'application/json'}
@@ -10978,7 +10978,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Delay respawn until connection is established
             setTimeout(() => {
                 respawnAgent();
-                const cleanUrl = window.location.pathname + (ctx.token ? `?token=${ctx.token}` : '');
+                const cleanUrl = window.location.pathname + (ctx.token ? `` : '');
                 window.history.replaceState({}, '', cleanUrl);
             }, 2000);
         } else if (urlParams.get('share')) {
@@ -10993,7 +10993,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         showToast('Shared content loaded', 'success');
                     }
                 } catch (_) {}
-                const cleanUrl = window.location.pathname + (ctx.token ? '?token=' + ctx.token : '');
+                const cleanUrl = window.location.pathname + (ctx.token ? '' : '');
                 window.history.replaceState({}, '', cleanUrl);
             }, 1000);
         } else if (deepAction === 'allow' || deepAction === 'deny') {
@@ -11008,7 +11008,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } else {
                     showToast(`Could not send ${deepAction} — not connected`, 'error');
                 }
-                const cleanUrl = window.location.pathname + (ctx.token ? `?token=${ctx.token}` : '');
+                const cleanUrl = window.location.pathname + (ctx.token ? `` : '');
                 window.history.replaceState({}, '', cleanUrl);
             }, 2000);
         }

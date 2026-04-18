@@ -110,7 +110,7 @@ export async function refreshTeamCards() {
         // Only fetch capture data — team state is already kept fresh by
         // updateTeamState() in the health poll loop (avoids duplicate request)
         const resp = await fetchWithTimeoutCb(
-            `/api/team/capture?lines=8&token=${ctx.token}${sessParam}`, {}, 5000
+            `/api/team/capture?lines=8${sessParam}`, {}, 5000
         );
         if (!resp.ok) return;
         const data = await resp.json();
@@ -366,7 +366,7 @@ export async function populateDispatchPlans() {
     if (!select) return;
 
     try {
-        const resp = await fetch(`/api/plans?token=${ctx.token}`);
+        const resp = await ctx.apiFetch(`/api/plans`);
         if (!resp.ok) throw new Error('Failed to load plans');
         const data = await resp.json();
         dispatchPlansCache = data.plans || [];
@@ -416,7 +416,7 @@ async function dispatchToLeader() {
 
     try {
         const resp = await fetchWithTimeoutCb(
-            `/api/team/dispatch?plan_filename=${encodeURIComponent(plan)}&include_context=true&token=${ctx.token}${sessParam}`,
+            `/api/team/dispatch?plan_filename=${encodeURIComponent(plan)}&include_context=true${sessParam}`,
             { method: 'POST' },
             15000
         );
@@ -635,7 +635,7 @@ export async function sendTeamInput(targetId, text) {
     const sessParam = ctx.currentSession ? `&session=${encodeURIComponent(ctx.currentSession)}` : '';
     try {
         const resp = await fetchWithTimeoutCb(
-            `/api/team/send?target_id=${encodeURIComponent(targetId)}&text=${encodeURIComponent(text)}&token=${ctx.token}${sessParam}`,
+            `/api/team/send?target_id=${encodeURIComponent(targetId)}&text=${encodeURIComponent(text)}${sessParam}`,
             { method: 'POST' },
             5000
         );
@@ -676,7 +676,7 @@ function showRoleSelector(anchorEl, agentName) {
         btn.addEventListener('click', async () => {
             sel.remove();
             try {
-                await fetch(`/api/team/role?token=${ctx.token}`, {
+                await ctx.apiFetch(`/api/team/role`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ agent_name: agentName, role: r.key }),
@@ -921,7 +921,7 @@ async function dismissTeam() {
     stopTeamCardRefresh();
 
     try {
-        const resp = await fetch(`/api/team/kill?token=${ctx.token}`, {
+        const resp = await ctx.apiFetch(`/api/team/kill`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ session: ctx.currentSession || '' }),

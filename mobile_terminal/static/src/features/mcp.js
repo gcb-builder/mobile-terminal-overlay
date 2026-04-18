@@ -29,7 +29,7 @@ async function loadPlugins() {
     if (!list) return;
 
     try {
-        const response = await ctx.apiFetch(`/api/plugins?token=${ctx.token}`);
+        const response = await ctx.apiFetch(`/api/plugins`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
 
@@ -70,7 +70,7 @@ async function loadPlugins() {
 
 async function togglePlugin(name, enabled) {
     try {
-        const response = await ctx.apiFetch(`/api/plugins/toggle?token=${ctx.token}`, {
+        const response = await ctx.apiFetch(`/api/plugins/toggle`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, enabled }),
@@ -119,7 +119,7 @@ async function loadMarketplace() {
     if (!list) return;
 
     try {
-        const response = await ctx.apiFetch(`/api/plugins/marketplace?token=${ctx.token}`);
+        const response = await ctx.apiFetch(`/api/plugins/marketplace`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         marketplaceCache = data.plugins || [];
@@ -217,7 +217,7 @@ async function loadMcpCatalog() {
     if (!list) return;
 
     try {
-        const response = await ctx.apiFetch(`/api/mcp-servers/catalog?token=${ctx.token}`);
+        const response = await ctx.apiFetch(`/api/mcp-servers/catalog`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         mcpCatalogCache = data.servers || [];
@@ -292,7 +292,7 @@ async function addCatalogServer(server, btn) {
     }
 
     try {
-        const response = await ctx.apiFetch(`/api/mcp-servers?token=${ctx.token}`, {
+        const response = await ctx.apiFetch(`/api/mcp-servers`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -338,7 +338,7 @@ async function loadMcpServers() {
     }
 
     try {
-        const response = await ctx.apiFetch(`/api/mcp-servers?token=${ctx.token}`);
+        const response = await ctx.apiFetch(`/api/mcp-servers`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
 
@@ -440,7 +440,7 @@ async function addMcpServer() {
     }
 
     try {
-        const response = await ctx.apiFetch(`/api/mcp-servers?token=${ctx.token}`, {
+        const response = await ctx.apiFetch(`/api/mcp-servers`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, command, args }),
@@ -474,7 +474,7 @@ async function removeMcpServer(name) {
 
     try {
         const response = await ctx.apiFetch(
-            `/api/mcp-servers/${encodeURIComponent(name)}?token=${ctx.token}`,
+            `/api/mcp-servers/${encodeURIComponent(name)}`,
             { method: 'DELETE' }
         );
 
@@ -521,7 +521,7 @@ async function mcpSetDirty() {
     let agentRunning = false;
     if (ctx.activeTarget) {
         try {
-            const resp = await ctx.apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(ctx.activeTarget)}&token=${ctx.token}`);
+            const resp = await ctx.apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(ctx.activeTarget)}`);
             if (resp.ok) {
                 const data = await resp.json();
                 agentRunning = !!data.running;
@@ -534,14 +534,14 @@ async function mcpSetDirty() {
 }
 
 async function stopAgentInPane(paneId, session) {
-    await ctx.apiFetch(`/api/sendkey?key=ctrl-c&session=${encodeURIComponent(session)}&msg_id=mcp-stop-${paneId}&token=${ctx.token}`, {
+    await ctx.apiFetch(`/api/sendkey?key=ctrl-c&session=${encodeURIComponent(session)}&msg_id=mcp-stop-${paneId}`, {
         method: 'POST',
     });
 
     for (let i = 0; i < 20; i++) {
         await new Promise(resolve => setTimeout(resolve, 500));
         try {
-            const resp = await ctx.apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(paneId)}&token=${ctx.token}`);
+            const resp = await ctx.apiFetch(`/api/health/agent?pane_id=${encodeURIComponent(paneId)}`);
             if (resp.ok) {
                 const data = await resp.json();
                 if (!data.running) return true;
@@ -550,7 +550,7 @@ async function stopAgentInPane(paneId, session) {
     }
 
     // Second Ctrl-C attempt
-    await ctx.apiFetch(`/api/sendkey?key=ctrl-c&session=${encodeURIComponent(session)}&msg_id=mcp-stop2-${paneId}&token=${ctx.token}`, {
+    await ctx.apiFetch(`/api/sendkey?key=ctrl-c&session=${encodeURIComponent(session)}&msg_id=mcp-stop2-${paneId}`, {
         method: 'POST',
     });
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -558,7 +558,7 @@ async function stopAgentInPane(paneId, session) {
 }
 
 async function startAgentWithResume(paneId) {
-    return ctx.apiFetch(`/api/agent/start?pane_id=${encodeURIComponent(paneId)}&token=${ctx.token}`, {
+    return ctx.apiFetch(`/api/agent/start?pane_id=${encodeURIComponent(paneId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ startup_command: 'claude --resume' }),
@@ -591,7 +591,7 @@ async function mcpRestartAgents(mode) {
         } else {
             let sessions = [ctx.currentSession];
             try {
-                const sessResp = await ctx.apiFetch(`/api/tmux/sessions?token=${ctx.token}`);
+                const sessResp = await ctx.apiFetch(`/api/tmux/sessions`);
                 if (sessResp.ok) {
                     const sessData = await sessResp.json();
                     sessions = sessData.sessions || [ctx.currentSession];
@@ -600,7 +600,7 @@ async function mcpRestartAgents(mode) {
 
             const stateResults = await Promise.all(
                 sessions.map(sess =>
-                    ctx.apiFetch(`/api/team/state?token=${ctx.token}&session=${encodeURIComponent(sess)}`)
+                    ctx.apiFetch(`/api/team/state?session=${encodeURIComponent(sess)}`)
                         .then(r => r.ok ? r.json() : null)
                         .catch(() => null)
                 )
