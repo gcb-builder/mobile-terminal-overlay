@@ -502,6 +502,9 @@ def create_app(config: Config) -> FastAPI:
             }
 
         app.state.active_target = target_id
+        # Bust the repo-path cache so callers see the new resolution
+        # immediately rather than waiting out the TTL.
+        _invalidate_repo_path_cache()
         app.state.audit_log.log("target_select", {"target": target_id})
 
         # Persist active target for restart recovery
@@ -1015,12 +1018,47 @@ def create_app(config: Config) -> FastAPI:
             logger.error(f"Failed to reload .env: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    # Repo-path resolution is hot: every router reaches for
+    # deps.get_current_repo_path() and that calls into get_repo_path_info()
+    # which can shell out to `tmux display-message` — a 1-3 ms blocking
+    # subprocess. A single async request often resolves the path 3-5 times.
+    # This cache holds the resolved dict for 1 second, keyed by
+    # (session, active_target). Targets get bumped explicitly via
+    # ``_invalidate_repo_path_cache()`` from select_target so a switch
+    # doesn't have to wait out the TTL.
+    _repo_path_cache: dict = {"key": None, "value": None, "ts": 0.0}
+    _REPO_PATH_TTL = 1.0
+
+    def _invalidate_repo_path_cache():
+        _repo_path_cache["key"] = None
+        _repo_path_cache["ts"] = 0.0
+
     def get_repo_path_info() -> dict:
         """
         Get repo path with resolution details.
         Returns: {path, source, target_id, is_fallback, warning}
+
+        Cached for ``_REPO_PATH_TTL`` seconds keyed by (session, target).
+        The cache shaves N-1 of every N tmux subprocess calls in routes
+        that resolve the path multiple times. Mutations that change the
+        right answer (target switch) call ``_invalidate_repo_path_cache``.
         """
         session_name = app.state.current_session
+        cache_key = (session_name, app.state.active_target)
+        now = time.time()
+        if (
+            _repo_path_cache["key"] == cache_key
+            and now - _repo_path_cache["ts"] < _REPO_PATH_TTL
+            and _repo_path_cache["value"] is not None
+        ):
+            return _repo_path_cache["value"]
+
+        def _store(info):
+            _repo_path_cache["key"] = cache_key
+            _repo_path_cache["value"] = info
+            _repo_path_cache["ts"] = now
+            return info
+
         result_info = {
             "path": None,
             "source": None,
@@ -1043,7 +1081,7 @@ def create_app(config: Config) -> FastAPI:
                     if target_path.exists():
                         result_info["path"] = target_path
                         result_info["source"] = "explicit_target"
-                        return result_info
+                        return _store(result_info)
                     else:
                         result_info["warning"] = f"Target path does not exist: {target_path}"
                 else:
@@ -1061,14 +1099,14 @@ def create_app(config: Config) -> FastAPI:
                 result_info["source"] = "configured_repo"
                 if not app.state.active_target:
                     result_info["is_fallback"] = True
-                return result_info
+                return _store(result_info)
 
         # Priority 3: Fall back to project_root if set
         if config.project_root:
             result_info["path"] = config.project_root
             result_info["source"] = "project_root"
             result_info["is_fallback"] = True
-            return result_info
+            return _store(result_info)
 
         # Priority 4: Query tmux for active pane's working directory
         try:
@@ -1082,7 +1120,7 @@ def create_app(config: Config) -> FastAPI:
                     result_info["path"] = pane_path
                     result_info["source"] = "active_pane_cwd"
                     result_info["is_fallback"] = True
-                    return result_info
+                    return _store(result_info)
         except Exception:
             pass
 
@@ -1091,7 +1129,7 @@ def create_app(config: Config) -> FastAPI:
         result_info["source"] = "server_cwd"
         result_info["is_fallback"] = True
         result_info["warning"] = "Using server working directory (no target selected)"
-        return result_info
+        return _store(result_info)
 
     def get_current_repo_path() -> Optional[Path]:
         """Get the path of the current repo based on session name and target."""
@@ -1206,6 +1244,7 @@ def create_app(config: Config) -> FastAPI:
 
         # Clear target selection and log mappings (pane IDs are session-specific)
         app.state.active_target = None
+        _invalidate_repo_path_cache()
         app.state.target_log_mapping.clear()
 
         # Update current session
