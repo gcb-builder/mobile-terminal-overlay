@@ -1309,3 +1309,38 @@ Unified single button showing "repo • pane" format with sectioned dropdown:
 - Docs no-store costs slightly more server load on tab switching (one disk read per tab entry). Plan dir + 200-char preview is cheap; not a concern.
 - File tree fetch is the heaviest of the docs no-cache fetches. If repo trees become huge, switch just that one back to caching with a manual Refresh button.
 - Server restart NOT required for any of this — all client-side changes. Hard browser refresh for `v=330` bundle + `v=239` styles.
+
+
+---
+
+## 2026-04-13 (final): Compose attachment race + path-join cleanup (commit 19074c3)
+
+**Goal:** User report — image upload combined with text in composer still fails to attach the image. Diagnosis revealed two distinct issues: a race when Send fires before the upload POST returns, and a UX confusion about what "image sent" means.
+
+**Diagnostic findings:**
+- Live test produced this terminal output: `Tes test test  /home/gcbbuilder/dev/mobile-terminal-overlay/.claude/uploads/upload-1776504678092.jpg`. The path WAS being sent, with a stray double-space.
+- The user's deeper concern was that the image arrives as a path reference rather than as an inline `[Image #N]` multimodal attachment. That's a separate feature track (would require agent-specific protocol support) and the user explicitly chose to keep MTO agent-agnostic — path-as-text stays.
+- Race: `uploadAttachment` is async; tapping Send before the POST returns reads `pendingAttachments` while still empty, so `withAttachmentPaths` has nothing to append, the text-only message ships, then `closeComposeModal(true)` clears state. Upload returns ~200ms later but the modal is gone — image silently lost.
+
+**Files Changed:**
+- `mobile_terminal/static/terminal.js`:
+  - New module-level `let inflightUploads = []` tracking in-flight upload promises.
+  - `uploadAttachment` (compose modal) and `uploadAndInsertPath` (desktop input/paste) split into outer wrapper that pushes/removes a tracker promise, and an inner `_…Inner` that does the work.
+  - New helper `awaitInflightUploads()` inside setupComposeMode — `Promise.allSettled` on a snapshot, with a brief "Waiting for N upload…" toast so the user knows why there's a small delay.
+  - `sendComposedText` and `queueComposedText` now `async`, await `awaitInflightUploads()` before reading `composeInput.value`.
+  - `sendLogCommand` (desktop command bar) now `async`, awaits `inflightUploads` before reading `logInput.value` — same race when pasting an image then immediately hitting Enter.
+  - `withAttachmentPaths` trims trailing whitespace from user text before joining paths, so `"text  "` + path becomes `"text /path"` not `"text  /path"`. Same logic catches trailing newlines.
+  - Stale comment about "paths normally inserted into textarea on upload" removed (paths haven't been injected since da34018).
+  - Diagnostic toast and `console.debug` block from the prior debugging round removed.
+- `mobile_terminal/static/index.html` — cache-bust v=330 → v=333 (multiple bumps during diagnosis).
+- `mobile_terminal/static/dist/terminal.min.js` + `.map` — rebuilt.
+
+**New Files:** None
+
+**Risks/Follow-ups:**
+- The "Waiting for N upload…" toast is short-lived (1.5s). On slow networks the toast disappears but the await still holds — could be made progress-aware later.
+- `Promise.allSettled` means a failed upload doesn't block the send — user gets whatever uploads succeeded. Right call (don't strand the message because of one bad image).
+- New uploads triggered DURING the wait aren't blocked (we snapshot at await time). Matches user intent: "send what's ready now."
+- `sendLogCommand` going async means callers get a Promise. Existing callers fire-and-forget — same observable behavior as before.
+- "Image as multimodal attachment" (not path-as-text) remains an open feature request. Would require an agent-specific protocol mechanism. Explicitly out of scope per user direction (clean and agnostic).
+- Server restart NOT required — all client-side. Hard browser refresh for `v=333` bundle.

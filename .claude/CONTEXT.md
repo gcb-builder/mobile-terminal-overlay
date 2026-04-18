@@ -3,12 +3,23 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Stop+Esc, queue Previous section, docs no-cache (small UX polish)
+- **Stage:** Compose attachment race + path-join cleanup
 - **Last Updated:** 2026-04-13
-- **Server Version:** v330 (terminal.js), v239 (styles.css), SW v128
+- **Server Version:** v333 (terminal.js), v239 (styles.css), SW v128
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --port 8080 --base-path /terminal --no-auth --host 0.0.0.0 --verbose &`
 
-## Recent: 2026-04-13 (later still) — Stop+Esc, queue Previous, docs no-cache (commit 435a804)
+## Recent: 2026-04-13 (final) — Compose attachment race + path-join cleanup (commit 19074c3)
+
+User report: image upload combined with text in composer fails to attach the image.
+
+- **Race fix**: `inflightUploads` array tracks in-flight upload promises. `sendComposedText`, `queueComposedText`, `sendLogCommand` are now `async` and await `awaitInflightUploads()` (or inline equivalent) before reading the input value. Brief "Waiting for N upload…" toast covers the wait. Fixes the case where a fast Send tap fired before `/api/upload` returned, sending text-only and silently losing the image.
+- **Path-join cleanup**: `withAttachmentPaths` trims trailing whitespace from user text before appending paths, so `"text  "` + path becomes `"text /path"` not `"text  /path"`. Stale comments removed.
+- **Diagnostic noise removed**: console.debug + diagnostic toast from previous round dropped now that the bug is identified.
+- **Open follow-up (out of scope here)**: image-as-multimodal-attachment (vs path-as-text) would require agent-specific protocol work. Explicitly punted per user direction (keep MTO agent-agnostic).
+
+No server restart needed; hard browser refresh for `v=333`.
+
+## Earlier: 2026-04-13 (later still) — Stop+Esc, queue Previous, docs no-cache (commit 435a804)
 
 Three small unrelated UX fixes. See touch-summary for detail.
 
