@@ -1221,6 +1221,27 @@ function sendKeyDebounced(key, force = false) {
 }
 
 /**
+ * Send a Stop / interrupt to the agent.
+ *
+ * Sends Ctrl+C (interrupt) followed by Esc (clear-input) ~100ms later.
+ * The Esc is critical: in Claude Code, Ctrl+C interrupts the agent but
+ * *preserves* the previously-submitted prompt in the input buffer for
+ * editing. If the user then types new text and submits, the new text
+ * gets appended to the preserved text and Claude receives
+ * "<prev message> + <new message>" — the user-visible "my previous
+ * message keeps getting re-sent" symptom. Esc clears the buffer in
+ * Claude Code and is a harmless no-op in bash/zsh; in vim it exits
+ * insert mode (which is what you want after a Stop anyway).
+ *
+ * Use this in preference to ``sendKeyDebounced('\\x03', true)`` for
+ * any user-facing "stop the agent" action.
+ */
+function sendStopInterrupt() {
+    sendKeyDebounced('\x03', true);
+    setTimeout(() => sendKeyDebounced('\x1b', true), 100);
+}
+
+/**
  * Start heartbeat ping/pong for connection health monitoring
  */
 function startHeartbeat() {
@@ -5812,7 +5833,7 @@ function appendStandardActionButtons(bar) {
     btn3.className = 'action-bar-btn action-bar-stop';
     btn3.textContent = 'Stop';
     btn3.addEventListener('click', () => {
-        sendKeyDebounced('\x03', true);
+        sendStopInterrupt();
         showToast('Interrupt sent', 'success');
     });
     bar.appendChild(btn3);
@@ -10225,7 +10246,7 @@ function setupDesktopLayout() {
             }
             else if (action === 'select' && selectCopyBtn) selectCopyBtn.click();
             else if (action === 'stop') {
-                sendKeyDebounced('\x03', true);
+                sendStopInterrupt();
                 showToast('Interrupt sent', 'success');
             }
             else if (action === 'compose' && composeBtn) composeBtn.click();
@@ -10543,7 +10564,7 @@ function setupDesktopShortcuts() {
         if (e.ctrlKey && e.key === 'c') {
             if (logInput && !logInput.value.trim()) {
                 e.preventDefault();
-                sendKeyDebounced('\x03', true);
+                sendStopInterrupt();
             }
             return;
         }
@@ -10795,7 +10816,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initPalette({
         switchToView, openSurface, executeRunnerCommand,
         respawnProcess, showLaunchTeamModal,
-        sendInterrupt: () => sendKeyDebounced('\x03', true),
+        sendInterrupt: () => sendStopInterrupt(),
     });
     initActivity();
     initHistory({ captureSnapshot, enterPreviewMode });

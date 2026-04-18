@@ -11,6 +11,13 @@ import { escapeHtml, formatTimeAgo, formatFileSize } from '../utils.js';
 // Module-local state
 let searchDebounceTimer = null;
 
+// All docs-tab GETs use this so the browser HTTP cache can't hand back a
+// stale plan list / context file / session log. The module-level caches
+// (plansCache, sessionsCache, fileTreeCache) are already nulled on modal
+// open, but without no-store the second-layer browser cache could still
+// return yesterday's response. Combined: every modal open hits disk.
+const NO_CACHE = { cache: 'no-store' };
+
 // ── Public API ───────────────────────────────────────────────────────
 
 /**
@@ -78,7 +85,7 @@ export function initDocs() {
         docsModalBody.innerHTML = '<div class="docs-loading">Loading files...</div>';
 
         try {
-            const resp = await fetch(`/api/files/tree?token=${ctx.token}`);
+            const resp = await fetch(`/api/files/tree?token=${ctx.token}`, NO_CACHE);
             if (!resp.ok) throw new Error('Failed to load files');
             fileTreeCache = await resp.json();
         } catch (e) {
@@ -216,7 +223,7 @@ export function initDocs() {
     async function openFileInModal(filePath) {
         docsModalBody.innerHTML = '<div class="docs-loading">Loading file...</div>';
         try {
-            const resp = await fetch(`/api/file?path=${encodeURIComponent(filePath)}&token=${ctx.token}`);
+            const resp = await fetch(`/api/file?path=${encodeURIComponent(filePath)}&token=${ctx.token}`, NO_CACHE);
             if (!resp.ok) throw new Error('Failed to load file');
             const data = await resp.json();
 
@@ -243,14 +250,17 @@ export function initDocs() {
         }
     }
 
-    // Plans tab with dropdown selector
+    // Plans tab with dropdown selector.
+    // Always re-fetches on entry (even when the modal stays open) so the
+    // dropdown reflects any plan files written between tab switches.
     async function loadPlansTab() {
         try {
-            if (!plansCache) {
-                const response = await fetch(`/api/plans?token=${ctx.token}`);
-                const data = await response.json();
-                plansCache = data.plans || [];
-            }
+            // Plan files are usually authored by Claude in the background;
+            // you want the dropdown to show whatever's on disk RIGHT NOW.
+            // No conditional cache — every entry hits disk.
+            const response = await fetch(`/api/plans?token=${ctx.token}`, NO_CACHE);
+            const data = await response.json();
+            plansCache = data.plans || [];
 
             if (plansCache.length === 0) {
                 docsModalBody.innerHTML = '<div class="docs-empty">No plan files found in ~/.claude/plans/</div>';
@@ -297,7 +307,7 @@ export function initDocs() {
         lastPlanRawContent = '';
 
         try {
-            const response = await fetch(`/api/plan?token=${ctx.token}&filename=${encodeURIComponent(filename)}&preview=false`);
+            const response = await fetch(`/api/plan?token=${ctx.token}&filename=${encodeURIComponent(filename)}&preview=false`, NO_CACHE);
             const data = await response.json();
 
             if (data.exists && data.content) {
@@ -342,7 +352,7 @@ export function initDocs() {
     // Context tab
     async function loadContextTab() {
         try {
-            const response = await fetch(`/api/docs/context?token=${ctx.token}`);
+            const response = await fetch(`/api/docs/context?token=${ctx.token}`, NO_CACHE);
             const data = await response.json();
 
             if (data.exists && data.content) {
@@ -363,7 +373,7 @@ export function initDocs() {
     // Touch summary tab
     async function loadTouchTab() {
         try {
-            const response = await fetch(`/api/docs/touch?token=${ctx.token}`);
+            const response = await fetch(`/api/docs/touch?token=${ctx.token}`, NO_CACHE);
             const data = await response.json();
 
             if (data.exists && data.content) {
@@ -389,7 +399,7 @@ export function initDocs() {
         }
 
         try {
-            const response = await fetch(`/api/log/sessions?token=${ctx.token}`);
+            const response = await fetch(`/api/log/sessions?token=${ctx.token}`, NO_CACHE);
             const data = await response.json();
             sessionsCache = data.sessions || [];
 
@@ -492,7 +502,7 @@ export function initDocs() {
         docsModalBody.innerHTML = '<div class="docs-loading">Loading session...</div>';
 
         try {
-            const response = await fetch(`/api/log?token=${ctx.token}&session_id=${encodeURIComponent(sessionId)}`);
+            const response = await fetch(`/api/log?token=${ctx.token}&session_id=${encodeURIComponent(sessionId)}`, NO_CACHE);
             const data = await response.json();
 
             const shortId = sessionId.substring(0, 8) + '...';

@@ -2842,6 +2842,65 @@ html, body {
     background: var(--error);
 }
 
+/* "Previous" section — collapsible group of recently-sent items, kept
+ * for re-queue history but visually separated from the active queue.
+ */
+.queue-section-previous {
+    margin-top: 12px;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+}
+.queue-section-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 4px;
+    cursor: pointer;
+    user-select: none;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+.queue-section-toggle {
+    font-size: 10px;
+    width: 12px;
+    text-align: center;
+}
+.queue-section-title {
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.queue-section-count {
+    background: var(--bg-secondary, #2a2a2a);
+    color: var(--text-secondary);
+    border-radius: 10px;
+    padding: 1px 8px;
+    font-size: 11px;
+}
+.queue-section-clear {
+    margin-left: auto;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+}
+.queue-section-clear:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+.queue-section-body {
+    margin-top: 4px;
+}
+.queue-active-empty {
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 8px 4px;
+    font-size: 12px;
+}
+
 @keyframes queue-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }

@@ -14,6 +14,11 @@ let queueItems = [];
 let queuePaused = false;
 let queueAutoSend = sessionStorage.getItem('mto_queue_autosend') === 'true'; // default: off (manual)
 
+// Whether the "Previous" (sent items) section is expanded. Persists across
+// drawer opens within a tab session — collapsed by default so the active
+// queue is what catches the eye.
+let previousExpanded = sessionStorage.getItem('mto_queue_prev_expanded') === 'true';
+
 // Queue persistence constants
 const QUEUE_STORAGE_PREFIX = 'mto_queue_';
 const QUEUE_SENDING_TIMEOUT_MS = 30000;
@@ -103,65 +108,152 @@ function updateAutoToggle() {
 // ── Core functions ───────────────────────────────────────────────────
 
 /**
+ * Render a single queue-item row. Returns an HTML string built from
+ * escapeHtml-sanitized inputs. Same construction pattern as the original
+ * inline render — extracted so Active and Previous sections can share it.
+ */
+function renderQueueRowHtml(item) {
+    const displayText = item.text.length > 60 ? item.text.slice(0, 60) + '...' : item.text;
+    const escapedText = escapeHtml(displayText);
+    const isQueued = item.status === 'queued';
+    const isSent = item.status === 'sent';
+    const eid = escapeHtml(String(item.id));
+
+    let actions = '';
+    if (isQueued) {
+        actions += '<button class="queue-send-btn" data-id="' + eid + '">Send</button>';
+        actions += '<button class="queue-edit-btn" data-id="' + eid + '">Edit</button>';
+    } else if (isSent) {
+        actions += '<button class="queue-item-requeue" data-id="' + eid + '" title="Re-queue">&#x21BA;</button>';
+    }
+    actions += '<button class="queue-item-remove" data-id="' + eid + '">&times;</button>';
+
+    const dragHandle = isQueued ? '<span class="queue-drag-handle" data-id="' + eid + '">&#x2261;</span>' : '';
+
+    return '<div class="queue-item" data-id="' + eid + '" data-status="' + escapeHtml(item.status) + '">'
+        + dragHandle
+        + '<span class="queue-item-status ' + escapeHtml(item.status) + '"></span>'
+        + '<div class="queue-item-content">'
+        + '<div class="queue-item-text">' + (escapedText || '(Enter)') + '</div>'
+        + '</div>'
+        + '<div class="queue-item-actions">' + actions + '</div>'
+        + '</div>';
+}
+
+/**
+ * Build the "Previous" section (collapsible header + body) using DOM
+ * APIs so we can safely insert event handlers and avoid raw HTML for
+ * the section chrome. The row HTML itself is delegated to
+ * renderQueueRowHtml which uses escapeHtml.
+ */
+function buildPreviousSection(previousItems) {
+    const section = document.createElement('div');
+    section.className = 'queue-section queue-section-previous';
+
+    const header = document.createElement('div');
+    header.className = 'queue-section-header';
+    header.id = 'queuePrevHeader';
+
+    const toggle = document.createElement('span');
+    toggle.className = 'queue-section-toggle';
+    toggle.textContent = previousExpanded ? '\u25BC' : '\u25B6';
+    header.appendChild(toggle);
+
+    const title = document.createElement('span');
+    title.className = 'queue-section-title';
+    title.textContent = 'Previous';
+    header.appendChild(title);
+
+    const count = document.createElement('span');
+    count.className = 'queue-section-count';
+    count.textContent = String(previousItems.length);
+    header.appendChild(count);
+
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'queue-section-clear';
+    clearBtn.id = 'queuePrevClear';
+    clearBtn.title = 'Clear all previous';
+    clearBtn.textContent = 'Clear';
+    header.appendChild(clearBtn);
+
+    section.appendChild(header);
+
+    if (previousExpanded) {
+        const body = document.createElement('div');
+        body.className = 'queue-section-body';
+        // Newest first — last sent at the top.
+        const sorted = previousItems.slice().sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0));
+        const rowsHtml = sorted.map(renderQueueRowHtml).join('');
+        // Single innerHTML assign of escapeHtml-sanitized content (same
+        // pattern as the existing active section render).
+        body.innerHTML = rowsHtml;
+        section.appendChild(body);
+    }
+
+    return section;
+}
+
+/**
  * Render queue items in the drawer.
+ *
+ * Two visual sections:
+ *   1. Active — items with status === 'queued' or 'sending'. The thing
+ *      the user is actively managing.
+ *   2. Previous — items with status === 'sent'. Kept as recent history
+ *      so the user can re-queue if a send landed wrong, but visually
+ *      separated and collapsed by default. Auto-purged after
+ *      SENT_RETAIN_MS regardless. User can also "Clear" all from the
+ *      section header.
+ *
+ * When both sections are empty, shows a single "Queue is empty" hint.
  */
 export function renderQueueList() {
     if (!queueList) return;
 
-    if (queueItems.length === 0) {
+    const active = queueItems.filter(i => i.status === 'queued' || i.status === 'sending');
+    const previous = queueItems.filter(i => i.status === 'sent');
+
+    if (active.length === 0 && previous.length === 0) {
         queueList.innerHTML = '<div class="queue-empty">Queue is empty</div>';
         if (queueCount) queueCount.textContent = '0';
         if (queueSendNext) queueSendNext.classList.remove('primary');
         updateQueueBadge(0);
+        const sidebarQueueCount = document.getElementById('sidebarQueueCount');
+        if (sidebarQueueCount) sidebarQueueCount.classList.add('hidden');
         return;
     }
 
-    const queuedIndices = [];
-    queueItems.forEach((item, i) => { if (item.status === 'queued') queuedIndices.push(i); });
-    const firstQueued = queuedIndices[0];
-    const lastQueued = queuedIndices[queuedIndices.length - 1];
+    // Render active section using the existing innerHTML pattern with
+    // escapeHtml-sanitized rows. If there are no active items, drop in
+    // a small "All caught up" hint so the section isn't visually empty
+    // when only Previous has content.
+    let activeHtml;
+    if (active.length === 0) {
+        activeHtml = '<div class="queue-empty queue-active-empty">All caught up</div>';
+    } else {
+        activeHtml = active.map(renderQueueRowHtml).join('');
+    }
+    queueList.innerHTML = activeHtml;
 
-    // All values are escaped via escapeHtml before interpolation
-    queueList.innerHTML = queueItems.map((item) => {
-        const displayText = item.text.length > 60 ? item.text.slice(0, 60) + '...' : item.text;
-        const escapedText = escapeHtml(displayText);
-        const isQueued = item.status === 'queued';
-        const isSent = item.status === 'sent';
-        const eid = escapeHtml(String(item.id));
-
-        let actions = '';
-        if (isQueued) {
-            actions += '<button class="queue-send-btn" data-id="' + eid + '">Send</button>';
-            actions += '<button class="queue-edit-btn" data-id="' + eid + '">Edit</button>';
-        } else if (isSent) {
-            actions += '<button class="queue-item-requeue" data-id="' + eid + '" title="Re-queue">&#x21BA;</button>';
-        }
-        actions += '<button class="queue-item-remove" data-id="' + eid + '">&times;</button>';
-
-        const dragHandle = isQueued ? '<span class="queue-drag-handle" data-id="' + eid + '">&#x2261;</span>' : '';
-
-        return '<div class="queue-item" data-id="' + eid + '" data-status="' + escapeHtml(item.status) + '">'
-            + dragHandle
-            + '<span class="queue-item-status ' + escapeHtml(item.status) + '"></span>'
-            + '<div class="queue-item-content">'
-            + '<div class="queue-item-text">' + (escapedText || '(Enter)') + '</div>'
-            + '</div>'
-            + '<div class="queue-item-actions">' + actions + '</div>'
-            + '</div>';
-    }).join('');
-
-    const queuedCount = queueItems.filter(i => i.status === 'queued').length;
-    if (queueCount) queueCount.textContent = queueItems.length.toString();
-    if (queueSendNext) queueSendNext.classList.toggle('primary', queuedCount > 0);
-    updateQueueBadge(queuedCount);
-
-    // Update sidebar queue count badge
-    const sidebarQueueCount = document.getElementById('sidebarQueueCount');
-    if (sidebarQueueCount) {
-        sidebarQueueCount.textContent = queuedCount.toString();
-        sidebarQueueCount.classList.toggle('hidden', queuedCount === 0);
+    // Append the Previous section via DOM APIs so the click handlers
+    // are bound to live nodes without re-querying.
+    if (previous.length > 0) {
+        queueList.appendChild(buildPreviousSection(previous));
     }
 
+    // Counts: queueCount shows ALL items (parity with old behavior).
+    if (queueCount) queueCount.textContent = queueItems.length.toString();
+    if (queueSendNext) queueSendNext.classList.toggle('primary', active.length > 0);
+    updateQueueBadge(active.length);
+
+    // Sidebar badge tracks active queue, not previous.
+    const sidebarQueueCount = document.getElementById('sidebarQueueCount');
+    if (sidebarQueueCount) {
+        sidebarQueueCount.textContent = active.length.toString();
+        sidebarQueueCount.classList.toggle('hidden', active.length === 0);
+    }
+
+    // Action handlers — same set across both sections.
     queueList.querySelectorAll('.queue-item-remove').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -190,6 +282,29 @@ export function renderQueueList() {
             requeueSentItem(btn.dataset.id);
         });
     });
+
+    // Previous-section header: click to expand/collapse, persisted.
+    const prevHeader = document.getElementById('queuePrevHeader');
+    if (prevHeader) {
+        prevHeader.addEventListener('click', (e) => {
+            // Don't trigger toggle when the inline Clear button was tapped.
+            if (e.target.closest('#queuePrevClear')) return;
+            previousExpanded = !previousExpanded;
+            sessionStorage.setItem('mto_queue_prev_expanded', String(previousExpanded));
+            renderQueueList();
+        });
+    }
+    const prevClear = document.getElementById('queuePrevClear');
+    if (prevClear) {
+        prevClear.addEventListener('click', (e) => {
+            e.stopPropagation();
+            // Drop all sent items from the local list. Server already
+            // dequeued them on send, so this is purely client-side cleanup.
+            queueItems = queueItems.filter(i => i.status !== 'sent');
+            saveQueueToStorage();
+            renderQueueList();
+        });
+    }
 }
 
 /**
