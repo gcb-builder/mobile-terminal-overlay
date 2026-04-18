@@ -18,6 +18,7 @@ from mobile_terminal.helpers import (
     send_text_to_pane,
 )
 from mobile_terminal.transport import WebSocketSink
+from mobile_terminal import terminal_session as _tsess
 
 logger = logging.getLogger(__name__)
 
@@ -351,118 +352,28 @@ def register(app: FastAPI, deps):
         await sink.send_text("\x1b[2J\x1b[H")
         logger.info(f"[TIMING] WebSocket setup TOTAL took {time.time()-_ws_start:.3f}s")
 
-        # Track PTY death for proper close code
-        pty_died = False
-        # Track connection closed to prevent send-after-close errors
-        connection_closed = False
-
-        # Client output mode: "tail" (default) or "full"
-        # In tail mode: don't forward raw PTY bytes, send periodic tail snapshots
-        # In full mode: forward raw PTY bytes for full terminal rendering
-        client_mode = "tail"
-        # Ring buffer for recent output (for tail extraction and mode switch catchup)
-        recent_buffer = bytearray()
-        RECENT_BUFFER_MAX = 64 * 1024  # 64KB of recent output
-        # Tail state
-        tail_seq = 0
-        TAIL_INTERVAL = 0.2  # Send tail updates every 200ms
-        last_target_epoch = app.state.target_epoch  # Track pane switches
-        # Shared PTY output batch (cleared on mode switch to prevent stale data)
-        pty_batch = bytearray()
-        pty_batch_flush_time = time.time()
-        # Track last pong for ghost connection detection
+        # Per-connection state (PTY death/close flags, ring buffer, tail
+        # seq, etc.) lives in TerminalSessionState — shared with the SSE
+        # handler via mobile_terminal.terminal_session. Output mode now
+        # lives on sink.client_mode; the WS receive loop mutates it on
+        # set_mode messages.
+        state = _tsess.TerminalSessionState(
+            sink=sink,
+            runtime=runtime,
+            output_buffer=output_buffer,
+            last_target_epoch=app.state.target_epoch,
+        )
+        # Track last pong for ghost connection detection — strictly local
+        # to the WS keepalive (SSE doesn't have ping/pong).
         last_pong_time = time.time()
 
-        # Create tasks for bidirectional I/O
-        async def read_from_terminal():
-            """Read from terminal and send to WebSocket with batching.
-
-            CRITICAL: PTY is ALWAYS drained regardless of client_mode.
-            - In 'full' mode: forward raw bytes to WebSocket (coalesced)
-            - In 'tail' mode: skip WebSocket send (tail_sender handles updates)
-
-            Coalescing: accumulate PTY bytes and flush every 25ms or 16KB
-            to reduce WS message frequency and client pressure.
-            """
-            nonlocal pty_died, connection_closed, recent_buffer, pty_batch, pty_batch_flush_time
-            loop = asyncio.get_event_loop()
-            # Coalescing parameters - balance latency vs throughput
-            # Aggressive rate limiting for mobile debugging
-            FLUSH_INTERVAL = 0.200  # 200ms = 5 FPS max
-            FLUSH_MAX_BYTES = 2048   # 2KB max per message (10KB/s total)
-
-            while app.state.active_client is sink and not connection_closed:
-                try:
-                    # select()-guarded read with 1s timeout — prevents
-                    # segfaults from blocking os.read() on closed fds
-                    data = await loop.run_in_executor(
-                        None, lambda: runtime.pty_read(4096)
-                    )
-                    if not data:
-                        # Timeout — no data available, loop again
-                        continue
-
-                    # Update input queue timestamp (for quiet-wait logic)
-                    app.state.input_queue.update_output_ts()
-
-                    # Store in ring buffer for future reconnects
-                    output_buffer.write(data)
-
-                    # Store in recent buffer for tail extraction and mode switch catchup
-                    recent_buffer.extend(data)
-                    if len(recent_buffer) > RECENT_BUFFER_MAX:
-                        # Trim to last RECENT_BUFFER_MAX bytes
-                        recent_buffer = recent_buffer[-RECENT_BUFFER_MAX:]
-
-                    # Only forward to WebSocket in 'full' mode
-                    if client_mode == "full":
-                        # Add to batch (cap size to prevent memory issues)
-                        pty_batch.extend(data)
-                        if len(pty_batch) > FLUSH_MAX_BYTES * 4:
-                            # Drop old data if accumulating too fast
-                            # Keep from a UTF-8 safe boundary
-                            keep_from = len(pty_batch) - FLUSH_MAX_BYTES
-                            # Find start of a valid UTF-8 character
-                            while keep_from < len(pty_batch) and (pty_batch[keep_from] & 0xC0) == 0x80:
-                                keep_from += 1
-                            pty_batch = pty_batch[keep_from:]
-
-                        # ONLY flush on time interval (enforces rate limit for mobile)
-                        # This prevents flooding the client even if PTY is very active
-                        now = time.time()
-                        if (now - pty_batch_flush_time) >= FLUSH_INTERVAL:
-                            if app.state.active_client is sink and pty_batch and not connection_closed:
-                                # Send at most FLUSH_MAX_BYTES per interval
-                                # Use UTF-8 safe boundary to avoid splitting multi-byte chars
-                                cut_pos = find_utf8_boundary(pty_batch, FLUSH_MAX_BYTES)
-                                send_data = bytes(pty_batch[:cut_pos])
-                                pty_batch = pty_batch[cut_pos:]
-                                await sink.send_bytes(send_data)
-                                pty_batch_flush_time = now
-
-                except EOFError as e:
-                    logger.warning(f"PTY EOF: {e}")
-                    pty_died = True
-                    break
-                except Exception as e:
-                    # Ignore send-after-close errors (expected during disconnect)
-                    if connection_closed or "after sending" in str(e) or "websocket.close" in str(e):
-                        break
-                    if app.state.active_client is sink:
-                        logger.error(f"Error reading from terminal: {e}")
-                    break
-
-            # Flush remaining data (only in full mode)
-            if client_mode == "full" and pty_batch and app.state.active_client is sink and not connection_closed:
-                try:
-                    await sink.send_bytes(bytes(pty_batch))
-                except Exception:
-                    pass
+        # read_from_terminal lives in mobile_terminal.terminal_session.
+        # See PR4 for the WS/SSE extraction rationale.
 
         async def write_to_terminal():
             """Read from WebSocket and write to terminal."""
-            nonlocal client_mode, pty_batch, pty_batch_flush_time
-            while app.state.active_client is sink and not connection_closed:
+            nonlocal last_pong_time
+            while app.state.active_client is sink and not state.connection_closed:
                 try:
                     message = await websocket.receive()
 
@@ -498,7 +409,7 @@ def register(app: FastAPI, deps):
                                         app.state.last_ws_input_time = time.time()
                                 elif msg_type == "ping":
                                     # Respond to heartbeat ping with pong
-                                    if not connection_closed:
+                                    if not state.connection_closed:
                                         await sink.send_json({"type": "pong"})
                                 elif msg_type == "pong":
                                     # Client responding to server_ping - connection is alive
@@ -526,17 +437,17 @@ def register(app: FastAPI, deps):
                                     # Client requests output mode change
                                     new_mode = data.get("mode", "tail")
                                     if new_mode in ("tail", "full"):
-                                        old_mode = client_mode
-                                        client_mode = new_mode
-                                        logger.info(f"[MODE] {old_mode} -> {client_mode}")
+                                        old_mode = sink.client_mode
+                                        sink.client_mode = new_mode
+                                        logger.info(f"[MODE] {old_mode} -> {new_mode}")
                                         # When switching to full mode:
                                         # Send capture-pane snapshot as immediate catchup,
                                         # then SIGWINCH for live forwarding.
                                         # The snapshot fixes the race where resize SIGWINCH
                                         # fires while still in tail mode (data lost).
-                                        if new_mode == "full" and not connection_closed:
-                                            pty_batch.clear()
-                                            pty_batch_flush_time = 0
+                                        if new_mode == "full" and not state.connection_closed:
+                                            state.pty_batch.clear()
+                                            state.pty_batch_flush_time = 0
                                             # Send capture-pane snapshot so client has
                                             # current screen content immediately
                                             try:
@@ -550,7 +461,7 @@ def register(app: FastAPI, deps):
                                                         capture_output=True, text=True, timeout=2,
                                                     ).stdout or ""
                                                 )
-                                                if snapshot and not connection_closed:
+                                                if snapshot and not state.connection_closed:
                                                     # Clear screen + send snapshot for clean render
                                                     await sink.send_text("\x1b[2J\x1b[H" + snapshot)
                                                     logger.info(f"[MODE] Sent capture-pane snapshot ({len(snapshot)} bytes)")
@@ -566,14 +477,14 @@ def register(app: FastAPI, deps):
                                             logger.info("[MODE] Full mode activated with snapshot catchup")
                                 elif msg_type == "term_subscribe":
                                     # Legacy: treat as set_mode full
-                                    client_mode = "full"
+                                    sink.client_mode = "full"
                                     logger.info("Client subscribed to terminal view (mode=full)")
-                                    if not connection_closed:
-                                        pty_batch.clear()
-                                        pty_batch_flush_time = time.time()
+                                    if not state.connection_closed:
+                                        state.pty_batch.clear()
+                                        state.pty_batch_flush_time = time.time()
                                 elif msg_type == "term_unsubscribe":
                                     # Legacy: treat as set_mode tail
-                                    client_mode = "tail"
+                                    sink.client_mode = "tail"
                                     logger.info("Client unsubscribed from terminal view (mode=tail)")
                             else:
                                 # JSON but not dict, treat as plain text
@@ -597,18 +508,17 @@ def register(app: FastAPI, deps):
 
         async def server_keepalive():
             """Send periodic pings and detect ghost connections via pong timeout."""
-            nonlocal last_pong_time, connection_closed
             SERVER_PING_INTERVAL = 15  # Send ping every 15s
             PONG_TIMEOUT = 30  # Consider dead if no pong for 30s
-            while app.state.active_client is sink and not connection_closed:
+            while app.state.active_client is sink and not state.connection_closed:
                 try:
                     await asyncio.sleep(SERVER_PING_INTERVAL)
-                    if app.state.active_client is sink and not connection_closed:
+                    if app.state.active_client is sink and not state.connection_closed:
                         # Check if client responded to previous ping
                         pong_age = time.time() - last_pong_time
                         if pong_age > PONG_TIMEOUT:
                             logger.warning(f"Ghost WS detected: no pong for {pong_age:.0f}s — closing")
-                            connection_closed = True
+                            state.connection_closed = True
                             try:
                                 await sink.close(code=4501)
                             except Exception:
@@ -618,176 +528,16 @@ def register(app: FastAPI, deps):
                 except Exception:
                     break
 
-        async def tail_sender():
-            """Send periodic tail updates when in tail mode.
-
-            Extracts last ~50 lines from recent_buffer, strips ANSI,
-            and sends as JSON for lightweight Log view rendering.
-            Also checks for pending permission requests (v2 messages).
-            """
-            nonlocal tail_seq, connection_closed, recent_buffer, last_target_epoch
-            perm_check_counter = 0
-            candidate_check_counter = 0
-            while app.state.active_client is sink and not connection_closed:
-                try:
-                    await asyncio.sleep(TAIL_INTERVAL)
-
-                    # Clear stale output when pane switches
-                    current_epoch = app.state.target_epoch
-                    if current_epoch != last_target_epoch:
-                        recent_buffer = bytearray()
-                        last_target_epoch = current_epoch
-                        tail_seq = 0
-
-                    if client_mode == "tail" and recent_buffer and not connection_closed:
-                        # Extract last portion and decode
-                        try:
-                            text = bytes(recent_buffer[-8192:]).decode('utf-8', errors='replace')
-                            # Strip ANSI and get last 50 lines
-                            plain = strip_ansi(text)
-                            lines = plain.split('\n')[-50:]
-                            # Filter out Claude CLI feedback prompt
-                            lines = [l for l in lines if 'How is Claude doing this session' not in l]
-                            tail_text = '\n'.join(lines)
-                            tail_seq += 1
-                            await sink.send_json({
-                                "type": "tail",
-                                "text": tail_text,
-                                "seq": tail_seq
-                            })
-                        except Exception as e:
-                            if "close" in str(e).lower() or "after sending" in str(e):
-                                connection_closed = True
-                                break
-                            logger.debug(f"Tail extraction error: {e}")
-
-                    # Check for permission requests every ~1s (5 ticks at 200ms)
-                    perm_check_counter += 1
-                    if perm_check_counter >= 5 and not connection_closed:
-                        perm_check_counter = 0
-                        try:
-                            detector = app.state.permission_detector
-                            session = app.state.current_session
-                            target = app.state.active_target
-                            if session and detector.log_file:
-                                tmux_t = get_tmux_target(session, target)
-                                perm = await asyncio.get_event_loop().run_in_executor(
-                                    None, detector.check_sync, session, target, tmux_t
-                                )
-                                if perm:
-                                    from mobile_terminal.permission_policy import normalize_request
-                                    policy = app.state.permission_policy
-                                    req = normalize_request(perm, deps.get_current_repo_path())
-                                    decision = policy.evaluate(req)
-                                    policy.audit(req, decision)
-
-                                    if decision.action == "allow":
-                                        await runtime.send_keys(tmux_t, "y", literal=True)
-                                        await runtime.send_keys(tmux_t, "Enter")
-                                        await deps.send_typed(sink, "permission_auto",
-                                            {"decision": "allow", "tool": req.tool,
-                                             "target": req.target, "reason": decision.reason},
-                                            level="info")
-                                    elif decision.action == "deny":
-                                        await runtime.send_keys(tmux_t, "n", literal=True)
-                                        await runtime.send_keys(tmux_t, "Enter")
-                                        await deps.send_typed(sink, "permission_auto",
-                                            {"decision": "deny", "tool": req.tool,
-                                             "target": req.target, "reason": decision.reason},
-                                            level="warning")
-                                    else:
-                                        perm["repo"] = str(deps.get_current_repo_path() or "")
-                                        perm["risk"] = req.risk
-                                        await deps.send_typed(sink, "permission_request", perm, level="urgent")
-                        except Exception as e:
-                            logger.debug(f"Permission check error: {e}")
-
-                    # Check for backlog candidates every ~2s (10 ticks at 200ms)
-                    candidate_check_counter += 1
-                    if candidate_check_counter >= 10 and not connection_closed:
-                        candidate_check_counter = 0
-                        try:
-                            cdet = app.state.candidate_detector
-                            if cdet.log_file:
-                                session = app.state.current_session or ""
-                                pane_id = app.state.active_target or ""
-                                raw = await asyncio.get_event_loop().run_in_executor(
-                                    None, cdet.check_sync, session, pane_id
-                                )
-                                if raw:
-                                    from uuid import uuid4
-                                    from dataclasses import asdict
-                                    from mobile_terminal.models import BacklogCandidate
-                                    project = str(deps.get_current_repo_path() or "")
-                                    cstore = app.state.candidate_store
-                                    for c in raw:
-                                        candidate = BacklogCandidate(
-                                            id=str(uuid4()), summary=c["summary"],
-                                            prompt=c["prompt"], source_tool=c["source_tool"],
-                                            detected_at=time.time(), session=session,
-                                            pane_id=pane_id, content_hash=c["hash"],
-                                        )
-                                        added = cstore.add(project, candidate)
-                                        if added:
-                                            await deps.send_typed(
-                                                sink, "backlog_candidate",
-                                                {"action": "new", "candidate": asdict(added)},
-                                                level="info",
-                                            )
-                        except Exception as e:
-                            logger.debug(f"Candidate check error: {e}")
-                except Exception:
-                    break
-
-        async def desktop_activity_monitor():
-            """Detect desktop keyboard activity in tmux session (1.5s polling)."""
-            last_hash = 0
-            desktop_active = False
-            desktop_since = 0
-            while app.state.active_client is sink and not connection_closed:
-                await asyncio.sleep(1.5)
-                try:
-                    session = app.state.current_session
-                    target = app.state.active_target
-                    if not session:
-                        continue
-                    tmux_target = get_tmux_target(session, target)
-                    def _capture_desktop():
-                        r = subprocess.run(
-                            ["tmux", "capture-pane", "-t", tmux_target, "-p", "-S", "-5"],
-                            capture_output=True, text=True, timeout=1
-                        )
-                        return r.stdout
-                    stdout = await asyncio.get_event_loop().run_in_executor(
-                        None, _capture_desktop
-                    )
-                    current_hash = hash(stdout)
-                    if current_hash != last_hash:
-                        last_hash = current_hash
-                        time_since_ws = time.time() - app.state.last_ws_input_time
-                        if time_since_ws > 1.5 and not desktop_active:
-                            desktop_active = True
-                            desktop_since = time.time()
-                            await deps.send_typed(sink, "device_state",
-                                             {"desktop_active": True}, level="info")
-                        elif time_since_ws <= 1.5 and desktop_active:
-                            desktop_active = False
-                            await deps.send_typed(sink, "device_state",
-                                             {"desktop_active": False}, level="info")
-                    if desktop_active and (time.time() - desktop_since) > 10:
-                        desktop_active = False
-                        await deps.send_typed(sink, "device_state",
-                                         {"desktop_active": False}, level="info")
-                except Exception:
-                    pass
+        # tail_sender and desktop_activity_monitor live in
+        # mobile_terminal.terminal_session — see PR4.
 
         # Run all tasks concurrently
-        read_task = asyncio.create_task(read_from_terminal())
+        read_task = asyncio.create_task(_tsess.read_from_terminal(state, app))
         app.state.read_task = read_task
         write_task = asyncio.create_task(write_to_terminal())
         keepalive_task = asyncio.create_task(server_keepalive())
-        tail_task = asyncio.create_task(tail_sender())
-        desktop_task = asyncio.create_task(desktop_activity_monitor())
+        tail_task = asyncio.create_task(_tsess.tail_sender(state, app, deps))
+        desktop_task = asyncio.create_task(_tsess.desktop_activity_monitor(state, app, deps))
 
         try:
             await asyncio.gather(read_task, write_task, keepalive_task, tail_task, desktop_task)
@@ -798,7 +548,7 @@ def register(app: FastAPI, deps):
             logger.error(f"WebSocket error: {e}")
         finally:
             # Signal tasks to stop sending before canceling
-            connection_closed = True
+            state.connection_closed = True
             read_task.cancel()
             write_task.cancel()
             keepalive_task.cancel()
@@ -809,7 +559,7 @@ def register(app: FastAPI, deps):
                 app.state.read_task = None
 
             # Close with appropriate code
-            if pty_died:
+            if state.pty_died:
                 logger.warning("Closing WebSocket with code 4500 (PTY died)")
                 try:
                     await sink.close(code=4500, reason="PTY died")

@@ -11011,6 +11011,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=337', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=338', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
