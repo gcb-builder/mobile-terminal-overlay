@@ -481,6 +481,11 @@ let terminalView;
 
 // Attachments state for compose modal
 let pendingAttachments = [];
+// Promises for currently-in-flight uploads from compose AND desktop input.
+// sendComposedText / queueComposedText / sendLogCommand await these before
+// reading pendingAttachments, otherwise a fast-tapping user can hit Send
+// before an upload returns and the file is silently dropped.
+let inflightUploads = [];
 
 // Draft persistence for compose modal
 let composeDraft = sessionStorage.getItem('composeDraft') || '';
@@ -4310,23 +4315,44 @@ function setupComposeMode() {
         return (composePaneSelect && composePaneSelect.value) || ctx.activeTarget;
     }
 
-    // Ensure all pending attachment paths are present in the composed text.
-    // Paths are normally inserted into the textarea on upload, but the user
-    // can accidentally delete or overwrite them while editing — append any
-    // missing ones here so the file is never silently dropped on send.
+    // Append any pendingAttachment paths to the composed text. Paths are
+    // never injected into the textarea — they live in the preview card —
+    // so this is the single point that joins user text + attachment paths
+    // for sending.
+    //
+    // Trims trailing whitespace from the user text before joining so we
+    // never produce "text  /path" (double space) when the user happens
+    // to leave a trailing space, and so trailing newlines don't end up
+    // between the text and the path.
     function withAttachmentPaths(text) {
         if (pendingAttachments.length === 0) return text;
-        const missing = pendingAttachments
+        const paths = pendingAttachments
             .map(a => a.path)
             .filter(p => p && !text.includes(p));
-        if (missing.length === 0) return text;
-        const paths = missing.join(' ');
-        return text ? `${text} ${paths}` : paths;
+        if (paths.length === 0) return text;
+        const joined = paths.join(' ');
+        const trimmed = (text || '').replace(/\s+$/, '');
+        return trimmed ? `${trimmed} ${joined}` : joined;
+    }
+
+    // Wait for any in-flight uploads to finish before sending. Without
+    // this, a too-fast Send tap reads pendingAttachments while it's
+    // still empty (upload POST hasn't returned), and the file is lost.
+    // Brief toast is shown so the user knows why there's a small delay.
+    async function awaitInflightUploads() {
+        if (inflightUploads.length === 0) return;
+        const n = inflightUploads.length;
+        showToast(`Waiting for ${n} upload${n > 1 ? 's' : ''}…`, 'info', 1500);
+        // Snapshot — new uploads triggered during the wait will not block
+        // the current send. Use Promise.allSettled so a failed upload
+        // doesn't prevent sending whatever did succeed.
+        await Promise.allSettled(inflightUploads.slice());
     }
 
     // Send to terminal (text + attachment paths)
     // If a different pane is selected, use the text API with pane_id
-    function sendComposedText(withEnter = false) {
+    async function sendComposedText(withEnter = false) {
+        await awaitInflightUploads();
         let text = withAttachmentPaths(composeInput.value);
         if (!text) return;
 
@@ -4348,7 +4374,8 @@ function setupComposeMode() {
         }
     }
 
-    function queueComposedText() {
+    async function queueComposedText() {
+        await awaitInflightUploads();
         let text = withAttachmentPaths(composeInput.value);
         if (text) {
             enqueueCommand(text).then(success => {
@@ -4964,6 +4991,20 @@ function getDocIcon(filename) {
  * @param {HTMLElement} [triggerBtn] - Optional button to show uploading state on
  */
 async function uploadAttachment(file, triggerBtn) {
+    // Register this upload as in-flight so a too-fast Send / Run / Queue
+    // tap can await it before reading pendingAttachments. Each upload is
+    // tracked as the promise itself, removed from the list on settle.
+    const tracker = _uploadAttachmentInner(file, triggerBtn);
+    inflightUploads.push(tracker);
+    try {
+        return await tracker;
+    } finally {
+        const i = inflightUploads.indexOf(tracker);
+        if (i >= 0) inflightUploads.splice(i, 1);
+    }
+}
+
+async function _uploadAttachmentInner(file, triggerBtn) {
     // Show uploading state on the trigger button if provided
     const originalContent = triggerBtn?.textContent;
     if (triggerBtn) {
@@ -7996,8 +8037,23 @@ function setupLogInput() {
 
 /**
  * Upload a file and insert its server path into an input element.
+ *
+ * Wrapped to register the upload as in-flight so a too-fast send from
+ * the same input (Enter-after-paste before the upload returns) can
+ * await it and not lose the placeholder→path swap.
  */
 async function uploadAndInsertPath(file, inputEl) {
+    const tracker = _uploadAndInsertPathInner(file, inputEl);
+    inflightUploads.push(tracker);
+    try {
+        return await tracker;
+    } finally {
+        const i = inflightUploads.indexOf(tracker);
+        if (i >= 0) inflightUploads.splice(i, 1);
+    }
+}
+
+async function _uploadAndInsertPathInner(file, inputEl) {
     // Guard against empty files — mobile browsers sometimes hand back a
     // 0-byte File when a paste fails to marshal the image data.
     if (!file || file.size === 0) {
@@ -8047,14 +8103,25 @@ async function uploadAndInsertPath(file, inputEl) {
 }
 
 /**
- * Send command from log input to ctx.terminal
- * Atomic send: command + carriage return as single write
+ * Send command from log input to ctx.terminal.
+ * Atomic send: command + carriage return as single write.
+ *
+ * Now async because we have to wait for any pending upload that the
+ * paste handler kicked off — otherwise a fast user pastes an image
+ * and immediately hits Enter, and we'd send the literal placeholder
+ * "[uploading file.png...]" instead of the resolved server path.
  */
-function sendLogCommand() {
+async function sendLogCommand() {
     if (isPreviewMode()) return;  // No input in preview mode
     if (!ctx.socket || ctx.socket.readyState !== WebSocket.OPEN) {
         showToast('Not connected yet', 'error');
         return;
+    }
+
+    if (inflightUploads.length > 0) {
+        const n = inflightUploads.length;
+        showToast(`Waiting for ${n} upload${n > 1 ? 's' : ''}…`, 'info', 1500);
+        await Promise.allSettled(inflightUploads.slice());
     }
 
     const command = logInput ? logInput.value.trim() : '';
