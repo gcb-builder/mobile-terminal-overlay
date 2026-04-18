@@ -3,12 +3,22 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Polish on compose attachments, multiline send, log scroll, candidate filtering
+- **Stage:** Queue cross-pane bleed + scheduling rewrite + candidate detector off
 - **Last Updated:** 2026-04-13
-- **Server Version:** v326 (terminal.js), v214 (styles.css), SW v128
+- **Server Version:** v327 (terminal.js), v214 (styles.css), SW v128
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --port 8080 --base-path /terminal --no-auth --host 0.0.0.0 --verbose &`
 
-## Recent: 2026-04-13 — Bug-fix batch (commit da34018)
+## Recent: 2026-04-13 (later) — Queue + candidate fixes (commit 8e669f8)
+
+Three related issues fixed together. See touch-summary for detail.
+
+- **Queue cross-pane bleed**: WS messages (`queue_update`, `queue_state`, `queue_sent`) now stamp `session` + `pane_id`; client filters by current view. Storage key normalized to match server (`mto_queue_<session>` with no `'default'` fallback).
+- **Queue scheduling rewrite**: removed client-side auto-drain (eliminates double-send race). Server is sole drainer. `CommandQueue` got an `asyncio.Event` wakeup so enqueue/resume trigger immediate drains. `_process_loop` iterates every queue belonging to the current tmux session, not just `active_target`. `_send_item` uses `send_text_to_pane` (bracketed paste) instead of raw PTY writes. `PROMPT_PATTERNS` extended for zsh/fish/node/oh-my-zsh.
+- **Candidate detector off**: `BacklogCandidateDetector.check_sync` is a no-op. Modern Claude Code uses TaskCreate the way it used TodoWrite (observed 413 TaskCreate calls in one SecondBrain session). Class skeleton kept dormant for future smarter signal.
+
+Server restart required for Python changes; hard browser refresh for `v=327` bundle.
+
+## Earlier: 2026-04-13 — Bug-fix batch (commit da34018)
 
 Four user-reported regressions resolved in one batch. See touch-summary for detail.
 

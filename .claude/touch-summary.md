@@ -1228,3 +1228,48 @@ Unified single button showing "repo • pane" format with sectioned dropdown:
 - TaskCreate may not be the right signal long-term. If users want NO automatic detection, the `BacklogCandidateDetector` can be disabled at server boot (currently always-on via `app.state.candidate_detector = BacklogCandidateDetector()` in `server.py:115`).
 - `CandidateStore` cap is in-memory; a server restart wipes it (intended — candidates are ephemeral by design).
 - Server-side changes (`helpers.py`, two routers, `claude.py`, `models.py`) require an MTO server restart to take effect. JS/HTML changes need a hard browser refresh (cache `v=326`).
+
+
+---
+
+## 2026-04-13 (later): Queue cross-pane bleed, scheduling rewrite, candidate detector off (commit 8e669f8)
+
+**Goal:** User-reported "queue items duplicate and misallocate across sessions" + "scheduling barely works" + "backlog still accumulates many items from agent in session". Three related issues, all fixed in one batch.
+
+**Diagnostic findings:**
+- Queue WS broadcasts carried no session/pane context, so items from any pane bled into the currently-viewed queue list and localStorage.
+- Two independent drain paths (client `tryDrainQueue` + server `_process_loop`) raced and could both send the same item — visible as duplicate execution in the terminal.
+- Server processor only drained `app.state.active_target`, so queues for non-active panes piled up indefinitely.
+- Client localStorage key used `default` fallback when no active pane; server used just the session — items written under one key, never reconciled with the other.
+- `PROMPT_PATTERNS` only matched ❯ / $ / # / >>>, so zsh/fish/node/oh-my-zsh sessions never satisfied the ready gate.
+- `BacklogCandidateDetector` was rescoped earlier from TodoWrite to TaskCreate, but a single observed SecondBrain orchestration session invoked TaskCreate **413 times** with **411 unique subjects** — modern Claude Code uses TaskCreate the way it used to use TodoWrite. The Suggestions tray was permanently full of "things Claude is currently doing", not "things to remember later".
+
+**Files Changed:**
+- `mobile_terminal/models.py`:
+  - `CommandQueue._wakeup_event` (lazy `asyncio.Event`, bound inside `_process_loop`). `_wake()` helper. `enqueue()` and `resume()` call `_wake()` so freshly-queued items drain within ms.
+  - `_parse_key` (inverse of `_queue_key`) splits "session:pane" back to (session, pane_id).
+  - `_process_loop` rewritten: awaits `_wakeup_event` with 2s idle-poll fallback; iterates every queue whose session == current tmux session, drains the first safe queued item per queue, gates on `_check_ready` per-pane.
+  - `_send_item` rewritten: uses `helpers.send_text_to_pane` (bracketed paste for multi-line) + explicit `runtime.send_keys(target, "Enter")`, instead of raw PTY writes via `input_queue.send`. Also stamps `app.state.last_ws_input_time` so desktop-activity detector doesn't misclassify queue writes. `queue_sent` WS payload now includes `session` + `pane_id`.
+  - `PROMPT_PATTERNS` extended: `>`, `▶`, `»`, `➜`, `λ`, `\.\.\.` added to the original four.
+- `mobile_terminal/routers/queue.py` — `queue_update` (add+remove) and all `queue_state` broadcasts now include `session` + `pane_id`.
+- `mobile_terminal/drivers/claude.py` — `BacklogCandidateDetector.check_sync` is now a no-op. Still advances `last_log_size` so future re-enablement doesn't backfill. Class skeleton, `_extract_candidates`, `_try_add` retained dormant for future use. Docstring rewritten with v1→v2→v3 history.
+- `mobile_terminal/static/src/features/queue.js`:
+  - `messageTargetsCurrentView(msg)` filters WS messages by `(msg.session, msg.pane_id)` against `(ctx.currentSession, ctx.activeTarget)`. Backward-compatible with unstamped messages.
+  - `getQueueStorageKey` no longer falls back to `default`; matches server keying exactly: `mto_queue_<session>` or `mto_queue_<session>:<pane>`.
+  - `enqueueCommand` POST response merge clarified — server `data.item` is authoritative for status, won't revert sent→queued.
+- `mobile_terminal/static/terminal.js`:
+  - `setTerminalBusy` no longer schedules a 3s drain timer.
+  - `tryDrainQueue` and `sendNextSafe` removed entirely (server is sole auto-drainer). `popNextQueueItemById` import dropped.
+  - Manual "Run" (`sendNextUnsafe`) unchanged.
+- `mobile_terminal/static/index.html` — cache-bust v=326 → v=327.
+- `mobile_terminal/static/dist/terminal.min.js` + `.map` — rebuilt.
+
+**New Files:** None
+
+**Risks/Follow-ups:**
+- "Drain all panes" is a behavior change: a queue you forgot about in pane B will fire when ready conditions are met, even if you're viewing pane A. Pause-per-pane via the Pause button still suppresses.
+- `_send_item` no longer goes through `input_queue.send` — there's a tiny race window if user types raw input concurrently with a queue item firing. In practice the queue only fires when `_check_ready` sees a quiet prompt, so user can't be actively typing.
+- Wider `PROMPT_PATTERNS` could false-positive on output lines ending in `>` (e.g. an HTML snippet). `BUSY_PATTERNS` and the QUIET_MS gate still guard. Watch for it; if it bites, narrow back.
+- `BacklogCandidateDetector` no-op means CandidateStore never receives anything new. The store remains in `server.py:116` for code parity but is functionally dead; can be removed later if no detection signal is added.
+- `reconcileQueue` race with WS messages and `pendingPrompt` stuck-state are NOT addressed in this batch — independent and lower-priority.
+- Server restart required for all Python changes; hard browser refresh for `v=327` bundle.
