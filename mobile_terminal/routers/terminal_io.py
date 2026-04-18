@@ -293,11 +293,21 @@ def register(app: FastAPI, deps):
             await websocket.accept()
             logger.info("WebSocket connection accepted")
 
-            # Close any existing connection (single client mode)
+            # Close any existing connection (single client mode).
+            # Bounded with a 1s timeout: a dead socket (e.g. mobile
+            # network switch where the previous client is unreachable)
+            # would otherwise wait at the TCP layer until the OS timeout
+            # (30-120s), blocking this connection's setup past the
+            # client's 2s hello-timeout and triggering a reconnect storm.
             if app.state.active_client is not None:
                 try:
-                    await app.state.active_client.close(code=4002)
+                    await asyncio.wait_for(
+                        app.state.active_client.close(code=4002),
+                        timeout=1.0,
+                    )
                     logger.info("Closed previous WebSocket connection")
+                except asyncio.TimeoutError:
+                    logger.warning("Previous client close timed out — abandoning (likely dead socket)")
                 except Exception:
                     pass
             if app.state.read_task is not None:

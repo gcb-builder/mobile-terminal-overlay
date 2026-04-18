@@ -114,11 +114,24 @@ def register(app: FastAPI, deps):
     ):
         sink = SSESink()
 
-        # Close any existing connection (single-client mode, cross-transport)
+        # Close any existing connection (single-client mode, cross-transport).
+        # Bounded with a short timeout: if the previous client is on a
+        # dead network (mobile WiFi→cellular switch, etc.) the close
+        # frame would otherwise wait at the TCP layer until the OS
+        # timeout (30-120s), blocking this new connection's setup and
+        # forcing the client into a reconnect-storm. 1s is plenty for a
+        # healthy close; anything longer is a dead socket and we just
+        # abandon it — the OLD handler's gather will tear it down once
+        # its tasks notice active_client changed.
         if app.state.active_client is not None:
             try:
-                await app.state.active_client.close(code=4002)
+                await asyncio.wait_for(
+                    app.state.active_client.close(code=4002),
+                    timeout=1.0,
+                )
                 logger.info("Closed previous client connection (cross-transport)")
+            except asyncio.TimeoutError:
+                logger.warning("Previous client close timed out — abandoning (likely dead socket)")
             except Exception:
                 pass
         if app.state.read_task is not None:
