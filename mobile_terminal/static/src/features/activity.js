@@ -57,8 +57,9 @@ async function fetchAndRender() {
     if (!list) return;
 
     try {
-        const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
-        const resp = await ctx.apiFetch(`/api/activity${paneParam}&limit=150`);
+        const params = new URLSearchParams({ limit: '150' });
+        if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
+        const resp = await ctx.apiFetch(`/api/activity?${params}`);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
 
@@ -249,7 +250,7 @@ async function updatePhaseBanner() {
     if (!banner || !iconEl || !textEl) return;
 
     try {
-        const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
+        const paneParam = ctx.activeTarget ? `?pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
         const resp = await ctx.apiFetch(`/api/health/agent${paneParam}`);
         if (!resp.ok) { banner.classList.add('hidden'); return; }
         const data = await resp.json();

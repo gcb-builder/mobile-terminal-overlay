@@ -3571,7 +3571,7 @@ async function updateAgentPhase() {
     if (!indicator) return;
 
     try {
-        const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
+        const paneParam = ctx.activeTarget ? `?pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
         const response = await apiFetch(`/api/status/phase${paneParam}`);
         if (!response.ok) return;
 
@@ -5898,7 +5898,7 @@ function appendStandardActionButtons(bar) {
 async function updateGitButton(btn) {
     if (!btn) return;
     try {
-        const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
+        const paneParam = ctx.activeTarget ? `?pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
         const resp = await apiFetch(`/api/rollback/git/status${paneParam}`);
         const data = await resp.json();
         if (!data.has_repo) return;
@@ -6163,7 +6163,7 @@ async function loadLogContent() {
 
     try {
         // Include pane_id to avoid race condition with other tabs
-        const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
+        const paneParam = ctx.activeTarget ? `?pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
         const response = await apiFetch(`/api/log${paneParam}`);
         if (!response.ok) {
             throw new Error('Failed to fetch log');
@@ -7879,7 +7879,7 @@ async function refreshLogContent(signal) {
 
     try {
         // Include pane_id to avoid race condition with other tabs
-        const paneParam = ctx.activeTarget ? `&pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
+        const paneParam = ctx.activeTarget ? `?pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
         const response = await apiFetch(`/api/log${paneParam}`, { signal });
         if (!response.ok) return;
 
@@ -11030,6 +11030,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=334', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=335', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
