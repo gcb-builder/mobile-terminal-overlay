@@ -17,7 +17,13 @@ const MAX_CACHED = 500;
  * Initialize tool output lazy-loading.
  * @param {HTMLElement} logContent - the #logContent container
  */
+// Re-entry guard. Repeated initToolOutput() calls are no-ops; otherwise
+// re-binding listeners on every call would stack handlers.
+let _tooloutputInitialized = false;
+
 export function initToolOutput(logContent) {
+    if (_tooloutputInitialized) return;
+    _tooloutputInitialized = true;
     logContentEl = logContent;
 
     // Delegated toggle listener

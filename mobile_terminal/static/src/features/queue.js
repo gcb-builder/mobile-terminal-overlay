@@ -253,58 +253,11 @@ export function renderQueueList() {
         sidebarQueueCount.classList.toggle('hidden', active.length === 0);
     }
 
-    // Action handlers — same set across both sections.
-    queueList.querySelectorAll('.queue-item-remove').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            removeQueueItem(btn.dataset.id);
-        });
-    });
-
-    queueList.querySelectorAll('.queue-send-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            sendQueueItemNow(btn.dataset.id);
-        });
-    });
-    queueList.querySelectorAll('.queue-edit-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            insertNextToInput(btn.dataset.id);
-        });
-    });
-
+    // Action handlers are bound ONCE in initQueue via event delegation
+    // on queueList. No per-render querySelectorAll/addEventListener pass
+    // — that was O(n) DOM work per render and a leak risk if a render
+    // raced with another (handlers stacking on the same element).
     setupQueueDragReorder();
-
-    queueList.querySelectorAll('.queue-item-requeue').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            requeueSentItem(btn.dataset.id);
-        });
-    });
-
-    // Previous-section header: click to expand/collapse, persisted.
-    const prevHeader = document.getElementById('queuePrevHeader');
-    if (prevHeader) {
-        prevHeader.addEventListener('click', (e) => {
-            // Don't trigger toggle when the inline Clear button was tapped.
-            if (e.target.closest('#queuePrevClear')) return;
-            previousExpanded = !previousExpanded;
-            sessionStorage.setItem('mto_queue_prev_expanded', String(previousExpanded));
-            renderQueueList();
-        });
-    }
-    const prevClear = document.getElementById('queuePrevClear');
-    if (prevClear) {
-        prevClear.addEventListener('click', (e) => {
-            e.stopPropagation();
-            // Drop all sent items from the local list. Server already
-            // dequeued them on send, so this is purely client-side cleanup.
-            queueItems = queueItems.filter(i => i.status !== 'sent');
-            saveQueueToStorage();
-            renderQueueList();
-        });
-    }
 }
 
 /**
@@ -903,10 +856,20 @@ function requeueSentItem(itemId) {
 
 // ── Public API ───────────────────────────────────────────────────────
 
+// Re-entry guard. terminal.js wires this up from DOMContentLoaded but
+// it could end up called twice (e.g. after a partial reload). Without a
+// guard, every static button (Pause/Flush/Auto) accumulates duplicate
+// listeners and fires N times per click.
+let _queueInitialized = false;
+
 /**
- * Bind queue event listeners. Called once from DOMContentLoaded.
+ * Bind queue event listeners. Idempotent — repeated calls are no-ops.
+ * Called once from DOMContentLoaded.
  */
 export function initQueue() {
+    if (_queueInitialized) return;
+    _queueInitialized = true;
+
     queueList = document.getElementById('queueList');
     queueCount = document.getElementById('queueCount');
     queueBadge = document.getElementById('queueBadge');
@@ -926,6 +889,56 @@ export function initQueue() {
             queueAutoSend = !queueAutoSend;
             sessionStorage.setItem('mto_queue_autosend', queueAutoSend);
             updateAutoToggle();
+        });
+    }
+
+    // Single delegated click handler on queueList — replaces N
+    // per-render forEach/addEventListener passes that were O(items)
+    // DOM work on every state change. event.target.closest() picks
+    // the right action by class.
+    if (queueList) {
+        queueList.addEventListener('click', (e) => {
+            // Most-specific match first; .closest() walks up to queueList.
+            const removeBtn = e.target.closest('.queue-item-remove');
+            if (removeBtn) {
+                e.stopPropagation();
+                removeQueueItem(removeBtn.dataset.id);
+                return;
+            }
+            const sendBtn = e.target.closest('.queue-send-btn');
+            if (sendBtn) {
+                e.stopPropagation();
+                sendQueueItemNow(sendBtn.dataset.id);
+                return;
+            }
+            const editBtn = e.target.closest('.queue-edit-btn');
+            if (editBtn) {
+                e.stopPropagation();
+                insertNextToInput(editBtn.dataset.id);
+                return;
+            }
+            const requeueBtn = e.target.closest('.queue-item-requeue');
+            if (requeueBtn) {
+                e.stopPropagation();
+                requeueSentItem(requeueBtn.dataset.id);
+                return;
+            }
+            // Previous-section "Clear all" button. Stop propagation so
+            // the header toggle below doesn't also fire.
+            if (e.target.closest('#queuePrevClear')) {
+                e.stopPropagation();
+                queueItems = queueItems.filter(i => i.status !== 'sent');
+                saveQueueToStorage();
+                renderQueueList();
+                return;
+            }
+            // Previous-section header: toggle expand/collapse.
+            if (e.target.closest('#queuePrevHeader')) {
+                previousExpanded = !previousExpanded;
+                sessionStorage.setItem('mto_queue_prev_expanded', String(previousExpanded));
+                renderQueueList();
+                return;
+            }
         });
     }
 

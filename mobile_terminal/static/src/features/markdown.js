@@ -187,7 +187,13 @@ function setupPlanPreviewHandler() {
  * Bind markdown/plan event listeners. Called once from DOMContentLoaded.
  * @param {HTMLElement} logContent - the #logContent element
  */
+// Re-entry guard. Repeated initMarkdown() calls are no-ops; otherwise
+// re-binding listeners on every call would stack handlers.
+let _markdownInitialized = false;
+
 export function initMarkdown(logContent) {
+    if (_markdownInitialized) return;
+    _markdownInitialized = true;
     logContentEl = logContent;
     setupPlanPreviewHandler();
 }

@@ -24,7 +24,13 @@ const NO_CACHE = { cache: 'no-store' };
  * Setup docs button and modal handlers.
  * Called once from DOMContentLoaded.
  */
+// Re-entry guard. Repeated initDocs() calls are no-ops; otherwise
+// re-binding listeners on every call would stack handlers.
+let _docsInitialized = false;
+
 export function initDocs() {
+    if (_docsInitialized) return;
+    _docsInitialized = true;
     const docsBtn = document.getElementById('docsBtn');
     const docsModal = document.getElementById('docsModal');
     const docsModalClose = document.getElementById('docsModalClose');

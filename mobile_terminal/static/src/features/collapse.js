@@ -248,7 +248,13 @@ function setupSuperCollapseHandler() {
  * Bind collapse event listeners. Called once from DOMContentLoaded.
  * @param {HTMLElement} logContent - the #logContent element
  */
+// Re-entry guard. Repeated initCollapse() calls are no-ops; otherwise
+// re-binding listeners on every call would stack handlers.
+let _collapseInitialized = false;
+
 export function initCollapse(logContent) {
+    if (_collapseInitialized) return;
+    _collapseInitialized = true;
     logContentEl = logContent;
     setupCollapseHandler();
     setupSuperCollapseHandler();

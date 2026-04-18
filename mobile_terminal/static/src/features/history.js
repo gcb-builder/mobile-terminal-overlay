@@ -171,29 +171,9 @@ function renderHistoryList() {
         }
     }).join('') + '</div>';
 
-    // Attach note button handlers
-    list.querySelectorAll('[data-action="note"]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const snapId = btn.dataset.id;
-            const existing = historyItems.find(i => i.id === snapId)?.note || '';
-            const note = prompt('Add note (max 500 chars):', existing);
-            if (note !== null) {
-                ctx.apiFetch(`/api/rollback/preview/${snapId}/annotate`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ note: note.substring(0, 500) }),
-                }).then(r => {
-                    if (r.ok) {
-                        const item = historyItems.find(i => i.id === snapId);
-                        if (item) item.note = note.substring(0, 500);
-                        renderHistoryList();
-                        showToast('Note saved', 'success');
-                    }
-                }).catch(() => showToast('Failed to save note', 'error'));
-            }
-        });
-    });
+    // Note button handler is delegated from the historyList click
+    // listener bound once in initHistory — see [data-action="note"]
+    // branch there.
 }
 
 /**
@@ -783,8 +763,35 @@ function setupHistoryTabHandlers() {
         });
     });
 
-    // History list click handler (commits and snapshots)
+    // History list click handler (commits, snapshots, note buttons,
+    // action buttons). Single delegated listener — no per-render bind
+    // passes anywhere downstream.
     document.getElementById('historyList')?.addEventListener('click', async (e) => {
+        // Note buttons (snapshot annotation). Bound here via delegation
+        // instead of in renderHistoryList — keeps re-render cheap.
+        const noteBtn = e.target.closest('[data-action="note"]');
+        if (noteBtn) {
+            e.stopPropagation();
+            const snapId = noteBtn.dataset.id;
+            const existing = historyItems.find(i => i.id === snapId)?.note || '';
+            const note = prompt('Add note (max 500 chars):', existing);
+            if (note !== null) {
+                ctx.apiFetch(`/api/rollback/preview/${snapId}/annotate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ note: note.substring(0, 500) }),
+                }).then(r => {
+                    if (r.ok) {
+                        const item = historyItems.find(i => i.id === snapId);
+                        if (item) item.note = note.substring(0, 500);
+                        renderHistoryList();
+                        showToast('Note saved', 'success');
+                    }
+                }).catch(() => showToast('Failed to save note', 'error'));
+            }
+            return;
+        }
+
         // Handle action buttons
         const actionBtn = e.target.closest('.history-action-btn');
         if (actionBtn) {
@@ -823,7 +830,13 @@ function setupHistoryTabHandlers() {
  * @param {Function} opts.captureSnapshot - captureSnapshot(label) from terminal.js
  * @param {Function} opts.enterPreviewMode - enterPreviewMode(id) from terminal.js
  */
+// Re-entry guard. setupHistoryTabHandlers binds delegated listeners on
+// historyList and modal elements; calling it twice would stack handlers.
+let _historyInitialized = false;
+
 export function initHistory(opts = {}) {
+    if (_historyInitialized) return;
+    _historyInitialized = true;
     captureSnapshotCb = opts.captureSnapshot || null;
     enterPreviewModeCb = opts.enterPreviewMode || null;
     setupHistoryTabHandlers();

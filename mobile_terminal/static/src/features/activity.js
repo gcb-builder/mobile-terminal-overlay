@@ -27,7 +27,13 @@ const CATEGORY_ICONS = {
 
 // ── Public API ────────────────────────────────────────────────────────
 
+// Re-entry guard. Repeated initActivity() calls are no-ops; otherwise
+// re-binding listeners on every call would stack handlers.
+let _activityInitialized = false;
+
 export function initActivity() {
+    if (_activityInitialized) return;
+    _activityInitialized = true;
     document.querySelectorAll('.activity-filter-pill').forEach(pill => {
         pill.addEventListener('click', () => {
             document.querySelectorAll('.activity-filter-pill').forEach(p => p.classList.remove('active'));

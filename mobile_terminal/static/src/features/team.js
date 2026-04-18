@@ -975,7 +975,13 @@ export function activateTeamView() {
  * @param {Function} opts.fetchWithTimeout - fetchWithTimeout(url, opts, ms) from terminal.js
  * @param {Function} opts.updateActionBar - updateActionBar() from terminal.js
  */
+// Re-entry guard. Repeated initTeam() calls are no-ops; otherwise
+// re-binding listeners on every call would stack handlers.
+let _teamInitialized = false;
+
 export function initTeam(opts = {}) {
+    if (_teamInitialized) return;
+    _teamInitialized = true;
     selectTargetCb = opts.selectTarget || null;
     switchToViewCb = opts.switchToView || null;
     fetchWithTimeoutCb = opts.fetchWithTimeout || null;

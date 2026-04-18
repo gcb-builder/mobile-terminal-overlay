@@ -657,7 +657,13 @@ async function mcpRestartAgents(mode) {
  * @param {Object} opts
  * @param {Function} opts.onAgentRestarted - callback when agent restart completes
  */
+// Re-entry guard. Repeated initMcp() calls are no-ops; otherwise
+// re-binding listeners on every call would stack handlers.
+let _mcpInitialized = false;
+
 export function initMcp(opts = {}) {
+    if (_mcpInitialized) return;
+    _mcpInitialized = true;
     onAgentRestarted = opts.onAgentRestarted || null;
 
     // MCP Servers tab

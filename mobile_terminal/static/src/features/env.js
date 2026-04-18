@@ -199,7 +199,13 @@ async function envReload() {
 /**
  * Bind ENV event listeners. Called once from DOMContentLoaded.
  */
+// Re-entry guard. Repeated initEnv() calls are no-ops; otherwise
+// re-binding listeners on every call would stack handlers.
+let _envInitialized = false;
+
 export function initEnv() {
+    if (_envInitialized) return;
+    _envInitialized = true;
     document.getElementById('envScopeSelect')?.addEventListener('change', (e) => {
         envCurrentScope = e.target.value;
         loadEnvVars();

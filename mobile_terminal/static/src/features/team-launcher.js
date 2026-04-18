@@ -14,7 +14,13 @@ let rosterAgents = [];
 
 // ── Public API ─────────────────────────────────────────────────────
 
+// Re-entry guard. Repeated initTeamLauncher() calls are no-ops; otherwise
+// re-binding listeners on every call would stack handlers.
+let _teamlauncherInitialized = false;
+
 export function initTeamLauncher() {
+    if (_teamlauncherInitialized) return;
+    _teamlauncherInitialized = true;
     const closeBtn = document.getElementById('launchTeamClose');
     const nextBtn = document.getElementById('launchTeamNext');
     const backBtn = document.getElementById('launchTeamBack');

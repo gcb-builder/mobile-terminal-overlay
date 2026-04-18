@@ -149,24 +149,9 @@ export function renderBacklogList() {
 
     backlogList.innerHTML = html;
 
-    // Bind candidate events
-    backlogList.querySelectorAll('.backlog-keep-btn').forEach(btn => {
-        btn.addEventListener('click', e => { e.stopPropagation(); keepCandidate(btn.dataset.id); });
-    });
-    backlogList.querySelectorAll('.backlog-dismiss-btn').forEach(btn => {
-        btn.addEventListener('click', e => { e.stopPropagation(); dismissCandidate(btn.dataset.id); });
-    });
-
-    // Bind backlog item events
-    backlogList.querySelectorAll('.backlog-send-btn').forEach(btn => {
-        btn.addEventListener('click', e => { e.stopPropagation(); sendBacklogItem(btn.dataset.id); });
-    });
-    backlogList.querySelectorAll('.backlog-queue-btn').forEach(btn => {
-        btn.addEventListener('click', e => { e.stopPropagation(); queueBacklogItem(btn.dataset.id); });
-    });
-    backlogList.querySelectorAll('.backlog-item-remove').forEach(btn => {
-        btn.addEventListener('click', e => { e.stopPropagation(); removeBacklogItem(btn.dataset.id); });
-    });
+    // Per-item handlers are bound ONCE in initBacklog via event
+    // delegation on backlogList. Avoids the O(items)
+    // querySelectorAll/addEventListener pass that ran on every render.
 }
 
 // ── Candidate Actions ─────────────────────────────────────────────────
@@ -393,14 +378,41 @@ export function handleCandidateMessage(payload) {
 
 // ── Init ───────────────────────────────────────────────────────────────
 
-export function initBacklog(project) {
-    backlogList = document.getElementById('backlogList');
-    backlogCount = document.getElementById('backlogCount');
-    backlogTabBadge = document.getElementById('backlogTabBadge');
-    backlogAddBtn = document.getElementById('backlogAddBtn');
+// Re-entry guard. Prevents duplicate listeners on the static buttons +
+// duplicate delegated listener on backlogList if initBacklog gets called
+// twice (project switch path runs reloadBacklogForProject which used to
+// be the one-time wire-up).
+let _backlogInitialized = false;
 
-    if (backlogAddBtn) {
-        backlogAddBtn.addEventListener('click', openAddDialog);
+export function initBacklog(project) {
+    if (!_backlogInitialized) {
+        _backlogInitialized = true;
+        backlogList = document.getElementById('backlogList');
+        backlogCount = document.getElementById('backlogCount');
+        backlogTabBadge = document.getElementById('backlogTabBadge');
+        backlogAddBtn = document.getElementById('backlogAddBtn');
+
+        if (backlogAddBtn) {
+            backlogAddBtn.addEventListener('click', openAddDialog);
+        }
+
+        // Single delegated click handler on backlogList. Replaces five
+        // per-render forEach/addEventListener passes. event.target.closest()
+        // routes to the right action by class.
+        if (backlogList) {
+            backlogList.addEventListener('click', (e) => {
+                const keepBtn = e.target.closest('.backlog-keep-btn');
+                if (keepBtn) { e.stopPropagation(); keepCandidate(keepBtn.dataset.id); return; }
+                const dismissBtn = e.target.closest('.backlog-dismiss-btn');
+                if (dismissBtn) { e.stopPropagation(); dismissCandidate(dismissBtn.dataset.id); return; }
+                const sendBtn = e.target.closest('.backlog-send-btn');
+                if (sendBtn) { e.stopPropagation(); sendBacklogItem(sendBtn.dataset.id); return; }
+                const queueBtn = e.target.closest('.backlog-queue-btn');
+                if (queueBtn) { e.stopPropagation(); queueBacklogItem(queueBtn.dataset.id); return; }
+                const removeBtn = e.target.closest('.backlog-item-remove');
+                if (removeBtn) { e.stopPropagation(); removeBacklogItem(removeBtn.dataset.id); return; }
+            });
+        }
     }
 
     currentProject = project || '';

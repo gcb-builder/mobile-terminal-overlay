@@ -25,7 +25,13 @@ let overlay, input, resultsContainer;
 
 // ── Public API ────────────────────────────────────────────────────────
 
+// Re-entry guard. Repeated initPalette() calls are no-ops; otherwise
+// re-binding listeners on every call would stack handlers.
+let _paletteInitialized = false;
+
 export function initPalette(callbacks) {
+    if (_paletteInitialized) return;
+    _paletteInitialized = true;
     overlay = document.getElementById('paletteOverlay');
     input = document.getElementById('paletteInput');
     resultsContainer = document.getElementById('paletteResults');

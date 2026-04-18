@@ -221,7 +221,13 @@ export async function loadPermissions() {
 
 // ── Init ───────────────────────────────────────────────────────────────
 
+// Re-entry guard. Repeated initPermissions() calls are no-ops; otherwise
+// re-binding listeners on every call would stack handlers.
+let _permissionsInitialized = false;
+
 export function initPermissions() {
+    if (_permissionsInitialized) return;
+    _permissionsInitialized = true;
     permissionsList = document.getElementById('permissionsList');
     permissionsAudit = document.getElementById('permissionsAudit');
     modeToggle = document.getElementById('permissionsModeToggle');
