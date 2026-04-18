@@ -22,7 +22,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=345">
+    <link rel="stylesheet" href="/static/styles.css?v=346">
 </head>
 <body>
     <div class="app">
@@ -39,15 +39,15 @@
                 </span>
             </div>
             <div class="header-right">
-                <button id="sidebarToggle" class="sidebar-toggle" title="Toggle team sidebar (T)">&#x25e8;</button>
-                <button id="paletteBtn" class="palette-btn" title="Command Palette (Ctrl+K)">&#x2318;</button>
-                <button id="docsBtn" class="docs-btn" title="View project docs">Docs</button>
+                <button type="button" id="sidebarToggle" class="sidebar-toggle" title="Toggle team sidebar (T)">&#x25e8;</button>
+                <button type="button" id="paletteBtn" class="palette-btn" title="Command Palette (Ctrl+K)">&#x2318;</button>
+                <button type="button" id="docsBtn" class="docs-btn" title="View project docs">Docs</button>
                 <span id="lastActivity" class="last-activity" title="Last activity">--</span>
-                <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh">
+                <button type="button" id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh">
                     <span>↻</span>
                 </button>
-                <button id="pushToggleBtn" class="push-toggle-btn hidden" title="Push notifications" aria-label="Push notifications">&#x1F514;</button>
-                <button id="repoBtn" class="repo-btn">
+                <button type="button" id="pushToggleBtn" class="push-toggle-btn hidden" title="Push notifications" aria-label="Push notifications">&#x1F514;</button>
+                <button type="button" id="repoBtn" class="repo-btn">
                     <span id="repoLabel">Terminal</span>
                     <span class="repo-arrow">&#x25BC;</span>
                 </button>
@@ -71,15 +71,15 @@
         <!-- Agent crash banner -->
         <div id="agentCrashBanner" class="agent-crash-banner hidden">
             <span class="agent-crash-text"><span id="agentCrashMsg">Agent has stopped. Respawn?</span></span>
-            <button id="agentRespawnBtn" class="agent-respawn-btn">Respawn</button>
-            <button id="agentCrashDismissBtn" class="agent-crash-dismiss-btn" aria-label="Dismiss">&times;</button>
+            <button type="button" id="agentRespawnBtn" class="agent-respawn-btn">Respawn</button>
+            <button type="button" id="agentCrashDismissBtn" class="agent-crash-dismiss-btn" aria-label="Dismiss">&times;</button>
         </div>
 
         <!-- Connection state banner (visible on disconnect/reconnect) -->
         <div id="connectionBanner" class="connection-banner hidden">
             <span id="connectionBannerIcon" class="connection-banner-icon"></span>
             <span id="connectionBannerText" class="connection-banner-text">Connection lost</span>
-            <button id="connectionBannerAction" class="connection-banner-action hidden">Reconnect</button>
+            <button type="button" id="connectionBannerAction" class="connection-banner-action hidden">Reconnect</button>
         </div>
 
         <!-- View switcher moved to collapse-row inside controlBarsContainer -->
@@ -88,7 +88,7 @@
         <div id="previewBanner" class="preview-banner hidden">
             <span class="preview-label">Preview Mode</span>
             <span id="previewTimestamp" class="preview-timestamp"></span>
-            <button id="previewBackToLive" class="preview-back-btn">Back to Live</button>
+            <button type="button" id="previewBackToLive" class="preview-back-btn">Back to Live</button>
         </div>
 
         <!-- Project context banner (from .claude/CONTEXT.md) -->
@@ -96,7 +96,7 @@
             <div id="contextBannerHeader" class="context-banner-header">
                 <span class="context-banner-label">Context</span>
                 <span id="contextBannerPreview" class="context-banner-preview"></span>
-                <button id="contextBannerDismiss" class="context-banner-dismiss" aria-label="Dismiss">&times;</button>
+                <button type="button" id="contextBannerDismiss" class="context-banner-dismiss" aria-label="Dismiss">&times;</button>
             </div>
             <div id="contextBannerBody" class="context-banner-body hidden"></div>
         </div>
@@ -107,16 +107,16 @@
                 <span class="permission-icon">&#x1F512;</span>
                 <span id="permissionTool" class="permission-tool"></span>
                 <span id="permissionTarget" class="permission-target"></span>
-                <button id="permissionMore" class="permission-more-btn">More...</button>
+                <button type="button" id="permissionMore" class="permission-more-btn">More...</button>
             </div>
             <div id="permissionContext" class="permission-context hidden">
                 <pre id="permissionPreview" class="permission-preview"></pre>
             </div>
             <div class="permission-actions">
-                <button id="permissionDeny" class="permission-btn deny">Deny</button>
-                <button id="permissionAllow" class="permission-btn allow">Allow</button>
-                <button id="permissionAlwaysRepo" class="permission-btn always-repo">Always&middot;Repo</button>
-                <button id="permissionAlways" class="permission-btn always">Always</button>
+                <button type="button" id="permissionDeny" class="permission-btn deny">Deny</button>
+                <button type="button" id="permissionAllow" class="permission-btn allow">Allow</button>
+                <button type="button" id="permissionAlwaysRepo" class="permission-btn always-repo">Always&middot;Repo</button>
+                <button type="button" id="permissionAlways" class="permission-btn always">Always</button>
             </div>
         </div>
 
@@ -124,19 +124,19 @@
         <div id="desktopSidebar" class="desktop-sidebar hidden">
             <div class="desktop-sidebar-header">
                 <span class="desktop-sidebar-title">Workspace</span>
-                <button id="sidebarBackBtn" class="sidebar-back-btn hidden" aria-label="Back">&larr;</button>
+                <button type="button" id="sidebarBackBtn" class="sidebar-back-btn hidden" aria-label="Back">&larr;</button>
                 <span id="sidebarToolTitle" class="sidebar-tool-title hidden"></span>
             </div>
             <div id="sidebarDefaultContent" class="sidebar-default-content">
                 <div class="sidebar-section" id="sidebarSessionsSection">
-                    <button class="sidebar-section-toggle" data-section="sessions">
+                    <button type="button" class="sidebar-section-toggle" data-section="sessions">
                         <span class="sidebar-section-arrow">&#x25BC;</span>
                         <span class="sidebar-section-label">Sessions</span>
                     </button>
                     <div class="sidebar-section-body" id="sidebarSessionsBody"></div>
                 </div>
                 <div class="sidebar-section" id="sidebarTeamSection">
-                    <button class="sidebar-section-toggle" data-section="team">
+                    <button type="button" class="sidebar-section-toggle" data-section="team">
                         <span class="sidebar-section-arrow">&#x25BC;</span>
                         <span class="sidebar-section-label">Team</span>
                         <span id="sidebarTeamCount" class="sidebar-section-count hidden">0</span>
@@ -144,7 +144,7 @@
                     <div class="sidebar-section-body" id="sidebarTeamBody"></div>
                 </div>
                 <div class="sidebar-section collapsed" id="sidebarQueueSection">
-                    <button class="sidebar-section-toggle" data-section="queue">
+                    <button type="button" class="sidebar-section-toggle" data-section="queue">
                         <span class="sidebar-section-arrow">&#x25BC;</span>
                         <span class="sidebar-section-label">Queue</span>
                         <span id="sidebarQueueCount" class="sidebar-section-count hidden">0</span>
@@ -152,7 +152,7 @@
                     <div class="sidebar-section-body sidebar-section-flex" id="sidebarQueueBody"></div>
                 </div>
                 <div class="sidebar-section collapsed" id="sidebarBacklogSection">
-                    <button class="sidebar-section-toggle" data-section="backlog">
+                    <button type="button" class="sidebar-section-toggle" data-section="backlog">
                         <span class="sidebar-section-arrow">&#x25BC;</span>
                         <span class="sidebar-section-label">Backlog</span>
                         <span id="sidebarBacklogCount" class="sidebar-section-count hidden">0</span>
@@ -160,14 +160,14 @@
                     <div class="sidebar-section-body sidebar-section-flex" id="sidebarBacklogBody"></div>
                 </div>
                 <div class="sidebar-section collapsed" id="sidebarPermissionsSection">
-                    <button class="sidebar-section-toggle" data-section="permissions">
+                    <button type="button" class="sidebar-section-toggle" data-section="permissions">
                         <span class="sidebar-section-arrow">&#x25BC;</span>
                         <span class="sidebar-section-label">Permissions</span>
                     </button>
                     <div class="sidebar-section-body" id="sidebarPermissionsBody"></div>
                 </div>
                 <div class="sidebar-section collapsed" id="sidebarProcessSection">
-                    <button class="sidebar-section-toggle" data-section="processes">
+                    <button type="button" class="sidebar-section-toggle" data-section="processes">
                         <span class="sidebar-section-arrow">&#x25BC;</span>
                         <span class="sidebar-section-label">Processes</span>
                         <span id="sidebarProcessCount" class="sidebar-section-count hidden">0</span>
@@ -184,47 +184,47 @@
             <div id="toolsPanel" class="tools-panel hidden">
                 <div class="tools-rail">
                     <!-- Tools that open as panels (not in sidebar) -->
-                    <button class="tools-rail-btn" data-tool="history" title="History">
+                    <button type="button" class="tools-rail-btn" data-tool="history" title="History">
                         <span class="rail-icon">&#x21BA;</span>
                     </button>
-                    <button class="tools-rail-btn" data-tool="activity" title="Activity">
+                    <button type="button" class="tools-rail-btn" data-tool="activity" title="Activity">
                         <span class="rail-icon">&#x23F1;</span>
                     </button>
-                    <button class="tools-rail-btn" data-tool="runner" title="Runner">
+                    <button type="button" class="tools-rail-btn" data-tool="runner" title="Runner">
                         <span class="rail-icon">&#x25B7;</span>
                     </button>
-                    <button class="tools-rail-btn" data-tool="dev" title="Dev">
+                    <button type="button" class="tools-rail-btn" data-tool="dev" title="Dev">
                         <span class="rail-icon">&#x29C9;</span>
                     </button>
-                    <button class="tools-rail-btn" data-tool="plugins" title="Plugins">
+                    <button type="button" class="tools-rail-btn" data-tool="plugins" title="Plugins">
                         <span class="rail-icon">&#x1F9E9;</span>
                     </button>
-                    <button class="tools-rail-btn" data-tool="mcp" title="MCP">
+                    <button type="button" class="tools-rail-btn" data-tool="mcp" title="MCP">
                         <span class="rail-icon">&#x2699;</span>
                     </button>
-                    <button class="tools-rail-btn" data-tool="env" title="Env">
+                    <button type="button" class="tools-rail-btn" data-tool="env" title="Env">
                         <span class="rail-icon">&#x1F511;</span>
                     </button>
                     <div class="tools-rail-spacer"></div>
                     <div class="tools-rail-divider"></div>
                     <!-- Actions -->
-                    <button class="tools-rail-btn" data-action="terminal" title="Terminal (3)">
+                    <button type="button" class="tools-rail-btn" data-action="terminal" title="Terminal (3)">
                         <span class="rail-icon">&#x2587;</span>
                     </button>
-                    <button class="tools-rail-btn" data-action="select" title="Select">
+                    <button type="button" class="tools-rail-btn" data-action="select" title="Select">
                         <span class="rail-icon">&#x2B1A;</span>
                     </button>
-                    <button class="tools-rail-btn rail-stop" data-action="stop" title="Stop (Ctrl+C)">
+                    <button type="button" class="tools-rail-btn rail-stop" data-action="stop" title="Stop (Ctrl+C)">
                         <span class="rail-icon">&#x25A0;</span>
                     </button>
-                    <button class="tools-rail-btn" data-action="compose" title="Compose">
+                    <button type="button" class="tools-rail-btn" data-action="compose" title="Compose">
                         <span class="rail-icon">&#x270E;</span>
                     </button>
                 </div>
                 <div class="tools-content" id="toolsContent">
                     <div class="tools-content-header">
                         <span id="toolsContentTitle">Tools</span>
-                        <button id="toolsContentClose" aria-label="Close panel">&times;</button>
+                        <button type="button" id="toolsContentClose" aria-label="Close panel">&times;</button>
                     </div>
                     <div id="toolsContentBody" class="tools-content-body"></div>
                 </div>
@@ -252,18 +252,18 @@
                 <div class="team-view-header">
                     <span class="team-view-title">Team</span>
                     <div id="desktopDensityToggle" class="desktop-density-toggle">
-                        <button class="density-btn" data-density="comfortable" title="Cards" aria-label="Card view">&#x25A6;</button>
-                        <button class="density-btn active" data-density="compact" title="Rows" aria-label="Row view">&#x2630;</button>
-                        <button class="density-btn" data-density="ultra" title="Lines" aria-label="Line view">&#x2500;</button>
+                        <button type="button" class="density-btn" data-density="comfortable" title="Cards" aria-label="Card view">&#x25A6;</button>
+                        <button type="button" class="density-btn active" data-density="compact" title="Rows" aria-label="Row view">&#x2630;</button>
+                        <button type="button" class="density-btn" data-density="ultra" title="Lines" aria-label="Line view">&#x2500;</button>
                     </div>
                     <div id="teamFilterBar" class="team-filter-bar">
                         <input type="text" id="teamSearchInput" class="team-search-input"
                                placeholder="Search agents..." autocomplete="off" aria-label="Search agents">
                         <div class="team-filter-chips">
-                            <button class="team-filter-chip active" data-filter="all">All</button>
-                            <button class="team-filter-chip" data-filter="attention">Attention</button>
-                            <button class="team-filter-chip" data-filter="working">Working</button>
-                            <button class="team-filter-chip" data-filter="idle">Idle</button>
+                            <button type="button" class="team-filter-chip active" data-filter="all">All</button>
+                            <button type="button" class="team-filter-chip" data-filter="attention">Attention</button>
+                            <button type="button" class="team-filter-chip" data-filter="working">Working</button>
+                            <button type="button" class="team-filter-chip" data-filter="idle">Idle</button>
                         </div>
                     </div>
                 </div>
@@ -275,17 +275,17 @@
                 <div class="terminal-panel-header">
                     <span class="terminal-panel-title">Terminal</span>
                     <div class="terminal-panel-controls">
-                        <button id="termSearchBtn" class="terminal-panel-btn" title="Search (Ctrl+F)" aria-label="Search terminal">&#x1F50D;</button>
-                        <button id="terminalCloseBtn" class="terminal-panel-btn" title="Close" aria-label="Close terminal">&times;</button>
+                        <button type="button" id="termSearchBtn" class="terminal-panel-btn" title="Search (Ctrl+F)" aria-label="Search terminal">&#x1F50D;</button>
+                        <button type="button" id="terminalCloseBtn" class="terminal-panel-btn" title="Close" aria-label="Close terminal">&times;</button>
                     </div>
                 </div>
                 <div id="termSearchBar" class="term-search-bar hidden">
                     <input type="text" id="termSearchInput" class="term-search-input"
                            placeholder="Find..." autocomplete="off" spellcheck="false">
                     <span id="termSearchCount" class="term-search-count"></span>
-                    <button id="termSearchPrev" class="term-search-nav" title="Previous" aria-label="Previous match">&#x25B2;</button>
-                    <button id="termSearchNext" class="term-search-nav" title="Next" aria-label="Next match">&#x25BC;</button>
-                    <button id="termSearchClose" class="term-search-close" title="Close" aria-label="Close search">&times;</button>
+                    <button type="button" id="termSearchPrev" class="term-search-nav" title="Previous" aria-label="Previous match">&#x25B2;</button>
+                    <button type="button" id="termSearchNext" class="term-search-nav" title="Next" aria-label="Next match">&#x25BC;</button>
+                    <button type="button" id="termSearchClose" class="term-search-close" title="Close" aria-label="Close search">&times;</button>
                 </div>
                 <div id="terminalAgentSelector" class="terminal-agent-selector hidden">
                     <select id="terminalAgentSelect" class="terminal-agent-select" aria-label="Select agent">
@@ -294,7 +294,7 @@
                 </div>
                 <div id="interactiveBadge" class="interactive-badge hidden">INTERACTIVE</div>
                 <div id="terminal-container" class="terminal-container"></div>
-                <button id="interactiveToggle" class="interactive-toggle" title="Enable raw keyboard input for vim/top/fzf">Interactive</button>
+                <button type="button" id="interactiveToggle" class="interactive-toggle" title="Enable raw keyboard input for vim/top/fzf">Interactive</button>
             </div>
         </div>
 
@@ -315,8 +315,8 @@
                        placeholder="command or prompt..."
                        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
                        aria-label="Command input">
-                <button id="logQueue" class="terminal-queue-btn desktop-only" title="Queue command (Q)">Q</button>
-                <button id="logSend" class="terminal-send-btn">⏎</button>
+                <button type="button" id="logQueue" class="terminal-queue-btn desktop-only" title="Queue command (Q)">Q</button>
+                <button type="button" id="logSend" class="terminal-send-btn">⏎</button>
             </div>
         </div>
 
@@ -325,23 +325,23 @@
             <div class="collapse-row">
                 <div id="recentRepos" class="recent-repos"></div>
                 <div id="viewSwitcher" class="view-dots hidden">
-                    <button class="view-dot active" data-view="team"></button>
-                    <button class="view-dot" data-view="log"></button>
-                    <button class="view-dot" data-view="terminal"></button>
+                    <button type="button" class="view-dot active" data-view="team"></button>
+                    <button type="button" class="view-dot" data-view="log"></button>
+                    <button type="button" class="view-dot" data-view="terminal"></button>
                 </div>
-                <button id="collapseToggle" class="collapse-toggle-btn" aria-label="Toggle control bars">
+                <button type="button" id="collapseToggle" class="collapse-toggle-btn" aria-label="Toggle control bars">
                     <span class="collapse-icon">&#x25B2;</span>
                 </button>
             </div>
             <div id="inputBar" class="input-bar">
-                <button class="quick-btn" data-key="esc">Esc</button>
-                <button class="quick-btn btn-clear" data-key="clear" title="Clear input">X</button>
+                <button type="button" class="quick-btn" data-key="esc">Esc</button>
+                <button type="button" class="quick-btn btn-clear" data-key="clear" title="Clear input">X</button>
                 <span class="bar-separator"></span>
-                <button class="quick-btn btn-arrow" data-key="down" aria-label="Down arrow">&#x25BC;</button>
-                <button class="quick-btn btn-arrow" data-key="up" aria-label="Up arrow">&#x25B2;</button>
-                <button class="quick-btn btn-tmux" data-key="ctrl-b">^B</button>
-                <button class="quick-btn btn-queue" data-key="queue" title="Add to queue">Q</button>
-                <button class="quick-btn btn-enter" data-key="enter">Enter</button>
+                <button type="button" class="quick-btn btn-arrow" data-key="down" aria-label="Down arrow">&#x25BC;</button>
+                <button type="button" class="quick-btn btn-arrow" data-key="up" aria-label="Up arrow">&#x25B2;</button>
+                <button type="button" class="quick-btn btn-tmux" data-key="ctrl-b">^B</button>
+                <button type="button" class="quick-btn btn-queue" data-key="queue" title="Add to queue">Q</button>
+                <button type="button" class="quick-btn btn-enter" data-key="enter">Enter</button>
             </div>
             <div id="controlBar" class="control-bar hidden"></div>
             <div id="roleBar" class="role-bar"></div>
@@ -353,12 +353,12 @@
                 <select id="dispatchPlanSelect" class="dispatch-plan-select" aria-label="Select plan">
                     <option value="">Select plan...</option>
                 </select>
-                <button id="dispatchBtn" class="team-card-btn dispatch" disabled>Dispatch</button>
+                <button type="button" id="dispatchBtn" class="team-card-btn dispatch" disabled>Dispatch</button>
             </div>
             <div class="dispatch-row">
                 <input type="text" id="leaderMessageInput" class="leader-message-input"
                        placeholder="Message leader..." autocomplete="off" aria-label="Message leader">
-                <button id="leaderMessageBtn" class="team-card-btn" disabled>Send</button>
+                <button type="button" id="leaderMessageBtn" class="team-card-btn" disabled>Send</button>
             </div>
         </div>
 
@@ -369,10 +369,10 @@
 
         <!-- Legacy viewBar (hidden, buttons referenced by existing JS) -->
         <div id="viewBar" class="view-bar hidden" style="display:none">
-            <button id="drawersBtn" class="view-btn drawers-btn">•••<span id="queueBadge" class="queue-badge hidden">0</span></button>
-            <button id="selectCopyBtn" class="view-btn select-btn">Select</button>
-            <button id="challengeBtn" class="view-btn challenge-btn">Challenge</button>
-            <button id="composeBtn" class="view-btn compose-btn">Compose</button>
+            <button type="button" id="drawersBtn" class="view-btn drawers-btn">•••<span id="queueBadge" class="queue-badge hidden">0</span></button>
+            <button type="button" id="selectCopyBtn" class="view-btn select-btn">Select</button>
+            <button type="button" id="challengeBtn" class="view-btn challenge-btn">Challenge</button>
+            <button type="button" id="composeBtn" class="view-btn compose-btn">Compose</button>
         </div>
 
         <!-- Compose modal (predictive text + file upload) -->
@@ -387,7 +387,7 @@
                         <option value="plan">Plan</option>
                         <option value="edit">Edit</option>
                     </select>
-                    <button id="composeClose" class="compose-close" aria-label="Close">&times;</button>
+                    <button type="button" id="composeClose" class="compose-close" aria-label="Close">&times;</button>
                 </div>
                 <textarea
                     id="composeInput"
@@ -405,15 +405,15 @@
                 <div id="composeAttachments" class="compose-attachments hidden"></div>
                 <div class="compose-footer">
                     <input type="file" id="composeFileInput" accept="*/*" hidden>
-                    <button id="composeAttach" class="compose-action attach-icon" title="Attach file" aria-label="Attach file">&#x1F4CE;</button>
-                    <button id="composePaste" class="compose-action secondary" title="Paste from clipboard">Paste</button>
-                    <button id="composeClear" class="compose-action secondary">Clear</button>
-                    <button id="composeInsert" class="compose-action secondary">Insert</button>
+                    <button type="button" id="composeAttach" class="compose-action attach-icon" title="Attach file" aria-label="Attach file">&#x1F4CE;</button>
+                    <button type="button" id="composePaste" class="compose-action secondary" title="Paste from clipboard">Paste</button>
+                    <button type="button" id="composeClear" class="compose-action secondary">Clear</button>
+                    <button type="button" id="composeInsert" class="compose-action secondary">Insert</button>
                 </div>
                 <div class="compose-run-footer">
-                    <button id="composeBacklog" class="compose-backlog-btn">Backlog</button>
-                    <button id="composeQueue" class="compose-queue-btn">Queue</button>
-                    <button id="composeRun" class="compose-run-btn">Run</button>
+                    <button type="button" id="composeBacklog" class="compose-backlog-btn">Backlog</button>
+                    <button type="button" id="composeQueue" class="compose-queue-btn">Queue</button>
+                    <button type="button" id="composeRun" class="compose-run-btn">Run</button>
                 </div>
             </div>
         </div>
@@ -426,7 +426,7 @@
                     <select id="challengeModel" class="challenge-model-select" aria-label="Select model">
                         <option value="">Loading...</option>
                     </select>
-                    <button id="challengeClose" class="challenge-close" aria-label="Close">&times;</button>
+                    <button type="button" id="challengeClose" class="challenge-close" aria-label="Close">&times;</button>
                 </div>
 
                 <!-- Collapsible input section -->
@@ -483,9 +483,9 @@
                 <div class="challenge-footer">
                     <span id="challengeStatus" class="challenge-status"></span>
                     <div class="challenge-actions">
-                        <button id="challengeCopy" class="challenge-action secondary hidden">Copy</button>
-                        <button id="challengeToCompose" class="challenge-action secondary hidden">Edit</button>
-                        <button id="challengeRun" class="challenge-action primary">Run</button>
+                        <button type="button" id="challengeCopy" class="challenge-action secondary hidden">Copy</button>
+                        <button type="button" id="challengeToCompose" class="challenge-action secondary hidden">Edit</button>
+                        <button type="button" id="challengeRun" class="challenge-action primary">Run</button>
                     </div>
                 </div>
             </div>
@@ -496,14 +496,14 @@
             <div class="docs-modal-content">
                 <div class="docs-modal-header">
                     <span id="docsModalTitle" class="docs-modal-title">Docs</span>
-                    <button id="docsModalClose" class="docs-modal-close" aria-label="Close">&times;</button>
+                    <button type="button" id="docsModalClose" class="docs-modal-close" aria-label="Close">&times;</button>
                 </div>
                 <div class="docs-tabs">
-                    <button class="docs-tab active" data-tab="plans">Plans</button>
-                    <button class="docs-tab" data-tab="context">Context</button>
-                    <button class="docs-tab" data-tab="touch">Touch</button>
-                    <button class="docs-tab" data-tab="sessions">Sessions</button>
-                    <button class="docs-tab" data-tab="search" aria-label="Search">&#x1F50D;</button>
+                    <button type="button" class="docs-tab active" data-tab="plans">Plans</button>
+                    <button type="button" class="docs-tab" data-tab="context">Context</button>
+                    <button type="button" class="docs-tab" data-tab="touch">Touch</button>
+                    <button type="button" class="docs-tab" data-tab="sessions">Sessions</button>
+                    <button type="button" class="docs-tab" data-tab="search" aria-label="Search">&#x1F50D;</button>
                 </div>
                 <div id="docsModalBody" class="docs-modal-body">
                     Loading...
@@ -516,7 +516,7 @@
             <div class="new-window-content">
                 <div class="new-window-header">
                     <span class="new-window-title">New Window in Repo</span>
-                    <button id="newWindowClose" class="new-window-close" aria-label="Close">&times;</button>
+                    <button type="button" id="newWindowClose" class="new-window-close" aria-label="Close">&times;</button>
                 </div>
                 <div class="new-window-body">
                     <div class="new-window-field">
@@ -539,8 +539,8 @@
                     </div>
                 </div>
                 <div class="new-window-footer">
-                    <button id="newWindowCancel" class="new-window-btn secondary">Cancel</button>
-                    <button id="newWindowCreate" class="new-window-btn primary">Create</button>
+                    <button type="button" id="newWindowCancel" class="new-window-btn secondary">Cancel</button>
+                    <button type="button" id="newWindowCreate" class="new-window-btn primary">Create</button>
                 </div>
             </div>
         </div>
@@ -555,19 +555,19 @@
                     <span id="dirtyChoiceFiles"></span>
                 </div>
                 <div class="dirty-choice-options">
-                    <button id="dirtyChoiceStash" class="dirty-choice-btn stash">
+                    <button type="button" id="dirtyChoiceStash" class="dirty-choice-btn stash">
                         <span class="dirty-choice-icon">📦</span>
                         <span class="dirty-choice-label">Stash changes and continue</span>
                         <span class="dirty-choice-desc">Can restore after revert</span>
                     </button>
-                    <button id="dirtyChoiceDiscard" class="dirty-choice-btn discard">
+                    <button type="button" id="dirtyChoiceDiscard" class="dirty-choice-btn discard">
                         <span class="dirty-choice-icon">🗑️</span>
                         <span class="dirty-choice-label">Discard all changes</span>
                         <span class="dirty-choice-desc">Permanent, cannot undo</span>
                     </button>
                 </div>
                 <div class="dirty-choice-footer">
-                    <button id="dirtyChoiceCancel" class="dirty-choice-cancel">Cancel</button>
+                    <button type="button" id="dirtyChoiceCancel" class="dirty-choice-cancel">Cancel</button>
                 </div>
             </div>
         </div>
@@ -587,8 +587,8 @@
                     </label>
                 </div>
                 <div class="discard-confirm-actions">
-                    <button id="discardConfirmCancel" class="dirty-choice-cancel">Cancel</button>
-                    <button id="discardConfirmYes" class="dirty-choice-btn danger">Yes, Discard All</button>
+                    <button type="button" id="discardConfirmCancel" class="dirty-choice-cancel">Cancel</button>
+                    <button type="button" id="discardConfirmYes" class="dirty-choice-btn danger">Yes, Discard All</button>
                 </div>
             </div>
         </div>
@@ -603,9 +603,9 @@
                     <p>📦 Stash saved: <code id="stashResultRef">stash@{0}</code></p>
                 </div>
                 <div class="stash-result-actions">
-                    <button id="stashResultApply" class="dirty-choice-btn stash">Apply Stash</button>
-                    <button id="stashResultDrop" class="dirty-choice-btn discard">Drop Stash</button>
-                    <button id="stashResultClose" class="dirty-choice-cancel">Close</button>
+                    <button type="button" id="stashResultApply" class="dirty-choice-btn stash">Apply Stash</button>
+                    <button type="button" id="stashResultDrop" class="dirty-choice-btn discard">Drop Stash</button>
+                    <button type="button" id="stashResultClose" class="dirty-choice-cancel">Close</button>
                 </div>
             </div>
         </div>
@@ -615,7 +615,7 @@
           <div class="launch-team-content">
             <div class="launch-team-header">
               <span class="launch-team-title">Launch Team</span>
-              <button id="launchTeamClose" class="launch-team-close-btn">&times;</button>
+              <button type="button" id="launchTeamClose" class="launch-team-close-btn">&times;</button>
             </div>
             <div class="launch-team-body">
               <!-- Step 1: Plan + Goal + Template -->
@@ -634,17 +634,17 @@
                 <div id="launchTeamSummary" class="launch-team-summary"></div>
                 <label class="launch-team-label">Agents</label>
                 <div id="launchTeamRoster" class="launch-team-roster"></div>
-                <button id="launchTeamAddAgent" class="launch-team-add-btn">+ Add Agent</button>
+                <button type="button" id="launchTeamAddAgent" class="launch-team-add-btn">+ Add Agent</button>
                 <label class="launch-team-checkbox-label"><input type="checkbox" id="launchTeamAutoDispatch" checked> Auto-dispatch to leader</label>
                 <div class="launch-team-confirm-msg">This will start Claude in <strong><span id="launchTeamCount">0</span></strong> windows</div>
               </div>
             </div>
             <div id="launchTeamStatus" class="launch-team-status hidden"></div>
             <div class="launch-team-footer">
-              <button id="launchTeamBack" class="launch-team-btn secondary hidden">Back</button>
-              <button id="launchTeamKill" class="launch-team-btn danger hidden">Kill Team</button>
-              <button id="launchTeamNext" class="launch-team-btn primary">Next</button>
-              <button id="launchTeamLaunch" class="launch-team-btn primary hidden">Launch</button>
+              <button type="button" id="launchTeamBack" class="launch-team-btn secondary hidden">Back</button>
+              <button type="button" id="launchTeamKill" class="launch-team-btn danger hidden">Kill Team</button>
+              <button type="button" id="launchTeamNext" class="launch-team-btn primary">Next</button>
+              <button type="button" id="launchTeamLaunch" class="launch-team-btn primary hidden">Launch</button>
             </div>
           </div>
         </div>
@@ -652,20 +652,20 @@
         <!-- FAB menu (vertical list, opens upward from bottom-right) -->
         <!-- Bottom items (closest to right thumb) are last in DOM -->
         <div id="fabMenu" class="fab-menu hidden">
-            <button class="fab-menu-item" data-action="launchTeam"><span class="fab-icon">&#x1F680;</span>Launch Team</button>
-            <button class="fab-menu-item" data-tab="mcp"><span class="fab-icon">&#x2699;</span>MCP</button>
-            <button class="fab-menu-item" data-tab="env"><span class="fab-icon">&#x1F511;</span>Env</button>
-            <button class="fab-menu-item" data-tab="plugins"><span class="fab-icon">&#x1F9E9;</span>Plugins</button>
-            <button class="fab-menu-item" data-tab="runner"><span class="fab-icon">&#x25B6;</span>Runner</button>
-            <button class="fab-menu-item" data-tab="dev"><span class="fab-icon">&#x2699;</span>Dev</button>
-            <button class="fab-menu-item" data-tab="process"><span class="fab-icon">&#x2630;</span>Process</button>
-            <button class="fab-menu-item" data-tab="activity"><span class="fab-icon">&#x23F1;</span>Activity</button>
-            <button class="fab-menu-item" data-tab="history"><span class="fab-icon">&#x231A;</span>History</button>
-            <button class="fab-menu-item" data-tab="permissions"><span class="fab-icon">&#x1F512;</span>Permissions</button>
-            <button class="fab-menu-item" data-tab="backlog"><span class="fab-icon">&#x2630;</span>Backlog</button>
-            <button class="fab-menu-item" data-tab="queue"><span class="fab-icon">&#x23F3;</span>Queue</button>
-            <button class="fab-menu-item" data-action="docs"><span class="fab-icon">&#x1F4C4;</span>Docs</button>
-            <button class="fab-menu-close" id="fabMenuClose" aria-label="Close">&times;</button>
+            <button type="button" class="fab-menu-item" data-action="launchTeam"><span class="fab-icon">&#x1F680;</span>Launch Team</button>
+            <button type="button" class="fab-menu-item" data-tab="mcp"><span class="fab-icon">&#x2699;</span>MCP</button>
+            <button type="button" class="fab-menu-item" data-tab="env"><span class="fab-icon">&#x1F511;</span>Env</button>
+            <button type="button" class="fab-menu-item" data-tab="plugins"><span class="fab-icon">&#x1F9E9;</span>Plugins</button>
+            <button type="button" class="fab-menu-item" data-tab="runner"><span class="fab-icon">&#x25B6;</span>Runner</button>
+            <button type="button" class="fab-menu-item" data-tab="dev"><span class="fab-icon">&#x2699;</span>Dev</button>
+            <button type="button" class="fab-menu-item" data-tab="process"><span class="fab-icon">&#x2630;</span>Process</button>
+            <button type="button" class="fab-menu-item" data-tab="activity"><span class="fab-icon">&#x23F1;</span>Activity</button>
+            <button type="button" class="fab-menu-item" data-tab="history"><span class="fab-icon">&#x231A;</span>History</button>
+            <button type="button" class="fab-menu-item" data-tab="permissions"><span class="fab-icon">&#x1F512;</span>Permissions</button>
+            <button type="button" class="fab-menu-item" data-tab="backlog"><span class="fab-icon">&#x2630;</span>Backlog</button>
+            <button type="button" class="fab-menu-item" data-tab="queue"><span class="fab-icon">&#x23F3;</span>Queue</button>
+            <button type="button" class="fab-menu-item" data-action="docs"><span class="fab-icon">&#x1F4C4;</span>Docs</button>
+            <button type="button" class="fab-menu-close" id="fabMenuClose" aria-label="Close">&times;</button>
         </div>
 
         <!-- Drawer backdrop (tap to close) -->
@@ -675,32 +675,32 @@
         <div id="previewDrawer" class="preview-drawer hidden">
             <div class="rollback-drawer-header">
                 <div class="rollback-tabs">
-                    <button class="rollback-tab active" data-tab="queue">Queue<span id="queueTabBadge" class="queue-tab-badge hidden">0</span></button>
-                    <button class="rollback-tab" data-tab="backlog">Backlog<span id="backlogTabBadge" class="queue-tab-badge hidden">0</span></button>
-                    <button class="rollback-tab" data-tab="runner">Runner</button>
-                    <button class="rollback-tab" data-tab="dev">Dev</button>
-                    <button class="rollback-tab" data-tab="history">History</button>
-                    <button class="rollback-tab" data-tab="process">Process</button>
-                    <button class="rollback-tab" data-tab="plugins">Plugins</button>
-                    <button class="rollback-tab" data-tab="mcp">MCP</button>
-                    <button class="rollback-tab" data-tab="env">Env</button>
-                    <button class="rollback-tab" data-tab="activity">Activity</button>
-                    <button class="rollback-tab" data-tab="permissions">Permissions</button>
+                    <button type="button" class="rollback-tab active" data-tab="queue">Queue<span id="queueTabBadge" class="queue-tab-badge hidden">0</span></button>
+                    <button type="button" class="rollback-tab" data-tab="backlog">Backlog<span id="backlogTabBadge" class="queue-tab-badge hidden">0</span></button>
+                    <button type="button" class="rollback-tab" data-tab="runner">Runner</button>
+                    <button type="button" class="rollback-tab" data-tab="dev">Dev</button>
+                    <button type="button" class="rollback-tab" data-tab="history">History</button>
+                    <button type="button" class="rollback-tab" data-tab="process">Process</button>
+                    <button type="button" class="rollback-tab" data-tab="plugins">Plugins</button>
+                    <button type="button" class="rollback-tab" data-tab="mcp">MCP</button>
+                    <button type="button" class="rollback-tab" data-tab="env">Env</button>
+                    <button type="button" class="rollback-tab" data-tab="activity">Activity</button>
+                    <button type="button" class="rollback-tab" data-tab="permissions">Permissions</button>
                 </div>
-                <button id="previewDrawerClose" class="preview-drawer-close" aria-label="Close drawer">&times;</button>
+                <button type="button" id="previewDrawerClose" class="preview-drawer-close" aria-label="Close drawer">&times;</button>
             </div>
             <!-- Queue tab content -->
             <div id="queueTabContent" class="rollback-tab-content active">
                 <div class="queue-tab-header">
                     <span class="queue-title">Command Queue</span>
                     <span id="queueCount" class="queue-count">0</span>
-                    <button id="queueAutoToggle" class="queue-auto-toggle active" title="Toggle auto-send">Auto</button>
-                    <button id="queuePauseBtn" class="queue-pause-btn">Pause</button>
+                    <button type="button" id="queueAutoToggle" class="queue-auto-toggle active" title="Toggle auto-send">Auto</button>
+                    <button type="button" id="queuePauseBtn" class="queue-pause-btn">Pause</button>
                 </div>
                 <div id="queueList" class="queue-list"></div>
                 <div class="queue-tab-footer">
-                    <button id="queueSendNext" class="queue-action-btn primary">Run</button>
-                    <button id="queueFlush" class="queue-action-btn secondary">Clear All</button>
+                    <button type="button" id="queueSendNext" class="queue-action-btn primary">Run</button>
+                    <button type="button" id="queueFlush" class="queue-action-btn secondary">Clear All</button>
                 </div>
             </div>
             <!-- Backlog tab content -->
@@ -711,7 +711,7 @@
                 </div>
                 <div id="backlogList" class="backlog-list"></div>
                 <div class="backlog-tab-footer">
-                    <button id="backlogAddBtn" class="backlog-action-btn secondary">+ Add Item</button>
+                    <button type="button" id="backlogAddBtn" class="backlog-action-btn secondary">+ Add Item</button>
                 </div>
             </div>
             <!-- Permissions tab content -->
@@ -719,16 +719,16 @@
                 <div class="permissions-tab-header">
                     <span class="permissions-title">Permissions</span>
                     <div id="permissionsModeToggle" class="permissions-mode-toggle">
-                        <button class="perm-mode-btn" data-mode="manual">Manual</button>
-                        <button class="perm-mode-btn active" data-mode="safe_auto">Safe Auto</button>
-                        <button class="perm-mode-btn" data-mode="session_auto">Session Auto</button>
+                        <button type="button" class="perm-mode-btn" data-mode="manual">Manual</button>
+                        <button type="button" class="perm-mode-btn active" data-mode="safe_auto">Safe Auto</button>
+                        <button type="button" class="perm-mode-btn" data-mode="session_auto">Session Auto</button>
                     </div>
                 </div>
                 <div id="permissionsList" class="permissions-list"></div>
                 <div id="permissionsAudit" class="permissions-audit"></div>
                 <div class="permissions-test-section">
-                    <button id="permissionsTestBtn" class="perm-mode-btn">Test Banner</button>
-                    <button id="permissionsTestPromptBtn" class="perm-mode-btn">Test Prompt Banner</button>
+                    <button type="button" id="permissionsTestBtn" class="perm-mode-btn">Test Banner</button>
+                    <button type="button" id="permissionsTestPromptBtn" class="perm-mode-btn">Test Prompt Banner</button>
                 </div>
             </div>
             <!-- Runner tab content -->
@@ -739,7 +739,7 @@
                 <div id="runnerCommands" class="runner-commands"></div>
                 <div class="runner-custom">
                     <input type="text" id="runnerCustomInput" class="runner-custom-input" placeholder="Custom command..." aria-label="Custom command">
-                    <button id="runnerCustomBtn" class="runner-custom-btn">Run</button>
+                    <button type="button" id="runnerCustomBtn" class="runner-custom-btn">Run</button>
                 </div>
             </div>
             <!-- Dev Preview tab content -->
@@ -749,12 +749,12 @@
                 </div>
                 <div class="dev-service-tabs" id="devServiceTabs"></div>
                 <div class="dev-controls">
-                    <button id="devStartBtn" class="dev-btn primary">Start</button>
-                    <button id="devRestartBtn" class="dev-btn">Restart</button>
-                    <button id="devStopBtn" class="dev-btn danger">Stop</button>
-                    <button id="devOpenBtn" class="dev-btn">Open</button>
-                    <button id="devCopyBtn" class="dev-btn">Copy</button>
-                    <button id="devLogsBtn" class="dev-btn">Logs</button>
+                    <button type="button" id="devStartBtn" class="dev-btn primary">Start</button>
+                    <button type="button" id="devRestartBtn" class="dev-btn">Restart</button>
+                    <button type="button" id="devStopBtn" class="dev-btn danger">Stop</button>
+                    <button type="button" id="devOpenBtn" class="dev-btn">Open</button>
+                    <button type="button" id="devCopyBtn" class="dev-btn">Copy</button>
+                    <button type="button" id="devLogsBtn" class="dev-btn">Logs</button>
                 </div>
                 <div id="devPreviewPlaceholder" class="dev-preview-placeholder">
                     Select a service above
@@ -771,8 +771,8 @@
                     <div class="dev-log-header">
                         <span class="dev-log-title">Service Logs</span>
                         <span id="devLogMeta" class="dev-log-meta"></span>
-                        <button id="devLogCopyBtn" class="dev-btn small">Copy</button>
-                        <button id="devLogCloseBtn" class="dev-btn small">Close</button>
+                        <button type="button" id="devLogCopyBtn" class="dev-btn small">Copy</button>
+                        <button type="button" id="devLogCloseBtn" class="dev-btn small">Close</button>
                     </div>
                     <pre id="devLogContent" class="dev-log-content">Loading...</pre>
                 </div>
@@ -781,23 +781,23 @@
             <div id="historyTabContent" class="rollback-tab-content hidden">
                 <div class="history-tab-header">
                     <div class="history-filters">
-                        <button class="history-filter-btn active" data-filter="all">All</button>
-                        <button class="history-filter-btn" data-filter="commit">Commits</button>
-                        <button class="history-filter-btn" data-filter="snapshot">Snapshots</button>
+                        <button type="button" class="history-filter-btn active" data-filter="all">All</button>
+                        <button type="button" class="history-filter-btn" data-filter="commit">Commits</button>
+                        <button type="button" class="history-filter-btn" data-filter="snapshot">Snapshots</button>
                     </div>
-                    <button id="historySnapBtn" class="history-snap-btn">+ Snap</button>
+                    <button type="button" id="historySnapBtn" class="history-snap-btn">+ Snap</button>
                 </div>
                 <div id="historyList" class="history-list"></div>
                 <!-- Commit detail panel (shown when a commit is selected) -->
                 <div id="historyCommitDetail" class="history-commit-detail hidden">
                     <div class="git-detail-header">
-                        <button id="historyBackBtn" class="git-back-btn">&larr; Back</button>
+                        <button type="button" id="historyBackBtn" class="git-back-btn">&larr; Back</button>
                         <span id="historyDetailHash" class="git-detail-hash"></span>
                     </div>
                     <div id="historyDetailContent" class="git-detail-content"></div>
                     <div class="git-detail-actions">
-                        <button id="historyDryRunBtn" class="git-action-btn secondary">Dry Run</button>
-                        <button id="historyRevertBtn" class="git-action-btn danger">Revert</button>
+                        <button type="button" id="historyDryRunBtn" class="git-action-btn secondary">Dry Run</button>
+                        <button type="button" id="historyRevertBtn" class="git-action-btn danger">Revert</button>
                     </div>
                     <div id="historyDryRunResult" class="git-dry-run-result hidden"></div>
                 </div>
@@ -806,7 +806,7 @@
             <div id="processTabContent" class="rollback-tab-content hidden">
                 <div id="processStatusBanner" class="process-status-banner">
                     <span id="processStatusText" class="process-status-text">Loading...</span>
-                    <button id="processRefreshBtn" class="process-refresh-btn">Refresh</button>
+                    <button type="button" id="processRefreshBtn" class="process-refresh-btn">Refresh</button>
                 </div>
                 <div id="descendantList" class="descendant-list">
                     <div class="descendant-empty">No background processes in this pane</div>
@@ -814,9 +814,9 @@
                 <details class="process-controls-details">
                     <summary class="process-controls-summary">Process Controls</summary>
                     <div class="process-actions">
-                        <button id="processTerminateBtn" class="process-action-btn warning">Terminate</button>
-                        <button id="processKillBtn" class="process-action-btn danger">Force Kill</button>
-                        <button id="processRespawnBtn" class="process-action-btn primary">Respawn</button>
+                        <button type="button" id="processTerminateBtn" class="process-action-btn warning">Terminate</button>
+                        <button type="button" id="processKillBtn" class="process-action-btn danger">Force Kill</button>
+                        <button type="button" id="processRespawnBtn" class="process-action-btn primary">Respawn</button>
                     </div>
                     <div id="processResult" class="process-result hidden"></div>
                 </details>
@@ -826,8 +826,8 @@
                 <div id="pluginsRestartBanner" class="mcp-restart-banner hidden">
                     <span>Changes saved</span>
                     <div class="mcp-restart-actions">
-                        <button class="mcp-restart-btn plugins-restart-one">Restart Pane</button>
-                        <button class="mcp-restart-btn plugins-restart-all">Restart All</button>
+                        <button type="button" class="mcp-restart-btn plugins-restart-one">Restart Pane</button>
+                        <button type="button" class="mcp-restart-btn plugins-restart-all">Restart All</button>
                     </div>
                 </div>
                 <p class="process-description mcp-scope-note">Global config (applies to all Claude Code sessions).</p>
@@ -841,7 +841,7 @@
                 </div>
                 <div class="mcp-add-section mcp-plugin-add">
                     <input id="pluginIdInput" class="mcp-input" placeholder="Custom plugin ID" aria-label="Plugin ID">
-                    <button id="pluginAddBtn" class="process-action-btn primary">Enable Plugin</button>
+                    <button type="button" id="pluginAddBtn" class="process-action-btn primary">Enable Plugin</button>
                 </div>
             </div>
             <!-- MCP tab content -->
@@ -849,14 +849,14 @@
                 <div id="mcpRestartBanner" class="mcp-restart-banner hidden">
                     <span>Changes saved</span>
                     <div class="mcp-restart-actions">
-                        <button id="mcpRestartOneBtn" class="mcp-restart-btn">Restart Pane</button>
-                        <button id="mcpRestartAllBtn" class="mcp-restart-btn">Restart All</button>
+                        <button type="button" id="mcpRestartOneBtn" class="mcp-restart-btn">Restart Pane</button>
+                        <button type="button" id="mcpRestartAllBtn" class="mcp-restart-btn">Restart All</button>
                     </div>
                 </div>
                 <p class="process-description mcp-scope-note">Global config (applies to all Claude Code sessions).</p>
                 <div class="process-tab-header">
                     <span class="process-title">Available Servers</span>
-                    <button id="mcpRefreshBtn" class="process-refresh-btn">Refresh</button>
+                    <button type="button" id="mcpRefreshBtn" class="process-refresh-btn">Refresh</button>
                 </div>
                 <div class="plugin-search">
                     <input id="mcpCatalogSearch" class="mcp-input" placeholder="Search servers..." aria-label="Search MCP servers">
@@ -874,8 +874,8 @@
                     <input id="mcpCommandInput" class="mcp-input" placeholder="Command (e.g. npx)" aria-label="Server command">
                     <input id="mcpArgsInput" class="mcp-input" placeholder="Args (e.g. -y @anthropic/server-chrome)" aria-label="Server arguments">
                     <div class="mcp-form-actions">
-                        <button id="mcpAddBtn" class="process-action-btn primary">Add Server</button>
-                        <button id="mcpCancelEditBtn" class="process-action-btn hidden">Cancel</button>
+                        <button type="button" id="mcpAddBtn" class="process-action-btn primary">Add Server</button>
+                        <button type="button" id="mcpCancelEditBtn" class="process-action-btn hidden">Cancel</button>
                     </div>
                 </div>
                 <div id="mcpResult" class="process-result hidden"></div>
@@ -885,7 +885,7 @@
             <div id="envTabContent" class="rollback-tab-content hidden">
                 <div id="envReloadBanner" class="env-reload-banner hidden">
                     <span>Env changed — reload to apply</span>
-                    <button id="envReloadBtn" class="mcp-restart-btn">Reload Env</button>
+                    <button type="button" id="envReloadBtn" class="mcp-restart-btn">Reload Env</button>
                 </div>
                 <div class="env-scope-selector">
                     <select id="envScopeSelect" class="mcp-input" aria-label="Env scope">
@@ -904,20 +904,20 @@
                         <button id="envValueToggle" class="env-value-toggle" type="button">Show</button>
                     </div>
                     <div class="mcp-form-actions">
-                        <button id="envAddBtn" class="process-action-btn primary">Set</button>
-                        <button id="envCancelEditBtn" class="process-action-btn hidden">Cancel</button>
+                        <button type="button" id="envAddBtn" class="process-action-btn primary">Set</button>
+                        <button type="button" id="envCancelEditBtn" class="process-action-btn hidden">Cancel</button>
                     </div>
                 </div>
             </div>
             <!-- Activity Timeline tab content -->
             <div id="activityTabContent" class="rollback-tab-content hidden">
                 <div class="activity-filter-bar">
-                    <button class="activity-filter-pill active" data-category="all">All</button>
-                    <button class="activity-filter-pill" data-category="tools">Tools</button>
-                    <button class="activity-filter-pill" data-category="files">Files</button>
-                    <button class="activity-filter-pill" data-category="tests">Tests</button>
-                    <button class="activity-filter-pill" data-category="git">Git</button>
-                    <button class="activity-filter-pill" data-category="errors">Errors</button>
+                    <button type="button" class="activity-filter-pill active" data-category="all">All</button>
+                    <button type="button" class="activity-filter-pill" data-category="tools">Tools</button>
+                    <button type="button" class="activity-filter-pill" data-category="files">Files</button>
+                    <button type="button" class="activity-filter-pill" data-category="tests">Tests</button>
+                    <button type="button" class="activity-filter-pill" data-category="git">Git</button>
+                    <button type="button" class="activity-filter-pill" data-category="errors">Errors</button>
                 </div>
                 <div class="activity-phase-banner hidden" id="activityPhaseBanner">
                     <span id="activityPhaseIcon" class="activity-phase-icon"></span>
@@ -932,8 +932,8 @@
             <div class="status-content">
                 <div class="spinner"></div>
                 <p id="statusText">Connecting...</p>
-                <button id="reconnectBtn" class="reconnect-btn hidden">Reconnect Now</button>
-                <button id="hardRefreshBtn" class="hard-refresh-btn hidden">Hard Refresh</button>
+                <button type="button" id="reconnectBtn" class="reconnect-btn hidden">Reconnect Now</button>
+                <button type="button" id="hardRefreshBtn" class="hard-refresh-btn hidden">Hard Refresh</button>
             </div>
         </div>
 
@@ -946,7 +946,7 @@
                            placeholder="Type a command..." autocomplete="off"
                            autocorrect="off" spellcheck="false"
                            aria-label="Command palette search">
-                    <button id="paletteClose" class="palette-close" aria-label="Close">&times;</button>
+                    <button type="button" id="paletteClose" class="palette-close" aria-label="Close">&times;</button>
                 </div>
                 <div id="paletteResults" class="palette-results" role="listbox"></div>
             </div>
@@ -956,6 +956,6 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script defer src="/static/terminal.js?v=345"></script>
+    <script defer src="/static/terminal.js?v=346"></script>
 </body>
 </html>

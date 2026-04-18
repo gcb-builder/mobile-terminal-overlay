@@ -1,19 +1,46 @@
 /* Mobile Terminal Overlay - Styles */
 
 :root {
-    /* VS Code Dark+ inspired palette */
+    /* VS Code Dark+ inspired palette. ALL semantic variables defined
+     * here so the stylesheet can reference them in either mode without
+     * accidental inheritance or undefined fallbacks. Previously many
+     * vars (--text-muted, --surface-*, --bg-hover, etc.) lived only in
+     * .high-contrast and were referenced by rules outside the
+     * high-contrast scope, breaking the default theme.
+     */
+
+    /* Surfaces */
     --bg-primary: #1e1e1e;
     --bg-secondary: #252526;
     --bg-tertiary: #2d2d2d;
+    --bg-hover: #2a2d2e;
+    --bg-elevated: #333333;
+    --surface-2: #2d2d2d;
+    --surface-3: #333333;
+
+    /* Text */
     --text-primary: #d4d4d4;
     --text-secondary: #858585;
+    --text-muted: #6e7681;
+
+    /* Accents */
     --accent: #3794ff;
     --accent-hover: #4fc1ff;
+    --accent-cyan: #4ec9b0;
+    --accent-magenta: #c586c0;
+
+    /* Status */
     --danger: #f14c4c;
     --success: #89d185;
     --warning: #cca700;
+    --info: #bc8cff;
+
+    /* Structural */
     --border: #3c3c3c;
     --shadow: rgba(0, 0, 0, 0.3);
+    --font-mono: 'Menlo', 'Monaco', 'Courier New', monospace;
+
+    /* Layout */
     --sidebar-width: 320px;
     --terminal-panel-height: 350px;
     --tools-rail-width: 48px;
@@ -21,11 +48,21 @@
     --tools-panel-width: 320px;
     --terminal-col-width: 400px;
 
-    /* Aliases for existing variables */
+    /* Aliases — keep historical names alive without re-defining colors. */
     --error: var(--danger);
+    --cyan: var(--accent-cyan);
+    --magenta: var(--accent-magenta);
+    --accent-red: var(--danger);
+    --accent-blue: var(--accent);
+    --accent-green: var(--success);
+    --border-color: var(--border);
 }
 
-/* High-contrast mode — boosted for sunlight readability */
+/* High-contrast mode — overrides ONLY the variables that need to
+ * differ for sunlight readability. Everything else inherits :root.
+ * Previously this block re-declared the entire palette which made
+ * drift between the two themes invisible.
+ */
 :root.high-contrast {
     --bg-primary: #000000;
     --bg-secondary: #0a0a0a;
@@ -39,23 +76,6 @@
     --success: #6bff6b;
     --warning: #ffd700;
     --border: #555555;
-    --accent-red: var(--danger);
-    --accent-blue: var(--accent);
-    --accent-green: var(--success);
-    --border-color: var(--border);
-
-    /* Additional semantic colors */
-    --text-muted: #6e7681;
-    --accent-cyan: #4ec9b0;
-    --accent-magenta: #c586c0;
-    --cyan: #4ec9b0;
-    --magenta: #c586c0;
-    --info: #bc8cff;
-    --bg-hover: #2a2d2e;
-    --bg-elevated: #333333;
-    --surface-2: #2d2d2d;
-    --surface-3: #333333;
-    --font-mono: 'Menlo', 'Monaco', 'Courier New', monospace;
 }
 
 * {
