@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "description": "Mobile-optimized terminal UI for accessing tmux sessions from a phone or tablet.",
   "scripts": {
-    "build": "esbuild mobile_terminal/static/terminal.js --bundle --minify --sourcemap --outfile=mobile_terminal/static/dist/terminal.min.js --format=iife --target=es2020",
-    "watch": "esbuild mobile_terminal/static/terminal.js --bundle --minify --sourcemap --outfile=mobile_terminal/static/dist/terminal.min.js --format=iife --target=es2020 --watch"
+    "sync-version": "node scripts/sync-version.js",
+    "build": "node scripts/sync-version.js && esbuild mobile_terminal/static/terminal.js --bundle --minify --sourcemap --outfile=mobile_terminal/static/dist/terminal.min.js --format=iife --target=es2020",
+    "watch": "node scripts/sync-version.js && esbuild mobile_terminal/static/terminal.js --bundle --minify --sourcemap --outfile=mobile_terminal/static/dist/terminal.min.js --format=iife --target=es2020 --watch"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
