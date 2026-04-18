@@ -4,6 +4,7 @@ from dataclasses import asdict
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Query
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ def register(app: FastAPI, deps):
         """Add a backlog item."""
         project = _resolve_project(project)
         if not project:
-            return {"status": "error", "message": "No project context"}
+            return JSONResponse({"error": "No project context"}, status_code=400)
         # Resolve origin: explicit param > auto-detect from source
         if origin is None:
             origin = "api_report" if source == "agent" else "manual"
@@ -90,7 +91,7 @@ def register(app: FastAPI, deps):
             project, id, status, queue_item_id
         )
         if item is None:
-            return {"status": "not_found"}
+            return JSONResponse({"error": "Backlog item not found"}, status_code=404)
 
         if app.state.active_client:
             try:
@@ -124,7 +125,9 @@ def register(app: FastAPI, deps):
             except Exception:
                 pass
 
-        return {"status": "ok" if success else "not_found"}
+        if not success:
+            return JSONResponse({"error": "Backlog item not found"}, status_code=404)
+        return {"status": "ok"}
 
     # ── Candidate endpoints ────────────────────────────────────────────
 
@@ -152,7 +155,7 @@ def register(app: FastAPI, deps):
         cstore = app.state.candidate_store
         candidate = cstore.remove(project, id)
         if not candidate:
-            return {"status": "not_found"}
+            return JSONResponse({"error": "Candidate not found"}, status_code=404)
 
         store = app.state.backlog_store
         item = store.add(
@@ -193,4 +196,6 @@ def register(app: FastAPI, deps):
             except Exception:
                 pass
 
-        return {"status": "ok" if dismissed else "not_found"}
+        if not dismissed:
+            return JSONResponse({"error": "Candidate not found"}, status_code=404)
+        return {"status": "ok"}

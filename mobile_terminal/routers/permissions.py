@@ -3,6 +3,7 @@ import logging
 from dataclasses import asdict
 
 from fastapi import Depends, FastAPI, Query
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +37,11 @@ def register(app: FastAPI, deps):
         """Create a new permission rule."""
         policy = app.state.permission_policy
         if scope not in ("global", "repo", "session"):
-            return {"status": "error", "message": "Invalid scope"}
+            return JSONResponse({"error": "Invalid scope"}, status_code=400)
         if action not in ("allow", "prompt", "deny"):
-            return {"status": "error", "message": "Invalid action"}
+            return JSONResponse({"error": "Invalid action"}, status_code=400)
         if matcher_type not in ("command", "path", "tool_only"):
-            return {"status": "error", "message": "Invalid matcher_type"}
+            return JSONResponse({"error": "Invalid matcher_type"}, status_code=400)
         rule = policy.add_rule(
             tool=tool,
             matcher_type=matcher_type,
@@ -61,10 +62,10 @@ def register(app: FastAPI, deps):
         """Delete a permission rule by ID."""
         policy = app.state.permission_policy
         if id.startswith("default_"):
-            return {"status": "error", "message": "Cannot delete default rules"}
+            return JSONResponse({"error": "Cannot delete default rules"}, status_code=400)
         removed = policy.remove_rule(id)
         if not removed:
-            return {"status": "error", "message": "Rule not found"}
+            return JSONResponse({"error": "Rule not found"}, status_code=404)
         return {"status": "ok"}
 
     @app.post("/api/permissions/mode")
@@ -77,7 +78,7 @@ def register(app: FastAPI, deps):
         try:
             policy.set_mode(mode)
         except ValueError as e:
-            return {"status": "error", "message": str(e)}
+            return JSONResponse({"error": str(e)}, status_code=400)
         return {"status": "ok", "mode": policy.mode}
 
     @app.get("/api/permissions/audit")

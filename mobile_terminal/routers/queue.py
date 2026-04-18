@@ -94,7 +94,9 @@ def register(app: FastAPI, deps):
             except Exception:
                 pass
 
-        return {"status": "ok" if success else "not_found"}
+        if not success:
+            return JSONResponse({"error": "Queue item not found"}, status_code=404)
+        return {"status": "ok"}
 
     @app.post("/api/queue/reorder")
     async def queue_reorder(
@@ -107,7 +109,9 @@ def register(app: FastAPI, deps):
         """Reorder an item in the queue."""
 
         success = app.state.command_queue.reorder(session, item_id, new_index, pane_id)
-        return {"status": "ok" if success else "not_found"}
+        if not success:
+            return JSONResponse({"error": "Queue item not found"}, status_code=404)
+        return {"status": "ok"}
 
     @app.post("/api/queue/pause")
     async def queue_pause(
@@ -202,5 +206,7 @@ def register(app: FastAPI, deps):
 
         if item:
             return {"status": "ok", "item": asdict(item)}
-        else:
-            return {"status": "not_found", "message": "No unsafe items in queue"}
+        return JSONResponse(
+            {"error": "No unsafe items in queue"},
+            status_code=404,
+        )
