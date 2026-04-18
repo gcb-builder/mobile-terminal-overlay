@@ -33,6 +33,11 @@ class WebSocketSink:
 
     def __init__(self, websocket: WebSocket) -> None:
         self._ws = websocket
+        # Output mode for the *receiver*: "tail" (compact JSON updates) or
+        # "full" (raw PTY bytes). Mirrors SSESink.client_mode so the
+        # shared terminal_session runners can read it via ``sink.client_mode``
+        # regardless of transport.
+        self.client_mode: str = "tail"
 
     @property
     def is_connected(self) -> bool:
