@@ -1183,6 +1183,76 @@ async function sendKeyWithSync(key, delay = 100) {
     await syncPromptToInput();
 }
 
+// ── Visibility-aware poller registry ────────────────────────────────
+//
+// One central scheduler for setInterval-based pollers. Each registered
+// poller declares its name + callback + interval; the registry runs them
+// only when the document is visible and pauses them all wholesale when
+// the tab hides. This replaces N per-poller `if (visibilityState ===
+// 'hidden') return;` checks scattered across the file with one
+// visibilitychange listener that suspends/resumes everything.
+//
+// Why centralized: scattered visibility checks waste timer ticks (the
+// browser still wakes the page to evaluate them) and miss nested
+// setTimeouts that schedule new work after the visibility check has
+// already passed. Pulling pollers into a registry also makes "stop
+// everything on disconnect" a one-liner if we ever need it.
+//
+// Async-loop pollers (startAgentHealthPolling, startLogAutoRefresh) are
+// NOT migrated — they already self-manage via AbortController and check
+// visibility inside their own loops, which is correct for that pattern.
+
+const _pollers = new Map();  // name -> { fn, intervalMs, timer }
+let _pollersSuspended = (typeof document !== 'undefined') &&
+    document.visibilityState === 'hidden';
+
+function _runPoller(name, fn) {
+    try { fn(); }
+    catch (e) { console.error(`[poller:${name}]`, e); }
+}
+
+function registerPoller(name, fn, intervalMs) {
+    // Replace an existing poller with the same name (idempotent re-register).
+    unregisterPoller(name);
+    const entry = { fn, intervalMs, timer: null };
+    _pollers.set(name, entry);
+    if (!_pollersSuspended) {
+        entry.timer = setInterval(() => _runPoller(name, fn), intervalMs);
+    }
+}
+
+function unregisterPoller(name) {
+    const entry = _pollers.get(name);
+    if (entry && entry.timer) clearInterval(entry.timer);
+    _pollers.delete(name);
+}
+
+if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+        const hidden = document.visibilityState === 'hidden';
+        if (hidden && !_pollersSuspended) {
+            // Suspend: clear all intervals. State is preserved so we can
+            // resume without losing each poller's identity.
+            for (const entry of _pollers.values()) {
+                if (entry.timer) {
+                    clearInterval(entry.timer);
+                    entry.timer = null;
+                }
+            }
+            _pollersSuspended = true;
+        } else if (!hidden && _pollersSuspended) {
+            // Resume: restart all intervals.
+            for (const [name, entry] of _pollers) {
+                entry.timer = setInterval(
+                    () => _runPoller(name, entry.fn),
+                    entry.intervalMs,
+                );
+            }
+            _pollersSuspended = false;
+        }
+    });
+}
+
 // Client-side debounce for key sends
 const KEY_DEBOUNCE_MS = 150;
 let lastKeySendTime = 0;
@@ -1246,39 +1316,44 @@ function sendStopInterrupt() {
 }
 
 /**
- * Start heartbeat ping/pong for connection health monitoring
+ * Start heartbeat ping/pong for connection health monitoring.
+ *
+ * Routed through registerPoller, so visibility handling is centralized
+ * (browser hidden → all pollers paused). The pong-timeout setTimeout
+ * still has its own handle so we can cancel it from stopHeartbeat or
+ * before scheduling a new one.
  */
 function startHeartbeat() {
     stopHeartbeat();
     lastPongTime = Date.now();
 
-    heartbeatTimer = setInterval(() => {
-        // Don't send heartbeats while tab is hidden — browser throttles timers
-        // and delayed pong responses cause false timeout disconnects
-        if (document.visibilityState === 'hidden') return;
-
+    registerPoller('heartbeat', () => {
         if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
-            // Send ping
             ctx.socket.send(JSON.stringify({ type: 'ping' }));
 
-            // Set timeout for pong response
+            // Cancel any pending pong-timeout from a previous tick before
+            // scheduling the new one — otherwise rapid ticks could stack.
+            if (heartbeatTimeoutTimer) clearTimeout(heartbeatTimeoutTimer);
             heartbeatTimeoutTimer = setTimeout(() => {
-                if (document.visibilityState === 'hidden') return;
+                heartbeatTimeoutTimer = null;
                 console.log('Heartbeat timeout - no pong received, reconnecting');
-                // Connection is dead, force reconnect
-                if (ctx.socket) {
-                    ctx.socket.close();
-                }
+                if (ctx.socket) ctx.socket.close();
             }, HEARTBEAT_TIMEOUT);
         }
     }, HEARTBEAT_INTERVAL);
 }
 
 /**
- * Stop heartbeat timers
+ * Stop heartbeat timers.
+ *
+ * Note: idle-check is now independent from heartbeat (was bundled here
+ * historically because they shared a timer pool). Each has its own
+ * stop function — stopIdleCheck handles its own state.
  */
 function stopHeartbeat() {
+    unregisterPoller('heartbeat');
     if (heartbeatTimer) {
+        // Backward-compat: legacy callers may have set this directly. Clear it.
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
     }
@@ -1286,44 +1361,61 @@ function stopHeartbeat() {
         clearTimeout(heartbeatTimeoutTimer);
         heartbeatTimeoutTimer = null;
     }
-    if (idleCheckTimer) {
-        clearInterval(idleCheckTimer);
-        idleCheckTimer = null;
-    }
 }
 
+// Tracks the nested stale-check setTimeout from the idle-check poller.
+// Previously this was an anonymous setTimeout — no handle, couldn't be
+// cancelled. If the page hid right after scheduling it (or stopIdleCheck
+// fired), the timer would still run and could close a healthy socket.
+let idleStaleCheckTimer = null;
+
 /**
- * Start idle connection check - detects stale connections faster
- * If no data received for IDLE_THRESHOLD, send a ping to verify connection
+ * Start idle connection check — detects stale connections faster.
+ * If no data received for IDLE_THRESHOLD, send a ping to verify connection.
+ *
+ * Routed through registerPoller: visibility handling is centralized.
+ * The nested stale-check timer now has a handle so it can be cancelled.
  */
 function startIdleCheck() {
-    if (idleCheckTimer) clearInterval(idleCheckTimer);
+    stopIdleCheck();
     lastDataReceived = Date.now();
 
-    idleCheckTimer = setInterval(() => {
-        // Skip idle checks while tab is hidden — timer drift causes false positives
-        if (document.visibilityState === 'hidden') return;
-
+    registerPoller('idle-check', () => {
         if (!ctx.socket || ctx.socket.readyState !== WebSocket.OPEN) return;
 
         const idle = Date.now() - lastDataReceived;
-        if (idle > IDLE_THRESHOLD) {
-            // No data for a while - send a ping to verify connection is alive
-            console.log(`Connection idle for ${idle}ms, sending keepalive ping`);
-            ctx.socket.send(JSON.stringify({ type: 'ping' }));
+        if (idle <= IDLE_THRESHOLD) return;
 
-            // If we don't get a pong soon, heartbeat timeout will catch it
-            // But also set a shorter timeout for this specific check
-            setTimeout(() => {
-                if (document.visibilityState === 'hidden') return;
-                const stillIdle = Date.now() - lastDataReceived;
-                if (stillIdle > IDLE_THRESHOLD + HEARTBEAT_TIMEOUT) {
-                    console.log('Connection appears stale, forcing reconnect');
-                    if (ctx.socket) ctx.socket.close();
-                }
-            }, HEARTBEAT_TIMEOUT);
-        }
-    }, 5000);  // Check every 5s
+        // No data for a while — ping to verify the connection is alive.
+        console.log(`Connection idle for ${idle}ms, sending keepalive ping`);
+        ctx.socket.send(JSON.stringify({ type: 'ping' }));
+
+        // Schedule a follow-up stale-check; clear any pending one first
+        // so rapid ticks don't stack handles. The handle is module-level
+        // so stopIdleCheck can cancel it cleanly.
+        if (idleStaleCheckTimer) clearTimeout(idleStaleCheckTimer);
+        idleStaleCheckTimer = setTimeout(() => {
+            idleStaleCheckTimer = null;
+            const stillIdle = Date.now() - lastDataReceived;
+            if (stillIdle > IDLE_THRESHOLD + HEARTBEAT_TIMEOUT) {
+                console.log('Connection appears stale, forcing reconnect');
+                if (ctx.socket) ctx.socket.close();
+            }
+        }, HEARTBEAT_TIMEOUT);
+    }, 5000);
+}
+
+function stopIdleCheck() {
+    unregisterPoller('idle-check');
+    if (idleCheckTimer) {
+        // Backward-compat for any legacy direct assignment.
+        clearInterval(idleCheckTimer);
+        idleCheckTimer = null;
+    }
+    if (idleStaleCheckTimer) {
+        clearTimeout(idleStaleCheckTimer);
+        idleStaleCheckTimer = null;
+    }
 }
 
 /**
@@ -1417,8 +1509,10 @@ function updateActivityDisplay() {
  * Start periodic activity display updates
  */
 function startActivityUpdates() {
-    if (activityUpdateTimer) return;
-    activityUpdateTimer = setInterval(updateActivityDisplay, 5000);
+    // Routed through registerPoller for centralized visibility handling.
+    // Previously plain setInterval with no visibility check — wasted ticks
+    // when the tab was hidden (browsers throttle but don't suspend).
+    registerPoller('activity-updates', updateActivityDisplay, 5000);
 }
 
 /**
@@ -11020,6 +11114,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=342', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=343', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
