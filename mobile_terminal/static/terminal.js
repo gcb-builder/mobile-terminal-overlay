@@ -107,7 +107,6 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
 // State
 // ctx.terminal initialized by context.js (null)
 // ctx.socket initialized by context.js (null)
-let isControlUnlocked = true;  // Controls always enabled (no lock)
 let interactiveMode = false;   // Terminal keyboard passthrough (off by default)
 let interactiveIdleTimer = null;  // Auto-disable after inactivity
 // ctx.config initialized by context.js (null)
@@ -738,7 +737,7 @@ function initTerminal() {
         // On desktop, terminal is view-only — all input goes through the input bar
         // Only allow direct terminal input in interactive mode (vim/top/fzf)
         if (ctx.uiMode === 'desktop-multipane' && !interactiveMode) return;
-        if (isControlUnlocked && !isPreviewMode() && ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
+        if (!isPreviewMode() && ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
             // Skip during active composition - wait for compositionend then onData fires
             if (isComposing) {
                 return;
@@ -2391,7 +2390,7 @@ function setupTerminalFocus() {
 
     // Tap ctx.terminal to focus and show keyboard (mobile only — desktop uses input bar)
     terminalContainer.addEventListener('click', () => {
-        if (isControlUnlocked && ctx.uiMode !== 'desktop-multipane') {
+        if (ctx.uiMode !== 'desktop-multipane') {
             ctx.terminal.focus();
         }
     });
@@ -2524,11 +2523,9 @@ async function populateUI() {
             btn.className = 'role-btn';
             btn.textContent = role.label;
             btn.addEventListener('click', () => {
-                if (isControlUnlocked) {
-                    // Ensure ctx.terminal is focused/active before sending input
-                    if (ctx.terminal) ctx.terminal.focus();
-                    sendInput(role.insert);
-                }
+                // Ensure ctx.terminal is focused/active before sending input
+                if (ctx.terminal) ctx.terminal.focus();
+                sendInput(role.insert);
             });
             roleBar.appendChild(btn);
         });
@@ -3949,13 +3946,11 @@ function setupEventListeners() {
         btn.addEventListener('pointerup', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (isControlUnlocked) {
-                // Ensure ctx.terminal is focused/active before sending input
-                if (ctx.terminal) ctx.terminal.focus();
-                const keyName = btn.dataset.key;
-                const key = keyMap[keyName] || keyName;
-                sendInput(key);
-            }
+            // Ensure ctx.terminal is focused/active before sending input
+            if (ctx.terminal) ctx.terminal.focus();
+            const keyName = btn.dataset.key;
+            const key = keyMap[keyName] || keyName;
+            sendInput(key);
         });
     });
 
@@ -3964,8 +3959,6 @@ function setupEventListeners() {
         btn.addEventListener('pointerup', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (!isControlUnlocked) return;
-
             // Ensure ctx.terminal is focused/active before sending input
             if (ctx.terminal) ctx.terminal.focus();
             const keyName = btn.dataset.key;
@@ -4181,8 +4174,6 @@ function setupViewportHandler() {
 // Enable paste from clipboard
 function setupClipboard() {
     document.addEventListener('paste', (e) => {
-        if (!isControlUnlocked) return;
-
         // If an input or textarea has focus, let the browser handle paste natively
         const tag = document.activeElement?.tagName;
         if (tag === 'INPUT' || tag === 'TEXTAREA') return;
@@ -5426,8 +5417,6 @@ function setupCommandHistory() {
     let inputBuffer = '';
 
     ctx.terminal.onKey(({ key, domEvent }) => {
-        if (!isControlUnlocked) return;
-
         // Enter key - save to history
         if (domEvent.key === 'Enter') {
             if (inputBuffer.trim()) {
@@ -5774,10 +5763,8 @@ function switchToLogView() {
     }
     hideAllContainers();
     if (logView) logView.classList.remove('hidden');
-    // Show control bars if unlocked (same as ctx.terminal view)
-    if (isControlUnlocked) {
-        controlBarsContainer.classList.remove('hidden');
-    }
+    // Show control bars (always — lock removed)
+    controlBarsContainer.classList.remove('hidden');
     updateViewSwitcher();
     updateActionBar();
     // Restore active prompt pre (hidden in ctx.terminal view)
@@ -5805,10 +5792,7 @@ function switchToTerminalView() {
     ctx.currentView = 'terminal';
     hideAllContainers();
     if (terminalView) terminalView.classList.remove('hidden');
-    // Only show control bars if unlocked
-    if (isControlUnlocked) {
-        controlBarsContainer.classList.remove('hidden');
-    }
+    controlBarsContainer.classList.remove('hidden');
     updateViewSwitcher();
     updateActionBar();
     updateTerminalAgentSelector();
@@ -5829,7 +5813,7 @@ function switchToTerminalView() {
             setOutputMode('full');
             // Auto-focus ctx.terminal to enable keyboard input (desktop only)
             // On touch devices, focusing opens the soft keyboard which is disruptive
-            if (ctx.terminal && isControlUnlocked && !('ontouchstart' in window)) {
+            if (ctx.terminal && !('ontouchstart' in window)) {
                 ctx.terminal.focus();
             }
         });
@@ -5848,9 +5832,7 @@ function switchToTeamView() {
     const teamViewEl = document.getElementById('teamView');
     if (teamViewEl) teamViewEl.classList.remove('hidden');
     // Show same bottom bars as log/terminal
-    if (isControlUnlocked) {
-        controlBarsContainer.classList.remove('hidden');
-    }
+    controlBarsContainer.classList.remove('hidden');
     updateViewSwitcher();
     updateActionBar();
     // Lightweight mode -- no xterm rendering
@@ -10588,7 +10570,6 @@ function setupDesktopShortcuts() {
     // Terminal control keys: work even when input is focused
     document.addEventListener('keydown', (e) => {
         if (ctx.uiMode !== 'desktop-multipane') return;
-        if (!isControlUnlocked) return;
 
         // Skip if compose/challenge/palette modal is open
         if (document.querySelector('.compose-modal:not(.hidden)') ||
@@ -11030,6 +11011,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=336', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=337', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
