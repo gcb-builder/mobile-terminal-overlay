@@ -532,24 +532,20 @@ def create_app(config: Config) -> FastAPI:
                 logger.info(f"[TIMING] select-pane took {time.time()-_t3:.3f}s")
                 logger.info(f"Switched tmux to pane {target_id}")
 
-                # Verify switch completed (max 1s total, not per-iteration)
+                # Single verification call (was a 1-second polling loop —
+                # but tmux's select-pane is synchronous, the next
+                # display-message returns the new pane, and the
+                # ``verified`` flag in the response is never consumed by
+                # the client). One subprocess call instead of up to 20.
                 _t4 = time.time()
-                _verify_iterations = 0
-                _verify_deadline = _t4 + 1.0  # Hard cap at 1 second total
-                while time.time() < _verify_deadline:
-                    _verify_iterations += 1
-                    try:
-                        current = await app.state.runtime.display_message(
-                            session, "#{window_index}:#{pane_index}"
-                        )
-                        if current == target_id:
-                            switch_verified = True
-                            break
-                    except Exception:
-                        pass  # Continue loop, will exit via deadline
-                    await asyncio.sleep(0.05)
-                logger.info(f"[TIMING] verify loop took {time.time()-_t4:.3f}s ({_verify_iterations} iterations)")
-
+                try:
+                    current = await app.state.runtime.display_message(
+                        session, "#{window_index}:#{pane_index}"
+                    )
+                    switch_verified = (current == target_id)
+                except Exception:
+                    switch_verified = False
+                logger.info(f"[TIMING] verify took {time.time()-_t4:.3f}s")
                 if not switch_verified:
                     logger.warning(f"Target switch verification failed for {target_id}")
         except Exception as e:

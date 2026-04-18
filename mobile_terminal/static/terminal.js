@@ -3310,10 +3310,12 @@ async function selectTarget(targetId, isInitialSync = false) {
                 logContent.innerHTML = '<div class="log-loading">Loading...</div>';
             }
 
-            // Full log reload after WebSocket reconnect settles
-            setTimeout(() => {
-                loadLogContent();
-            }, 500);
+            // Load log content directly. Earlier code waited 500ms here
+            // for "WebSocket reconnect to settle" — but the WS does NOT
+            // reconnect on target switch (server keeps it alive and
+            // swaps the tmux pane underneath, see server.py:select_target),
+            // so the wait was pure dead delay.
+            loadLogContent();
         }
 
     } catch (error) {
@@ -11011,6 +11013,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=338', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=339', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
