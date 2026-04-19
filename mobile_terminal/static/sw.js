@@ -1,6 +1,6 @@
 // Service Worker for Mobile Terminal PWA
 // __BASE_PATH is injected by the server at the top of this file
-const CACHE_NAME = 'terminal-v349';
+const CACHE_NAME = 'terminal-v350';
 
 // Install event - cache essential assets
 self.addEventListener('install', (event) => {

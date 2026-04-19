@@ -61,6 +61,55 @@ def save_queue_to_disk(session: str, items: list, pane_id: Optional[str] = None)
         logger.error(f"Error saving queue for {session}: {e}")
 
 
+def get_sent_ids_file(session: str, pane_id: Optional[str] = None) -> Path:
+    """Sidecar file holding recently-sent item ids for replay protection.
+
+    Lives next to the queue JSONL so it shares the same mkdir/dir scheme,
+    but in its own ``.sent.jsonl`` to keep the queue file untouched by
+    sent-id bookkeeping (a corrupt sent-ids file must never block queue
+    operations).
+    """
+    base = get_queue_file(session, pane_id)
+    return base.with_suffix(".sent.jsonl")
+
+
+def load_sent_ids_from_disk(session: str, pane_id: Optional[str] = None) -> list:
+    """Load recently-sent id snapshots from disk.
+
+    Returns a list of {id, sent_at, item: <full QueueItem dict>} entries.
+    Caller is responsible for TTL filtering — this function reads as-is
+    so the same file can be inspected for debugging.
+    """
+    f = get_sent_ids_file(session, pane_id)
+    out = []
+    if f.exists():
+        try:
+            with open(f, "r") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        out.append(json.loads(line))
+        except Exception as e:
+            logger.warning(f"Error loading sent-ids for {session}: {e}")
+    return out
+
+
+def save_sent_ids_to_disk(session: str, entries: list, pane_id: Optional[str] = None):
+    """Write recently-sent id snapshots to disk.
+
+    Each entry is a dict {id, sent_at, item}. Caller passes an already-
+    pruned list — this function writes verbatim.
+    """
+    f = get_sent_ids_file(session, pane_id)
+    try:
+        QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(f, "w") as fh:
+            for entry in entries:
+                fh.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        logger.error(f"Error saving sent-ids for {session}: {e}")
+
+
 # ── Backlog persistence ────────────────────────────────────────────────
 
 
@@ -812,7 +861,14 @@ class CommandQueue:
         return self._queues[key]
 
     def _load_from_disk(self, session: str, pane_id: Optional[str] = None):
-        """Load queue from disk for a session+pane."""
+        """Load queue + recently-sent ids from disk for a session+pane.
+
+        Sent ids survive the restart so reconcileQueue from a client
+        that missed the queue_sent broadcast can still be replay-blocked.
+        Without disk persistence the in-memory _recently_sent dict is
+        wiped on every restart, which is exactly when the bug bites
+        (server restart between drain and client reconnect).
+        """
         key = self._queue_key(session, pane_id)
         items_data = load_queue_from_disk(session, pane_id)
         items = []
@@ -836,12 +892,63 @@ class CommandQueue:
             self._queues[key] = items
             logger.info(f"Loaded {len(items)} queued items for {key}")
 
+        # Restore the recently-sent cache, applying TTL on read so
+        # entries from a long-stopped server don't leak in.
+        sent_data = load_sent_ids_from_disk(session, pane_id)
+        if sent_data:
+            now = time.time()
+            cache = {}
+            for entry in sent_data:
+                try:
+                    sid = entry["id"]
+                    sent_at = float(entry.get("sent_at", 0))
+                    if now - sent_at > self.SENT_ID_TTL_SECONDS:
+                        continue  # past TTL, skip
+                    item_dict = entry.get("item") or {}
+                    item = QueueItem(
+                        id=item_dict.get("id", sid),
+                        text=item_dict.get("text", ""),
+                        policy=item_dict.get("policy", "safe"),
+                        status=item_dict.get("status", "sent"),
+                        created_at=item_dict.get("created_at", sent_at),
+                        sent_at=sent_at,
+                        error=item_dict.get("error"),
+                        backlog_id=item_dict.get("backlog_id"),
+                    )
+                    cache[sid] = (item, sent_at)
+                except Exception as e:
+                    logger.warning(f"Skipping invalid sent-id entry: {e}")
+            if cache:
+                self._recently_sent[key] = cache
+                logger.info(f"Loaded {len(cache)} replay-protect entries for {key}")
+
     def _save_to_disk(self, session: str, pane_id: Optional[str] = None):
-        """Save queue to disk for a session+pane."""
+        """Save queue + recently-sent ids to disk for a session+pane.
+
+        The two files share the same lifecycle: every queue mutation
+        rewrites both. Cheap (small files, written rarely), and keeps
+        the on-disk state self-consistent after any restart.
+        """
         key = self._queue_key(session, pane_id)
         queue = self._queues.get(key, [])
         items_data = [asdict(item) for item in queue]
         save_queue_to_disk(session, items_data, pane_id)
+
+        # Persist the recently-sent cache too. Prune past-TTL entries
+        # before writing so the file stays bounded over time.
+        sent_cache = self._recently_sent.get(key, {})
+        if sent_cache or get_sent_ids_file(session, pane_id).exists():
+            now = time.time()
+            entries = []
+            for sid, (item, sent_at) in sent_cache.items():
+                if now - sent_at > self.SENT_ID_TTL_SECONDS:
+                    continue
+                entries.append({
+                    "id": sid,
+                    "sent_at": sent_at,
+                    "item": asdict(item),
+                })
+            save_sent_ids_to_disk(session, entries, pane_id)
 
     def _classify_policy(self, text: str) -> str:
         """Determine if command is safe or unsafe."""

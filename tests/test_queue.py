@@ -365,6 +365,45 @@ class TestReplayProtection:
         active = [i for i in self.q.list_items("sess") if i.status == "queued"]
         assert all(i.id != "X4" for i in active)
 
+    def test_replay_cache_survives_restart_via_disk(self, tmp_path, monkeypatch):
+        # Most realistic scenario: server drains item, restarts (deploy.sh,
+        # systemd respawn, crash recovery), client reconnects after a
+        # network switch and reconcileQueue re-POSTs the same id. The
+        # in-memory cache is gone; without disk persistence the agent
+        # would re-execute. With disk persistence, the cache reloads
+        # and the replay-block still fires.
+        from mobile_terminal import models
+        monkeypatch.setattr(models, "QUEUE_DIR", tmp_path)
+
+        # First "process": enqueue, mark sent (which writes the disk
+        # cache via the real _save_to_disk path).
+        q1 = CommandQueue()
+        q1.enqueue("sess", "echo hi", item_id="X9")
+        # Simulate a real successful drain: status flip + cache populate
+        # + disk save (the same sequence _send_item performs on success).
+        key = q1._queue_key("sess")
+        item = q1._queues[key][0]
+        item.status = "sent"
+        item.sent_at = time.time()
+        q1._recently_sent.setdefault(key, {})[item.id] = (item, item.sent_at)
+        q1._save_to_disk("sess")
+
+        # "Restart": brand-new CommandQueue. _load_from_disk fires on
+        # first _get_queue access — and it filters out sent items, so
+        # the queue starts empty. The recently-sent cache loads from
+        # the sidecar file.
+        q2 = CommandQueue()
+        active = q2.list_items("sess")  # triggers _load_from_disk
+        assert all(i.id != "X9" for i in active), "sent item must NOT survive in active queue"
+
+        # Now the client's reconcile re-POSTs the same id. Cache should
+        # block it.
+        item2, new2 = q2.enqueue("sess", "echo hi", item_id="X9")
+        assert new2 is False, "cache must survive restart and replay-block the re-enqueue"
+        assert item2.status == "sent"
+        active = [i for i in q2.list_items("sess") if i.status == "queued"]
+        assert all(i.id != "X9" for i in active)
+
     def test_replay_cache_scoped_per_pane(self):
         # Same id sent on pane A; enqueued fresh on pane B should NOT
         # be replay-blocked (different queue keys, different histories).
