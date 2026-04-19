@@ -4443,12 +4443,42 @@ function setupComposeMode() {
         await Promise.allSettled(inflightUploads.slice());
     }
 
+    // If compose was opened to edit an existing queue item (composeEditingItemId
+    // set by prefillCompose), dequeue the original BEFORE the new send/enqueue
+    // lands. Awaited so the server sees `remove → enqueue` in order — without
+    // the await, parallel POSTs let reconcileQueue (on a WS reconnect during
+    // the gap) refetch the original from the server and produce a duplicate.
+    // The flag is consumed (cleared) so a subsequent action on the same modal
+    // open doesn't try to re-remove a now-gone item.
+    async function consumeEditingItemRemoval() {
+        if (!composeEditingItemId) return;
+        const id = composeEditingItemId;
+        composeEditingItemId = null;
+        try {
+            const params = new URLSearchParams({
+                session: ctx.currentSession,
+                item_id: id,
+                token: ctx.token,
+            });
+            if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
+            await apiFetch(`/api/queue/remove?${params}`, { method: 'POST' });
+        } catch (e) {
+            console.warn('Failed to dequeue edited item before resend:', e);
+            // Continue anyway — worst case is the duplicate this tries to
+            // prevent, which is the original behavior.
+        }
+    }
+
     // Send to terminal (text + attachment paths)
     // If a different pane is selected, use the text API with pane_id
     async function sendComposedText(withEnter = false) {
         await awaitInflightUploads();
         let text = withAttachmentPaths(composeInput.value);
         if (!text) return;
+
+        // If editing an existing queue item, remove it first (awaited)
+        // so the send doesn't leave the original behind.
+        await consumeEditingItemRemoval();
 
         const targetPane = getComposeTargetPane();
         if (targetPane && targetPane !== ctx.activeTarget) {
@@ -4471,13 +4501,14 @@ function setupComposeMode() {
     async function queueComposedText() {
         await awaitInflightUploads();
         let text = withAttachmentPaths(composeInput.value);
-        if (text) {
-            enqueueCommand(text).then(success => {
-                if (success) {
-                    closeComposeModal(true);
-                }
-            });
-        }
+        if (!text) return;
+
+        // If editing an existing queue item, remove it BEFORE the
+        // enqueue so the server sees a clean replace, not a duplicate.
+        await consumeEditingItemRemoval();
+
+        const ok = await enqueueCommand(text);
+        if (ok) closeComposeModal(true);
     }
 
     // Insert button - insert text only (no Enter)
@@ -5253,6 +5284,13 @@ function closeComposeModal(clearDraft = false) {
         sessionStorage.setItem('composeDraft', composeDraft);
         sessionStorage.setItem('composeDraftAttachments', JSON.stringify(draftAttachments));
     }
+    // Always clear the editing-item marker on close. Cancel path: the
+    // original stays in the queue (we never removed it). Send/Queue
+    // paths already consumed the marker via consumeEditingItemRemoval
+    // before reaching here, so this is a no-op for them. Without this
+    // clear, a subsequent NON-edit open of compose would inherit the
+    // stale id and try to remove an unrelated item.
+    composeEditingItemId = null;
     composeModal.classList.add('hidden');
     composeInput.blur();
     clearAttachments();
@@ -6573,11 +6611,25 @@ function createLogCard(msg) {
     return card;
 }
 
+// Tracks which queue item (if any) is currently being edited in the
+// compose modal. Set by prefillCompose when called from queue.js's
+// "Edit" path; consumed by sendComposedText/queueComposedText to
+// dequeue the original BEFORE the new send/enqueue lands. Cleared on
+// modal close. Without this, a parallel remove+enqueue can produce
+// duplicates when reconcileQueue (e.g. on mobile WS reconnect)
+// refetches server state in the gap between the two POSTs.
+let composeEditingItemId = null;
+
 /**
- * Pre-fill compose modal with text for AI debugging.
- * Exposed on window so ES module features (activity.js) can call it.
+ * Pre-fill compose modal with text. Optional ``editingItemId`` marks
+ * this open as an edit of an existing queue item, so on Send/Queue
+ * the original is removed first (awaited) and only then re-enqueued.
+ *
+ * Exposed on window so ES module features (activity.js, queue.js)
+ * can call it.
  */
-function prefillCompose(text) {
+function prefillCompose(text, editingItemId = null) {
+    composeEditingItemId = editingItemId;
     composeDraft = text;
     composeInput.value = text;
     // Populate pane selector
@@ -11153,6 +11205,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=347', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=348', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

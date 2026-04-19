@@ -539,12 +539,17 @@ function insertNextToInput(specificId) {
         : queueItems.find(i => i.status === 'queued');
     if (!item) return;
 
-    // Open in compose modal for full editing
+    // Pass the original item's id along so compose's Send/Queue handler
+    // can dequeue-then-re-enqueue atomically (awaited), avoiding the
+    // race where the parallel remove+enqueue lets reconcileQueue (on a
+    // WS reconnect) refetch the original from the server before the
+    // remove POST landed — which produced visible duplicates.
+    //
+    // Side benefit: the original stays in the queue while the user is
+    // editing. If they cancel the modal, nothing was lost.
     if (window.prefillCompose) {
-        window.prefillCompose(item.text);
+        window.prefillCompose(item.text, item.id);
     }
-
-    removeQueueItem(item.id);
 }
 
 async function reorderQueueItem(itemId, direction) {
