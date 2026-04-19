@@ -739,6 +739,15 @@ class CommandQueue:
         r'^\s*git\s+push',   # git push
     ]
 
+    # How long to remember the ids of items that were sent. Replay
+    # protection for the case where the WS dropped between server-side
+    # send and client-side queue_sent receipt — without this, the
+    # client's reconcileQueue on reconnect re-enqueues the item by id
+    # and the agent re-executes a prompt the user thought was done.
+    # 10 minutes is comfortably longer than any plausible WS reconnect
+    # window while keeping memory bounded.
+    SENT_ID_TTL_SECONDS = 600
+
     def __init__(self):
         self._queues: Dict[str, List[QueueItem]] = {}
         self._paused: Dict[str, bool] = {}
@@ -747,6 +756,13 @@ class CommandQueue:
         self._processor_task = None
         self._app = None  # Set during startup
         self._loaded_sessions: set = set()  # Track which sessions loaded from disk
+        # Recently-sent item ids (per queue key) with the historical
+        # QueueItem snapshot. Lets us tell a duplicate enqueue ("the
+        # client missed our queue_sent broadcast and is re-asking")
+        # apart from a genuinely new item. Snapshot returned to the
+        # client with is_new=False so the client can update its local
+        # state to 'sent' without us re-running anything.
+        self._recently_sent: Dict[str, Dict[str, tuple]] = {}  # key → {id → (item, ts)}
         # Wakeup signal for the processor loop. Set by enqueue() so the
         # processor doesn't have to wait up to its idle timeout to notice
         # that there's work to do. Created lazily to avoid binding to a
@@ -858,14 +874,43 @@ class CommandQueue:
 
         Returns (item, is_new) tuple. If item_id already exists, returns existing item
         with is_new=False (idempotency).
+
+        Replay protection: if the id was sent within the last
+        SENT_ID_TTL_SECONDS but the client is asking again (typically
+        because the queue_sent WS broadcast was missed during a
+        reconnect), return the historical sent item with is_new=False
+        instead of re-creating and re-running it. Without this guard,
+        reconcileQueue on a flaky-network reconnect would re-execute
+        the prompt the user thought was done.
         """
         queue = self._get_queue(session, pane_id)
+        key = self._queue_key(session, pane_id)
 
         # Idempotency check: if ID provided and exists, return existing
         if item_id:
             for existing in queue:
                 if existing.id == item_id:
                     return (existing, False)  # Already exists
+            # Replay-protection check: was this id recently sent? Prune
+            # expired entries lazily on every check so the dict stays
+            # bounded even if no fresh sends arrive.
+            sent_for_key = self._recently_sent.get(key, {})
+            if sent_for_key:
+                now = time.time()
+                expired = [
+                    sid for sid, (_, ts) in sent_for_key.items()
+                    if now - ts > self.SENT_ID_TTL_SECONDS
+                ]
+                for sid in expired:
+                    del sent_for_key[sid]
+                if item_id in sent_for_key:
+                    historical, _ = sent_for_key[item_id]
+                    logger.info(
+                        f"Replay-protect: enqueue with id={item_id[:8]}.. "
+                        f"matches recently-sent item, returning sent snapshot "
+                        f"(no re-execution)"
+                    )
+                    return (historical, False)
 
         # Determine policy
         if policy == "auto":
@@ -1048,6 +1093,14 @@ class CommandQueue:
             item.status = "sent"
             item.sent_at = time.time()
             self._save_to_disk(session, pane_id)  # Persist sent status
+
+            # Record the id in the recently-sent cache for replay
+            # protection. If a flaky-WS client misses the queue_sent
+            # broadcast and re-asks via reconcileQueue, the next enqueue
+            # with this id will return is_new=False instead of running
+            # the prompt a second time.
+            key = self._queue_key(session, pane_id)
+            self._recently_sent.setdefault(key, {})[item.id] = (item, item.sent_at)
 
             # Update PTY-input bookkeeping so other code (e.g. desktop
             # activity detector) doesn't think this came from outside MTO.

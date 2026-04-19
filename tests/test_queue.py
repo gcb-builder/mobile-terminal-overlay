@@ -289,3 +289,139 @@ class TestGetNextUnsafe:
         item, _ = self.q.enqueue("sess", "sudo rm", policy="unsafe", item_id="u1")
         item.status = "sent"
         assert self.q.get_next_unsafe("sess") is None
+
+
+# ---------------------------------------------------------------------------
+# Replay protection — re-enqueue of an already-sent id must not re-run.
+# Regression guard for the case where a client missed the queue_sent WS
+# broadcast (mobile reconnect) and reconcileQueue re-POSTed the item.
+# ---------------------------------------------------------------------------
+
+class TestReplayProtection:
+    def setup_method(self):
+        self.q = CommandQueue()
+        self.q._loaded_sessions = set()
+        self.q._load_from_disk = lambda *a: None
+        self.q._save_to_disk = lambda *a: None
+
+    def _mark_sent(self, session, item_id, ts=None):
+        """Simulate what _send_item does on a successful drain."""
+        key = self.q._queue_key(session)
+        # Find the item in the queue, mark it sent, populate cache.
+        for it in self.q._queues.get(key, []):
+            if it.id == item_id:
+                it.status = "sent"
+                it.sent_at = ts if ts is not None else time.time()
+                self.q._recently_sent.setdefault(key, {})[item_id] = (it, it.sent_at)
+                return it
+        raise AssertionError(f"item {item_id} not found")
+
+    def test_re_enqueue_after_send_returns_existing_not_new(self):
+        # First enqueue + simulated drain.
+        item1, new1 = self.q.enqueue("sess", "echo hi", item_id="X1")
+        assert new1 is True
+        self._mark_sent("sess", "X1")
+
+        # Item is gone from the active queue (drained + sent).
+        # Simulate the client's reconcile re-enqueueing the same id.
+        item2, new2 = self.q.enqueue("sess", "echo hi", item_id="X1")
+
+        assert new2 is False, "second enqueue with same id must NOT be treated as new"
+        assert item2.status == "sent", "must return the historical sent snapshot"
+        # The item is NOT re-added to the active queue — agent must not re-run.
+        active = [i for i in self.q.list_items("sess") if i.status == "queued"]
+        assert all(i.id != "X1" for i in active), "sent id must not reappear as queued"
+
+    def test_replay_cache_expires_after_ttl(self):
+        # Simulate a server restart between drain and re-enqueue:
+        #  - item was sent in a previous process
+        #  - new process loaded only queued items from disk (sent items
+        #    don't survive _load_from_disk filtering), so the in-memory
+        #    queue is empty
+        #  - the recently_sent cache entry is what's left, but it's
+        #    older than the TTL so it should be pruned and ignored
+        item1, _ = self.q.enqueue("sess", "echo hi", item_id="X2")
+        old_ts = time.time() - (self.q.SENT_ID_TTL_SECONDS + 60)
+        self._mark_sent("sess", "X2", ts=old_ts)
+        # Drop from active queue so only the cache entry gates this id.
+        self.q._queues[self.q._queue_key("sess")] = []
+
+        # Re-enqueue. Cache entry is past TTL → pruned → fresh enqueue.
+        item2, new2 = self.q.enqueue("sess", "echo hi", item_id="X2")
+        assert new2 is True
+        assert item2.status == "queued"
+
+    def test_replay_cache_blocks_after_restart_within_ttl(self):
+        # Same restart simulation as above, but with a fresh timestamp.
+        # The cache entry should still be live → block the re-enqueue.
+        item1, _ = self.q.enqueue("sess", "echo hi", item_id="X4")
+        self._mark_sent("sess", "X4")
+        self.q._queues[self.q._queue_key("sess")] = []  # rebuilt-on-restart
+
+        item2, new2 = self.q.enqueue("sess", "echo hi", item_id="X4")
+        assert new2 is False, "cache must replay-block within TTL even when queue is empty"
+        assert item2.status == "sent"
+        # And the item must NOT be re-added to the queue.
+        active = [i for i in self.q.list_items("sess") if i.status == "queued"]
+        assert all(i.id != "X4" for i in active)
+
+    def test_replay_cache_scoped_per_pane(self):
+        # Same id sent on pane A; enqueued fresh on pane B should NOT
+        # be replay-blocked (different queue keys, different histories).
+        item1, _ = self.q.enqueue("sess", "echo hi", item_id="X3", pane_id="0:0")
+        # Mark sent on pane 0:0
+        key_a = self.q._queue_key("sess", "0:0")
+        item1.status = "sent"
+        item1.sent_at = time.time()
+        self.q._recently_sent.setdefault(key_a, {})[item1.id] = (item1, item1.sent_at)
+
+        item2, new2 = self.q.enqueue("sess", "echo hi", item_id="X3", pane_id="1:0")
+        assert new2 is True, "different pane must not inherit the other pane's sent history"
+        assert item2.status == "queued"
+
+
+# ---------------------------------------------------------------------------
+# Wakeup signaling — enqueue() and resume() flip the asyncio event so the
+# processor loop runs immediately instead of waiting out its idle timeout.
+# ---------------------------------------------------------------------------
+
+class TestWakeup:
+    def setup_method(self):
+        self.q = CommandQueue()
+        self.q._loaded_sessions = set()
+        self.q._load_from_disk = lambda *a: None
+        self.q._save_to_disk = lambda *a: None
+
+    def test_wake_is_safe_before_loop_starts(self):
+        # _wakeup_event is None until _process_loop binds it. _wake()
+        # must silently no-op rather than raise — otherwise enqueue()
+        # would crash whenever it ran outside an event loop (e.g.
+        # during startup or in tests).
+        assert self.q._wakeup_event is None
+        self.q._wake()  # Must not raise.
+
+    def test_enqueue_calls_wake(self):
+        # Bind a fake event so we can observe the set() call without
+        # spinning up a real asyncio loop.
+        class FakeEvent:
+            def __init__(self):
+                self.set_called = False
+            def set(self):
+                self.set_called = True
+        fake = FakeEvent()
+        self.q._wakeup_event = fake
+        self.q.enqueue("sess", "echo hi")
+        assert fake.set_called is True
+
+    def test_resume_calls_wake(self):
+        class FakeEvent:
+            def __init__(self):
+                self.set_called = False
+            def set(self):
+                self.set_called = True
+        fake = FakeEvent()
+        self.q._wakeup_event = fake
+        self.q.pause("sess")
+        fake.set_called = False  # Reset after pause (which doesn't wake).
+        self.q.resume("sess")
+        assert fake.set_called is True, "resume must wake the processor"
