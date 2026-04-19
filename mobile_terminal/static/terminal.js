@@ -7540,7 +7540,13 @@ function setupSelectionBacklog(container) {
     cardBarSplit.className = 'selection-fab-btn split';
     cardBarSplit.textContent = '+ Split';
     cardBar.appendChild(cardBarSplit);
+    const cardBarCopy = document.createElement('button');
+    cardBarCopy.type = 'button';
+    cardBarCopy.className = 'selection-fab-btn';
+    cardBarCopy.textContent = 'Copy';
+    cardBar.appendChild(cardBarCopy);
     const cardBarDone = document.createElement('button');
+    cardBarDone.type = 'button';
     cardBarDone.className = 'selection-fab-btn';
     cardBarDone.textContent = 'Done';
     cardBarDone.style.background = 'var(--bg-tertiary)';
@@ -7644,6 +7650,39 @@ function setupSelectionBacklog(container) {
         const lines = splitBacklogLines(text);
         for (const line of lines) addBacklogItem(line.slice(0, 120), line, 'human');
         ctx.showToast('Added ' + lines.length + ' items to backlog', 'success');
+        exitCardSelect();
+    });
+
+    cardBarCopy.addEventListener('click', async () => {
+        const text = getSelectedText();
+        if (!text) return;
+        try {
+            // Modern path: navigator.clipboard. Requires secure context
+            // (https or localhost). Falls through to the legacy path if
+            // unavailable (e.g. plain http on an internal IP).
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                // Legacy fallback via a hidden textarea + execCommand.
+                // Works in non-secure contexts where the Clipboard API
+                // is gated. Deprecated but widely supported.
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                ta.style.pointerEvents = 'none';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+            }
+            const n = selectedCards.size;
+            ctx.showToast(`Copied ${n} card${n === 1 ? '' : 's'}`, 'success');
+        } catch (e) {
+            console.error('Copy failed:', e);
+            ctx.showToast('Copy failed', 'error');
+            return;
+        }
         exitCardSelect();
     });
 
@@ -11114,6 +11153,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=346', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=347', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
