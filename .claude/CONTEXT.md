@@ -3,12 +3,55 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Compose attachment race + path-join cleanup
-- **Last Updated:** 2026-04-13
-- **Server Version:** v333 (terminal.js), v239 (styles.css), SW v128
-- **Server Start:** `./venv/bin/mobile-terminal --session claude --port 8080 --base-path /terminal --no-auth --host 0.0.0.0 --verbose &`
+- **Stage:** Codebase audit batch complete — six numbered PRs + four follow-up bug fixes landed
+- **Last Updated:** 2026-04-19
+- **Server Version:** v346 (terminal.js + styles.css now bumped together via scripts/version.txt)
+- **Server Start:** `./venv/bin/mobile-terminal --session claude --port 8080 --base-path /terminal --no-auth --host 0.0.0.0 &` (drop `--verbose` if still in your systemd unit — it's noisy and competes for journal I/O)
 
-## Recent: 2026-04-13 (final) — Compose attachment race + path-join cleanup (commit 19074c3)
+## Recent: 2026-04-13..19 — Codebase audit batch (PR1–PR6 + follow-ups)
+
+Cross-cutting cleanup pass driven by a four-agent parallel review of
+the codebase. Executed as ten focused commits across the user's
+priority order. Tasks tracked in TaskList.
+
+| PR | Commit | Summary |
+|---|---|---|
+| **PR1** | `d2d2169` | Single source of truth for static cache-bust: `scripts/version.txt` + `scripts/sync-version.js` propagates one integer to `index.html`, `sw.js` CACHE_NAME, and the sw.js URL inside `terminal.js`. Wired into `npm run build` (idempotent, fail-loud). Versions had drifted: JS=333, CSS=239, SW=v128, sw.js URL=v120 — all now in lock-step. |
+| **PR2** | `891d5da` | Frontend `apiFetch` standardization. 96 raw `fetch(` → `apiFetch`/`ctx.apiFetch`. 118 redundant `?token=…` strips. Only intentional raw fetches remain (the two inside `apiFetch` and `fetchWithTimeout`). |
+| | `3682de2` | PR2 follow-up: token-strip orphaned `&` in 6 URL templates (`/api/log`, `/api/status/phase`, `/api/rollback/git/status`, `/api/health/agent`, `/api/activity`). Fixed by switching `paneParam` to `?` prefix or rewriting via URLSearchParams. |
+| **PR3a** | `185d30d` | Cache `get_repo_path_info()` (1s TTL keyed by session+target) — every router was hitting it via `deps.get_current_repo_path()` which does a tmux subprocess per call. Bust on `select_target` and `switch_repo`. |
+| **PR3b** | (decision) | Keep `BacklogCandidateDetector` as a dormant skeleton — already a no-op, docstring already explains how to re-enable. No code change. |
+| **PR3c** | `bd886dc` | Unify minority error response shapes. 9 routes in backlog/permissions/queue migrated from `{"status": "error"}` (HTTP 200) to `JSONResponse({"error": …}, status_code=N)` (proper HTTP errors). |
+| **PR4 (1/2)** | `3e43e5e` | New `mobile_terminal/terminal_session.py` with shared `read_from_terminal`, `tail_sender`, `desktop_activity_monitor` runners + `TerminalSessionState` dataclass. ~220 lines of WS/SSE-duplicated code consolidated. `WebSocketSink.client_mode` added for sink-uniform reads. |
+| **PR4 (2/2)** | `902ee8a` | Both transport handlers wired to the shared module. Transport-specific bits (WS `server_keepalive` ping/pong + `write_to_terminal`, SSE `server_keepalive` comment + POST endpoints) deliberately kept inline. |
+| **PR5a** | `d9c6f30` | `registerPoller(name, fn, intervalMs)` registry + single `visibilitychange` listener pauses/resumes ALL pollers. Migrated `heartbeat`, `idle-check`, `activity-updates`. Fixed leaked nested setTimeout in idle-check (was an anonymous timer with no handle). |
+| **PR5b** | `8e4836c` | Removed `isControlUnlocked` dead control flow — variable was hardcoded `true`, 13 guard sites stripped. |
+| **PR5c** | `d668c0c` | Event delegation: queue/backlog/history per-render listener-bind passes replaced with single delegated handler at init. Init guards (`_xxxInitialized`) added to all 14 feature module `init*()` exports. |
+| **PR5d** | `257e6e5` | Unified duplicate `formatTimeAgo` (utils.js, ms) vs `formatAgo` (permissions.js, seconds — silent unit-mismatch bug). Removed the last `alert()` (docs.js Pin failure → `showToast`). |
+| **PR6** | `6948b1c` | CSS variables consolidated into `:root` (was missing/duplicated in `:root.high-contrast`). HC now overrides only what differs. `type="button"` added to all 178 unmarked `<button>` elements (defensive vs future stray `<form>` wrappers). |
+
+### Follow-up fixes that surfaced during the audit
+
+- **`98206ab`** cache bump after PR3a/3c
+- **`8e4836c`** PR5b done out of order to clear noise
+- **`ec932be`** pane-switch speedup: dropped the dead 500ms client `setTimeout` (was waiting for a WS reconnect that doesn't happen) + replaced 1-second tmux verify polling loop in `select_target` with a single subprocess call.
+- **`be1c2d8`** restored `?token=` on the WebSocket URL — PR2's bulk strip caught it despite the commit message claiming it was protected. `new WebSocket()` can't set headers, breaks auth-mode deployments.
+- **`09d00a4`** bounded the previous-client close on connect to 1s. Without this, a dead socket from the previous client (mobile network change) hung TCP for 30-120s, blowing past the client's 2s `HELLO_TIMEOUT` and triggering reconnect storms ending in auto-reload.
+- **`e118499`** PR4 oversight: SSE `event_generator`'s PTY-died cleanup referenced `pty_died` (closure local that had been migrated to `state.pty_died`). NameError silently caught by the broad `except`, so dead PTYs were inherited by next connection. Fixed.
+
+### Outside-this-scope ops fix
+
+`systemd/mto.service` had `--verbose` in `ExecStart` — removed in your working-tree edit (lives alongside the rest of the systemd reorg you've been staging). To pick up: copy/symlink to `~/.config/systemd/user/` or `/etc/systemd/system/`, `daemon-reload`, `restart`. Removes most of the journal write churn that competed with the event loop.
+
+### Known remaining work (deferred, listed for memory)
+
+- Wider `console.error`/silent-catch sweep in feature modules (PR5d landed only the alert + duplicate helper)
+- 57 `!important` uses in button states (specificity refactor)
+- ~30 hardcoded hex colors that should be `var(--*)` (notably team dots in styles.css)
+- Sourcemap shipping decision (`terminal.min.js.map` is ~990KB on every page load)
+- Remaining `setInterval`-based pollers (connection watchdog, metrics, dev status, SSE heartbeat) not yet routed through the new `registerPoller` registry — lower frequency, lower impact
+
+## Earlier: 2026-04-13 (final) — Compose attachment race + path-join cleanup (commit 19074c3)
 
 User report: image upload combined with text in composer fails to attach the image.
 

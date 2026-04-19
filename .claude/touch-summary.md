@@ -1344,3 +1344,52 @@ Unified single button showing "repo • pane" format with sectioned dropdown:
 - `sendLogCommand` going async means callers get a Promise. Existing callers fire-and-forget — same observable behavior as before.
 - "Image as multimodal attachment" (not path-as-text) remains an open feature request. Would require an agent-specific protocol mechanism. Explicitly out of scope per user direction (clean and agnostic).
 - Server restart NOT required — all client-side. Hard browser refresh for `v=333` bundle.
+
+
+---
+
+## 2026-04-19: Codebase audit batch — PR1 through PR6 (10 commits + 5 follow-ups)
+
+**Goal:** End-to-end cleanup pass driven by a four-agent parallel review (Python backend, terminal.js monolith, src/features modules, static assets/build). User chose a 6-PR landing plan in priority order: version-sync first, fetch standardization second, backend correctness third, transport parity fourth, frontend lifecycle fifth, CSS hardening sixth. PR3 and PR5 split into atomic sub-commits per user direction.
+
+**Commit sequence (chronological):**
+
+- `d2d2169` PR1: scripts/version.txt + scripts/sync-version.js. Single integer propagates to index.html (terminal.js?v= and styles.css?v=), sw.js CACHE_NAME, terminal.js sw.js URL. Wired into npm run build. Idempotent + fail-loud (exits non-zero if any expected pattern not found).
+- `891d5da` PR2: 96 raw fetch → apiFetch / ctx.apiFetch across terminal.js + 14 feature modules. 118 redundant ?token= strips. Bulk migration via /tmp/migrate-fetch.js script (one-off).
+- `3682de2` PR2 follow-up: /api/log + 5 other endpoints broken by PR2 strip orphaning the leading & in URL templates. Fixed by switching `paneParam` to `?` prefix or rewriting via URLSearchParams.
+- `185d30d` PR3a: 1-second TTL cache on get_repo_path_info (closure with _store helper preserves the priority-chain return shape). Bust on select_target + switch_repo via _invalidate_repo_path_cache.
+- `bd886dc` PR3c: 9 sites in routers/{backlog,permissions,queue}.py migrated from `return {"status": "error", "message": ...}` (HTTP 200) to `JSONResponse({"error": ...}, status_code=N)`. Frontend behavior unchanged (callers wrap in `if (resp.ok)` first).
+- `98206ab` cache bump v=336.
+- `8e4836c` PR5b: removed `isControlUnlocked` (hardcoded true). 13 guard sites stripped or simplified. 3 view-switcher blocks inlined (`if (...) classList.remove(\hidden\)` → just remove).
+- `3e43e5e` PR4 (1/2): created mobile_terminal/terminal_session.py with TerminalSessionState dataclass + read_from_terminal + tail_sender + desktop_activity_monitor. Added `client_mode: str = "tail"` to WebSocketSink so shared runners can read sink.client_mode uniformly across transports.
+- `902ee8a` PR4 (2/2): wired both transport handlers to the shared module. terminal_io.py 821→571 lines, terminal_sse.py 593→385 lines. Transport-specific bits (WS server_keepalive ping/pong + write_to_terminal in-band JSON dispatch; SSE server_keepalive `: keepalive` comment + POST endpoints) deliberately kept inline.
+- `ec932be` pane-switch speedup: removed the dead 500ms client setTimeout in selectTarget (commented as "wait for WS reconnect to settle" but WS does NOT reconnect on target switch) + replaced server-side 1s display-message polling loop with a single subprocess call (the `verified` flag in the response is never consumed by the client anyway).
+- `be1c2d8` restored ?token= on the WebSocket URL stripped by PR2. WebSockets cannot send custom headers, so the token MUST be in the URL. With --no-auth (current config) the empty string still works, but auth-mode deployments would have broken.
+- `09d00a4` bounded `app.state.active_client.close(code=4002)` with `asyncio.wait_for(..., 1.0)` in BOTH terminal_io.py and terminal_sse.py. Without the bound, a dead socket from the previous client (mobile network change) waits at the TCP layer for 30-120s, blowing past the client's 2s HELLO_TIMEOUT and triggering a reconnect storm. The OLD handler's gather tears down naturally within ~200ms once tasks notice active_client changed.
+- `e118499` SSE event_generator's `if pty_died:` was a stale closure-local reference after PR4 migrated it to state.pty_died — the WS handler was correctly migrated; SSE was missed. NameError silently swallowed by the surrounding `except Exception as e:`. Effect: dead PTYs were inherited by next connection, instant EOF, abort, retry. Now state.pty_died.
+- `d9c6f30` PR5a: registerPoller / unregisterPoller registry inside terminal.js + single visibilitychange listener that pauses ALL registered pollers wholesale. Migrated startHeartbeat, startIdleCheck, startActivityUpdates. Fixed leaked nested setTimeout in idle-check (was anonymous timer with no handle — now tracked in `idleStaleCheckTimer`). Async-loop pollers (startAgentHealthPolling, startLogAutoRefresh) deliberately not migrated — they self-manage via AbortController + per-iteration visibility checks.
+- `d668c0c` PR5c: event delegation for queue.js/backlog.js/history.js — previously each render did per-item forEach + addEventListener which was O(items) DOM work AND a leak risk if renders raced. Now one delegated click listener on the parent list at init, routed by event.target.closest(). Init guards (`_xxxInitialized` flag) added to all 14 feature module init*() exports so repeated init calls are idempotent no-ops instead of stacking listeners.
+- `257e6e5` PR5d: permissions.js formatAgo (taking Unix epoch SECONDS) deleted, callers now use utils.js formatTimeAgo (taking MILLISECONDS) with `* 1000` conversion at call site. Last alert() in the codebase (docs.js Pin failure) replaced with showToast.
+- `6948b1c` PR6: CSS variables consolidated into `:root` (was missing/duplicated in `:root.high-contrast` — `--text-muted` defined twice, several semantic vars only inside HC despite being referenced outside). HC now overrides ONLY what differs. type="button" bulk-added to 178/183 missing `<button>` elements via /tmp/add-button-type.js script.
+
+**Out-of-scope ops fix (your working tree, not committed by me):**
+- `systemd/mto.service` ExecStart had `--verbose` removed. Diagnosed via the other-Claude analysis (logs showing 30s reconnect cycles during mobile-foreground use, confirmed normal post-09d00a4; main remaining slowness was journal write contention from --verbose).
+
+**New Files:**
+- `mobile_terminal/terminal_session.py` (357 lines)
+- `scripts/version.txt`
+- `scripts/sync-version.js`
+- `scripts/README.md`
+
+**Risks / Follow-ups (deferred):**
+- Wider error-handling sweep across feature modules — PR5d only fixed the obvious bug (formatAgo) and last alert(). ~40 catch blocks across modules with mixed silent / console.error / showToast / showToast(\warning\) patterns. Future PR could adopt a documented policy ("user-initiated actions get toast on failure; background telemetry gets console.debug") and grind through.
+- 57 `!important` uses in button states (lines 2212-2289). Specificity refactor.
+- ~30 hardcoded hex colors that should be `var(--*)` — notably team dots styles.css:2700-2732.
+- Sourcemap shipping decision (terminal.min.js.map is ~990KB).
+- Remaining setInterval-based pollers (connection watchdog, metrics, dev status, SSE heartbeat) not yet routed through registerPoller. Lower frequency, lower impact.
+- URLSearchParams object-literal `token: ctx.token` sites — harmless URL redundancy, requires per-site surgery to clean.
+- The pre-existing structural log-fetch slowness (parsing entire JSONL on each /api/log call) — not addressed. Would need delta-fetch infrastructure.
+
+**No JS test infrastructure exists (tests/ is Python only). PR5a/c/d would benefit from jsdom unit tests but adding the framework was out of scope. Backend changes (PR3a, PR3c, PR4, follow-up close-timeout) covered by existing pytest.**
+
+**Server restart needed for:** PR3a, PR3c, PR4, ec932be, 09d00a4, e118499 (Python changes). Hard browser refresh for `v=346` JS + `v=346` CSS bundles.
