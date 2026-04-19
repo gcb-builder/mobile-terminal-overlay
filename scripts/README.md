@@ -1,5 +1,41 @@
 # scripts/
 
+## deploy.sh
+
+End-to-end "make my edits live" script. Runs:
+
+1. Python import check (cheap pre-flight; catches syntax errors)
+2. Frontend build via `npm run build` (sync-version + esbuild)
+3. `systemctl --user restart mto`
+4. Smoke test: `GET /health` and `GET /api/ws-debug` both return 200
+
+Fails fast — a broken import or build aborts before the restart, so the
+service keeps serving the previous bundle until you fix the error.
+
+### Usage
+
+```bash
+bash scripts/deploy.sh                # build + restart + smoke test
+bash scripts/deploy.sh --no-restart   # build only (e.g. testing build locally)
+bash scripts/deploy.sh --skip-build   # restart + smoke test only (e.g. .py-only edits)
+```
+
+### Why this exists
+
+`systemctl --user restart mto` alone re-execs the Python process but
+does **not** rebuild the frontend bundle. If you forgot to
+`npm run build` first, your JS edits sit invisible in `dist/` from a
+prior build. Same trap secondbrain's `scripts/deploy-web.sh` solves —
+this script copies that pattern.
+
+Doesn't touch `tmux-claude.service` — that holds your Claude session
+panes. Restart it manually only if you've changed PTY-handling code.
+
+### Tunables
+
+If you change the install layout, edit the constants near the top:
+`SERVICE_NAME`, `HEALTH_URL`, `DEBUG_URL`, `PYTHON_VENV`.
+
 ## sync-version.js
 
 Single source of truth for the static-asset cache-bust version. The integer
