@@ -36,8 +36,12 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Tunables — change these if your install layout differs.
 SERVICE_NAME="mto"                                         # systemd --user unit name
-HEALTH_URL="http://127.0.0.1:8080/terminal/health"         # base_path is /terminal
-DEBUG_URL="http://127.0.0.1:8080/terminal/api/ws-debug"
+# The server registers API/health routes at ROOT — base_path (/terminal)
+# is only used for serving static assets and the index page, plus by
+# the upstream proxy (Caddy / Tailscale serve) for path-prefix routing.
+# Smoke tests hit the server directly on 127.0.0.1:8080 with no prefix.
+HEALTH_URL="http://127.0.0.1:8080/health"
+DEBUG_URL="http://127.0.0.1:8080/api/ws-debug"
 PYTHON_VENV="$REPO_ROOT/venv/bin/python3"
 
 # Flag parsing
