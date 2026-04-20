@@ -3594,7 +3594,7 @@ async function respawnAgent() {
 async function updateTeamState() {
     const hadTeamHere = isTeamInCurrentRepo();
     try {
-        const sessParam = ctx.currentSession ? `&session=${encodeURIComponent(ctx.currentSession)}` : '';
+        const sessParam = ctx.currentSession ? `?session=${encodeURIComponent(ctx.currentSession)}` : '';
         const resp = await fetchWithTimeout(
             `/api/team/state${sessParam}`, {}, 5000
         );
@@ -11212,6 +11212,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=350', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=351', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
