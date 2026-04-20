@@ -259,8 +259,16 @@ def register(app: FastAPI, deps):
         return {"status": "ok", "id": msg_id, "key": tmux_key}
 
     @app.websocket("/ws/terminal")
-    async def terminal_websocket(websocket: WebSocket, _auth=Depends(deps.verify_token)):
-        """WebSocket endpoint for terminal I/O."""
+    async def terminal_websocket(
+        websocket: WebSocket,
+        since: Optional[int] = Query(None),
+        _auth=Depends(deps.verify_token),
+    ):
+        """WebSocket endpoint for terminal I/O.
+
+        ``?since=<int>`` is the client's last-seen pane buffer seq.
+        Step 3 only logs it; the snapshot/delta decision lands in step 4.
+        """
         _ws_start = time.time()
         logger.info(f"[TIMING] WebSocket /ws/terminal START")
 
@@ -354,6 +362,33 @@ def register(app: FastAPI, deps):
             await sink.close(code=4500)
             return
         logger.info(f"[TIMING] hello handshake took {time.time()-_hello_start:.3f}s")
+
+        # Seq baseline: tells the client where the pane's byte stream
+        # currently stands. Step 3 always sends a baseline (no delta yet)
+        # but logs the client's ?since= so we can spot-check before step 4
+        # actually serves deltas. Kept as a separate JSON frame so the
+        # raw-byte streaming path stays binary-clean.
+        try:
+            from mobile_terminal.pane_buffer import get_or_create_pane_buffer
+            pbuf = get_or_create_pane_buffer(
+                app.state.pane_buffers,
+                app.state.current_session,
+                app.state.active_target,
+            )
+            baseline_seq = pbuf.next_seq
+            await sink.send_json({
+                "type": "seq_baseline",
+                "seq": baseline_seq,
+                "session": app.state.current_session,
+                "target": app.state.active_target,
+            })
+            if since is not None:
+                logger.info(
+                    f"[SEQ] connect since={since} baseline={baseline_seq} "
+                    f"window=[{pbuf.oldest_seq},{pbuf.next_seq}]"
+                )
+        except Exception as e:
+            logger.warning(f"seq_baseline send failed: {e}")
 
         # Don't send capture-pane history on initial connect
         # Default mode is "tail" which uses lightweight JSON updates

@@ -1651,6 +1651,13 @@ function handleJsonMessage(msg) {
         return true;
     }
 
+    // Per-pane PTY byte-seq baseline. Step 3 just consumes it so the JSON
+    // doesn't fall through and get written into xterm. Step 5 will use it
+    // to seed lastSeq[paneKey] for delta-reconnect.
+    if (msg.type === 'seq_baseline') {
+        return true;
+    }
+
     if (msg.type === 'pong') {
         handlePong();
         return true;
