@@ -523,14 +523,28 @@ async function toggleQueuePause() {
 function sendQueueItemNow(itemId) {
     const item = queueItems.find(i => i.id === itemId && i.status === 'queued');
     if (!item) return;
-    if (ctx.sendTextAtomic) {
-        ctx.sendTextAtomic(item.text, true);
-        item.status = 'sent';
-        item.sentAt = Date.now();
-        saveQueueToStorage();
-        renderQueueList();
-        scheduleSentPurge();
-    }
+    if (!ctx.sendTextAtomic) return;
+    ctx.sendTextAtomic(item.text, true);
+    item.status = 'sent';
+    item.sentAt = Date.now();
+    saveQueueToStorage();
+    renderQueueList();
+    scheduleSentPurge();
+    // Tell server to mark sent too — without this, the server still
+    // sees status=queued so reconcile re-renders this in active and
+    // the processor would re-drain on resume (double send).
+    markSentOnServer(item.id);
+}
+
+function markSentOnServer(itemId) {
+    if (!ctx.currentSession) return;
+    const params = new URLSearchParams({
+        session: ctx.currentSession,
+        item_id: itemId,
+        token: ctx.token,
+    });
+    if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
+    ctx.apiFetch(`/api/queue/mark_sent?${params}`, { method: 'POST' }).catch(() => {});
 }
 
 function insertNextToInput(specificId) {

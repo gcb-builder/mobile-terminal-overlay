@@ -98,6 +98,36 @@ def register(app: FastAPI, deps):
             return JSONResponse({"error": "Queue item not found"}, status_code=404)
         return {"status": "ok"}
 
+    @app.post("/api/queue/mark_sent")
+    async def queue_mark_sent(
+        session: str = Query(...),
+        item_id: str = Query(...),
+        pane_id: Optional[str] = Query(None),
+        _auth=Depends(deps.verify_token),
+    ):
+        """Mark a queued item as sent — for client-driven manual sends
+        where the text was already delivered to the PTY by the client
+        (e.g. row Send button or Run while paused). Without this the
+        server-side queue still treats the item as queued."""
+        item = app.state.command_queue.mark_sent(session, item_id, pane_id)
+        if item is None:
+            return JSONResponse({"error": "Queue item not found"}, status_code=404)
+
+        if app.state.active_client:
+            try:
+                await app.state.active_client.send_json({
+                    "type": "queue_sent",
+                    "id": item.id,
+                    "sent_at": item.sent_at,
+                    "backlog_id": item.backlog_id,
+                    "session": session,
+                    "pane_id": pane_id,
+                })
+            except Exception:
+                pass
+
+        return {"status": "ok", "item": asdict(item)}
+
     @app.post("/api/queue/reorder")
     async def queue_reorder(
         session: str = Query(...),

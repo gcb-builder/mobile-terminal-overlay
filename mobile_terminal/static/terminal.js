@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v354 ===');
+console.log('=== TERMINAL.JS v356 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1174,8 +1174,10 @@ function sendNextUnsafe() {
         return;
     }
 
-    // Remove from server-side queue so _process_loop doesn't send it again
-    dequeueFromServer(item.id);
+    // Mark sent on the server so _process_loop doesn't re-drain it
+    // AND it stays in the Previous section (a /remove broadcast would
+    // strip it from the client list entirely).
+    markSentOnServer(item.id);
 
     sendTextAtomic(item.text, true);
     setTerminalBusy(true);
@@ -1191,17 +1193,19 @@ function sendNextUnsafe() {
 }
 
 /**
- * Fire-and-forget: tell server to remove a queue item.
- * Prevents server-side _process_loop from sending it again.
+ * Fire-and-forget: tell server an item was manually delivered to PTY.
+ * Server marks it sent (status + sent_at + replay-protection cache)
+ * and broadcasts queue_sent so the client moves it to Previous.
+ * Prevents server-side _process_loop from re-draining the same item.
  */
-function dequeueFromServer(itemId) {
+function markSentOnServer(itemId) {
     const params = new URLSearchParams({
         session: ctx.currentSession,
         item_id: itemId,
         token: ctx.token,
     });
     if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-    apiFetch(`/api/queue/remove?${params}`, { method: 'POST' }).catch(() => {});
+    apiFetch(`/api/queue/mark_sent?${params}`, { method: 'POST' }).catch(() => {});
 }
 
 /**
@@ -11291,6 +11295,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=354', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=356', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

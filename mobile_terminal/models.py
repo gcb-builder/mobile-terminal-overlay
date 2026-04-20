@@ -1078,6 +1078,34 @@ class CommandQueue:
             self._save_to_disk(session, pane_id)
         return self._get_queue(session, pane_id).copy()
 
+    def mark_sent(self, session: str, item_id: str, pane_id: Optional[str] = None) -> Optional[QueueItem]:
+        """Mark an item as sent without firing the PTY drain path.
+
+        Used when the client manually delivers the text itself (e.g.
+        the per-row Send button or the Run button while the queue is
+        paused). Without this, the server still sees the item as
+        ``queued`` — next reconcile re-renders it in the active section
+        and the processor would re-drain it on resume (double send).
+
+        Behavior mirrors the relevant bookkeeping in _send_item: status,
+        sent_at, replay-protection cache, and on-disk persistence with
+        prune. Returns the updated item or None if not found.
+        """
+        queue = self._get_queue(session, pane_id)
+        for item in queue:
+            if item.id != item_id:
+                continue
+            if item.status == "sent":
+                return item  # idempotent — already marked
+            item.status = "sent"
+            item.sent_at = time.time()
+            key = self._queue_key(session, pane_id)
+            self._recently_sent.setdefault(key, {})[item.id] = (item, item.sent_at)
+            self._prune_old_sent(session, pane_id)
+            self._save_to_disk(session, pane_id)
+            return item
+        return None
+
     def _prune_old_sent(self, session: str, pane_id: Optional[str] = None) -> bool:
         """Drop sent items past SENT_VISIBLE_TTL_SECONDS from the queue.
 

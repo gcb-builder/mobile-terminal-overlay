@@ -486,6 +486,33 @@ class TestSentItemPrune:
         items = self.q.list_items("sess")
         assert items == []
 
+    def test_mark_sent_updates_status_and_replay_cache(self):
+        """Manual mark_sent (used by Send / Run-while-paused buttons)
+        must mark sent AND populate the replay cache so reconcile and
+        the processor loop both treat the item as already delivered."""
+        item, _ = self.q.enqueue("sess", "manual", item_id="MAN")
+        result = self.q.mark_sent("sess", "MAN")
+        assert result is item
+        assert item.status == "sent"
+        assert item.sent_at is not None
+        # Replay cache populated → re-enqueue blocked
+        item2, is_new = self.q.enqueue("sess", "manual", item_id="MAN")
+        assert is_new is False
+        assert item2.status == "sent"
+
+    def test_mark_sent_returns_none_for_unknown_id(self):
+        assert self.q.mark_sent("sess", "MISSING") is None
+
+    def test_mark_sent_idempotent(self):
+        """Calling twice doesn't double-update sent_at or break anything."""
+        item, _ = self.q.enqueue("sess", "x", item_id="IDX")
+        first = self.q.mark_sent("sess", "IDX")
+        first_ts = first.sent_at
+        # second call returns the already-sent item, doesn't reset sent_at
+        second = self.q.mark_sent("sess", "IDX")
+        assert second is first
+        assert second.sent_at == first_ts
+
     def test_prune_does_not_affect_replay_cache(self):
         """Visible-prune and replay-protection are independent. After
         visible prune, re-enqueueing the pruned id must STILL be blocked
