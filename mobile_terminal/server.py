@@ -82,6 +82,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.last_ws_connect = 0  # Timestamp of last WebSocket connection
     app.state.ws_connect_lock = asyncio.Lock()  # Prevent concurrent connection handling
     app.state.output_buffer = RingBuffer(max_size=2 * 1024 * 1024)  # 2MB scrollback buffer
+    app.state.pane_buffers = {}  # pane_key -> PaneRingBuffer for delta-reconnect catchup
     app.state.input_queue = InputQueue(runtime=runtime)  # Serialized input queue with ACKs
     app.state.command_queue = CommandQueue()  # Deferred-send command queue
     app.state.command_queue.set_app(app)
@@ -1237,6 +1238,9 @@ def create_app(config: Config) -> FastAPI:
 
         # Clear output buffer (don't replay old session's content)
         app.state.output_buffer.clear()
+        # Pane identities reset with the tmux session — drop all delta buffers
+        # so a new session's pane_id can't accidentally inherit old bytes.
+        app.state.pane_buffers.clear()
 
         # Clear target selection and log mappings (pane IDs are session-specific)
         app.state.active_target = None

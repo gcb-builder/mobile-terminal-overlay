@@ -39,6 +39,7 @@ from mobile_terminal.helpers import (
     get_tmux_target,
     strip_ansi,
 )
+from mobile_terminal.pane_buffer import get_or_create_pane_buffer
 from mobile_terminal.transport import ClientSink
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,21 @@ async def read_from_terminal(state: TerminalSessionState, app) -> None:
 
             # Persistent ring buffer for full-mode reconnect catchup.
             state.output_buffer.write(data)
+
+            # Per-pane delta buffer (step 2: silently maintained, used by
+            # later steps to serve since=N reconnects without re-shipping
+            # the full snapshot). Keyed by current (session, target) at
+            # append time — a brief mis-attribution during a pane switch
+            # is tolerated since the snapshot fallback covers it.
+            try:
+                pbuf = get_or_create_pane_buffer(
+                    app.state.pane_buffers,
+                    app.state.current_session,
+                    app.state.active_target,
+                )
+                pbuf.append(data)
+            except Exception as e:
+                logger.debug(f"pane buffer append failed: {e}")
 
             # Recent buffer for tail extraction + mode-switch snapshot.
             state.recent_buffer.extend(data)

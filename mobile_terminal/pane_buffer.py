@@ -23,6 +23,30 @@ from typing import Optional
 DEFAULT_MAX_BYTES = 1_048_576  # 1 MiB per pane
 
 
+def pane_key(session: Optional[str], target: Optional[str]) -> str:
+    """Stable registry key for a pane. ``target`` may be None for the
+    session's default pane (no explicit target selected)."""
+    return f"{session or ''}:{target or ''}"
+
+
+def get_or_create_pane_buffer(
+    registry: dict, session: Optional[str], target: Optional[str],
+    max_bytes: int = DEFAULT_MAX_BYTES,
+) -> "PaneRingBuffer":
+    """Look up the buffer for a pane, constructing it on first access.
+
+    The registry is ``app.state.pane_buffers`` (a plain dict). Callers
+    on the tmux-disconnect path MUST clear the registry so stale pane
+    identities don't collide with a new tmux session's panes.
+    """
+    key = pane_key(session, target)
+    buf = registry.get(key)
+    if buf is None:
+        buf = PaneRingBuffer(max_bytes=max_bytes)
+        registry[key] = buf
+    return buf
+
+
 class PaneRingBuffer:
     """Bounded byte ring with absolute-seq addressing.
 

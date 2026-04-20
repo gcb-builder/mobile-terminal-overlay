@@ -5,7 +5,11 @@ import random
 
 import pytest
 
-from mobile_terminal.pane_buffer import PaneRingBuffer
+from mobile_terminal.pane_buffer import (
+    PaneRingBuffer,
+    get_or_create_pane_buffer,
+    pane_key,
+)
 
 
 # ── Construction / invariants ───────────────────────────────────────────
@@ -164,3 +168,56 @@ def test_two_buffers_are_independent():
     assert b.next_seq == 0
     assert b.since(0) == b""
     assert a.since(0) == b"hello"
+
+
+# ── Registry helper ─────────────────────────────────────────────────────
+
+def test_pane_key_handles_none():
+    assert pane_key(None, None) == ":"
+    assert pane_key("alpha", None) == "alpha:"
+    assert pane_key(None, "2:0") == ":2:0"
+    assert pane_key("alpha", "2:0") == "alpha:2:0"
+
+
+def test_get_or_create_returns_same_buffer_for_same_key():
+    reg = {}
+    a = get_or_create_pane_buffer(reg, "s", "2:0")
+    b = get_or_create_pane_buffer(reg, "s", "2:0")
+    assert a is b
+    a.append(b"hi")
+    assert get_or_create_pane_buffer(reg, "s", "2:0").since(0) == b"hi"
+
+
+def test_get_or_create_returns_different_buffers_for_different_keys():
+    reg = {}
+    a = get_or_create_pane_buffer(reg, "s", "2:0")
+    b = get_or_create_pane_buffer(reg, "s", "2:1")
+    c = get_or_create_pane_buffer(reg, "other", "2:0")
+    assert a is not b
+    assert a is not c
+    assert b is not c
+    a.append(b"AAA")
+    b.append(b"BBB")
+    assert a.since(0) == b"AAA"
+    assert b.since(0) == b"BBB"
+    assert c.since(0) == b""
+
+
+def test_registry_clear_drops_all_buffers():
+    """Mirrors the tmux-disconnect path: dict.clear() must invalidate
+    every buffer so a new tmux session can't inherit old pane bytes."""
+    reg = {}
+    get_or_create_pane_buffer(reg, "s", "2:0").append(b"old")
+    reg.clear()
+    fresh = get_or_create_pane_buffer(reg, "s", "2:0")
+    assert fresh.next_seq == 0
+    assert fresh.since(0) == b""
+
+
+def test_get_or_create_respects_max_bytes_on_first_construction():
+    reg = {}
+    buf = get_or_create_pane_buffer(reg, "s", "2:0", max_bytes=8)
+    buf.append(b"0123456789")  # exceeds cap, single chunk retained
+    buf.append(b"x")             # now evict the big chunk
+    assert buf.oldest_seq == 10
+    assert buf.since(10) == b"x"
