@@ -472,10 +472,30 @@ export async function enqueueCommand(text, policy = 'auto', backlogId = null) {
     return true;
 }
 
+// Recently-deleted item ids with delete-timestamp. reconcileQueue
+// filters these out of serverItems so a reconcile racing with the
+// /api/queue/remove POST can't restore the item before the broadcast
+// cleans it up. 10s window is well beyond typical POST RTT.
+const _recentlyDeleted = new Map(); // id → deletedAt ms
+const DELETED_GUARD_MS = 10000;
+
+function _pruneDeletedGuard() {
+    const cutoff = Date.now() - DELETED_GUARD_MS;
+    for (const [id, ts] of _recentlyDeleted) {
+        if (ts < cutoff) _recentlyDeleted.delete(id);
+    }
+}
+
+export function isRecentlyDeleted(itemId) {
+    _pruneDeletedGuard();
+    return _recentlyDeleted.has(itemId);
+}
+
 async function removeQueueItem(itemId) {
     if (!ctx.currentSession) return;
 
     queueItems = queueItems.filter(item => item.id !== itemId);
+    _recentlyDeleted.set(itemId, Date.now());
     saveQueueToStorage();
     renderQueueList();
 
@@ -645,6 +665,10 @@ export async function reconcileQueue() {
         console.warn('Failed to fetch server queue for reconciliation:', e);
     }
 
+    // Drop items the user just deleted client-side — guards the race
+    // where reconcile fetches from the server before /api/queue/remove
+    // POST has landed and the broadcast remove arrives.
+    serverItems = serverItems.filter(i => !isRecentlyDeleted(i.id));
     const serverMap = new Map(serverItems.map(i => [i.id, i]));
 
     const merged = [...serverItems];
