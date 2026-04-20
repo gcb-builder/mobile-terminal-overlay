@@ -41,8 +41,8 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 4. Core terminal/socket init (connect, setupCommandHistory)
 // 5. Initial load of active tab/view
 
-// VERSION DIAGNOSTIC - if you see this in console, browser has v247 code
-console.log('=== TERMINAL.JS v286 ===');
+// VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
+console.log('=== TERMINAL.JS v352 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -11212,6 +11212,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=351', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=352', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

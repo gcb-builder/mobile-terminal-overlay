@@ -49,6 +49,8 @@ const TARGETS = [
         replacements: [
             // navigator.serviceWorker.register(_bp + '/sw.js?v=N', ...)
             { pattern: /(\/sw\.js\?v=)\d+/g, replace: (v) => `$1${v}` },
+            // console.log('=== TERMINAL.JS vN ===') — diagnostic version
+            { pattern: /(=== TERMINAL\.JS v)\d+( ===)/g, replace: (v) => `$1${v}$2` },
         ],
     },
 ];
