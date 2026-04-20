@@ -3,10 +3,47 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Codebase audit batch complete — six numbered PRs + four follow-up bug fixes landed
-- **Last Updated:** 2026-04-19
-- **Server Version:** v346 (terminal.js + styles.css now bumped together via scripts/version.txt)
+- **Stage:** Seq-based delta-reconnect feature live on both transports — server confirms `mode=delta` deliveries on real reconnects. Step 6 (PTY respawn reset frame) deferred as polish.
+- **Last Updated:** 2026-04-20
+- **Server Version:** v355 (single source of truth: scripts/version.txt now also syncs the `=== TERMINAL.JS vN ===` console diagnostic)
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --port 8080 --base-path /terminal --no-auth --host 0.0.0.0 &` (drop `--verbose` if still in your systemd unit — it's noisy and competes for journal I/O)
+
+## Recent: 2026-04-20 — Seq-based delta-reconnect (8 commits)
+
+Goal: stop full-snapshot ship on every WS/SSE reconnect. Server now keeps a per-pane ring buffer of raw PTY bytes with absolute byte-seq addressing. On reconnect, client sends `?since=N`; server ships only the delta if `N` is in the buffer window, else falls back to the historical snapshot path.
+
+| Commit | Step | Summary |
+|---|---|---|
+| `d42c1b3` | 1 | `mobile_terminal/pane_buffer.py` — `PaneRingBuffer` with absolute-seq addressing, brutal rollover (in-window or `None`), no `reset()` method (PTY respawn = construct a new buffer). 17 unit tests. |
+| `5d5b257` | 2 | Wire buffer into `read_from_terminal` PTY drain (silent maintenance). `app.state.pane_buffers: dict[str, PaneRingBuffer]` keyed by `f"{session}:{target}"`. Cleared on tmux session switch. 5 registry tests. |
+| `b71868f` | 3 | `?since=<int>` query parsing + `seq_baseline` JSON frame after `hello` on WS. Client adds no-op handler so the new frame doesn't fall through to xterm. |
+| `bad7a67` | 4 | `decide_resume(pbuf, since) -> ResumeDecision` pure function with 4 modes (fresh/snapshot/caught_up/delta) + 7 tests. WS handler ships delta bytes BEFORE baseline JSON, skips clear-screen on delta path so xterm state survives. |
+| `d32e805` | — | Fix: `/api/team/state${sessParam}` was using `&session=` when it was the only query param → 404. Same family as PR2 follow-up `3682de2`. |
+| `5bf610f` | 7 | SSE parity in `terminal_sse.py` — same `decide_resume` decision, same baseline frame, same skip-snapshot-on-delta. Reordered before step 5 because user is on SSE (Tailscale Serve HTTP/2→WS upgrade flakiness keeps WS as second choice). |
+| `5f24a7a` | — | `sync-version.js` now also rewrites `console.log('=== TERMINAL.JS vN ===')`. The line was hardcoded at v286 for ages so every deploy looked broken. |
+| `6481087` | 5 | Client `lastSeqByPane` Map + conservative tracking (`_seqTrackingEnabled` only after binary in full mode). `?since=N` appended to WS+SSE reconnect URLs. Server reseeds `seq_baseline` after capture-pane snapshot on mode→full so client lastSeq matches `pane_buffer.next_seq` (tail mode doesn't ship bytes, so the connect-time baseline goes stale). In-memory only — page reload clears it (xterm is empty after reload, delta would visually corrupt). |
+| `b1e8d2b` | — | Raised `MAX_QUEUE_BYTES` 200KB → 1.5MB after a real reconnect shipped a 254KB delta and overflowed the xterm write queue. Server pane buffer caps at 1MB so 1.5MB covers worst case + a couple live chunks. xterm.js drains MB/sec — the cap was backpressure, not a drain ceiling. |
+
+**Verified live (server log):**
+```
+[SEQ-SSE] connect since=696009 window=[0,950914] mode=delta baseline=950914 delta_bytes=254905
+```
+Client said "I've seen up to seq 696009", server said "current is 950914", delta of 254905 bytes shipped — the actual NAT-recovery scenario.
+
+**Architecture invariants:**
+- Per-pane buffer keyed by `f"{session}:{target}"`. Pane switch keeps the old pane's buffer. Tmux session switch clears all (pane identities reset).
+- `since < oldest_seq` OR `since > next_seq` → `None` → snapshot fallback. No partial recovery.
+- Wire order on resume: delta bytes → seq_baseline → (clear-screen / capture-pane only on snapshot path).
+- Client `_seqTrackingEnabled` invalidated on mode switch and pane switch. Reseeded by next `seq_baseline`.
+
+**Known limitations (deferred):**
+- **Step 6 — PTY respawn reset frame:** if the underlying PTY dies/respawns during a connection, server constructs a fresh buffer (seq=0) but never tells the client. Client could request `?since=N` against the new buffer; `decide_resume` correctly returns the snapshot path (since N > next_seq → out of window) so the conservative fallback works. A typed `{type: 'reset'}` frame would let the client clear `lastSeq` immediately rather than relying on the seq math.
+- **Mode-switch race:** the `set_mode → snapshot → baseline` sequence in `terminal_io.py:466-487` is async; live PTY bytes flushing during the ~200ms window between baseline-seq read and baseline send can mis-align lastSeq by a small amount. Visual glitch on subsequent reconnect, not data corruption.
+- **Pane-switch baseline:** when `selectTarget` flips active_target mid-connection, no new baseline is sent — client just invalidates tracking until next reconnect.
+
+**Files touched:**
+- New: `mobile_terminal/pane_buffer.py` (130 lines), `tests/test_pane_buffer.py` (28 tests)
+- Modified: `mobile_terminal/server.py` (registry init + clear), `mobile_terminal/terminal_session.py` (PTY append), `mobile_terminal/routers/terminal_io.py` (resume decision + mode-switch reseed), `mobile_terminal/routers/terminal_sse.py` (same parity), `mobile_terminal/static/terminal.js` (lastSeq tracking + URL builders + queue cap), `scripts/sync-version.js` (TERMINAL.JS log line)
 
 ## Recent: 2026-04-13..19 — Codebase audit batch (PR1–PR6 + follow-ups)
 

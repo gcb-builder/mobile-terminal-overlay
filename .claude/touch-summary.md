@@ -1393,3 +1393,54 @@ Unified single button showing "repo • pane" format with sectioned dropdown:
 **No JS test infrastructure exists (tests/ is Python only). PR5a/c/d would benefit from jsdom unit tests but adding the framework was out of scope. Backend changes (PR3a, PR3c, PR4, follow-up close-timeout) covered by existing pytest.**
 
 **Server restart needed for:** PR3a, PR3c, PR4, ec932be, 09d00a4, e118499 (Python changes). Hard browser refresh for `v=346` JS + `v=346` CSS bundles.
+
+---
+
+## 2026-04-20 — Seq-based delta-reconnect (8 commits, v=347→355)
+
+Goal: replace full snapshot on every reconnect with a byte-level delta from the client's last-seen seq. Direct fix for the "phone gets dropped, reload-or-reconnect ships everything from scratch" UX problem.
+
+- `d42c1b3` Step 1: `mobile_terminal/pane_buffer.py` — `PaneRingBuffer` with absolute byte-seq addressing. Public API: `append(data) -> (start_seq, end_seq)`, `since(seq) -> bytes | None`, properties `oldest_seq`, `next_seq`, `retained_bytes`. Brutal rollover: in-window or `None` (no partial recovery — caller falls back to snapshot). No `reset()` method by design (PTY respawn = construct a new buffer; makes seq-rewind bugs across stream identities impossible). 17 tests covering exact-tail/off-by-one, mid-chunk slicing across eviction, random 200-chunk byte-exact contiguity, single-chunk-exceeds-cap retention.
+
+- `5d5b257` Step 2: wire buffer into `read_from_terminal` (silent maintenance). `app.state.pane_buffers: dict[str, PaneRingBuffer]` keyed by `f"{session}:{target}"`. Each PTY chunk that goes to the client also goes to the per-pane buffer. Cleared on tmux session switch (server.py:~1239) so a new session's pane_id can't inherit old bytes — pane switches WITHIN a session keep their buffers. 5 registry tests (same-key returns same buf, different keys isolated, dict.clear() invalidates, max_bytes propagates).
+
+- `b71868f` Step 3: `?since=<int>` parsing on `/ws/terminal` + `seq_baseline` JSON frame after `hello`. Server logs `[SEQ] connect since=N window=[oldest,next] mode=...`. Client adds explicit no-op handler for `seq_baseline` so the JSON literal doesn't fall through `handleJsonMessage` and get written into xterm. Functionally inert — no client yet sends `?since=`.
+
+- `bad7a67` Step 4: `decide_resume(pbuf, since) -> ResumeDecision` pure function with 4 cases (`fresh`/`snapshot`/`caught_up`/`delta`). 7 unit tests. WS handler ships delta bytes via `send_bytes()` BEFORE the baseline JSON, then skips the clear-screen escape on the delta path (preserves xterm state we just extended). Logs `mode=` and `delta_bytes=`.
+
+- `d32e805` Out-of-band fix: `terminal.js:3597` was building `/api/team/state${sessParam}` with `sessParam = '&session=...'` even though it was the only query param → `/api/team/state&session=claude` → 404. Same family as PR2 follow-up `3682de2`. Three other `&session=` sites in `src/features/team.js` are correct (they follow another `?param=`).
+
+- `5bf610f` Step 7 (REORDERED before step 5): SSE parity in `terminal_sse.py`. Same `decide_resume` decision, same `seq_baseline` frame (sent BETWEEN delta and capture-pane snapshot in non-delta paths). Reordered ahead of step 5 because user is locked on SSE — Tailscale Serve HTTP/2→WS upgrade flakiness keeps WS as second choice. Without SSE parity, step 5 wouldn't visibly change anything for the actual user.
+
+- `5f24a7a` Out-of-band fix: `console.log('=== TERMINAL.JS vN ===')` was hardcoded at v286 since forever. Every deploy looked broken because the version log was frozen even though the bundle was fresh. `sync-version.js` now also rewrites this line via a fourth replacement pattern. v=353 verified the new sync rule end-to-end.
+
+- `6481087` Step 5: client `lastSeqByPane` Map + conservative tracking (`_seqTrackingEnabled` only after a binary frame in full mode advances the count from a known baseline). `?since=N` appended to WS+SSE reconnect URLs via `_seqSinceToken()`. `selectTarget` and `setOutputMode` invalidate tracking (mode/pane changes break byte alignment). Server reseeds `seq_baseline` after the capture-pane snapshot on mode-switch-to-full (both transports) — without this, the connect-time baseline stays stale through tail mode and the first reconnect after switching to full mode would request a way-too-old `since=`. **In-memory only, not localStorage**: page reload empties xterm, so a delta would visually corrupt the screen — fresh snapshot is correct in that case.
+
+- `b1e8d2b` Out-of-band fix: real reconnect under heavy output shipped a 254KB delta which overflowed the client's 200KB xterm write queue (`Vu=2e5` minified) → `[QUEUE] Overflow` → queue cleared → catchup data dropped. Raised `MAX_QUEUE_BYTES` 200KB → 1.5MB to match worst-case full delta (server pane buffer caps at 1MB). xterm.js drains MB/sec — the cap was always backpressure, not a drain ceiling. `MAX_QUEUE_ITEMS` raised 500 → 2000 to match.
+
+**Verified live:**
+```
+[SEQ-SSE] connect since=696009 window=[0,950914] mode=delta baseline=950914 delta_bytes=254905
+```
+Real reconnect during active Claude streaming, ~250KB delta correctly delivered.
+
+**New files:**
+- `mobile_terminal/pane_buffer.py` (~130 lines)
+- `tests/test_pane_buffer.py` (28 tests, all pass)
+
+**Modified files:**
+- `mobile_terminal/server.py` — registry init + tmux-session-switch clear
+- `mobile_terminal/terminal_session.py` — append to per-pane buffer in PTY drain
+- `mobile_terminal/routers/terminal_io.py` — `?since=` query, resume decision, mode-switch baseline reseed
+- `mobile_terminal/routers/terminal_sse.py` — full SSE parity for all of the above
+- `mobile_terminal/static/terminal.js` — lastSeqByPane tracking + URL builders + queue cap
+- `scripts/sync-version.js` — fourth pattern for the TERMINAL.JS console line
+- `scripts/version.txt` — bumps to 351, 352, 353, 354, 355 across the deploys
+
+**Risks / Follow-ups (deferred):**
+- **Step 6 — PTY respawn reset frame**: server constructs a fresh buffer on respawn (seq=0) but doesn't notify the client. Conservative fallback works (client's stale `since=N` > new `next_seq=0` → snapshot path) but a typed `{type:'reset'}` frame is cleaner. Low priority.
+- **Mode-switch race**: ~200ms window in `set_mode → snapshot → baseline` where live PTY flush can mis-align lastSeq by a chunk. Visual glitch on subsequent reconnect, not corruption.
+- **Pane-switch baseline**: switching `active_target` mid-connection doesn't issue a fresh baseline — client just invalidates tracking until next reconnect. Next reconnect ships fresh snapshot. Acceptable.
+- **localStorage persistence across reload**: not done deliberately. If we later want page-reload-to-resume, would need a way to also persist the xterm state (maybe via xterm.js's built-in serialize addon).
+
+**Server restart needed for**: every step 1–7 commit (Python). Hard browser refresh for `v=355` JS bundle.
