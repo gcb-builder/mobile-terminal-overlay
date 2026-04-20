@@ -110,8 +110,12 @@ def register(app: FastAPI, deps):
     @app.get("/api/terminal/stream")
     async def terminal_stream(
         request: Request,
+        since: Optional[int] = Query(None),
         _auth=Depends(deps.verify_token),
     ):
+        """SSE stream. ``?since=<int>`` is the client's last-seen pane
+        buffer seq — used for delta-vs-snapshot decision via the same
+        ``decide_resume()`` helper as the WS handler."""
         sink = SSESink()
 
         # Close any existing connection (single-client mode, cross-transport).
@@ -163,25 +167,71 @@ def register(app: FastAPI, deps):
         await sink.send_json(hello_msg)
         logger.info(f"SSE hello sent: {hello_msg}")
 
-        # Send capture-pane snapshot instead of clearing screen —
-        # client keeps last frame visible during reconnect, snapshot refreshes it
+        # Resume decision: mirrors the WS handler (terminal_io.py).
+        # Order on the wire:
+        #   1. delta bytes (if any) — base64-encoded SSE binary frame;
+        #      extends the client's existing xterm state before baseline
+        #      tells it to start counting bytes
+        #   2. seq_baseline JSON — client's signal that lastSeq is now `seq`
+        #   3. capture-pane snapshot (only on fresh / snapshot / out-of-window
+        #      paths; skipped on delta path so we don't wipe xterm state
+        #      we just extended)
         try:
-            session = app.state.current_session
-            target = app.state.active_target
-            tmux_t = get_tmux_target(session, target) if target else session
-            snapshot = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: subprocess.run(
-                    ["tmux", "capture-pane", "-p", "-e", "-t", tmux_t],
-                    capture_output=True, text=True, timeout=2,
-                ).stdout or ""
+            from mobile_terminal.pane_buffer import (
+                decide_resume,
+                get_or_create_pane_buffer,
             )
-            if snapshot:
-                await sink.send_text("\x1b[2J\x1b[H" + snapshot)
+            pbuf = get_or_create_pane_buffer(
+                app.state.pane_buffers,
+                app.state.current_session,
+                app.state.active_target,
+            )
+            decision = decide_resume(pbuf, since)
+            logger.info(
+                f"[SEQ-SSE] connect since={since} "
+                f"window=[{pbuf.oldest_seq},{pbuf.next_seq}] "
+                f"mode={decision.mode} baseline={decision.baseline_seq} "
+                f"delta_bytes={len(decision.delta) if decision.delta else 0}"
+            )
+            if decision.delta:
+                await sink.send_bytes(decision.delta)
+
+            await sink.send_json({
+                "type": "seq_baseline",
+                "seq": decision.baseline_seq,
+                "session": app.state.current_session,
+                "target": app.state.active_target,
+                "mode": decision.mode,
+            })
+
+            if decision.send_clear_screen:
+                # Existing SSE behavior: capture-pane snapshot prefixed
+                # with clear-screen so the client always sees current
+                # screen content on a non-delta resume.
+                try:
+                    session = app.state.current_session
+                    target = app.state.active_target
+                    tmux_t = get_tmux_target(session, target) if target else session
+                    snapshot = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: subprocess.run(
+                            ["tmux", "capture-pane", "-p", "-e", "-t", tmux_t],
+                            capture_output=True, text=True, timeout=2,
+                        ).stdout or ""
+                    )
+                    if snapshot:
+                        await sink.send_text("\x1b[2J\x1b[H" + snapshot)
+                    else:
+                        await sink.send_text("\x1b[2J\x1b[H")
+                except Exception as e:
+                    await sink.send_text("\x1b[2J\x1b[H")
+                    logger.debug(f"capture-pane on SSE connect failed: {e}")
         except Exception as e:
-            # Fallback to plain clear if capture fails
-            await sink.send_text("\x1b[2J\x1b[H")
-            logger.debug(f"capture-pane on SSE connect failed: {e}")
+            logger.warning(f"SSE resume decision failed: {e}")
+            try:
+                await sink.send_text("\x1b[2J\x1b[H")
+            except Exception:
+                pass
 
         # Per-connection state lives in TerminalSessionState — same struct
         # the WS handler uses, shared via mobile_terminal.terminal_session.
