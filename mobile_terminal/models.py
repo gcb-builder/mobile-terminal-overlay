@@ -728,6 +728,11 @@ class QueueItem:
     sent_at: Optional[float] = None
     error: Optional[str] = None
     backlog_id: Optional[str] = None
+    # Opt-in: only items the user has explicitly marked are eligible
+    # for the processor's auto-drain. Default False so accidental
+    # enqueues never fire on their own. Manual Send / Run buttons
+    # ignore this flag — those are explicit user actions.
+    auto_eligible: bool = False
 
 
 class CommandQueue:
@@ -892,6 +897,7 @@ class CommandQueue:
                     created_at=data.get("created_at", time.time()),
                     sent_at=data.get("sent_at"),
                     error=data.get("error"),
+                    auto_eligible=bool(data.get("auto_eligible", False)),
                 )
                 # Only load items that are still queued (not sent/failed)
                 if item.status in ("queued", "pending"):
@@ -1077,6 +1083,25 @@ class CommandQueue:
         if self._prune_old_sent(session, pane_id):
             self._save_to_disk(session, pane_id)
         return self._get_queue(session, pane_id).copy()
+
+    def set_auto_eligible(self, session: str, item_id: str, value: bool, pane_id: Optional[str] = None) -> Optional[QueueItem]:
+        """Toggle the auto-drain opt-in flag on an item. Returns the
+        updated item, or None if not found / not in 'queued' status
+        (sent items can't be flagged — they're done)."""
+        queue = self._get_queue(session, pane_id)
+        for item in queue:
+            if item.id != item_id:
+                continue
+            if item.status != "queued":
+                return None
+            item.auto_eligible = bool(value)
+            self._save_to_disk(session, pane_id)
+            # Wake processor — flipping to True means the next idle
+            # cycle should consider this item immediately.
+            if value:
+                self._wake()
+            return item
+        return None
 
     def mark_sent(self, session: str, item_id: str, pane_id: Optional[str] = None) -> Optional[QueueItem]:
         """Mark an item as sent without firing the PTY drain path.
@@ -1391,9 +1416,16 @@ class CommandQueue:
                 if not queue:
                     continue
 
-                # First safe queued item, if any
+                # First safe queued item that the user opted into
+                # auto-send for. The auto_eligible gate makes the
+                # default behavior "stays in queue until user explicitly
+                # sends" — the processor only drains items that have
+                # been ⚡-flagged in the UI.
                 item = next(
-                    (i for i in queue if i.status == "queued" and i.policy == "safe"),
+                    (i for i in queue
+                     if i.status == "queued"
+                     and i.policy == "safe"
+                     and i.auto_eligible),
                     None,
                 )
                 if not item:

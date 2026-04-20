@@ -292,6 +292,69 @@ class TestGetNextUnsafe:
 
 
 # ---------------------------------------------------------------------------
+# Auto-eligibility opt-in — items default auto_eligible=False so the
+# processor never fires until the user explicitly ⚡-flags them.
+# ---------------------------------------------------------------------------
+
+class TestAutoEligible:
+    def setup_method(self):
+        self.q = CommandQueue()
+        self.q._loaded_sessions = set()
+        self.q._load_from_disk = lambda *a: None
+        self.q._save_to_disk = lambda *a: None
+
+    def test_new_items_default_to_not_eligible(self):
+        item, _ = self.q.enqueue("sess", "ls", policy="safe", item_id="A")
+        assert item.auto_eligible is False
+
+    def test_set_auto_eligible_flips_flag(self):
+        self.q.enqueue("sess", "ls", policy="safe", item_id="A")
+        result = self.q.set_auto_eligible("sess", "A", True)
+        assert result is not None
+        assert result.auto_eligible is True
+        # Toggle back
+        result = self.q.set_auto_eligible("sess", "A", False)
+        assert result.auto_eligible is False
+
+    def test_set_auto_eligible_returns_none_for_missing_id(self):
+        assert self.q.set_auto_eligible("sess", "MISSING", True) is None
+
+    def test_set_auto_eligible_returns_none_for_sent_item(self):
+        item, _ = self.q.enqueue("sess", "ls", policy="safe", item_id="A")
+        item.status = "sent"  # simulate post-send
+        assert self.q.set_auto_eligible("sess", "A", True) is None
+
+    def test_processor_picker_skips_non_eligible_items(self):
+        """The processor's `next safe queued + auto_eligible` filter
+        is what gates auto-drain. Items without the flag stay queued."""
+        self.q.enqueue("sess", "ls", policy="safe", item_id="manual")
+        self.q.enqueue("sess", "pwd", policy="safe", item_id="auto")
+        self.q.set_auto_eligible("sess", "auto", True)
+
+        # Mirror the processor's picker logic exactly
+        queue = self.q._get_queue("sess")
+        picked = next(
+            (i for i in queue
+             if i.status == "queued" and i.policy == "safe" and i.auto_eligible),
+            None,
+        )
+        assert picked is not None
+        assert picked.id == "auto"
+
+    def test_processor_picker_returns_none_when_nothing_eligible(self):
+        self.q.enqueue("sess", "ls", policy="safe", item_id="A")
+        self.q.enqueue("sess", "pwd", policy="safe", item_id="B")
+        # Neither was opt-in'd
+        queue = self.q._get_queue("sess")
+        picked = next(
+            (i for i in queue
+             if i.status == "queued" and i.policy == "safe" and i.auto_eligible),
+            None,
+        )
+        assert picked is None
+
+
+# ---------------------------------------------------------------------------
 # Replay protection — re-enqueue of an already-sent id must not re-run.
 # Regression guard for the case where a client missed the queue_sent WS
 # broadcast (mobile reconnect) and reconcileQueue re-POSTed the item.

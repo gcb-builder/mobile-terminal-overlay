@@ -2786,6 +2786,28 @@ html, body {
     min-height: 28px;
 }
 .queue-edit-btn:active { background: var(--bg-primary); }
+
+/* ⚡ auto-send opt-in toggle. Outline = manual-only (default);
+   .on = filled, item is eligible for the server's auto-drain. */
+.queue-auto-btn {
+    padding: 4px 8px;
+    background: transparent;
+    color: var(--text-muted, #888);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    min-height: 28px;
+    min-width: 28px;
+}
+.queue-auto-btn:active { background: var(--bg-primary); }
+.queue-auto-btn.on {
+    background: #e5b400;
+    color: #1e1e1e;
+    border-color: #e5b400;
+}
+.queue-auto-btn.on:active { background: #c69b00; }
 .queue-item.dragging {
     position: relative;
     z-index: 10;

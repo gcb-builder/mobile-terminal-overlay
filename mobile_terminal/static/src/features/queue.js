@@ -123,6 +123,12 @@ function renderQueueRowHtml(item) {
 
     let actions = '';
     if (isQueued) {
+        // ⚡ toggle: opt this item into the server's auto-drain. Filled
+        // (.on) = eligible; outline = manual-only (default). Tapping
+        // anything else (Send/Edit/X) is unaffected.
+        const autoOn = item.auto_eligible ? ' on' : '';
+        const autoTitle = item.auto_eligible ? 'Disable auto-send' : 'Enable auto-send';
+        actions += '<button class="queue-auto-btn' + autoOn + '" data-id="' + eid + '" title="' + autoTitle + '" aria-pressed="' + (item.auto_eligible ? 'true' : 'false') + '">&#x26A1;</button>';
         actions += '<button class="queue-send-btn" data-id="' + eid + '">Send</button>';
         actions += '<button class="queue-edit-btn" data-id="' + eid + '">Edit</button>';
     } else if (isSent) {
@@ -558,6 +564,36 @@ function sendQueueItemNow(itemId) {
     markSentOnServer(item.id);
 }
 
+async function toggleAutoEligible(itemId) {
+    const item = queueItems.find(i => i.id === itemId && i.status === 'queued');
+    if (!item || !ctx.currentSession) return;
+    const newValue = !item.auto_eligible;
+    // Optimistic flip — server queue_update broadcast will reconcile if it differs
+    item.auto_eligible = newValue;
+    saveQueueToStorage();
+    renderQueueList();
+    const params = new URLSearchParams({
+        session: ctx.currentSession,
+        item_id: itemId,
+        value: newValue ? 'true' : 'false',
+        token: ctx.token,
+    });
+    if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
+    try {
+        const resp = await ctx.apiFetch(`/api/queue/auto_eligible?${params}`, { method: 'POST' });
+        if (!resp.ok) {
+            // Revert on failure
+            item.auto_eligible = !newValue;
+            saveQueueToStorage();
+            renderQueueList();
+        }
+    } catch {
+        item.auto_eligible = !newValue;
+        saveQueueToStorage();
+        renderQueueList();
+    }
+}
+
 function markSentOnServer(itemId) {
     if (!ctx.currentSession) return;
     const params = new URLSearchParams({
@@ -954,6 +990,12 @@ export function initQueue() {
             if (sendBtn) {
                 e.stopPropagation();
                 sendQueueItemNow(sendBtn.dataset.id);
+                return;
+            }
+            const autoBtn = e.target.closest('.queue-auto-btn');
+            if (autoBtn) {
+                e.stopPropagation();
+                toggleAutoEligible(autoBtn.dataset.id);
                 return;
             }
             const editBtn = e.target.closest('.queue-edit-btn');

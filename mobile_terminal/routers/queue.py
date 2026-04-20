@@ -98,6 +98,35 @@ def register(app: FastAPI, deps):
             return JSONResponse({"error": "Queue item not found"}, status_code=404)
         return {"status": "ok"}
 
+    @app.post("/api/queue/auto_eligible")
+    async def queue_auto_eligible(
+        session: str = Query(...),
+        item_id: str = Query(...),
+        value: bool = Query(...),
+        pane_id: Optional[str] = Query(None),
+        _auth=Depends(deps.verify_token),
+    ):
+        """Toggle the auto-drain opt-in flag on a queue item. Items
+        default to auto_eligible=False so the processor never fires
+        until the user explicitly ⚡-flags them in the UI."""
+        item = app.state.command_queue.set_auto_eligible(session, item_id, value, pane_id)
+        if item is None:
+            return JSONResponse({"error": "Queue item not found or not queued"}, status_code=404)
+
+        if app.state.active_client:
+            try:
+                await app.state.active_client.send_json({
+                    "type": "queue_update",
+                    "action": "update",
+                    "session": session,
+                    "pane_id": pane_id,
+                    "item": asdict(item),
+                })
+            except Exception:
+                pass
+
+        return {"status": "ok", "item": asdict(item)}
+
     @app.post("/api/queue/mark_sent")
     async def queue_mark_sent(
         session: str = Query(...),
