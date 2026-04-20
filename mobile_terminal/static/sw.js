@@ -1,6 +1,6 @@
 // Service Worker for Mobile Terminal PWA
 // __BASE_PATH is injected by the server at the top of this file
-const CACHE_NAME = 'terminal-v350';
+const CACHE_NAME = 'terminal-v359';
 
 // Install event - cache essential assets
 self.addEventListener('install', (event) => {
@@ -83,9 +83,20 @@ self.addEventListener('push', (event) => {
     },
     actions: actions,
   };
-  event.waitUntil(
-    self.registration.showNotification(data.title || 'Terminal', options)
-  );
+  event.waitUntil(Promise.all([
+    self.registration.showNotification(data.title || 'Terminal', options),
+    // Wake any backgrounded tabs that are still in memory but whose WS
+    // died at the NAT. Tab reacts on the message and forces a reconnect
+    // before the user even taps the notification. No-op when the page
+    // has been evicted (matchAll returns empty) — push tap then opens
+    // a fresh client which reconnects normally.
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cls => {
+      cls.forEach(c => {
+        try { c.postMessage({ type: 'sw_wake', push_type: data.type }); }
+        catch (e) { /* postMessage failure on a dead client — ignore */ }
+      });
+    }),
+  ]));
 });
 
 // Notification click handler - per-type routing
