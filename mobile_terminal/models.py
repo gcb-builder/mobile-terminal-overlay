@@ -797,6 +797,16 @@ class CommandQueue:
     # window while keeping memory bounded.
     SENT_ID_TTL_SECONDS = 600
 
+    # How long sent items stay in the visible queue (the "Previous"
+    # section on the client). After this they're dropped from
+    # _queues[key] and the queue file on disk. Independent from
+    # SENT_ID_TTL_SECONDS — the replay-protection cache (also TTL'd)
+    # remains the source of truth for "did we already send id X" long
+    # after the visible item has scrolled off. 5 minutes matches typical
+    # "did I send that one?" recheck behavior; otherwise the queue file
+    # grows indefinitely and every reconcile re-renders all history.
+    SENT_VISIBLE_TTL_SECONDS = 300
+
     def __init__(self):
         self._queues: Dict[str, List[QueueItem]] = {}
         self._paused: Dict[str, bool] = {}
@@ -1061,8 +1071,38 @@ class CommandQueue:
         return False
 
     def list_items(self, session: str, pane_id: Optional[str] = None) -> List[QueueItem]:
-        """Get all items in the queue."""
+        """Get all items in the queue. Prunes expired sent items first
+        so the visible queue stays bounded even when a long-idle client
+        reconnects."""
+        if self._prune_old_sent(session, pane_id):
+            self._save_to_disk(session, pane_id)
         return self._get_queue(session, pane_id).copy()
+
+    def _prune_old_sent(self, session: str, pane_id: Optional[str] = None) -> bool:
+        """Drop sent items past SENT_VISIBLE_TTL_SECONDS from the queue.
+
+        Replay protection (``_recently_sent``) is independent and keeps
+        a separate TTL — so dropping the visible item here does NOT let
+        a duplicate enqueue re-run the prompt.
+
+        Returns True if anything was dropped (so callers can persist).
+        """
+        key = self._queue_key(session, pane_id)
+        queue = self._queues.get(key)
+        if not queue:
+            return False
+        now = time.time()
+        kept = [
+            item for item in queue
+            if not (
+                item.status == "sent"
+                and (now - (item.sent_at or 0)) > self.SENT_VISIBLE_TTL_SECONDS
+            )
+        ]
+        if len(kept) == len(queue):
+            return False
+        self._queues[key] = kept
+        return True
 
     def pause(self, session: str, pane_id: Optional[str] = None) -> None:
         """Pause queue processing for a session+pane."""
@@ -1199,7 +1239,11 @@ class CommandQueue:
 
             item.status = "sent"
             item.sent_at = time.time()
-            self._save_to_disk(session, pane_id)  # Persist sent status
+            # Prune visibly-stale sent items from the queue while we're
+            # writing anyway — keeps the disk file bounded and stops
+            # reconcile from re-rendering ancient history.
+            self._prune_old_sent(session, pane_id)
+            self._save_to_disk(session, pane_id)  # Persist sent status + prune
 
             # Record the id in the recently-sent cache for replay
             # protection. If a flaky-WS client misses the queue_sent

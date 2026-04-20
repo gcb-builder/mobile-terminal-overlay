@@ -420,6 +420,94 @@ class TestReplayProtection:
 
 
 # ---------------------------------------------------------------------------
+# Sent-item pruning — sent items past SENT_VISIBLE_TTL_SECONDS are removed
+# from the active queue so the visible "Previous" section + on-disk file
+# stay bounded across long-running sessions and idle reconnects.
+# ---------------------------------------------------------------------------
+
+class TestSentItemPrune:
+    def setup_method(self):
+        self.q = CommandQueue()
+        self.q._loaded_sessions = set()
+        self.q._load_from_disk = lambda *a: None
+        self.q._save_to_disk = lambda *a: None
+
+    def _mark_sent(self, session, item_id, ts):
+        key = self.q._queue_key(session)
+        for it in self.q._queues.get(key, []):
+            if it.id == item_id:
+                it.status = "sent"
+                it.sent_at = ts
+                return it
+        raise AssertionError(f"item {item_id} not found")
+
+    def test_prune_drops_old_sent_items(self):
+        self.q.enqueue("sess", "old", item_id="OLD")
+        self._mark_sent("sess", "OLD", ts=time.time() - (self.q.SENT_VISIBLE_TTL_SECONDS + 60))
+        pruned = self.q._prune_old_sent("sess")
+        assert pruned is True
+        assert self.q.list_items("sess") == []
+
+    def test_prune_keeps_recent_sent_items(self):
+        self.q.enqueue("sess", "recent", item_id="REC")
+        self._mark_sent("sess", "REC", ts=time.time() - 10)
+        pruned = self.q._prune_old_sent("sess")
+        assert pruned is False
+        items = self.q.list_items("sess")
+        assert len(items) == 1
+        assert items[0].id == "REC"
+
+    def test_prune_keeps_queued_items_regardless_of_age(self):
+        """Queued items have no sent_at — pruning must not touch them."""
+        item, _ = self.q.enqueue("sess", "still pending", item_id="QUE")
+        # Even with a stale sent_at-style timestamp set externally, status
+        # 'queued' overrides — we only prune by status==sent.
+        item.sent_at = time.time() - 99999
+        pruned = self.q._prune_old_sent("sess")
+        assert pruned is False
+        assert any(i.id == "QUE" for i in self.q.list_items("sess"))
+
+    def test_prune_mixed_keeps_recent_drops_old(self):
+        self.q.enqueue("sess", "old", item_id="OLD")
+        self.q.enqueue("sess", "recent", item_id="REC")
+        self.q.enqueue("sess", "queued", item_id="QUE")  # stays queued
+        self._mark_sent("sess", "OLD", ts=time.time() - (self.q.SENT_VISIBLE_TTL_SECONDS + 60))
+        self._mark_sent("sess", "REC", ts=time.time() - 5)
+        pruned = self.q._prune_old_sent("sess")
+        assert pruned is True
+        ids = {i.id for i in self.q.list_items("sess")}
+        assert ids == {"REC", "QUE"}
+
+    def test_list_items_invokes_prune(self):
+        """list_items must self-prune so a long-idle reconnect doesn't
+        replay ancient sent items in the Previous section."""
+        self.q.enqueue("sess", "old", item_id="STALE")
+        self._mark_sent("sess", "STALE", ts=time.time() - (self.q.SENT_VISIBLE_TTL_SECONDS + 60))
+        items = self.q.list_items("sess")
+        assert items == []
+
+    def test_prune_does_not_affect_replay_cache(self):
+        """Visible-prune and replay-protection are independent. After
+        visible prune, re-enqueueing the pruned id must STILL be blocked
+        by the recently_sent cache (replay TTL is 600s vs visible 300s)."""
+        item, _ = self.q.enqueue("sess", "old", item_id="DUP")
+        ts = time.time() - (self.q.SENT_VISIBLE_TTL_SECONDS + 60)
+        self._mark_sent("sess", "DUP", ts=ts)
+        # Mirror what _send_item does: populate the replay cache.
+        key = self.q._queue_key("sess")
+        self.q._recently_sent.setdefault(key, {})[item.id] = (item, ts)
+
+        self.q._prune_old_sent("sess")
+        assert self.q.list_items("sess") == []
+
+        # Even though item was pruned from the visible queue, replay
+        # cache (still inside its 600s TTL) blocks re-execution.
+        item2, is_new = self.q.enqueue("sess", "old", item_id="DUP")
+        assert is_new is False
+        assert item2.status == "sent"
+
+
+# ---------------------------------------------------------------------------
 # Wakeup signaling — enqueue() and resume() flip the asyncio event so the
 # processor loop runs immediately instead of waiting out its idle timeout.
 # ---------------------------------------------------------------------------
