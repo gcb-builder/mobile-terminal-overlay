@@ -74,6 +74,19 @@ def pane_key(session: Optional[str], target: Optional[str]) -> str:
     return f"{session or ''}:{target or ''}"
 
 
+def drop_session_pane_buffers(registry: dict, session: Optional[str]) -> int:
+    """Remove every buffer keyed under the given session. Used on PTY
+    respawn — a fresh PTY's bytes are not a continuation of the old
+    one, so the old buffer's seqs would mislead any reconnect that
+    asks for ``?since=N`` against the now-orphaned stream. Returns the
+    number of entries dropped."""
+    prefix = f"{session or ''}:"
+    keys = [k for k in registry if k.startswith(prefix)]
+    for k in keys:
+        del registry[k]
+    return len(keys)
+
+
 def get_or_create_pane_buffer(
     registry: dict, session: Optional[str], target: Optional[str],
     max_bytes: int = DEFAULT_MAX_BYTES,

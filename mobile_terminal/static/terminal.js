@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v356 ===');
+console.log('=== TERMINAL.JS v359 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1707,6 +1707,25 @@ function handleJsonMessage(msg) {
 
     // Tail mode updates - lightweight text for Log view
     if (msg.type === 'tail') {
+        return true;
+    }
+
+    // PTY respawn: server dropped its pane buffers for this session.
+    // Drop ours too so the next reconnect doesn't ask for a delta
+    // against a stream that no longer exists. Without this the
+    // conservative `since > next_seq → snapshot` fallback would still
+    // catch it, but the typed reset is unambiguous and skips a
+    // wasted check.
+    if (msg.type === 'reset') {
+        if (msg.session) {
+            const prefix = `${msg.session}:`;
+            for (const key of Array.from(lastSeqByPane.keys())) {
+                if (key.startsWith(prefix)) lastSeqByPane.delete(key);
+            }
+        } else {
+            lastSeqByPane.clear();
+        }
+        _invalidateSeqTracking();
         return true;
     }
 
@@ -10045,6 +10064,17 @@ async function setupPushNotifications() {
         } else if (event.data?.type === 'respawn_agent') {
             // Respawn Claude from push notification action
             respawnAgent();
+        } else if (event.data?.type === 'sw_wake') {
+            // SW push handler nudges any open client when a push fires.
+            // If our socket has died at the NAT (mobile background), force
+            // a reconnect immediately rather than waiting for the user to
+            // tap the notification. No-op when the socket is healthy.
+            const sock = ctx.socket;
+            const dead = !sock || sock.readyState !== WebSocket.OPEN;
+            if (dead && typeof manualReconnect === 'function') {
+                console.log('[SW] wake nudge — socket dead, reconnecting');
+                manualReconnect();
+            }
         }
     });
 }
@@ -11295,6 +11325,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=356', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=359', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

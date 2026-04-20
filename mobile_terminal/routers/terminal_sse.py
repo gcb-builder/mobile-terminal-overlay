@@ -144,13 +144,21 @@ def register(app: FastAPI, deps):
 
         app.state.active_client = sink
 
-        # Spawn tmux if not already running
+        # Spawn tmux if not already running. Fresh PTY = drop pane
+        # buffers for this session (see WS handler comment) and the
+        # client gets a typed reset frame after the hello.
         runtime = app.state.runtime
+        _did_respawn = False
         if not runtime.has_fd:
             try:
                 session_name = app.state.current_session
                 runtime.spawn(session_name)
                 logger.info(f"Spawned tmux session: {session_name}")
+                _did_respawn = True
+                from mobile_terminal.pane_buffer import drop_session_pane_buffers
+                n = drop_session_pane_buffers(app.state.pane_buffers, session_name)
+                if n:
+                    logger.info(f"[SEQ-SSE] PTY respawn: dropped {n} pane buffers")
             except Exception as e:
                 logger.error(f"Failed to spawn tmux: {e}")
                 return JSONResponse({"error": str(e)}, status_code=500)
@@ -166,6 +174,15 @@ def register(app: FastAPI, deps):
         }
         await sink.send_json(hello_msg)
         logger.info(f"SSE hello sent: {hello_msg}")
+
+        if _did_respawn:
+            try:
+                await sink.send_json({
+                    "type": "reset",
+                    "session": app.state.current_session,
+                })
+            except Exception:
+                pass
 
         # Resume decision: mirrors the WS handler (terminal_io.py).
         # Order on the wire:

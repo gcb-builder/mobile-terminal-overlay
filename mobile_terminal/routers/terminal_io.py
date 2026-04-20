@@ -17,8 +17,17 @@ from mobile_terminal.helpers import (
     get_cached_capture, set_cached_capture,
     send_text_to_pane,
 )
+from mobile_terminal.pane_buffer import drop_session_pane_buffers
 from mobile_terminal.transport import WebSocketSink
 from mobile_terminal import terminal_session as _tsess
+
+
+def _drop_pane_buffers_for_session(app, session: str) -> None:
+    """Module-level helper so the spawn block stays terse. Logs the
+    drop count for cross-checking [SEQ] log lines on next reconnect."""
+    n = drop_session_pane_buffers(app.state.pane_buffers, session)
+    if n:
+        logger.info(f"[SEQ] PTY respawn: dropped {n} pane buffers for session={session}")
 
 logger = logging.getLogger(__name__)
 
@@ -329,14 +338,20 @@ def register(app: FastAPI, deps):
                 app.state.ws_connect_lock.release()
         logger.info(f"[TIMING] WebSocket lock+accept took {time.time()-_ws_start:.3f}s")
 
-        # Spawn tmux if not already running
+        # Spawn tmux if not already running. A fresh PTY invalidates
+        # every per-pane buffer for this session — old seqs would
+        # appear to extend the new (unrelated) byte stream. Drop the
+        # buffers + tell the client to clear its lastSeq immediately.
         runtime = app.state.runtime
         _spawn_start = time.time()
+        _did_respawn = False
         if not runtime.has_fd:
             try:
                 session_name = app.state.current_session
                 runtime.spawn(session_name)
                 logger.info(f"Spawned tmux session: {session_name}")
+                _did_respawn = True
+                _drop_pane_buffers_for_session(app, session_name)
             except Exception as e:
                 logger.error(f"Failed to spawn tmux: {e}")
                 await sink.send_json({"type": "error", "message": str(e)})
@@ -362,6 +377,21 @@ def register(app: FastAPI, deps):
             await sink.close(code=4500)
             return
         logger.info(f"[TIMING] hello handshake took {time.time()-_hello_start:.3f}s")
+
+        # If we just spawned a fresh PTY, tell the client to clear its
+        # lastSeq for this session before the resume decision runs —
+        # otherwise it'd ask for a delta against a stream that no
+        # longer exists. The conservative `since > next_seq → snapshot`
+        # fallback also catches this, but the typed reset frame skips
+        # the wasted round-trip and is unambiguous in the logs.
+        if _did_respawn:
+            try:
+                await sink.send_json({
+                    "type": "reset",
+                    "session": app.state.current_session,
+                })
+            except Exception:
+                pass
 
         # Resume decision: ship a delta if the client's ?since= still
         # sits inside the pane buffer window; otherwise fall back to the

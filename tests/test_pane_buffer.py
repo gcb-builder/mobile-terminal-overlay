@@ -8,6 +8,7 @@ import pytest
 from mobile_terminal.pane_buffer import (
     PaneRingBuffer,
     decide_resume,
+    drop_session_pane_buffers,
     get_or_create_pane_buffer,
     pane_key,
 )
@@ -278,6 +279,29 @@ def test_decide_resume_since_zero_on_empty_is_caught_up():
     assert d.delta == b""
     assert d.send_clear_screen is False
     assert d.baseline_seq == 0
+
+
+def test_drop_session_pane_buffers_removes_only_matching_session():
+    """PTY respawn invalidates every pane in the affected session but
+    not panes in other sessions sharing the same registry."""
+    reg = {}
+    get_or_create_pane_buffer(reg, "alpha", "1:0").append(b"a-1")
+    get_or_create_pane_buffer(reg, "alpha", "2:0").append(b"a-2")
+    get_or_create_pane_buffer(reg, "beta",  "1:0").append(b"b-1")
+    n = drop_session_pane_buffers(reg, "alpha")
+    assert n == 2
+    assert "alpha:1:0" not in reg and "alpha:2:0" not in reg
+    assert "beta:1:0" in reg
+    # Recreating the alpha buffer starts fresh.
+    fresh = get_or_create_pane_buffer(reg, "alpha", "1:0")
+    assert fresh.next_seq == 0
+
+
+def test_drop_session_pane_buffers_returns_zero_when_no_match():
+    reg = {}
+    get_or_create_pane_buffer(reg, "alpha", "1:0").append(b"x")
+    assert drop_session_pane_buffers(reg, "missing") == 0
+    assert "alpha:1:0" in reg  # untouched
 
 
 def test_get_or_create_respects_max_bytes_on_first_construction():
