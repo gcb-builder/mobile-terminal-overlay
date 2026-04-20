@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v353 ===');
+console.log('=== TERMINAL.JS v354 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -130,8 +130,13 @@ let lastResyncTime = 0;
 const RESYNC_COOLDOWN = 5000;  // Don't resync more than once per 5 seconds
 
 // Backlog limits (tuned for mobile)
-const MAX_QUEUE_BYTES = 200000;  // 200KB max backlog
-const MAX_QUEUE_ITEMS = 500;     // 500 chunks max
+// Raised from 200KB → 1.5MB to absorb full delta-reconnect bursts
+// without dropping queue. The server's per-pane buffer caps at 1MB,
+// so 1.5MB covers the worst case (full delta + a couple live chunks
+// arriving during the same animation frame). xterm.js drains
+// megabytes/sec — the cap is backpressure, not a drain ceiling.
+const MAX_QUEUE_BYTES = 1500000; // 1.5MB max backlog
+const MAX_QUEUE_ITEMS = 2000;    // 2000 chunks max (matches enlarged byte cap)
 const MAX_PER_FRAME_MS = 8;      // 8ms max per frame
 const CHUNK_SIZE = 8192;         // 8KB max per ctx.terminal.write() call (larger to avoid ANSI splits)
 
@@ -11286,6 +11291,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=353', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=354', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
