@@ -7,6 +7,7 @@ import pytest
 
 from mobile_terminal.pane_buffer import (
     PaneRingBuffer,
+    decide_resume,
     get_or_create_pane_buffer,
     pane_key,
 )
@@ -212,6 +213,71 @@ def test_registry_clear_drops_all_buffers():
     fresh = get_or_create_pane_buffer(reg, "s", "2:0")
     assert fresh.next_seq == 0
     assert fresh.since(0) == b""
+
+
+# ── decide_resume() ─────────────────────────────────────────────────────
+
+def test_decide_resume_fresh_connect_no_since():
+    buf = PaneRingBuffer()
+    buf.append(b"hello")
+    d = decide_resume(buf, None)
+    assert d.mode == "fresh"
+    assert d.delta is None
+    assert d.send_clear_screen is True
+    assert d.baseline_seq == 5
+
+
+def test_decide_resume_caught_up():
+    buf = PaneRingBuffer()
+    buf.append(b"hello")
+    d = decide_resume(buf, 5)
+    assert d.mode == "caught_up"
+    assert d.delta == b""
+    assert d.send_clear_screen is False
+    assert d.baseline_seq == 5
+
+
+def test_decide_resume_delta_in_window():
+    buf = PaneRingBuffer()
+    buf.append(b"hello world")  # seq 0..11
+    d = decide_resume(buf, 6)
+    assert d.mode == "delta"
+    assert d.delta == b"world"
+    assert d.send_clear_screen is False
+    assert d.baseline_seq == 11
+
+
+def test_decide_resume_since_too_old_falls_back_to_snapshot():
+    buf = PaneRingBuffer(max_bytes=4)
+    buf.append(b"abcd")
+    buf.append(b"efgh")  # evicts "abcd"
+    d = decide_resume(buf, 0)
+    assert d.mode == "snapshot"
+    assert d.delta is None
+    assert d.send_clear_screen is True
+    assert d.baseline_seq == 8
+
+
+def test_decide_resume_since_past_tail_falls_back_to_snapshot():
+    """Stale identity case: client claims seq beyond what server produced
+    (e.g. server restarted). Treat as out of window so client gets a
+    fresh start, not a misleading delta."""
+    buf = PaneRingBuffer()
+    buf.append(b"abc")
+    d = decide_resume(buf, 999)
+    assert d.mode == "snapshot"
+    assert d.delta is None
+    assert d.send_clear_screen is True
+    assert d.baseline_seq == 3
+
+
+def test_decide_resume_since_zero_on_empty_is_caught_up():
+    buf = PaneRingBuffer()
+    d = decide_resume(buf, 0)
+    assert d.mode == "caught_up"
+    assert d.delta == b""
+    assert d.send_clear_screen is False
+    assert d.baseline_seq == 0
 
 
 def test_get_or_create_respects_max_bytes_on_first_construction():

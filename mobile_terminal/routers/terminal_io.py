@@ -363,38 +363,53 @@ def register(app: FastAPI, deps):
             return
         logger.info(f"[TIMING] hello handshake took {time.time()-_hello_start:.3f}s")
 
-        # Seq baseline: tells the client where the pane's byte stream
-        # currently stands. Step 3 always sends a baseline (no delta yet)
-        # but logs the client's ?since= so we can spot-check before step 4
-        # actually serves deltas. Kept as a separate JSON frame so the
-        # raw-byte streaming path stays binary-clean.
+        # Resume decision: ship a delta if the client's ?since= still
+        # sits inside the pane buffer window; otherwise fall back to the
+        # historical clear-screen + tail/snapshot path. Order matters:
+        #   1. delta bytes first (so they're written into the existing
+        #      xterm state before the client knows it can start counting)
+        #   2. seq_baseline last (the client's signal that lastSeq is
+        #      now `seq` and subsequent binary frames should advance it)
+        # When a non-empty delta is shipped we deliberately skip the
+        # clear-screen escape — the whole point is to preserve the
+        # client's existing xterm state and append the missed bytes.
         try:
-            from mobile_terminal.pane_buffer import get_or_create_pane_buffer
+            from mobile_terminal.pane_buffer import (
+                decide_resume,
+                get_or_create_pane_buffer,
+            )
             pbuf = get_or_create_pane_buffer(
                 app.state.pane_buffers,
                 app.state.current_session,
                 app.state.active_target,
             )
-            baseline_seq = pbuf.next_seq
+            decision = decide_resume(pbuf, since)
+            logger.info(
+                f"[SEQ] connect since={since} "
+                f"window=[{pbuf.oldest_seq},{pbuf.next_seq}] "
+                f"mode={decision.mode} baseline={decision.baseline_seq} "
+                f"delta_bytes={len(decision.delta) if decision.delta else 0}"
+            )
+            if decision.delta:
+                await sink.send_bytes(decision.delta)
             await sink.send_json({
                 "type": "seq_baseline",
-                "seq": baseline_seq,
+                "seq": decision.baseline_seq,
                 "session": app.state.current_session,
                 "target": app.state.active_target,
+                "mode": decision.mode,
             })
-            if since is not None:
-                logger.info(
-                    f"[SEQ] connect since={since} baseline={baseline_seq} "
-                    f"window=[{pbuf.oldest_seq},{pbuf.next_seq}]"
-                )
+            if decision.send_clear_screen:
+                # Default mode is "tail" — clear screen triggers overlay
+                # hide and gives a clean canvas. Skipped on the delta path
+                # to preserve xterm state we just extended.
+                await sink.send_text("\x1b[2J\x1b[H")
         except Exception as e:
-            logger.warning(f"seq_baseline send failed: {e}")
+            logger.warning(f"resume decision failed: {e}")
+            # Be conservative: fall back to clear-screen so the client
+            # at least lands on a known state.
+            await sink.send_text("\x1b[2J\x1b[H")
 
-        # Don't send capture-pane history on initial connect
-        # Default mode is "tail" which uses lightweight JSON updates
-        # History will be sent as catchup when client switches to "full" mode
-        # Just send clear screen to trigger client overlay hide
-        await sink.send_text("\x1b[2J\x1b[H")
         logger.info(f"[TIMING] WebSocket setup TOTAL took {time.time()-_ws_start:.3f}s")
 
         # Per-connection state (PTY death/close flags, ring buffer, tail

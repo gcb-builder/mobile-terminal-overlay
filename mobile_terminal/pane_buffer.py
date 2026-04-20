@@ -17,10 +17,55 @@ back to a full snapshot. No partial recovery — simpler is safer.
 """
 
 from collections import deque
+from dataclasses import dataclass
 from typing import Optional
 
 
 DEFAULT_MAX_BYTES = 1_048_576  # 1 MiB per pane
+
+
+@dataclass(frozen=True)
+class ResumeDecision:
+    """Result of deciding how to handle a (re)connect.
+
+    - ``baseline_seq``: what the server's pane buffer is at right now;
+      what the client's lastSeq should be once the resume frames are
+      processed.
+    - ``delta``: bytes to ship as catch-up. ``None`` means "no delta
+      send" (either fresh connect or out-of-window). ``b""`` means
+      client is exactly caught up — no bytes to send but also no
+      snapshot needed.
+    - ``send_clear_screen``: whether to emit ``\\x1b[2J\\x1b[H``. False
+      whenever a non-empty delta is being shipped, since clearing would
+      wipe the xterm state the delta is meant to extend.
+    - ``mode``: ``"fresh"`` | ``"snapshot"`` | ``"caught_up"`` | ``"delta"``.
+      Diagnostic only; transport handlers don't branch on it.
+    """
+    baseline_seq: int
+    delta: Optional[bytes]
+    send_clear_screen: bool
+    mode: str
+
+
+def decide_resume(pbuf: "PaneRingBuffer", since: Optional[int]) -> ResumeDecision:
+    """Pure decision: what to ship a (re)connecting client.
+
+    - ``since is None`` → fresh connect: no delta, clear screen.
+    - ``since`` outside buffer window → snapshot fallback: no delta,
+      clear screen. (Caller still has to ship a snapshot if it wants
+      one — this function only governs the delta wire.)
+    - ``since == next_seq`` → caught up: no delta, no clear.
+    - ``since`` in window → delta: ship the bytes, do NOT clear.
+    """
+    baseline = pbuf.next_seq
+    if since is None:
+        return ResumeDecision(baseline, None, True, "fresh")
+    delta = pbuf.since(since)
+    if delta is None:
+        return ResumeDecision(baseline, None, True, "snapshot")
+    if delta == b"":
+        return ResumeDecision(baseline, b"", False, "caught_up")
+    return ResumeDecision(baseline, delta, False, "delta")
 
 
 def pane_key(session: Optional[str], target: Optional[str]) -> str:
