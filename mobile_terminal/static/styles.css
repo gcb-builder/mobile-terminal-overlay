@@ -2936,9 +2936,15 @@ html, body {
     font-size: 13px;
     font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
     color: var(--text-primary);
-    white-space: nowrap;
+    /* Show up to 2 wrapped lines; ellipsize after. Tap on the row goes
+       to the composer for the full text — no inline expand needed. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-clamp: 2;
     overflow: hidden;
-    text-overflow: ellipsis;
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 .queue-item-meta {

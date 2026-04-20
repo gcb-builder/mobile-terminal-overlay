@@ -113,8 +113,10 @@ function updateAutoToggle() {
  * inline render — extracted so Active and Previous sections can share it.
  */
 function renderQueueRowHtml(item) {
-    const displayText = item.text.length > 60 ? item.text.slice(0, 60) + '...' : item.text;
-    const escapedText = escapeHtml(displayText);
+    // CSS .queue-item-text uses -webkit-line-clamp:2 to show up to two
+    // wrapped lines and ellipsize after. Pass the full text through —
+    // truncating in JS at 60 chars used to hide useful preview content.
+    const escapedText = escapeHtml(item.text);
     const isQueued = item.status === 'queued';
     const isSent = item.status === 'sent';
     const eid = escapeHtml(String(item.id));
