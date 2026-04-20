@@ -429,6 +429,22 @@ def register(app: FastAPI, deps):
                 if snapshot:
                     await client.send_text("\x1b[2J\x1b[H" + snapshot)
                     logger.info(f"[MODE] Sent capture-pane snapshot ({len(snapshot)} bytes)")
+                # Reseed client lastSeq with current pane_buffer.next_seq —
+                # tail mode didn't ship PTY bytes so the client's running
+                # lastSeq is stale relative to server seq.
+                from mobile_terminal.pane_buffer import get_or_create_pane_buffer
+                pbuf = get_or_create_pane_buffer(
+                    app.state.pane_buffers,
+                    app.state.current_session,
+                    app.state.active_target,
+                )
+                await client.send_json({
+                    "type": "seq_baseline",
+                    "seq": pbuf.next_seq,
+                    "session": app.state.current_session,
+                    "target": app.state.active_target,
+                    "mode": "mode_switch_full",
+                })
             except Exception as e:
                 logger.warning(f"[MODE] capture-pane catchup failed: {e}")
 

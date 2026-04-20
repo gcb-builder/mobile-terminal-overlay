@@ -525,6 +525,24 @@ def register(app: FastAPI, deps):
                                                     # Clear screen + send snapshot for clean render
                                                     await sink.send_text("\x1b[2J\x1b[H" + snapshot)
                                                     logger.info(f"[MODE] Sent capture-pane snapshot ({len(snapshot)} bytes)")
+                                                # Reseed client lastSeq with the current pane buffer
+                                                # next_seq — without this, the client's lastSeq stays
+                                                # at the connect-time baseline and diverges from server
+                                                # state since tail mode doesn't ship PTY bytes.
+                                                if not state.connection_closed:
+                                                    from mobile_terminal.pane_buffer import get_or_create_pane_buffer
+                                                    pbuf = get_or_create_pane_buffer(
+                                                        app.state.pane_buffers,
+                                                        app.state.current_session,
+                                                        app.state.active_target,
+                                                    )
+                                                    await sink.send_json({
+                                                        "type": "seq_baseline",
+                                                        "seq": pbuf.next_seq,
+                                                        "session": app.state.current_session,
+                                                        "target": app.state.active_target,
+                                                        "mode": "mode_switch_full",
+                                                    })
                                             except Exception as e:
                                                 logger.warning(f"[MODE] capture-pane catchup failed: {e}")
                                             # Also send SIGWINCH so live PTY forwarding

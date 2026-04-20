@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v352 ===');
+console.log('=== TERMINAL.JS v353 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -420,6 +420,56 @@ const _urlTransport = new URLSearchParams(location.search).get('transport');
 let _preferSSE = _urlTransport === 'sse' || (!_urlTransport && sessionStorage.getItem(_transportKey) === 'sse');
 // ?transport=ws explicitly clears stored SSE preference so it doesn't reassert next load
 if (_urlTransport === 'ws') sessionStorage.removeItem(_transportKey);
+
+// ── Per-pane PTY-byte seq tracking for delta-reconnect ──────────────────
+// Server's pane buffer assigns each PTY byte an absolute seq. On a fresh
+// connect the server sends {type: 'seq_baseline', seq: N, session, target}.
+// We record N and increment by binary-frame byte length while in full
+// mode. On reconnect we append ?since=lastSeq to the URL — server then
+// either ships a delta or falls back to a snapshot if seq is out of
+// window. In-memory only (NOT localStorage): if the page reloads, xterm
+// state is also empty, so a delta would visually corrupt the screen —
+// fresh snapshot is correct in that case.
+const lastSeqByPane = new Map();      // paneKey → integer seq
+let _seqTrackingEnabled = false;       // become true on first binary in full mode
+let _seqTrackingPaneKey = null;        // pane the current tracking applies to
+
+function _seqPaneKey(session, target) {
+    return `${session || ''}:${target || ''}`;
+}
+
+function _currentPaneKey() {
+    return _seqPaneKey(ctx.currentSession, ctx.activeTarget);
+}
+
+function _advanceSeq(byteLength) {
+    if (!_seqTrackingPaneKey) return;
+    if (ctx.outputMode !== 'full') return;
+    if (_seqTrackingPaneKey !== _currentPaneKey()) return;
+    const cur = lastSeqByPane.get(_seqTrackingPaneKey);
+    if (cur === undefined) return;
+    lastSeqByPane.set(_seqTrackingPaneKey, cur + byteLength);
+    _seqTrackingEnabled = true;
+}
+
+// Reset tracking on any state change that could invalidate the byte
+// alignment (mode switch, pane switch). Cleared lastSeq stays in the
+// map — the next seq_baseline will overwrite it.
+function _invalidateSeqTracking() {
+    _seqTrackingEnabled = false;
+    _seqTrackingPaneKey = null;
+}
+
+// Build the ?since= or &since= suffix for reconnect URLs. Returns the
+// raw `since=N` token (no leading separator) or '' when tracking isn't
+// trustworthy.
+function _seqSinceToken() {
+    if (!_seqTrackingEnabled) return '';
+    if (_seqTrackingPaneKey !== _currentPaneKey()) return '';
+    const seq = lastSeqByPane.get(_seqTrackingPaneKey);
+    if (seq === undefined) return '';
+    return `since=${seq}`;
+}
 
 // SSE input batcher: coalesces rapid keystrokes into single POST requests
 const _sseEncoder = new TextEncoder();
@@ -1651,10 +1701,19 @@ function handleJsonMessage(msg) {
         return true;
     }
 
-    // Per-pane PTY byte-seq baseline. Step 3 just consumes it so the JSON
-    // doesn't fall through and get written into xterm. Step 5 will use it
-    // to seed lastSeq[paneKey] for delta-reconnect.
+    // Per-pane PTY byte-seq baseline. Server tells us where its
+    // pane_buffer.next_seq stands; we record it and start advancing
+    // on subsequent binary frames. On the next reconnect the URL
+    // gets ?since=<lastSeq> so the server can ship a delta instead
+    // of a fresh snapshot.
     if (msg.type === 'seq_baseline') {
+        const key = _seqPaneKey(msg.session, msg.target);
+        lastSeqByPane.set(key, msg.seq);
+        // Reset tracking flags — wait for the next binary frame in
+        // full mode to confirm the client is in a state where lastSeq
+        // tracks the actual rendered xterm position.
+        _seqTrackingEnabled = false;
+        _seqTrackingPaneKey = key;
         return true;
     }
 
@@ -1808,7 +1867,8 @@ function connectSSE() {
     // X-MTO-Token header is set normally. URL token not required here.
     // If we ever switch back to EventSource, restore ?token=… because
     // EventSource can't set custom headers.
-    const streamUrl = `/api/terminal/stream`;
+    const _sseSinceTok = _seqSinceToken();
+    const streamUrl = `/api/terminal/stream${_sseSinceTok ? '?' + _sseSinceTok : ''}`;
 
     apiFetch(streamUrl).then(response => {
         if (!response.ok) throw new Error(`SSE stream ${response.status}`);
@@ -1934,6 +1994,7 @@ function connectSSE() {
                             const arr = new Uint8Array(bytes.length);
                             for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
                             if (ctx.terminal) queuedWrite(arr);
+                            _advanceSeq(arr.byteLength);
                             updateLastActivity();
                             if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
                                 statusOverlay.classList.add('hidden');
@@ -2025,7 +2086,8 @@ async function connect() {
     // Token MUST be in the URL: new WebSocket() can't set custom
     // headers, so X-MTO-Token isn't sent on the upgrade request. PR2's
     // bulk strip removed this and broke auth-enabled deployments.
-    const wsUrl = `${protocol}//${window.location.host}${window.__BASE_PATH || ''}/ws/terminal?token=${ctx.token}&_t=${Date.now()}`;
+    const _sinceTok = _seqSinceToken();
+    const wsUrl = `${protocol}//${window.location.host}${window.__BASE_PATH || ''}/ws/terminal?token=${ctx.token}&_t=${Date.now()}${_sinceTok ? '&' + _sinceTok : ''}`;
 
     // Only show overlay on first connect — reconnects use grace period
     if (!hasConnectedOnce) {
@@ -2147,6 +2209,7 @@ async function connect() {
                     return;
                 }
                 queuedWrite(new Uint8Array(buffer));
+                _advanceSeq(blobSize);
                 // Force ctx.terminal refresh on first data
                 if (!_firstDataReceived) {
                     _firstDataReceived = true;
@@ -2337,6 +2400,11 @@ function setOutputMode(mode) {
     const oldMode = ctx.outputMode;
     ctx.outputMode = mode;
     ctx.modeEpoch++;  // Invalidate ALL in-flight operations from previous mode
+    // Mode change invalidates seq tracking: in tail mode the server isn't
+    // shipping bytes, so client lastSeq diverges from pane_buffer.next_seq.
+    // Server resends seq_baseline after the capture-pane snapshot on
+    // mode→full, which reseeds tracking.
+    _invalidateSeqTracking();
 
     console.log(`[MODE] v245 Switching ${oldMode} -> ${mode} (epoch=${ctx.modeEpoch})`);
 
@@ -3307,6 +3375,12 @@ async function selectTarget(targetId, isInitialSync = false) {
     if (!isInitialSync) {
         saveQueueToStorage();
     }
+
+    // Pane switch invalidates the seq tracking — bytes flowing on the
+    // current connection will start coming from a different pane buffer.
+    // The next reconnect must NOT request ?since= until a fresh
+    // seq_baseline arrives for the new active pane.
+    _invalidateSeqTracking();
 
     // === OPTIMISTIC: Apply target locally immediately ===
     ctx.activeTarget = targetId;
@@ -11212,6 +11286,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=352', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=353', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
