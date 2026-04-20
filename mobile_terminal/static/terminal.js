@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v359 ===');
+console.log('=== TERMINAL.JS v360 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -2663,14 +2663,18 @@ async function loadCurrentSession() {
 let contextBannerRequestId = 0;
 
 async function loadContextBanner() {
+    // Repurposed: now shows the most recent end-of-turn recap from the
+    // active pane's JSONL log instead of the static .claude/CONTEXT.md.
+    // Same banner DOM (label changed in HTML), same dismiss behaviour.
     const requestId = ++contextBannerRequestId;
     const banner = document.getElementById('contextBanner');
     const preview = document.getElementById('contextBannerPreview');
     const body = document.getElementById('contextBannerBody');
     if (!banner || !preview || !body) return;
 
-    // Check per-repo dismiss flag
-    const dismissKey = `mto_context_dismissed_${ctx.currentSession || ''}`;
+    // Per-pane dismiss flag — recap changes per pane, so dismiss should
+    // be scoped per pane too. (Old: per-session.)
+    const dismissKey = `mto_recap_dismissed_${ctx.currentSession || ''}_${ctx.activeTarget || ''}`;
     if (sessionStorage.getItem(dismissKey)) {
         banner.classList.add('hidden');
         return;
@@ -2679,12 +2683,12 @@ async function loadContextBanner() {
     try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 3000);
-        const response = await apiFetch(`/api/docs/context`, {
+        const params = ctx.activeTarget ? `?pane_id=${encodeURIComponent(ctx.activeTarget)}` : '';
+        const response = await apiFetch(`/api/log/recap${params}`, {
             signal: controller.signal,
         });
         clearTimeout(timeout);
 
-        // Stale response — a newer request is in flight
         if (requestId !== contextBannerRequestId) return;
 
         if (!response.ok) { banner.classList.add('hidden'); return; }
@@ -2694,16 +2698,11 @@ async function loadContextBanner() {
             return;
         }
 
-        // Extract preview: first non-empty, non-heading line
-        const lines = data.content.split('\n');
-        const previewLine = lines.find(l => l.trim() && !l.startsWith('#')) || lines[0] || '';
-        preview.textContent = previewLine.trim();
-
-        // Body: cap at 4000 chars
-        let bodyText = data.content.slice(0, 4000);
-        if (data.content.length > 4000) bodyText += '\n... [truncated]';
-        body.textContent = bodyText;
-        body.classList.add('hidden');  // Start collapsed
+        // Preview: first line up to ~140 chars; expand reveals full text.
+        const firstLine = data.content.split('\n')[0].trim();
+        preview.textContent = firstLine.length > 140 ? firstLine.slice(0, 140) + '…' : firstLine;
+        body.textContent = data.content.slice(0, 4000);
+        body.classList.add('hidden');  // collapsed by default
 
         banner.classList.remove('hidden');
     } catch (e) {
@@ -3193,8 +3192,15 @@ async function switchRepo(session) {
                 loadLogContent();  // Full reload, not incremental refresh
                 await reconcileQueue();  // Reconcile queue for new session
                 reloadBacklogForProject('');
-                // Refresh context banner for new repo
-                sessionStorage.removeItem(`mto_context_dismissed_${session}`);
+                // Refresh recap banner for new session — clear all
+                // per-pane dismiss flags for this session so the new
+                // pane's recap surfaces.
+                for (let i = sessionStorage.length - 1; i >= 0; i--) {
+                    const k = sessionStorage.key(i);
+                    if (k && k.startsWith(`mto_recap_dismissed_${session}_`)) {
+                        sessionStorage.removeItem(k);
+                    }
+                }
                 loadContextBanner().catch(() => {});
             }, 500);
         }, 600);
@@ -3415,6 +3421,10 @@ async function selectTarget(targetId, isInitialSync = false) {
     localStorage.setItem('mto_active_target', targetId);
     updateNavLabel();
     populateRecentRepos();
+
+    // Refresh recap banner so it reflects the newly-active pane's
+    // most recent end-of-turn summary (banner is per-pane).
+    loadContextBanner().catch(() => {});
 
     // Immediately update team-scoped UI for the new target's repo
     updateLogFilterBarVisibility();
@@ -11233,7 +11243,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             e.stopPropagation();
             const banner = document.getElementById('contextBanner');
             if (banner) banner.classList.add('hidden');
-            const dismissKey = `mto_context_dismissed_${ctx.currentSession || ''}`;
+            // Per-pane dismiss to match loadContextBanner; switching panes
+            // surfaces that pane's recap until dismissed independently.
+            const dismissKey = `mto_recap_dismissed_${ctx.currentSession || ''}_${ctx.activeTarget || ''}`;
             sessionStorage.setItem(dismissKey, '1');
         });
     }
@@ -11325,6 +11337,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=359', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=360', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

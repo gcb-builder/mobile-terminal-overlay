@@ -484,6 +484,15 @@ def register(app: FastAPI, deps):
                                         # Track tool_use for result pairing (only tool pills, not special entries)
                                         if tool_name not in ('AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Task', 'TodoWrite') and tool_id:
                                             pending_tool_uses[tool_id] = (len(conversation) - 1, tool_name, tool_detail)
+
+                    elif msg_type == 'system' and entry.get('subtype') == 'away_summary':
+                        # End-of-turn recap from Opus 4.7. The text is on
+                        # the top-level 'content' string, not in message.content.
+                        # Inline it into the conversation feed with a 🪞 prefix
+                        # so it sits in temporal order with the rest of the turn.
+                        recap_text = entry.get('content', '')
+                        if isinstance(recap_text, str) and recap_text.strip():
+                            conversation.append(f"🪞 recap: {recap_text.strip()}")
                 except json.JSONDecodeError:
                     continue
 
@@ -564,6 +573,90 @@ def register(app: FastAPI, deps):
                 return JSONResponse({"error": str(e)}, status_code=500)
 
         return {"cleared": False, "error": "No cache file exists"}
+
+    @app.get("/api/log/recap")
+    async def get_log_recap(
+        request: Request,
+        _auth=Depends(deps.verify_token),
+        pane_id: Optional[str] = Query(None, description="Pane ID (window:pane); falls back to active_target"),
+    ):
+        """Most recent end-of-turn recap (system/away_summary) for the
+        active pane's JSONL log. Used by the pinned recap banner in
+        the Log view header — gives "what is the agent up to right
+        now" at a glance without scrolling the conversation feed.
+
+        Returns {exists, content, timestamp} or {exists: False}.
+        Tail-scans the file (recaps live near the end) so it's cheap
+        even on long sessions.
+        """
+        target_id = pane_id or app.state.active_target
+
+        if pane_id:
+            try:
+                parts = pane_id.split(":")
+                if len(parts) == 2:
+                    result = await run_subprocess(
+                        ["tmux", "display-message", "-t",
+                         f"{app.state.current_session}:{parts[0]}.{parts[1]}",
+                         "-p", "#{pane_current_path}"],
+                        capture_output=True, text=True, timeout=2
+                    )
+                    repo_path = (
+                        Path(result.stdout.strip())
+                        if result.returncode == 0 and result.stdout.strip()
+                        else deps.get_current_repo_path()
+                    )
+                else:
+                    repo_path = deps.get_current_repo_path()
+            except Exception:
+                repo_path = deps.get_current_repo_path()
+        else:
+            repo_path = deps.get_current_repo_path()
+
+        if not repo_path:
+            return {"exists": False}
+
+        project_id = get_project_id(repo_path)
+        claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
+        if not claude_projects_dir.exists():
+            return {"exists": False}
+
+        log_file = detect_target_log_file(target_id, app.state.current_session, claude_projects_dir)
+        if not log_file or not log_file.exists():
+            return {"exists": False}
+
+        # Tail-scan: read the file backwards line-by-line. Recaps are
+        # always at the end of a turn so the latest one is near EOF.
+        try:
+            with log_file.open("rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                # Cap the scan at last 256KB — way more than needed and
+                # bounds worst-case latency on huge logs.
+                read_from = max(0, size - 256 * 1024)
+                f.seek(read_from)
+                tail = f.read().decode("utf-8", errors="replace")
+            for line in reversed(tail.splitlines()):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "system" and entry.get("subtype") == "away_summary":
+                    content = entry.get("content", "")
+                    if isinstance(content, str) and content.strip():
+                        return {
+                            "exists": True,
+                            "content": content.strip(),
+                            "timestamp": entry.get("timestamp"),
+                        }
+        except Exception as e:
+            logger.debug(f"recap scan failed for {log_file.name}: {e}")
+            return {"exists": False, "error": str(e)}
+
+        return {"exists": False}
 
     @app.get("/api/log/sessions")
     async def list_log_sessions(_auth=Depends(deps.verify_token)):

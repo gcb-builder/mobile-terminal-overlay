@@ -22,7 +22,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=350">
+    <link rel="stylesheet" href="/static/styles.css?v=360">
 </head>
 <body>
     <div class="app">
@@ -91,10 +91,10 @@
             <button type="button" id="previewBackToLive" class="preview-back-btn">Back to Live</button>
         </div>
 
-        <!-- Project context banner (from .claude/CONTEXT.md) -->
+        <!-- Recap banner: most recent end-of-turn recap from agent log -->
         <div id="contextBanner" class="context-banner hidden">
             <div id="contextBannerHeader" class="context-banner-header">
-                <span class="context-banner-label">Context</span>
+                <span class="context-banner-label">Recap</span>
                 <span id="contextBannerPreview" class="context-banner-preview"></span>
                 <button type="button" id="contextBannerDismiss" class="context-banner-dismiss" aria-label="Dismiss">&times;</button>
             </div>
@@ -956,6 +956,6 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script defer src="/static/terminal.js?v=350"></script>
+    <script defer src="/static/terminal.js?v=360"></script>
 </body>
 </html>
