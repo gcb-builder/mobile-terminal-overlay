@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v371 ===');
+console.log('=== TERMINAL.JS v375 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1810,10 +1810,16 @@ function ssePostMessage(data) {
             } else if (msg.type === 'input') {
                 sseSendInputBatched(msg.data);
             } else if (msg.type === 'text') {
+                // Forward pane_id so the permission Allow/Deny path can
+                // route the y/n to the source pane instead of whichever
+                // pane is globally active. Without this, SSE stripped
+                // pane_id and the response landed on the wrong pane.
+                const body = { text: msg.text, enter: msg.enter || false };
+                if (msg.pane_id) body.pane_id = msg.pane_id;
                 apiFetch(`/api/terminal/text`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: msg.text, enter: msg.enter || false })
+                    body: JSON.stringify(body)
                 });
             } else {
                 // Generic JSON — send as text input
@@ -11459,6 +11465,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=371', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=375', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
