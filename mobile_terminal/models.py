@@ -110,6 +110,47 @@ def save_sent_ids_to_disk(session: str, entries: list, pane_id: Optional[str] = 
         logger.error(f"Error saving sent-ids for {session}: {e}")
 
 
+def get_tomb_file(session: str, pane_id: Optional[str] = None) -> Path:
+    """Sidecar file holding tombstoned (removed) item ids.
+
+    Stops cross-device localStorage replay: when one client deletes
+    item X, the server records the tombstone so a different client
+    that still has X locally can't resurrect it via reconcileQueue.
+    """
+    base = get_queue_file(session, pane_id)
+    return base.with_suffix(".tomb.jsonl")
+
+
+def load_tombs_from_disk(session: str, pane_id: Optional[str] = None) -> dict:
+    """Returns {id: removed_at} dict. Caller TTL-filters."""
+    f = get_tomb_file(session, pane_id)
+    out = {}
+    if f.exists():
+        try:
+            with open(f, "r") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        entry = json.loads(line)
+                        out[entry["id"]] = entry["removed_at"]
+        except Exception as e:
+            logger.warning(f"Error loading tombstones for {session}: {e}")
+    return out
+
+
+def save_tombs_to_disk(session: str, tombs: dict, pane_id: Optional[str] = None):
+    """Write tombstones {id: removed_at} verbatim. Caller has already
+    pruned past-TTL entries."""
+    f = get_tomb_file(session, pane_id)
+    try:
+        QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(f, "w") as fh:
+            for tid, ts in tombs.items():
+                fh.write(json.dumps({"id": tid, "removed_at": ts}) + "\n")
+    except Exception as e:
+        logger.error(f"Error saving tombstones for {session}: {e}")
+
+
 # ── Backlog persistence ────────────────────────────────────────────────
 
 
@@ -812,6 +853,12 @@ class CommandQueue:
     # grows indefinitely and every reconcile re-renders all history.
     SENT_VISIBLE_TTL_SECONDS = 300
 
+    # Tombstone TTL for explicitly-removed item ids. Generous because
+    # mobile clients can stay backgrounded for a long time before
+    # reconnecting and trying to re-upload their stale localStorage.
+    # 24h covers normal phone-in-pocket gaps without unbounded growth.
+    TOMBSTONE_TTL_SECONDS = 86400
+
     def __init__(self):
         self._queues: Dict[str, List[QueueItem]] = {}
         self._paused: Dict[str, bool] = {}
@@ -827,6 +874,10 @@ class CommandQueue:
         # client with is_new=False so the client can update its local
         # state to 'sent' without us re-running anything.
         self._recently_sent: Dict[str, Dict[str, tuple]] = {}  # key → {id → (item, ts)}
+        # Tombstones: ids that were explicitly removed. Used to reject
+        # reconcileQueue-driven resurrection from another device's
+        # stale localStorage. Loaded from disk on first access.
+        self._tombstones: Dict[str, Dict[str, float]] = {}  # key → {id → removed_at}
         # Wakeup signal for the processor loop. Set by enqueue() so the
         # processor doesn't have to wait up to its idle timeout to notice
         # that there's work to do. Created lazily to avoid binding to a
@@ -938,6 +989,16 @@ class CommandQueue:
                 self._recently_sent[key] = cache
                 logger.info(f"Loaded {len(cache)} replay-protect entries for {key}")
 
+        # Restore tombstones, applying TTL on read.
+        tomb_data = load_tombs_from_disk(session, pane_id)
+        if tomb_data:
+            now = time.time()
+            tombs = {tid: ts for tid, ts in tomb_data.items()
+                     if now - ts <= self.TOMBSTONE_TTL_SECONDS}
+            if tombs:
+                self._tombstones[key] = tombs
+                logger.info(f"Loaded {len(tombs)} tombstones for {key}")
+
     def _save_to_disk(self, session: str, pane_id: Optional[str] = None):
         """Save queue + recently-sent ids to disk for a session+pane.
 
@@ -965,6 +1026,15 @@ class CommandQueue:
                     "item": asdict(item),
                 })
             save_sent_ids_to_disk(session, entries, pane_id)
+
+        # Persist tombstones, prune past-TTL entries.
+        tomb_cache = self._tombstones.get(key, {})
+        if tomb_cache or get_tomb_file(session, pane_id).exists():
+            now = time.time()
+            kept = {tid: ts for tid, ts in tomb_cache.items()
+                    if now - ts <= self.TOMBSTONE_TTL_SECONDS}
+            self._tombstones[key] = kept
+            save_tombs_to_disk(session, kept, pane_id)
 
     def _classify_policy(self, text: str) -> str:
         """Determine if command is safe or unsafe."""
@@ -1014,6 +1084,30 @@ class CommandQueue:
             for existing in queue:
                 if existing.id == item_id:
                     return (existing, False)  # Already exists
+            # Tombstone check: this id was explicitly removed within
+            # TTL. Returning a synthetic "removed" snapshot tells the
+            # client to drop it from localStorage rather than keep
+            # re-uploading it on every reconcile.
+            tombs_for_key = self._tombstones.get(key, {})
+            if tombs_for_key:
+                now = time.time()
+                expired = [
+                    tid for tid, ts in tombs_for_key.items()
+                    if now - ts > self.TOMBSTONE_TTL_SECONDS
+                ]
+                for tid in expired:
+                    del tombs_for_key[tid]
+                if item_id in tombs_for_key:
+                    logger.info(
+                        f"Tombstone block: enqueue with id={item_id[:8]}.. "
+                        f"was removed at ts={tombs_for_key[item_id]:.0f}"
+                    )
+                    removed_at = tombs_for_key[item_id]
+                    removed = QueueItem(
+                        id=item_id, text=text, policy="safe",
+                        status="removed", created_at=removed_at,
+                    )
+                    return (removed, False)
             # Replay-protection check: was this id recently sent? Prune
             # expired entries lazily on every check so the dict stays
             # bounded even if no fresh sends arrive.
@@ -1055,11 +1149,15 @@ class CommandQueue:
         return (item, True)
 
     def dequeue(self, session: str, item_id: str, pane_id: Optional[str] = None) -> bool:
-        """Remove an item from the queue."""
+        """Remove an item from the queue. Records a tombstone so other
+        clients with a stale localStorage copy can't resurrect the id
+        via reconcileQueue."""
         queue = self._get_queue(session, pane_id)
         for i, item in enumerate(queue):
             if item.id == item_id:
                 queue.pop(i)
+                key = self._queue_key(session, pane_id)
+                self._tombstones.setdefault(key, {})[item_id] = time.time()
                 self._save_to_disk(session, pane_id)
                 return True
         return False

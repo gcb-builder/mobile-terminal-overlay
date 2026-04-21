@@ -465,6 +465,17 @@ export async function enqueueCommand(text, policy = 'auto', backlogId = null) {
 
         if (resp.ok) {
             const data = await resp.json();
+            // Server may respond with a tombstone — id was explicitly
+            // removed within the last 24h, so this enqueue (likely
+            // a reconcile-from-localStorage replay) is rejected.
+            // Drop it from our local queue + localStorage so we don't
+            // try again on the next reconcile.
+            if (data.item && data.item.status === 'removed') {
+                queueItems = queueItems.filter(i => i.id !== itemId);
+                saveQueueToStorage();
+                renderQueueList();
+                return false;
+            }
             const idx = queueItems.findIndex(i => i.id === itemId);
             if (idx >= 0) {
                 // Server is authoritative for status. If the server says

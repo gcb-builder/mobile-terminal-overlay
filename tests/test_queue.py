@@ -351,6 +351,42 @@ class TestAutoEligible:
         )
         assert picked is None
 
+    def test_dequeue_records_tombstone(self):
+        """Removing an item creates a tombstone so cross-device replay
+        of the same id via reconcileQueue is blocked."""
+        self.q.enqueue("sess", "ls", item_id="DEL")
+        assert self.q.dequeue("sess", "DEL") is True
+        key = self.q._queue_key("sess")
+        assert "DEL" in self.q._tombstones.get(key, {})
+
+    def test_re_enqueue_of_tombstoned_id_returns_removed(self):
+        """The cross-device case: device A removed the item; device B's
+        stale localStorage tries to re-upload it; server returns a
+        removed-status snapshot so device B drops it locally."""
+        self.q.enqueue("sess", "ls", item_id="X")
+        self.q.dequeue("sess", "X")
+        # Device B reconciles, posts the same id back
+        item, is_new = self.q.enqueue("sess", "ls", item_id="X")
+        assert is_new is False
+        assert item.status == "removed"
+        # Server's queue is still empty — synthetic item, not added back
+        assert all(i.id != "X" for i in self.q.list_items("sess"))
+
+    def test_tombstone_expires_after_ttl(self):
+        """Once past TOMBSTONE_TTL_SECONDS the tombstone is purged and
+        re-enqueueing the id succeeds normally."""
+        self.q.enqueue("sess", "ls", item_id="OLD")
+        self.q.dequeue("sess", "OLD")
+        key = self.q._queue_key("sess")
+        # Force the tombstone timestamp into the past
+        self.q._tombstones[key]["OLD"] = (
+            time.time() - self.q.TOMBSTONE_TTL_SECONDS - 60
+        )
+        # Now a fresh enqueue with the same id succeeds (lazy prune)
+        item, is_new = self.q.enqueue("sess", "ls", item_id="OLD")
+        assert is_new is True
+        assert item.status == "queued"
+
     def test_eligible_overrides_unsafe_policy(self):
         """⚡ is the user's explicit consent — it must override the
         unsafe policy gate. Without this, classifier-flagged commands
