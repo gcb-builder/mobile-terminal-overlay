@@ -3,10 +3,42 @@
 ## Current State
 
 - **Branch:** master
-- **Stage:** Seq-based delta-reconnect feature live on both transports — server confirms `mode=delta` deliveries on real reconnects. Step 6 (PTY respawn reset frame) deferred as polish.
-- **Last Updated:** 2026-04-20
-- **Server Version:** v355 (single source of truth: scripts/version.txt now also syncs the `=== TERMINAL.JS vN ===` console diagnostic)
+- **Stage:** Queue UX overhaul + per-client target sync + agent-memory file search live. Two open follow-ups: defensive selectTarget init, per-pane queue widget.
+- **Last Updated:** 2026-04-21
+- **Server Version:** v370
 - **Server Start:** `./venv/bin/mobile-terminal --session claude --port 8080 --base-path /terminal --no-auth --host 0.0.0.0 &` (drop `--verbose` if still in your systemd unit — it's noisy and competes for journal I/O)
+
+## Recent: 2026-04-20..21 — Queue UX overhaul + multi-client polish (12 commits)
+
+Driven by real-use complaints: stale items reappearing across reconnects/devices, `[y/n]`-mistime auto-sends, queue rows too short to read, queue cross-pollution between secondbrain/MTO panes, agent recap invisible in MTO log.
+
+| Commit | Summary |
+|---|---|
+| `e81f242` | **Step 6 — PTY respawn reset frame**: server drops per-pane buffers + sends `{type:'reset'}` on fresh PTY spawn; client clears matching `lastSeqByPane` keys. Closes the delta-reconnect feature. |
+| `a80dcf7` | **SW push wake nudge**: sw.js push handler postMessages `sw_wake` to open clients. Backgrounded tabs whose WS died at NAT reconnect immediately on push receipt rather than waiting for tap. |
+| `2f37095` | **Recap inline + pinned banner**: Opus 4.7 `system/away_summary` JSONL events now render in /api/log as `🪞 recap: ...`. New `/api/log/recap` tail-scans last 256KB for the most recent recap; banner replaces the static .claude/CONTEXT.md banner. |
+| `c2b4850` | **Per-item ⚡ opt-in for auto-send**: `auto_eligible: bool = False` on QueueItem. Processor picker filters to ⚡-flagged. New POST /api/queue/auto_eligible. Default False so accidental enqueues never fire. |
+| `71c1913` | **Edit-then-Queue race fix**: `consumeEditingItemRemoval` now routes through `removeQueueItem` so the v=358 `_recentlyDeleted` guard catches the race. No more "edited original reappears as duplicate". |
+| `2992b09` | **⚡ overrides safe-only gate**: per-item ⚡ is the user's explicit consent — drop the `policy=='safe'` requirement from the picker. Items the user knowingly flagged auto-fire regardless of classifier verdict. |
+| `93f47d8` | **Driver-phase ready gate + Pause→Hold rename**: `_check_ready` consults `driver.observe(ctx).phase` and only fires when `idle`. Stops auto-send during mid-tool-call streaming gaps. Pause button renamed "Hold" with tooltip explaining ⚡ relationship. |
+| `7950bb2` | **Tombstones for queue items**: `dequeue` records `(id, removed_at)` with 24h TTL, persisted as `*.tomb.jsonl`. Re-enqueue of a tombstoned id returns synthetic `{status:'removed'}` so a different device's stale localStorage drops the item locally. Stops cross-device resurrection. |
+| `7c35d3b` | **Resizable workspace sidebar (desktop)**: drag handle on right edge; bounds 240–800px; persists to localStorage. |
+| `9fdb90b` | **Queue rows: title attribute**: full prompt text in `title="..."` on each row → native hover tooltip on desktop. Mobile gets the existing 2-line wrap. |
+| `4fc1109` | **Agent memory in file search**: `/api/files/search` and `/api/file` accept a `memory/` virtual prefix that resolves to `~/.claude/projects/<id>/memory/`. Surfaces auto-memory files (e.g. `project_bank_description_rules.md`) that live outside the repo. |
+| `5aeefad` | **Per-client target view**: `loadTargets` no longer blindly overwrites `ctx.activeTarget` from server's `data.active`. Mobile keeps its locally-chosen pane unless that pane is gone — stops desktop's pane switch from dragging mobile's queue/log view along. |
+
+**RCAs investigated this session (no code change needed):**
+- "Items keep reappearing on queue" → pre-v=357 manual sends never told the server `sent`. Cleanup script flipped 45 disk items to `sent`; v=357+ prevents recurrence.
+- "X delete items reappear" → race between local filter and POST + reconcile from another tab. Fixed in v=358 (`_recentlyDeleted` guard).
+- "Secondbrain queue showing in MTO pane" → desktop's pane switch leaked into mobile via the old `loadTargets` overwrite. v=370 stops it. Existing residue items (7 in pane 1:0's queue file) cleaned up by user via X button (now creates tombstones).
+
+**Open follow-ups (concrete):**
+- **Defensive selectTarget init**: on cold start, don't auto-fire `selectTarget(savedTarget, true)` if savedTarget's repo doesn't match the URL/session context. Currently any saved target gets re-applied even if the user re-opened MTO from a fresh URL targeting a different repo. ~10 LOC.
+- **Per-pane queue widget**: in desktop multipane, the queue panel should follow the visible terminal column (the pane the user is reading), not the global `ctx.activeTarget`. Architectural fix for the cross-pollution discomfort. Bigger change — needs a per-column queue context.
+
+**Files touched:**
+- New: `mobile_terminal/static/index.html` (recap banner, sidebar resizer handle, ⚡ button)
+- Modified: `mobile_terminal/models.py` (auto_eligible field, mark_sent, tombstones, prune), `mobile_terminal/routers/queue.py` (mark_sent + auto_eligible endpoints), `mobile_terminal/routers/files.py` (memory/ virtual prefix), `mobile_terminal/routers/logs.py` (away_summary inline + /api/log/recap), `mobile_terminal/routers/terminal_io.py` + `terminal_sse.py` (reset frame on PTY respawn, mode-switch baseline), `mobile_terminal/static/terminal.js` (queue UX, sidebar resize, lastSeq tracking, target sync), `mobile_terminal/static/src/features/queue.js` (⚡ toggle, tombstone handling, mark_sent), `mobile_terminal/static/sw.js` (push wake nudge)
 
 ## Recent: 2026-04-20 — Seq-based delta-reconnect (8 commits)
 

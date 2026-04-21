@@ -1444,3 +1444,67 @@ Real reconnect during active Claude streaming, ~250KB delta correctly delivered.
 - **localStorage persistence across reload**: not done deliberately. If we later want page-reload-to-resume, would need a way to also persist the xterm state (maybe via xterm.js's built-in serialize addon).
 
 **Server restart needed for**: every step 1–7 commit (Python). Hard browser refresh for `v=355` JS bundle.
+
+---
+
+## 2026-04-20..21 — Queue UX overhaul + multi-client polish (12 commits, v=356→370)
+
+Driven by real-use complaints: stale items reappearing across reconnects/devices, `[y/n]`-mistime auto-sends, queue rows too short to read, queue cross-pollution between secondbrain/MTO panes, agent recap invisible in MTO log, file searcher missing agent-memory.
+
+- `e81f242` **Step 6 — PTY respawn reset frame**: server's `runtime.spawn()` triggers `drop_session_pane_buffers(...)` + sends `{type:'reset', session}` after hello. Client's `handleJsonMessage` for `reset` clears matching `lastSeqByPane` keys + invalidates tracking. Closes the delta-reconnect feature. 2 new tests in test_pane_buffer.
+
+- `a80dcf7` **SW push wake nudge**: sw.js push handler wraps `showNotification` in `Promise.all` with `clients.matchAll({includeUncontrolled:true}).postMessage({type:'sw_wake'})`. terminal.js's existing serviceWorker message handler routes `sw_wake` → if socket isn't OPEN, force `manualReconnect()`. Helps backgrounded-but-alive tabs reconnect on push without waiting for tap.
+
+- `2f37095` **Recap inline + pinned banner**: `system/away_summary` JSONL events now render in /api/log as `🪞 recap: ...` (sits in temporal order). New GET /api/log/recap tail-scans last 256KB of active pane's JSONL for the most recent recap; banner replaces the static .claude/CONTEXT.md banner. Per-pane sessionStorage dismiss flag. Refreshes on session AND pane switch.
+
+- `c2b4850` **Per-item ⚡ opt-in for auto-send**: `auto_eligible: bool = False` field on QueueItem (persisted + restored). `_process_loop` picker filters to ⚡-flagged items. New POST /api/queue/auto_eligible flips the flag + wakes processor. Client UI: ⚡ button in row action bar, optimistic toggle with revert. Default False so accidental enqueues never fire. 5 new tests in TestAutoEligible.
+
+- `71c1913` **Edit-then-Queue race fix**: `consumeEditingItemRemoval` (terminal.js) now routes through `removeQueueItem` (queue.js) so the v=358 `_recentlyDeleted` guard catches the race that re-enqueued the original after an edit. Required exporting `removeQueueItem`.
+
+- `2992b09` **⚡ overrides safe-only gate**: drop the `policy=='safe'` requirement from the processor picker. Per-item ⚡ is the user's explicit consent — having the classifier veto it on top means commands the user knowingly flagged still wouldn't auto-fire. Test test_eligible_overrides_unsafe_policy asserts the new behavior.
+
+- `93f47d8` **Driver-phase ready gate + Pause→Hold rename**: `_check_ready` consults `driver.observe(ctx).phase` and only fires when `idle` — prevents items landing mid-tool-call when output briefly quiets between streaming chunks. Capture-pane heuristics (quiet 400ms + prompt char + no [y/n]) remain as defence in depth. `app.state.build_observe_context` exposed for CommandQueue. Pause button renamed "Hold" with tooltip explaining ⚡ relationship.
+
+- `7950bb2` **Server-side tombstones**: removing an item creates a 24h-TTL tombstone keyed by id, persisted as `*.tomb.jsonl`. Re-enqueue of a tombstoned id returns `{item: {status:'removed'}, is_new: false}` and the client filters it out of localStorage. Stops the cross-device localStorage replay where device A removes an item but device B re-uploads it on next reconcile. 3 new tests.
+
+- `7c35d3b` **Resizable workspace sidebar (desktop)**: 4px col-resize handle on right edge of `.desktop-sidebar`. Pointer-event handlers update `--desktop-sidebar-width` CSS var live, persisted to localStorage on release. Bounds 240–800px. Hidden on mobile/tablet.
+
+- `9fdb90b` **Queue rows: title attribute** = full text → native hover tooltip on desktop. escapeHtml already escapes `"` and `'` so safe inline.
+
+- `4fc1109` **Agent memory in file search**: `/api/files/search` rglobs `~/.claude/projects/<project_id>/memory/` and surfaces matches under a `memory/` virtual prefix. `/api/file` accepts the same prefix and resolves to the memory root with the same parent-traversal guard. Surfaces files like `memory/project_bank_description_rules.md` that live outside the repo and were invisible to git ls-files.
+
+- `5aeefad` **Per-client target view**: `loadTargets()` no longer blindly does `ctx.activeTarget = data.active`. Mobile keeps its locally-chosen pane unless that pane is gone from the session. Stops desktop's pane switch from dragging mobile's queue/log along — the source of the cross-pollution that left 7 secondbrain items in MTO's queue file.
+
+**Cleanup actions performed (no commit):**
+- One-shot script flipped 45 stuck `queued` items to `sent` across `claude_*.jsonl` files. Backups at `*.jsonl.bak`. Server restart re-loaded with sent items filtered out — but cross-device reconcile re-uploaded 25 of them anyway, exposing the localStorage replay problem (fixed in `7950bb2`).
+- User manually X-deleted the 7 cross-polluted items from pane 1:0's queue. Tombstones now prevent re-upload.
+
+**RCAs investigated this session (no code change needed):**
+- "MTO sent 1 / 2" → not MTO. No `_send_item` invocations or `tmux send-keys` of those values; came from user's own keyboard.
+- "Secondbrain queue showing in MTO pane" → mobile's `ctx.activeTarget` was overwritten by desktop's switch via the buggy `loadTargets`; v=370 fixes.
+
+**Open follow-ups:**
+- **Defensive selectTarget init**: on cold start, skip auto-firing `selectTarget(savedTarget, true)` if savedTarget's repo (cwd) doesn't match the URL/session context. Currently a stale localStorage value re-applies. ~10 LOC.
+- **Per-pane queue widget**: in desktop multipane, queue panel should bind to the visible terminal column rather than the global `ctx.activeTarget`. Architectural — needs a per-column queue context that subscribes to its own pane's queue endpoint and broadcasts.
+
+**New files:**
+- `*.tomb.jsonl` sidecar files in `~/.cache/mobile-overlay/queue/` (created lazily on first dequeue per pane)
+
+**Files touched:**
+- `mobile_terminal/models.py` (auto_eligible, mark_sent, _prune_old_sent, _tombstones, set_auto_eligible)
+- `mobile_terminal/routers/queue.py` (mark_sent + auto_eligible endpoints)
+- `mobile_terminal/routers/files.py` (memory/ virtual prefix)
+- `mobile_terminal/routers/logs.py` (away_summary inline + /api/log/recap)
+- `mobile_terminal/routers/terminal_io.py` + `terminal_sse.py` (PTY respawn reset, mode-switch baseline reseed)
+- `mobile_terminal/server.py` (build_observe_context exposed)
+- `mobile_terminal/pane_buffer.py` (drop_session_pane_buffers helper)
+- `mobile_terminal/static/index.html` (recap banner, sidebar resizer, ⚡ button)
+- `mobile_terminal/static/styles.css` (Hold button, ⚡ toggle, queue row 2-line wrap, sidebar resizer)
+- `mobile_terminal/static/terminal.js` (seq tracking on PTY reset, sidebar resize JS, target-sync fix, recap banner JS, edit-then-queue route through removeQueueItem)
+- `mobile_terminal/static/src/features/queue.js` (⚡ toggle handler, tombstone handling, mark_sent, exported removeQueueItem)
+- `mobile_terminal/static/sw.js` (push wake nudge)
+- `tests/test_queue.py` (5 + 3 + 2 + 1 new tests across TestAutoEligible, TestSentItemPrune additions)
+- `tests/test_pane_buffer.py` (2 new tests for drop_session_pane_buffers)
+- `scripts/version.txt` (356 → 370)
+
+**Server restart needed for**: every commit (Python state). Hard browser refresh for `v=370` JS bundle.
