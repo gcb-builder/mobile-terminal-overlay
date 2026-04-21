@@ -1426,13 +1426,27 @@ class CommandQueue:
 
             tmux_t = get_tmux_target(session, pane_id) if pane_id else session
 
+            # Instrumentation: bracket each send step so we can tell where
+            # an auto-sent item stalls when the resulting JSONL user turn
+            # doesn't appear (bug: text visible in tail but no turn submit).
+            # On the next repro we'll see exactly whether Enter was sent
+            # and whether the subprocess call returned cleanly.
+            logger.info(
+                f"[QUEUE-SEND] id={item.id[:8]} pane={tmux_t} "
+                f"text_len={len(item.text)} text={item.text[:60]!r}"
+            )
             try:
                 if item.text:
                     await send_text_to_pane(runtime, tmux_t, item.text)
+                    logger.info(f"[QUEUE-SEND] id={item.id[:8]} text sent → pressing Enter")
+                else:
+                    logger.info(f"[QUEUE-SEND] id={item.id[:8]} empty text → pressing Enter")
                 # Always send Enter — empty text + Enter is a valid "submit
                 # current prompt" action and matches sendTextAtomic(text, true).
                 await runtime.send_keys(tmux_t, "Enter")
+                logger.info(f"[QUEUE-SEND] id={item.id[:8]} Enter done")
             except Exception as send_err:
+                logger.warning(f"[QUEUE-SEND] id={item.id[:8]} FAILED: {send_err}")
                 item.status = "failed"
                 item.error = f"send-keys failed: {send_err}"
                 self._save_to_disk(session, pane_id)
