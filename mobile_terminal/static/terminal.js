@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v369 ===');
+console.log('=== TERMINAL.JS v370 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -2484,8 +2484,21 @@ function sendTextAtomic(text, enter = true) {
         ctx.socket.send(JSON.stringify({ type: 'text', text: text, enter: enter }));
     }
 }
+// Send text to a SPECIFIC pane (overrides the server's global active_target).
+// Used by the permission Allow/Deny path so the y/n lands in the pane that
+// asked for permission, not whichever pane is currently active for the
+// shared server state. paneId is the "window:pane" string (e.g. "3:0").
+function sendTextAtomicToPane(text, enter, paneId) {
+    if (isPreviewMode()) return;
+    if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
+        ctx.socket.send(JSON.stringify({
+            type: 'text', text: text, enter: enter, pane_id: paneId,
+        }));
+    }
+}
 // Expose for feature modules (backlog send-now)
 ctx.sendTextAtomic = sendTextAtomic;
+ctx.sendTextAtomicToPane = sendTextAtomicToPane;
 
 /**
  * Toggle control lock
@@ -9890,8 +9903,21 @@ function hidePermissionBanner() {
  * Setup permission banner button handlers (called once from DOMContentLoaded)
  */
 function setupPermissionBanner() {
+    // Send the response to the pane that ASKED for permission (stamped
+    // by server as payload.source_pane). Falls back to the active pane
+    // if not present (older server, or test path) to keep behavior
+    // backward-compatible.
+    const sendPermissionResponse = (yn) => {
+        const target = activePermissionPayload?.source_pane || ctx.activeTarget;
+        if (target) {
+            sendTextAtomicToPane(yn, true, target);
+        } else {
+            sendTextAtomic(yn, true);
+        }
+    };
+
     document.getElementById('permissionAllow')?.addEventListener('click', () => {
-        sendTextAtomic('y', true);
+        sendPermissionResponse('y');
         setTerminalBusy(true);
         recentSentCommands.add('y');
         lastSuggestion = '';
@@ -9900,7 +9926,7 @@ function setupPermissionBanner() {
     });
 
     document.getElementById('permissionDeny')?.addEventListener('click', () => {
-        sendTextAtomic('n', true);
+        sendPermissionResponse('n');
         setTerminalBusy(true);
         recentSentCommands.add('n');
         lastSuggestion = '';
@@ -9916,7 +9942,7 @@ function setupPermissionBanner() {
         if (activePermissionPayload) {
             await createPermissionRule(activePermissionPayload, 'repo');
         }
-        sendTextAtomic('y', true);
+        sendPermissionResponse('y');
         setTerminalBusy(true);
         recentSentCommands.add('y');
         lastSuggestion = '';
@@ -9929,7 +9955,7 @@ function setupPermissionBanner() {
         if (activePermissionPayload) {
             await createPermissionRule(activePermissionPayload, 'global');
         }
-        sendTextAtomic('y', true);
+        sendPermissionResponse('y');
         setTerminalBusy(true);
         recentSentCommands.add('y');
         lastSuggestion = '';
@@ -10080,7 +10106,16 @@ async function setupPushNotifications() {
 
     navigator.serviceWorker.addEventListener('message', (event) => {
         if (event.data?.type === 'permission_response') {
-            sendTextAtomic(event.data.choice, true);
+            // SW push notification's Allow/Deny action — the SW already
+            // included pane_id from notifData (sw.js notificationclick).
+            // Send to that pane so the y/n lands where the prompt was,
+            // not in whichever pane the user happens to be viewing now.
+            const target = event.data.pane_id || activePermissionPayload?.source_pane || ctx.activeTarget;
+            if (target) {
+                sendTextAtomicToPane(event.data.choice, true, target);
+            } else {
+                sendTextAtomic(event.data.choice, true);
+            }
         } else if (event.data?.type === 'respawn_agent') {
             // Respawn Claude from push notification action
             respawnAgent();
@@ -11403,6 +11438,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=369', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=370', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

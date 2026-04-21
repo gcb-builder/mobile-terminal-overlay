@@ -1,6 +1,6 @@
 // Service Worker for Mobile Terminal PWA
 // __BASE_PATH is injected by the server at the top of this file
-const CACHE_NAME = 'terminal-v359';
+const CACHE_NAME = 'terminal-v370';
 
 // Install event - cache essential assets
 self.addEventListener('install', (event) => {
@@ -106,13 +106,17 @@ self.addEventListener('notificationclick', (event) => {
   const bp = (typeof __BASE_PATH !== 'undefined') ? __BASE_PATH : '';
 
   if (event.action === 'allow' || event.action === 'deny') {
-    // Permission response
+    // Permission response — include pane_id from the original push
+    // payload so the page sends y/n to the pane that asked, not to
+    // whatever pane is globally active (which could be a different
+    // pane by the time the user taps the notification).
     event.waitUntil(
       clients.matchAll({ type: 'window' }).then(cls => {
         if (cls.length > 0) {
           cls[0].postMessage({
             type: 'permission_response',
-            choice: event.action === 'allow' ? 'y' : 'n'
+            choice: event.action === 'allow' ? 'y' : 'n',
+            pane_id: notifData.pane_id || '',
           });
           cls[0].focus();
         } else {

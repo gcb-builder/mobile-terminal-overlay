@@ -110,6 +110,9 @@ def register(app: FastAPI, deps):
             "target": target,
             "repo": repo,
             "risk": classify_risk(tool, target),
+            # Test endpoint always uses the currently-active pane as the
+            # synthetic prompt source so the Allow path round-trips clean.
+            "source_pane": app.state.active_target,
         }
         # Store for polling clients and try direct send
         app.state._test_permission = perm

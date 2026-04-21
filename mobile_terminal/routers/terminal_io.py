@@ -506,11 +506,17 @@ def register(app: FastAPI, deps):
                                     last_pong_time = time.time()
                                 elif msg_type == "text":
                                     # Atomic text send via tmux send-keys (not PTY write)
-                                    # This avoids interleaving with PTY output stream
+                                    # This avoids interleaving with PTY output stream.
+                                    # If the message includes pane_id (e.g. permission
+                                    # Allow/Deny stamps source_pane on the response),
+                                    # honor that — otherwise the global active_target
+                                    # could land it in the wrong pane when multiple
+                                    # clients race or the user is viewing a different
+                                    # pane than the one that asked.
                                     text_data = data.get("text", "")
                                     send_enter = data.get("enter", False)
                                     session = app.state.current_session
-                                    target = app.state.active_target
+                                    target = data.get("pane_id") or app.state.active_target
                                     tmux_t = get_tmux_target(session, target)
                                     if text_data:
                                         try:
