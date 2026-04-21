@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v366 ===');
+console.log('=== TERMINAL.JS v369 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -3303,7 +3303,17 @@ async function loadTargets() {
 
         const data = await response.json();
         ctx.targets = data.targets || [];
-        ctx.activeTarget = data.active;
+        // Per-client target view: respect mobile's locally-chosen pane
+        // if it still exists in the session, even when another client
+        // (e.g. desktop) has switched the server's app.state.active_target
+        // to something else. Each device's queue/log view follows its
+        // own selection; only fall through to server's value when the
+        // client has nothing saved or the saved pane is gone.
+        const targetIds = new Set(ctx.targets.map(t => t.id));
+        const localStillValid = ctx.activeTarget && targetIds.has(ctx.activeTarget);
+        if (!localStillValid) {
+            ctx.activeTarget = data.active;
+        }
 
         // Get expected repo path from current repo ctx.config
         if (ctx.config && ctx.config.repos) {
@@ -11393,6 +11403,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=366', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=369', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
