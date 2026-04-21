@@ -325,8 +325,8 @@ class TestAutoEligible:
         assert self.q.set_auto_eligible("sess", "A", True) is None
 
     def test_processor_picker_skips_non_eligible_items(self):
-        """The processor's `next safe queued + auto_eligible` filter
-        is what gates auto-drain. Items without the flag stay queued."""
+        """The processor's `next queued + auto_eligible` filter is what
+        gates auto-drain. Items without the flag stay queued."""
         self.q.enqueue("sess", "ls", policy="safe", item_id="manual")
         self.q.enqueue("sess", "pwd", policy="safe", item_id="auto")
         self.q.set_auto_eligible("sess", "auto", True)
@@ -334,8 +334,7 @@ class TestAutoEligible:
         # Mirror the processor's picker logic exactly
         queue = self.q._get_queue("sess")
         picked = next(
-            (i for i in queue
-             if i.status == "queued" and i.policy == "safe" and i.auto_eligible),
+            (i for i in queue if i.status == "queued" and i.auto_eligible),
             None,
         )
         assert picked is not None
@@ -347,11 +346,25 @@ class TestAutoEligible:
         # Neither was opt-in'd
         queue = self.q._get_queue("sess")
         picked = next(
-            (i for i in queue
-             if i.status == "queued" and i.policy == "safe" and i.auto_eligible),
+            (i for i in queue if i.status == "queued" and i.auto_eligible),
             None,
         )
         assert picked is None
+
+    def test_eligible_overrides_unsafe_policy(self):
+        """⚡ is the user's explicit consent — it must override the
+        unsafe policy gate. Without this, classifier-flagged commands
+        like `sudo rm` couldn't be auto-sent even after user opted in."""
+        self.q.enqueue("sess", "sudo rm -rf foo", policy="unsafe", item_id="risky")
+        self.q.set_auto_eligible("sess", "risky", True)
+        queue = self.q._get_queue("sess")
+        picked = next(
+            (i for i in queue if i.status == "queued" and i.auto_eligible),
+            None,
+        )
+        assert picked is not None
+        assert picked.id == "risky"
+        assert picked.policy == "unsafe"
 
 
 # ---------------------------------------------------------------------------

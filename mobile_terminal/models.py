@@ -1416,15 +1416,14 @@ class CommandQueue:
                 if not queue:
                     continue
 
-                # First safe queued item that the user opted into
-                # auto-send for. The auto_eligible gate makes the
-                # default behavior "stays in queue until user explicitly
-                # sends" — the processor only drains items that have
-                # been ⚡-flagged in the UI.
+                # First queued item the user opted into auto-send for.
+                # The ⚡ flag IS the safety gate — by tapping it the user
+                # has taken explicit responsibility for that command, so
+                # the picker no longer enforces policy=='safe'. Without
+                # ⚡ nothing auto-fires regardless of policy.
                 item = next(
                     (i for i in queue
                      if i.status == "queued"
-                     and i.policy == "safe"
                      and i.auto_eligible),
                     None,
                 )
