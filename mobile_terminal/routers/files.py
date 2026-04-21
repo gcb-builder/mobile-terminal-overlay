@@ -8,7 +8,15 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, Query, UploadFile
 from fastapi.responses import JSONResponse
 
-from mobile_terminal.helpers import run_subprocess
+from mobile_terminal.helpers import get_project_id, run_subprocess
+
+
+def _agent_memory_dir(repo_path: Path) -> Path:
+    """Return the agent's persistent-memory directory for a given repo
+    (~/.claude/projects/<project_id>/memory/). Lives outside the repo
+    so it's not committable; we surface it as a `memory/` virtual
+    prefix in MTO's file searcher."""
+    return Path.home() / ".claude" / "projects" / get_project_id(repo_path) / "memory"
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +188,27 @@ def register(app: FastAPI, deps):
                 q_lower = q.lower()
                 files = [f for f in all_files if q_lower in f.lower()][:limit]
 
+            # Also include the agent's persistent-memory dir under a
+            # virtual `memory/` prefix. These files live outside the
+            # repo (~/.claude/projects/<id>/memory/) so git ls-files
+            # never sees them, but they're useful project context to
+            # browse from MTO.
+            try:
+                if repo_path:
+                    mem_dir = _agent_memory_dir(repo_path)
+                    if mem_dir.exists():
+                        q_lower = q.lower()
+                        for p in sorted(mem_dir.rglob("*")):
+                            if not p.is_file():
+                                continue
+                            virtual = "memory/" + str(p.relative_to(mem_dir))
+                            if q_lower in virtual.lower():
+                                if virtual not in files:
+                                    files.append(virtual)
+                        files = files[:limit]
+            except Exception as e:
+                logger.debug(f"memory dir scan failed: {e}")
+
             return {"files": files, "query": q}
 
         except subprocess.TimeoutExpired:
@@ -191,8 +220,9 @@ def register(app: FastAPI, deps):
     @app.get("/api/file")
     async def read_file(path: str = Query(...), _auth=Depends(deps.verify_token)):
         """
-        Read a file from the current repo.
-        Path is relative to repo root.
+        Read a file from the current repo, or — if path starts with
+        `memory/` — from the agent's persistent-memory directory.
+        Path is relative to that root.
         """
 
         repo_path = deps.get_current_repo_path()
@@ -203,10 +233,21 @@ def register(app: FastAPI, deps):
         if ".." in path or path.startswith("/"):
             return JSONResponse({"error": "Invalid path"}, status_code=400)
 
-        file_path = (repo_path / path).resolve()
-        # Ensure resolved path is still within repo (catches symlink escapes)
-        if not str(file_path).startswith(str(repo_path.resolve())):
-            return JSONResponse({"error": "Invalid path"}, status_code=400)
+        # `memory/...` is the virtual prefix used by /api/files/search
+        # for the agent's persistent-memory directory. Resolve against
+        # that root instead of the repo.
+        if path.startswith("memory/"):
+            mem_root = _agent_memory_dir(repo_path).resolve()
+            if not mem_root.exists():
+                return JSONResponse({"error": "Memory dir not found"}, status_code=404)
+            file_path = (mem_root / path[len("memory/"):]).resolve()
+            if not str(file_path).startswith(str(mem_root)):
+                return JSONResponse({"error": "Invalid path"}, status_code=400)
+        else:
+            file_path = (repo_path / path).resolve()
+            # Ensure resolved path is still within repo (catches symlink escapes)
+            if not str(file_path).startswith(str(repo_path.resolve())):
+                return JSONResponse({"error": "Invalid path"}, status_code=400)
 
         if not file_path.exists():
             return JSONResponse({"error": "File not found"}, status_code=404)
