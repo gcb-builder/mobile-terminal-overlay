@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v362 ===');
+console.log('=== TERMINAL.JS v366 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -10320,12 +10320,68 @@ function updateSidebarTop() {
     }
 }
 
+// Workspace sidebar resize: drag handle on the right edge updates
+// --desktop-sidebar-width and persists to localStorage. Bounded
+// 240px–800px so the user can't accidentally hide the sidebar or
+// crowd out the main content entirely.
+const SIDEBAR_WIDTH_MIN = 240;
+const SIDEBAR_WIDTH_MAX = 800;
+const SIDEBAR_WIDTH_KEY = 'mto_desktop_sidebar_width';
+let _sidebarResizerWired = false;
+
+function setupSidebarResizer() {
+    const handle = document.getElementById('desktopSidebarResizer');
+    if (!handle) return;
+    // Restore saved width every time we enter desktop mode (the
+    // populateDesktopSidebar caller).
+    const saved = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) || '0', 10);
+    if (saved >= SIDEBAR_WIDTH_MIN && saved <= SIDEBAR_WIDTH_MAX) {
+        document.documentElement.style.setProperty('--desktop-sidebar-width', saved + 'px');
+    }
+    if (_sidebarResizerWired) return;
+    _sidebarResizerWired = true;
+
+    let startX = 0;
+    let startWidth = 0;
+    function onPointerMove(e) {
+        const dx = e.clientX - startX;
+        let next = startWidth + dx;
+        if (next < SIDEBAR_WIDTH_MIN) next = SIDEBAR_WIDTH_MIN;
+        if (next > SIDEBAR_WIDTH_MAX) next = SIDEBAR_WIDTH_MAX;
+        document.documentElement.style.setProperty('--desktop-sidebar-width', next + 'px');
+    }
+    function onPointerUp() {
+        handle.classList.remove('dragging');
+        document.removeEventListener('pointermove', onPointerMove);
+        document.removeEventListener('pointerup', onPointerUp);
+        const cur = getComputedStyle(document.documentElement)
+            .getPropertyValue('--desktop-sidebar-width').trim();
+        const px = parseInt(cur, 10);
+        if (px >= SIDEBAR_WIDTH_MIN && px <= SIDEBAR_WIDTH_MAX) {
+            localStorage.setItem(SIDEBAR_WIDTH_KEY, String(px));
+        }
+    }
+    handle.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        startX = e.clientX;
+        const cur = getComputedStyle(document.documentElement)
+            .getPropertyValue('--desktop-sidebar-width').trim();
+        startWidth = parseInt(cur, 10) || 300;
+        handle.classList.add('dragging');
+        document.addEventListener('pointermove', onPointerMove);
+        document.addEventListener('pointerup', onPointerUp);
+    });
+}
+
 function populateDesktopSidebar() {
     const sidebar = document.getElementById('desktopSidebar');
     if (!sidebar) return;
 
     // Measure where views-container starts (below header + banners)
     updateSidebarTop();
+
+    // Restore saved sidebar width (persists across reloads).
+    setupSidebarResizer();
 
     // Reparent team cards container into sidebar
     const teamCards = document.getElementById('teamCardsContainer');
@@ -11337,6 +11393,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=362', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=366', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

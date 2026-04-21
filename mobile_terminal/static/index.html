@@ -22,7 +22,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=364">
+    <link rel="stylesheet" href="/static/styles.css?v=366">
 </head>
 <body>
     <div class="app">
@@ -122,6 +122,9 @@
 
         <!-- Desktop sidebar: persistent panel with sessions, team, queue -->
         <div id="desktopSidebar" class="desktop-sidebar hidden">
+            <!-- Drag handle on the right edge to widen/narrow the workspace
+                 column at the expense of the main content (log/tail). -->
+            <div id="desktopSidebarResizer" class="desktop-sidebar-resizer" aria-label="Resize workspace column" title="Drag to resize"></div>
             <div class="desktop-sidebar-header">
                 <span class="desktop-sidebar-title">Workspace</span>
                 <button type="button" id="sidebarBackBtn" class="sidebar-back-btn hidden" aria-label="Back">&larr;</button>
@@ -956,6 +959,6 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script defer src="/static/terminal.js?v=364"></script>
+    <script defer src="/static/terminal.js?v=366"></script>
 </body>
 </html>

@@ -8426,6 +8426,26 @@ html, body {
         z-index: 10;
     }
 
+    /* Drag handle along the right edge of the workspace column.
+       4px hit area, semi-visible on hover, col-resize cursor. */
+    .app.desktop-multipane .desktop-sidebar-resizer {
+        position: absolute;
+        top: 0; bottom: 0;
+        right: 0;
+        width: 4px;
+        cursor: col-resize;
+        background: transparent;
+        z-index: 11;
+        transition: background 0.1s;
+    }
+    .app.desktop-multipane .desktop-sidebar-resizer:hover,
+    .app.desktop-multipane .desktop-sidebar-resizer.dragging {
+        background: var(--accent, #3794ff);
+    }
+    /* Hide outside desktop-multipane (mobile + tablet) */
+    .desktop-sidebar-resizer { display: none; }
+    .app.desktop-multipane .desktop-sidebar-resizer { display: block; }
+
     .desktop-sidebar-header {
         display: flex;
         align-items: center;
