@@ -145,7 +145,8 @@ function renderQueueRowHtml(item) {
         + dragHandle
         + '<span class="queue-item-status ' + escapeHtml(item.status) + '"></span>'
         + '<div class="queue-item-content">'
-        + '<div class="queue-item-text">' + (escapedText || '(Enter)') + '</div>'
+        + '<div class="queue-item-text" title="' + (escapedText || '(Enter)') + '">'
+        + (escapedText || '(Enter)') + '</div>'
         + '</div>'
         + '<div class="queue-item-actions">' + actions + '</div>'
         + '</div>';
