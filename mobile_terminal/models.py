@@ -1192,13 +1192,42 @@ class CommandQueue:
     async def _check_ready(self, session: str, pane_id: Optional[str] = None) -> bool:
         """
         Check if terminal is ready to receive input:
-        1. Output has been quiet for QUIET_MS
-        2. Prompt is visible
+        1. Driver says agent is in 'idle' phase (semantic — protects
+           against firing mid-tool-call when output briefly quiets)
+        2. Output has been quiet for QUIET_MS (defence in depth)
+        3. No confirmation prompt visible ([y/n] etc.)
+        4. Prompt is visible
         """
         from mobile_terminal.helpers import run_subprocess, get_tmux_target
 
         if not self._app:
             return False
+
+        # ── Driver phase check ─────────────────────────────────────
+        # The driver knows whether the agent is actively running a
+        # tool call vs. waiting at its idle prompt. The capture-pane
+        # heuristics below can false-positive during a brief streaming
+        # gap; the phase check is the authoritative "agent is done"
+        # signal. Skip if the build_observe_context helper isn't
+        # registered (test/standalone CommandQueue use).
+        build_ctx = getattr(self._app.state, "build_observe_context", None)
+        driver = getattr(self._app.state, "driver", None)
+        if build_ctx is not None and driver is not None and pane_id:
+            try:
+                ctx = await build_ctx(pane_id)
+                if ctx is not None:
+                    loop = asyncio.get_event_loop()
+                    obs = await loop.run_in_executor(None, driver.observe, ctx)
+                    # Only auto-fire when the agent reports idle. Other
+                    # phases (working/planning/running_task/waiting)
+                    # mean the user's command would land mid-effort.
+                    if obs.phase != "idle":
+                        return False
+            except Exception as e:
+                logger.debug(f"driver phase check failed: {e}")
+                # Fall through to the heuristic gate below — better to
+                # fire on a quiet+prompt match than to lock up forever
+                # if the driver is misbehaving.
 
         # Check quiet period
         input_queue = self._app.state.input_queue

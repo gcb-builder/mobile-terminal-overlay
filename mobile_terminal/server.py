@@ -1288,6 +1288,10 @@ def create_app(config: Config) -> FastAPI:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _build_observe_context_sync, pane_id)
 
+    # Expose for CommandQueue's ready gate — it needs the agent's
+    # semantic phase ("idle" vs "working") to avoid firing mid-task.
+    app.state.build_observe_context = _build_observe_context
+
     # ===== Phase Detection — delegated to app.state.driver.observe() =====
     _git_head_cache: dict = {"value": "", "ts": 0.0}
 

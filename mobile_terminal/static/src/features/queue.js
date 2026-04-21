@@ -95,7 +95,10 @@ function loadQueueFromStorage() {
 
 function updatePauseButton() {
     if (!queuePauseBtn) return;
-    queuePauseBtn.textContent = queuePaused ? 'Resume' : 'Pause';
+    queuePauseBtn.textContent = queuePaused ? 'Resume' : 'Hold';
+    queuePauseBtn.title = queuePaused
+        ? 'Release: ⚡ auto-sends will resume'
+        : 'Hold all ⚡ auto-sends. Items stay in queue; tap Resume to release.';
     queuePauseBtn.classList.toggle('paused', queuePaused);
 }
 
