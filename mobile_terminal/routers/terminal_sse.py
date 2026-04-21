@@ -375,11 +375,20 @@ def register(app: FastAPI, deps):
 
         text_data = data.get("text", "")
         send_enter = data.get("enter", False)
+        explicit_pane = data.get("pane_id")
 
         runtime = app.state.runtime
         session = app.state.current_session
-        target = data.get("pane_id") or app.state.active_target
+        target = explicit_pane or app.state.active_target
         tmux_t = get_tmux_target(session, target)
+        # Diagnostic: trace text-send routing so we can tell whether the
+        # client is sending pane_id (e.g. permission Allow → source_pane)
+        # vs falling through to app.state.active_target.
+        logger.info(
+            f"[TEXT-SEND] pane={target} (explicit={explicit_pane!r}, "
+            f"active={app.state.active_target!r}) "
+            f"text={text_data[:30]!r} enter={send_enter}"
+        )
 
         if text_data:
             try:
