@@ -1308,18 +1308,38 @@ class CommandQueue:
                 return item
         return None
 
+    # Min seconds since last client input (any text from any connected
+    # WS/SSE client) before auto-send is allowed to fire. Stops the
+    # queue from racing with the user's own typing — symptom seen in
+    # the wild: auto-sent "test1234" arrived in Claude's input box at
+    # the same instant the user was typing the next message, and got
+    # concatenated into one merged turn instead of submitting alone.
+    USER_TYPING_QUIET_SECONDS = 3.0
+
     async def _check_ready(self, session: str, pane_id: Optional[str] = None) -> bool:
         """
         Check if terminal is ready to receive input:
-        1. Driver says agent is in 'idle' phase (semantic — protects
+        1. User hasn't typed in the last USER_TYPING_QUIET_SECONDS
+           (avoid racing with their own input into Claude's TUI box)
+        2. Driver says agent is in 'idle' phase (semantic — protects
            against firing mid-tool-call when output briefly quiets)
-        2. Output has been quiet for QUIET_MS (defence in depth)
-        3. No confirmation prompt visible ([y/n] etc.)
-        4. Prompt is visible
+        3. Output has been quiet for QUIET_MS (defence in depth)
+        4. No confirmation prompt visible ([y/n] etc.)
+        5. Prompt is visible
         """
         from mobile_terminal.helpers import run_subprocess, get_tmux_target
 
         if not self._app:
+            return False
+
+        # ── User-typing quiet check ────────────────────────────────
+        # last_ws_input_time is updated by every text/bytes message
+        # the WS handler receives. If the user typed within the last
+        # ~3s, there's a good chance their next Enter is about to
+        # fire — auto-sending right now would land in Claude Code's
+        # input box and merge with whatever they're composing.
+        last_input = getattr(self._app.state, "last_ws_input_time", 0)
+        if last_input and time.time() - last_input < self.USER_TYPING_QUIET_SECONDS:
             return False
 
         # ── Driver phase check ─────────────────────────────────────
