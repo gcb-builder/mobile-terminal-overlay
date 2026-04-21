@@ -15,7 +15,7 @@ import { initCollapse, scheduleCollapse, scheduleSuperCollapse, applyCollapseSyn
 import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          reconcileQueue, reloadQueueForTarget, refreshQueueList,
          getQueueItems, isQueuePaused, saveQueueToStorage,
-         popNextQueueItem, requeueItem } from './src/features/queue.js';
+         popNextQueueItem, requeueItem, removeQueueItem } from './src/features/queue.js';
 import { initBacklog, handleBacklogMessage, handleCandidateMessage,
          refreshBacklogList, reloadBacklogForProject, addBacklogItem,
          updateBacklogStatus } from './src/features/backlog.js';
@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v360 ===');
+console.log('=== TERMINAL.JS v362 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -4573,18 +4573,18 @@ function setupComposeMode() {
         if (!composeEditingItemId) return;
         const id = composeEditingItemId;
         composeEditingItemId = null;
+        // Route through removeQueueItem (the same path as the X
+        // button) so we get the optimistic local filter + the
+        // _recentlyDeleted guard added in v=358. Without that guard, a
+        // reconcile firing between the remove POST and its broadcast
+        // would see the still-local original missing from the server's
+        // list and re-enqueue it via the localItems re-push path —
+        // producing the exact "edited original reappears as a
+        // duplicate" bug this function exists to prevent.
         try {
-            const params = new URLSearchParams({
-                session: ctx.currentSession,
-                item_id: id,
-                token: ctx.token,
-            });
-            if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-            await apiFetch(`/api/queue/remove?${params}`, { method: 'POST' });
+            await removeQueueItem(id);
         } catch (e) {
             console.warn('Failed to dequeue edited item before resend:', e);
-            // Continue anyway — worst case is the duplicate this tries to
-            // prevent, which is the original behavior.
         }
     }
 
@@ -11337,6 +11337,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=360', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=362', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

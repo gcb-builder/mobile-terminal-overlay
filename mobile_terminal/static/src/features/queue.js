@@ -499,7 +499,7 @@ export function isRecentlyDeleted(itemId) {
     return _recentlyDeleted.has(itemId);
 }
 
-async function removeQueueItem(itemId) {
+export async function removeQueueItem(itemId) {
     if (!ctx.currentSession) return;
 
     queueItems = queueItems.filter(item => item.id !== itemId);
