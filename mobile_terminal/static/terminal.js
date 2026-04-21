@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v370 ===');
+console.log('=== TERMINAL.JS v371 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -2678,20 +2678,18 @@ let contextBannerRequestId = 0;
 async function loadContextBanner() {
     // Repurposed: now shows the most recent end-of-turn recap from the
     // active pane's JSONL log instead of the static .claude/CONTEXT.md.
-    // Same banner DOM (label changed in HTML), same dismiss behaviour.
+    // Same banner DOM (label changed in HTML), but smarter dismiss:
+    // tapping × stores the dismissed recap's TIMESTAMP, not just a
+    // boolean. A newer recap (different timestamp) reappears
+    // automatically — otherwise dismiss-once means "never see another
+    // recap on this pane until tab close."
     const requestId = ++contextBannerRequestId;
     const banner = document.getElementById('contextBanner');
     const preview = document.getElementById('contextBannerPreview');
     const body = document.getElementById('contextBannerBody');
     if (!banner || !preview || !body) return;
 
-    // Per-pane dismiss flag — recap changes per pane, so dismiss should
-    // be scoped per pane too. (Old: per-session.)
     const dismissKey = `mto_recap_dismissed_${ctx.currentSession || ''}_${ctx.activeTarget || ''}`;
-    if (sessionStorage.getItem(dismissKey)) {
-        banner.classList.add('hidden');
-        return;
-    }
 
     try {
         const controller = new AbortController();
@@ -2710,6 +2708,19 @@ async function loadContextBanner() {
             banner.classList.add('hidden');
             return;
         }
+
+        // Honor dismiss only for the SAME recap. Newer timestamp = new
+        // recap = show again. Falsy ts (legacy) treated as "always
+        // dismissed" until a real recap arrives.
+        const dismissedTs = sessionStorage.getItem(dismissKey);
+        if (dismissedTs && data.timestamp && dismissedTs === String(data.timestamp)) {
+            banner.classList.add('hidden');
+            return;
+        }
+
+        // Stamp the element with the recap timestamp so the dismiss
+        // handler knows which one is being dismissed.
+        banner.dataset.recapTimestamp = data.timestamp || '';
 
         // Preview: first line up to ~140 chars; expand reveals full text.
         const firstLine = data.content.split('\n')[0].trim();
@@ -11344,10 +11355,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             e.stopPropagation();
             const banner = document.getElementById('contextBanner');
             if (banner) banner.classList.add('hidden');
-            // Per-pane dismiss to match loadContextBanner; switching panes
-            // surfaces that pane's recap until dismissed independently.
+            // Store the dismissed recap's timestamp (set by loadContextBanner).
+            // Newer recaps will have a different timestamp and reappear.
+            // Falls back to '1' for the rare case where no timestamp is set
+            // (legacy / first-render race) — same effect as before for that.
+            const ts = banner?.dataset.recapTimestamp || '1';
             const dismissKey = `mto_recap_dismissed_${ctx.currentSession || ''}_${ctx.activeTarget || ''}`;
-            sessionStorage.setItem(dismissKey, '1');
+            sessionStorage.setItem(dismissKey, ts);
         });
     }
 
@@ -11374,8 +11388,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     ]).then(() => {
         // Reconcile queue after session is known (needs ctx.currentSession)
         reconcileQueue().catch(e => console.warn('reconcileQueue failed:', e));
-        // Fire-and-forget: context banner load must never block
+        // Fire-and-forget: context banner load must never block.
+        // Also poll on a 30s cadence so a fresh agent recap surfaces
+        // without the user having to switch panes / reload. Routed via
+        // registerPoller for visibility-paused behavior (no polling
+        // when the tab is backgrounded).
         loadContextBanner().catch(() => {});
+        registerPoller('recap-banner', () => {
+            loadContextBanner().catch(() => {});
+        }, 30000);
         // Fire-and-forget: push notification setup
         setupPushNotifications().catch(() => {});
 
@@ -11438,6 +11459,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=370', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=371', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
