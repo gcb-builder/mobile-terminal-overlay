@@ -1009,6 +1009,27 @@ class CommandQueue:
         key = self._queue_key(session, pane_id)
         queue = self._queues.get(key, [])
         items_data = [asdict(item) for item in queue]
+
+        # Diagnostic: catch any save that drops previously-persisted
+        # ids without going through dequeue/mark_sent. Narrows down
+        # "item vanished from disk without a trace" bugs by logging
+        # exactly which save path shrank the queue and which ids were
+        # lost. Compares the in-memory queue we're about to write
+        # against whatever's currently on disk.
+        try:
+            prev_on_disk = {d.get("id") for d in load_queue_from_disk(session, pane_id)}
+            new_ids = {d.get("id") for d in items_data}
+            disappeared = prev_on_disk - new_ids
+            if disappeared:
+                import inspect
+                caller = inspect.stack()[1].function if len(inspect.stack()) > 1 else "?"
+                logger.warning(
+                    f"[QUEUE-DIAG] save dropped {len(disappeared)} id(s) from "
+                    f"{key} (caller={caller}): {[d[:8] for d in disappeared]}"
+                )
+        except Exception as e:
+            logger.debug(f"queue diag check failed: {e}")
+
         save_queue_to_disk(session, items_data, pane_id)
 
         # Persist the recently-sent cache too. Prune past-TTL entries
