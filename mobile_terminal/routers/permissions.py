@@ -1,6 +1,7 @@
 """Routes for permission policy management."""
 import logging
 from dataclasses import asdict
+from typing import Optional
 
 from fastapi import Depends, FastAPI, Query
 from fastapi.responses import JSONResponse
@@ -95,11 +96,14 @@ def register(app: FastAPI, deps):
     async def permissions_test(
         tool: str = Query("Bash"),
         target: str = Query("pytest tests/ -q"),
+        source_pane: Optional[str] = Query(None, description="Override source_pane (defaults to active_target). Use to validate cross-pane routing."),
         _auth=Depends(deps.verify_token),
     ):
         """Return a fake permission_request payload for the frontend to display.
 
-        The frontend polls this and shows the enhanced banner.
+        The frontend shows the enhanced banner. Pass ?source_pane=X:Y
+        to validate that Allow/Deny routes the y/n to that specific
+        pane (not whichever pane is globally active).
         """
         import uuid
         repo = str(deps.get_current_repo_path() or "")
@@ -110,9 +114,7 @@ def register(app: FastAPI, deps):
             "target": target,
             "repo": repo,
             "risk": classify_risk(tool, target),
-            # Test endpoint always uses the currently-active pane as the
-            # synthetic prompt source so the Allow path round-trips clean.
-            "source_pane": app.state.active_target,
+            "source_pane": source_pane or app.state.active_target,
         }
         # Store for polling clients and try direct send
         app.state._test_permission = perm
