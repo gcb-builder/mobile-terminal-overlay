@@ -722,49 +722,25 @@ export async function reconcileQueue() {
     // where reconcile fetches from the server before /api/queue/remove
     // POST has landed and the broadcast remove arrives.
     serverItems = serverItems.filter(i => !isRecentlyDeleted(i.id));
-    const serverMap = new Map(serverItems.map(i => [i.id, i]));
 
-    const merged = [...serverItems];
-
-    const toEnqueue = [];
-    for (const local of localItems) {
-        if (!serverMap.has(local.id)) {
-            // Only re-enqueue items still in "queued" status.
-            // Sent/completed items not on server = already processed, drop them.
-            if (local.status === 'queued') {
-                toEnqueue.push(local);
-            }
-        }
-    }
-
-    for (const item of toEnqueue) {
-        try {
-            const params = new URLSearchParams({
-                session: ctx.currentSession,
-                text: item.text,
-                policy: item.policy || 'auto',
-                id: item.id,
-                token: ctx.token
-            });
-            if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
-            const resp = await ctx.apiFetch(`/api/queue/enqueue?${params}`, { method: 'POST' });
-            if (resp.ok) {
-                const data = await resp.json();
-                if (data.is_new) {
-                    merged.push(data.item);
-                }
-            }
-        } catch (e) {
-            console.warn('Failed to re-enqueue item:', item.id, e);
-            merged.push(item);
-        }
-    }
-
-    queueItems = merged;
+    // Server is authoritative. We used to re-upload local items the
+    // server didn't have ("toEnqueue" loop) — that's what caused the
+    // whole class of cross-device replay bugs (sent items reappearing
+    // on another device, removed items resurrecting after server
+    // restart, queue cross-pollination after multi-pane drift).
+    //
+    // localStorage is now strictly a render-cache: anything not in
+    // serverItems is stale and gets dropped. The 24h replay-cache and
+    // tombstone TTLs still defend the WS-drop-during-send case but no
+    // longer have to defend against multi-day localStorage drift.
+    queueItems = [...serverItems];
     saveQueueToStorage();
     renderQueueList();
 
-    console.log(`Queue reconciled: ${serverItems.length} server, ${localItems.length} local, ${toEnqueue.length} re-enqueued`);
+    const dropped = localItems.filter(i =>
+        !serverItems.some(s => s.id === i.id) && i.status === 'queued'
+    ).length;
+    console.log(`Queue reconciled: ${serverItems.length} server, ${localItems.length} local, ${dropped} stale-local dropped`);
 }
 
 /**
