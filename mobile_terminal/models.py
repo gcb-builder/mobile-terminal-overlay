@@ -839,9 +839,15 @@ class CommandQueue:
     # send and client-side queue_sent receipt — without this, the
     # client's reconcileQueue on reconnect re-enqueues the item by id
     # and the agent re-executes a prompt the user thought was done.
-    # 10 minutes is comfortably longer than any plausible WS reconnect
-    # window while keeping memory bounded.
-    SENT_ID_TTL_SECONDS = 600
+    #
+    # Bumped 600s → 86400s (24h) to cover cross-device replay: when
+    # device A sends an item but device B is offline, B's localStorage
+    # still has the item as 'queued'. When B comes online >10 min
+    # later, the old short TTL had let the cache expire and the item
+    # got re-enqueued (and re-executed) on B's reconcile. 24h matches
+    # the TOMBSTONE_TTL_SECONDS for X-deleted items — same problem
+    # shape, same retention window.
+    SENT_ID_TTL_SECONDS = 86400
 
     # How long sent items stay in the visible queue (the "Previous"
     # section on the client). After this they're dropped from
