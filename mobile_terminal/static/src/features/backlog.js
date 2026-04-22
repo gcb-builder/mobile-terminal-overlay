@@ -129,6 +129,7 @@ export function renderBacklogList() {
             if (!isDone && !isQueued) {
                 actions += `<button class="backlog-send-btn" data-id="${eid}">Send</button>`;
                 actions += `<button class="backlog-queue-btn" data-id="${eid}">Queue</button>`;
+                actions += `<button class="backlog-edit-btn" data-id="${eid}" title="Edit in composer">Edit</button>`;
             } else if (isQueued) {
                 actions += `<span style="font-size:10px;color:var(--warning);padding:4px 6px">Queued</span>`;
             }
@@ -205,6 +206,20 @@ function sendBacklogItem(itemId) {
         ctx.sendTextAtomic(item.prompt, true);
         updateBacklogStatus(itemId, 'done');
         ctx.showToast('Sent to terminal', 'success');
+    }
+}
+
+function editBacklogItemInComposer(itemId) {
+    const item = backlogItems.find(i => i.id === itemId);
+    if (!item || item.status === 'done') return;
+    // Open composer pre-filled with the backlog prompt. Unlike the
+    // queue Edit path, no editingItemId is passed — the backlog
+    // entry stays put. User can Send/Queue/Backlog the edited text
+    // and choose separately whether to delete the original via X.
+    if (window.prefillCompose) {
+        window.prefillCompose(item.prompt);
+    } else {
+        ctx.showToast('Composer not ready', 'warning');
     }
 }
 
@@ -409,6 +424,8 @@ export function initBacklog(project) {
                 if (sendBtn) { e.stopPropagation(); sendBacklogItem(sendBtn.dataset.id); return; }
                 const queueBtn = e.target.closest('.backlog-queue-btn');
                 if (queueBtn) { e.stopPropagation(); queueBacklogItem(queueBtn.dataset.id); return; }
+                const editBtn = e.target.closest('.backlog-edit-btn');
+                if (editBtn) { e.stopPropagation(); editBacklogItemInComposer(editBtn.dataset.id); return; }
                 const removeBtn = e.target.closest('.backlog-item-remove');
                 if (removeBtn) { e.stopPropagation(); removeBacklogItem(removeBtn.dataset.id); return; }
             });
