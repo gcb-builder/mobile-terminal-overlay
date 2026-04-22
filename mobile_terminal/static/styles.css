@@ -7595,6 +7595,13 @@ html, body {
     background: rgba(234, 179, 8, 0.1);
     border-bottom: 2px solid var(--warning);
     flex-shrink: 0;
+    /* Cap width on wide viewports so the action buttons don't stretch
+       to absurd sizes (and so the leftmost button doesn't get pushed
+       off-screen on the desktop multipane layout). */
+    max-width: 760px;
+    margin: 0 auto;
+    box-sizing: border-box;
+    width: 100%;
 }
 .permission-banner.hidden { display: none; }
 .permission-header {
@@ -7637,18 +7644,29 @@ html, body {
     margin: 0;
 }
 .permission-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+    display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     margin-top: 8px;
+    justify-content: flex-end;
 }
 .permission-btn {
-    min-height: 44px;
+    min-height: 36px;
+    padding: 8px 16px;
     border: none;
-    border-radius: 8px;
-    font-size: 14px;
+    border-radius: 6px;
+    font-size: 13px;
     font-weight: 600;
     cursor: pointer;
+    flex: 0 0 auto;
+}
+.permission-btn.allow,
+.permission-btn.deny {
+    min-width: 96px;
+}
+.permission-btn.always-repo,
+.permission-btn.always {
+    min-width: 110px;
 }
 .permission-btn.allow {
     background: var(--success);
