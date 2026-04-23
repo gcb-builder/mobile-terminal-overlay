@@ -268,6 +268,13 @@ def register(app: FastAPI, deps):
         if not hasattr(app.state, "permission_scanner_cooldown"):
             app.state.permission_scanner_cooldown = {}
         last_approved: dict[str, float] = app.state.permission_scanner_cooldown
+        # Per-pane hash of the last APPROVED prompt's capture-pane text.
+        # If the next scan returns the same hash, the captured screen
+        # hasn't changed since approval (likely tmux capture lag or the
+        # agent not yet rendering past the prompt) — skip to prevent
+        # firing a duplicate y that lands as a stray turn after the
+        # agent has actually moved on.
+        last_approved_hash: dict[str, str] = {}
 
         def _scan_panes_sync(session: str) -> list:
             """Scan all panes for permission prompts. Runs in executor thread
@@ -308,6 +315,18 @@ def register(app: FastAPI, deps):
                             continue
                     except Exception as e:
                         logger.debug(f"[permission_scanner] capture error {target_id}: {e}")
+                        continue
+
+                    # Dedup: if the captured screen is byte-for-byte the
+                    # same as the LAST one we approved on this pane, the
+                    # agent hasn't visibly progressed — likely capture-pane
+                    # lag or a still-rendered stale prompt. Firing y here
+                    # would land on an already-answered prompt and become
+                    # a stray turn.
+                    import hashlib
+                    pane_hash = hashlib.md5(pane_text.encode("utf-8", "replace")).hexdigest()
+                    if last_approved_hash.get(target_id) == pane_hash:
+                        logger.info(f"[permission_scanner] skip dup-hash in {target_id}")
                         continue
 
                     logger.info(f"[permission_scanner] PROMPT DETECTED in {target_id} ({Path(pane_cwd).name})")
@@ -385,6 +404,7 @@ def register(app: FastAPI, deps):
                         "perm": perm,
                         "req": req,
                         "decision": decision,
+                        "pane_hash": pane_hash,
                     })
             except Exception as e:
                 logger.warning(f"[permission_scanner] scan error: {e}", exc_info=True)
@@ -416,6 +436,7 @@ def register(app: FastAPI, deps):
                         await runtime.send_keys(tmux_t, "y", literal=True)
                         await runtime.send_keys(tmux_t, "Enter")
                         last_approved[target_id] = time.time()
+                        last_approved_hash[target_id] = hit["pane_hash"]
                         logger.info(f"[permission_scanner] Auto-approved {perm['tool']} "
                                     f"in {target_id} ({hit['repo_name']}): {decision.reason}")
                         sink = app.state.active_client
@@ -430,6 +451,7 @@ def register(app: FastAPI, deps):
                         await runtime.send_keys(tmux_t, "n", literal=True)
                         await runtime.send_keys(tmux_t, "Enter")
                         last_approved[target_id] = time.time()
+                        last_approved_hash[target_id] = hit["pane_hash"]
                         logger.info(f"[permission_scanner] Auto-denied {perm['tool']} "
                                     f"in {target_id}: {decision.reason}")
                     else:
