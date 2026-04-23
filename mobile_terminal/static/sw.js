@@ -1,6 +1,6 @@
 // Service Worker for Mobile Terminal PWA
 // __BASE_PATH is injected by the server at the top of this file
-const CACHE_NAME = 'terminal-v370';
+const CACHE_NAME = 'terminal-v389';
 
 // Install event - cache essential assets
 self.addEventListener('install', (event) => {
@@ -80,6 +80,7 @@ self.addEventListener('push', (event) => {
       url: bp + '/',
       session: data.session || '',
       pane_id: data.pane_id || '',
+      permission_id: data.permission_id || '',
     },
     actions: actions,
   };
@@ -117,6 +118,7 @@ self.addEventListener('notificationclick', (event) => {
             type: 'permission_response',
             choice: event.action === 'allow' ? 'y' : 'n',
             pane_id: notifData.pane_id || '',
+            permission_id: notifData.permission_id || '',
           });
           cls[0].focus();
         } else {
@@ -125,6 +127,7 @@ self.addEventListener('notificationclick', (event) => {
             action: event.action,
             pane_id: notifData.pane_id || '',
             session: notifData.session || '',
+            permission_id: notifData.permission_id || '',
           });
           clients.openWindow(bp + '/?' + params.toString());
         }

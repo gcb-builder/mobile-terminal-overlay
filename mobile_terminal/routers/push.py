@@ -168,11 +168,12 @@ def register(app: FastAPI, deps):
                                 if _perm_pending_since == 0:
                                     _perm_pending_since = time.time()
                                 elif time.time() - _perm_pending_since > 10:
+                                    perm_extra = {**extra, "permission_id": perm.get("id", "")}
                                     await maybe_send_push(
                                         f"{agent_name} needs approval",
                                         f"Allow {perm['tool']}: {perm['target'][:80]}?",
                                         "permission",
-                                        extra_data=extra,
+                                        extra_data=perm_extra,
                                     )
                         else:
                             _perm_pending_since = 0
@@ -358,9 +359,14 @@ def register(app: FastAPI, deps):
                     # Extract tool info from JSONL
                     perm = det.check_sync(session, target_id, tmux_t)
                     if not perm:
-                        # Re-scan recent entries with fresh detector
+                        # Re-scan recent entries with fresh detector. Inherit
+                        # det.last_sent_id so the rescan can dedup against the
+                        # permission we already answered — otherwise this path
+                        # re-fires y on the same tool_use after the 5s cooldown
+                        # whenever JSONL hasn't grown (i.e. agent went idle).
                         det2 = ClaudePermissionDetector()
                         det2.set_log_file(det.log_file)
+                        det2.last_sent_id = det.last_sent_id
                         try:
                             fsize = det.log_file.stat().st_size
                             det2.last_log_size = max(0, fsize - 10240)

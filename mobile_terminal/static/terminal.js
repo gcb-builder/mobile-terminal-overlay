@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v386 ===');
+console.log('=== TERMINAL.JS v389 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -3502,6 +3502,14 @@ async function selectTarget(targetId, isInitialSync = false) {
     updateNavLabel();
     populateRecentRepos();
 
+    // Dismiss any pending permission banner — context has shifted; a stale
+    // tap here would send y/n to source_pane out of context. The prompt may
+    // still be pending in that pane, but the user can answer it inline.
+    if (activePermissionPayload) {
+        console.log('[perm] auto-dismiss banner on target change');
+        hidePermissionBanner();
+    }
+
     // Refresh recap banner so it reflects the newly-active pane's
     // most recent end-of-turn summary (banner is per-pane).
     loadContextBanner().catch(() => {});
@@ -3882,6 +3890,18 @@ async function updateAgentPhase() {
 
         const phase = data.phase;
         const agentRunning = data.agent_running ?? data.claude_running;
+
+        // Stale-permission-banner guard: if the agent transitions to idle
+        // while a permission banner is showing, the prompt is no longer
+        // current — dismiss after a 2s grace (covers TUI render lag where
+        // capture briefly looks idle before the y/n is fully processed).
+        // Real fix is server-side `permission_resolved`; this is the
+        // minimum-LOC stopgap until that lifecycle exists.
+        if (activePermissionPayload && phase === 'idle' && prevPhase && prevPhase !== 'idle'
+                && Date.now() - permissionShownAt > 2000) {
+            console.log('[perm] auto-dismiss banner on idle transition');
+            hidePermissionBanner();
+        }
 
         // Hide indicator when idle and agent not running
         if (phase === 'idle' && !agentRunning) {
@@ -10173,16 +10193,26 @@ async function setupPushNotifications() {
 
     navigator.serviceWorker.addEventListener('message', (event) => {
         if (event.data?.type === 'permission_response') {
-            // SW push notification's Allow/Deny action — the SW already
-            // included pane_id from notifData (sw.js notificationclick).
-            // Send to that pane so the y/n lands where the prompt was,
-            // not in whichever pane the user happens to be viewing now.
+            // SW push notification's Allow/Deny action. Only honor if the
+            // permission is still the currently-pending one in this client —
+            // otherwise a stale notification tap (agent already finished, or
+            // prompt was answered elsewhere) would send a stray y/n into an
+            // idle pane. Full lifecycle (permission_resolved) is the proper
+            // fix; this check is the minimum guard until that lands.
+            const notifId = event.data.permission_id || '';
+            const activeId = activePermissionPayload?.id || '';
+            if (!activeId || (notifId && notifId !== activeId)) {
+                console.log('[perm] dropping stale SW response', { notifId, activeId });
+                try { ctx.showToast('Permission already handled', 'info', 2000); } catch {}
+                return;
+            }
             const target = event.data.pane_id || activePermissionPayload?.source_pane || ctx.activeTarget;
             if (target) {
                 sendTextAtomicToPane(event.data.choice, true, target);
             } else {
                 sendTextAtomic(event.data.choice, true);
             }
+            hidePermissionBanner();
         } else if (event.data?.type === 'respawn_agent') {
             // Respawn Claude from push notification action
             respawnAgent();
@@ -11515,6 +11545,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=386', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=389', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
