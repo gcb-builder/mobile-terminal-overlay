@@ -886,6 +886,10 @@ class CommandQueue:
         r'Do you want to proceed\?',         # Confirmation question
         r'Allow\s',                          # Permission prompt
         r'\? \(\d+ options?\)',              # Multi-choice question
+        # Claude Code permission-selector lines — present even when the
+        # "Do you want to proceed?" line has scrolled out of the capture
+        # window. Matches "❯ 1. Yes", "  2. Yes, and …", etc.
+        r'^\s*[❯>]\s*\d+\.\s+',
     ]
 
     # Patterns for commands that are safe to auto-send
@@ -1485,10 +1489,13 @@ class CommandQueue:
                     if obs.phase != "idle":
                         return False
             except Exception as e:
-                logger.debug(f"driver phase check failed: {e}")
-                # Fall through to the heuristic gate below — better to
-                # fire on a quiet+prompt match than to lock up forever
-                # if the driver is misbehaving.
+                # Driver is configured but the check itself failed. Refuse
+                # to fire — landing a queued command into a working pane
+                # is worse than the queue stalling for a poll cycle. The
+                # heuristic below would happily false-positive in exactly
+                # the conditions that broke the driver check.
+                logger.warning(f"driver phase check failed; skipping fire: {e}")
+                return False
 
         # Check quiet period
         input_queue = self._app.state.input_queue
@@ -1499,10 +1506,12 @@ class CommandQueue:
         # Build proper tmux target for the active pane
         tmux_target = get_tmux_target(session, pane_id) if pane_id else session
 
-        # Check for prompt via tmux capture-pane
+        # Check for prompt via tmux capture-pane. -S -20 because Claude
+        # Code's permission UI (question + selector + input box) easily
+        # exceeds 5 lines, and BUSY_PATTERNS need to see the whole box.
         try:
             result = await run_subprocess(
-                ["tmux", "capture-pane", "-t", tmux_target, "-p", "-S", "-5"],
+                ["tmux", "capture-pane", "-t", tmux_target, "-p", "-S", "-20"],
                 capture_output=True,
                 text=True,
                 timeout=2,
