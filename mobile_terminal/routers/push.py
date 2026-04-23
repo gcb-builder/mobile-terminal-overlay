@@ -259,8 +259,15 @@ def register(app: FastAPI, deps):
 
         # Per-pane detectors keyed by target_id
         detectors: dict[str, ClaudePermissionDetector] = {}
-        # Track last-seen prompt per pane to avoid re-processing
-        last_approved: dict[str, float] = {}
+        # Track last-seen prompt per pane to avoid re-processing.
+        # Lifted to app.state so the /api/terminal/text handler can bump
+        # this when it forwards a banner-Allow y/n response — without
+        # that, the scanner wouldn't know the user already answered and
+        # could fire its own y on the now-cleared screen, which lands
+        # as a stray turn after the agent is ready again.
+        if not hasattr(app.state, "permission_scanner_cooldown"):
+            app.state.permission_scanner_cooldown = {}
+        last_approved: dict[str, float] = app.state.permission_scanner_cooldown
 
         def _scan_panes_sync(session: str) -> list:
             """Scan all panes for permission prompts. Runs in executor thread

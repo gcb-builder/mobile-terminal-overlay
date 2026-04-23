@@ -529,6 +529,18 @@ def register(app: FastAPI, deps):
                                         except Exception as e:
                                             logger.warning(f"tmux send-keys Enter failed: {e}")
                                     app.state.last_ws_input_time = time.time()
+                                    # Mirror the SSE handler: bump scanner
+                                    # cooldown when this looks like a
+                                    # permission/menu response so the scanner
+                                    # doesn't double-fire on the cleared prompt.
+                                    try:
+                                        t = (text_data or "").strip().lower()
+                                        if t in ("y", "n", "yes", "no", "") or (len(t) == 1 and t.isdigit()):
+                                            cd = getattr(app.state, "permission_scanner_cooldown", None)
+                                            if cd is not None and target:
+                                                cd[target] = time.time()
+                                    except Exception:
+                                        pass
                                 elif msg_type == "set_mode":
                                     # Client requests output mode change
                                     new_mode = data.get("mode", "tail")

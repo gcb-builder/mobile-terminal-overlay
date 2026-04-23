@@ -402,6 +402,21 @@ def register(app: FastAPI, deps):
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)
 
+        # If this looks like a permission/menu response (single-char y/n
+        # or yes/no, single digit, or empty Enter), bump the
+        # permission_scanner cooldown for this pane so the scanner
+        # doesn't fire its own y a few seconds later on the now-cleared
+        # prompt — that landed as a stray turn after the agent was ready.
+        try:
+            t = (text_data or "").strip().lower()
+            if t in ("y", "n", "yes", "no", "") or (len(t) == 1 and t.isdigit()):
+                cd = getattr(app.state, "permission_scanner_cooldown", None)
+                if cd is not None and target:
+                    cd[target] = time.time()
+                    logger.info(f"[TEXT-SEND] bumped scanner cooldown for {target} (response={t!r})")
+        except Exception:
+            pass
+
         app.state.last_ws_input_time = time.time()
         return {"ok": True}
 
