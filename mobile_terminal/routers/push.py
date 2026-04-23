@@ -378,24 +378,22 @@ def register(app: FastAPI, deps):
                             det.last_sent_id = det2.last_sent_id
 
                     if not perm:
-                        # JSONL extraction failed — synthesize from terminal content.
-                        # We know a permission prompt is showing. Extract tool name
-                        # from the pane text (box header or prose).
-                        tool_name = "Bash"  # default — most permission prompts are Bash
-                        target_text = ""
-                        for tl in pane_text.split('\n'):
-                            stripped = tl.strip().replace('╭', '').replace('╮', '').replace('─', '').strip()
-                            if stripped in ('Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep',
-                                           'WebFetch', 'WebSearch', 'Agent', 'NotebookEdit'):
-                                tool_name = stripped
-                                break
-                        perm = {
-                            "tool": tool_name,
-                            "target": target_text,
-                            "context": "",
-                            "id": f"scan:{target_id}:{int(time.time())}",
-                        }
-                        logger.info(f"[permission_scanner] synthesized perm for {target_id}: {tool_name}")
+                        # JSONL says no unresolved tool_use right now — even
+                        # though capture-pane shows prompt-shaped text. The
+                        # prior synthesize-from-terminal fallback fired y
+                        # here based on visual heuristics alone, which is
+                        # how stray y's landed after the agent had moved
+                        # on (TUI buffer still showed an answered prompt).
+                        # The only authoritative "Claude is blocked on
+                        # permission" signal is JSONL; without it, refuse
+                        # to send keystrokes. If JSONL is genuinely broken,
+                        # the push-notification path will still fire and
+                        # the user can tap Allow.
+                        logger.info(
+                            f"[permission_scanner] JSONL has no unresolved perm "
+                            f"for {target_id} — skipping auto-fire (capture-pattern only)"
+                        )
+                        continue
 
                     # Evaluate policy
                     policy = app.state.permission_policy

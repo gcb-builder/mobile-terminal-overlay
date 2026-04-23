@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v390 ===');
+console.log('=== TERMINAL.JS v391 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -11545,6 +11545,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=390', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=391', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
