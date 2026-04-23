@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v382 ===');
+console.log('=== TERMINAL.JS v383 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -4688,24 +4688,19 @@ function setupComposeMode() {
         });
     }
 
-    // Backlog button - add to backlog (split on lines if multi-line)
+    // Backlog button - composer content is treated as ONE item, always.
+    // The user is editing a single prompt; splitting on newlines (even
+    // markdown-list ones) was breaking re-adds where formatting just
+    // happened to use list markers. Card-select / log-FAB paths still
+    // use splitBacklogLines for the genuine "AI suggested N items" case.
     const composeBacklog = document.getElementById('composeBacklog');
     if (composeBacklog) {
         composeBacklog.addEventListener('click', () => {
             const text = composeInput.value.trim();
             if (!text) return;
-            const lines = splitBacklogLines(text);
-            if (lines.length <= 1) {
-                // Single item
-                const summary = text.split('\n')[0].slice(0, 120);
-                addBacklogItem(summary, text, 'human');
-                ctx.showToast('Added to backlog', 'success');
-            } else {
-                for (const line of lines) {
-                    addBacklogItem(line.slice(0, 120), line, 'human');
-                }
-                ctx.showToast(`Added ${lines.length} items to backlog`, 'success');
-            }
+            const summary = text.split('\n')[0].slice(0, 120);
+            addBacklogItem(summary, text, 'human');
+            ctx.showToast('Added to backlog', 'success');
             closeComposeModal(true);
         });
     }
@@ -11480,6 +11475,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=382', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=383', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
