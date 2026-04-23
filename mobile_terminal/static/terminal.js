@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v375 ===');
+console.log('=== TERMINAL.JS v382 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7902,19 +7902,34 @@ function setupSelectionBacklog(container) {
 
 /**
  * Split text into individual backlog items.
- * Handles: "- item", "* item", "N. item", "N) item", plain lines.
- * Skips empty lines and markdown headers used as context.
+ *
+ * Heuristic: only split when the input *looks like* a list — i.e. has
+ * at least one line starting with `-`, `*`, `1.`, or `1)`. Without
+ * those markers, treat the whole thing as a single multi-line item
+ * (preserves prose, paragraphs, code blocks).
+ *
+ * Reason: a user re-adding ONE multi-line prompt to backlog from the
+ * composer was getting it shredded into N items, one per newline.
+ * Now that only happens if the input is unambiguously list-formatted.
+ *
+ * When in list mode: skip blank lines, markdown headers (`#`, `**X**`),
+ * and horizontal rules.
  */
 function splitBacklogLines(text) {
     const lines = text.split('\n');
+    const hasListMarker = lines.some(l =>
+        /^\s*[-*]\s+/.test(l) || /^\s*\d+[.)]\s+/.test(l)
+    );
+    if (!hasListMarker) {
+        // Single multi-line item — return as one entry, trimmed.
+        const single = text.trim();
+        return single ? [single] : [];
+    }
     const items = [];
     for (const raw of lines) {
-        // Strip list prefixes: "- ", "* ", "1. ", "1) "
         const stripped = raw.replace(/^\s*[-*]\s+/, '').replace(/^\s*\d+[.)]\s+/, '').trim();
         if (!stripped) continue;
-        // Skip markdown headers and horizontal rules
         if (/^#{1,4}\s/.test(stripped) || /^[-=]{3,}$/.test(stripped)) continue;
-        // Skip lines that are just bold headers like "**Something**"
         if (/^\*\*[^*]+\*\*$/.test(stripped)) continue;
         items.push(stripped);
     }
@@ -11465,6 +11480,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=375', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=382', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
