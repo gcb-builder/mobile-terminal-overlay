@@ -340,7 +340,41 @@ def create_app(config: Config) -> FastAPI:
         return {
             "auto_setup": config.auto_setup,
             "result": app.state.setup_result,
+            "startup_layout": getattr(app.state, "startup_layout_result", None),
+            "layout_configured": [
+                {"window_name": w.window_name, "path": w.path, "auto_resume": w.auto_resume}
+                for w in (config.startup_layout or [])
+            ],
         }
+
+    @app.post("/api/setup/restore")
+    async def setup_restore(_auth=Depends(verify_token)):
+        """Re-apply startup_layout: ensure each configured window
+        exists, optionally auto-resume the agent. Idempotent — safe
+        to call any time. Returns the same shape as the startup-time
+        layout result so the UI can show what changed.
+
+        Use after WSL/host restart, or any time the user wants their
+        configured workspace re-established without restarting MTO.
+        """
+        from mobile_terminal.helpers import ensure_startup_layout
+        try:
+            result = await ensure_startup_layout(config)
+            app.state.startup_layout_result = result
+            # If active_target is now invalid (e.g. user nuked panes),
+            # bump it to the first newly-created window for convenience.
+            if result["created"] and not app.state.active_target:
+                from mobile_terminal.helpers import _list_session_windows
+                wins = _list_session_windows(config.session_name)
+                first_name = result["created"][0]
+                for w in wins:
+                    if w.get("window_name") == first_name:
+                        app.state.active_target = f"{w['window_index']}:0"
+                        break
+            return {"status": "ok", "result": result, "focused": app.state.active_target}
+        except Exception as e:
+            logger.error(f"setup/restore: failed: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/api/tmux/sessions")
     async def get_tmux_sessions(
@@ -1543,6 +1577,59 @@ def create_app(config: Config) -> FastAPI:
             except Exception as e:
                 logger.error(f"auto_setup: failed: {e}")
                 app.state.setup_result = {"error": str(e)}
+
+        # Apply startup_layout (v1 of session-restore roadmap): make
+        # sure each declared window exists and optionally auto-resume
+        # the agent. Idempotent — pre-existing windows are skipped.
+        if getattr(config, "startup_layout", None):
+            try:
+                from mobile_terminal.helpers import ensure_startup_layout
+                layout_result = await ensure_startup_layout(config)
+                app.state.startup_layout_result = layout_result
+                logger.info(
+                    f"startup_layout: created={layout_result['created']} "
+                    f"skipped={layout_result['skipped']} "
+                    f"resumed={layout_result['resumed']}"
+                )
+            except Exception as e:
+                logger.error(f"startup_layout: failed: {e}")
+                app.state.startup_layout_result = {"error": str(e)}
+
+        # Validate the persisted active_target — if the pane no longer
+        # exists (typical after WSL restart where the cached id was
+        # 3:0 but we just rebuilt to 0:0/1:0/...), fall back to the
+        # first window in startup_layout, else first existing window,
+        # else None. Stops the "land on a dead pane" issue.
+        try:
+            from mobile_terminal.helpers import _list_session_windows
+            wins = _list_session_windows(config.session_name)
+            existing_ids = {w.get("window_index") for w in wins}
+            if app.state.active_target:
+                # active_target can be "win:pane" or "win"; check window-index
+                cur_win = app.state.active_target.split(":", 1)[0]
+                if cur_win not in existing_ids:
+                    logger.info(
+                        f"active_target {app.state.active_target!r} no longer "
+                        f"exists in tmux — falling back"
+                    )
+                    app.state.active_target = None
+            if not app.state.active_target and getattr(config, "startup_layout", None):
+                # Match first layout window to its tmux window_index
+                first_name = config.startup_layout[0].window_name
+                for w in wins:
+                    if w.get("window_name") == first_name:
+                        app.state.active_target = f"{w['window_index']}:0"
+                        logger.info(
+                            f"active_target → {app.state.active_target} (first startup_layout window)"
+                        )
+                        break
+            if not app.state.active_target and wins:
+                app.state.active_target = f"{wins[0]['window_index']}:0"
+                logger.info(
+                    f"active_target → {app.state.active_target} (first existing window)"
+                )
+        except Exception as e:
+            logger.warning(f"active_target fallback failed: {e}")
 
         print(f"\n{'=' * 60}")
         print(f"Mobile Terminal Overlay v0.2.0")

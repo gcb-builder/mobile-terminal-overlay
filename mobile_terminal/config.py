@@ -54,6 +54,22 @@ class Repo:
 
 
 @dataclass
+class StartupWindow:
+    """One window declared in startup_layout. On MTO startup we
+    ensure the tmux session has a window with this name pointing at
+    this cwd; if auto_resume is True AND the window had to be created
+    (didn't already exist), we run the agent's resume command in it.
+
+    Idempotent: pre-existing windows with the same name are left
+    alone — no agent restart, no cwd change. The user's running work
+    isn't disturbed by an MTO restart.
+    """
+    window_name: str        # tmux window name
+    path: str               # cwd to create the window in
+    auto_resume: bool = False  # if True and window was just created, run "claude --continue"
+
+
+@dataclass
 class Config:
     """Configuration for Mobile Terminal Overlay."""
 
@@ -84,6 +100,11 @@ class Config:
 
     # Workspace directories to scan for project subdirectories
     workspace_dirs: List[str] = field(default_factory=list)  # e.g. ["~/dev"]
+
+    # Startup layout: windows MTO ensures exist on startup. After WSL
+    # restart this lets the user open MTO and find their workspace
+    # ready instead of one empty pane. See StartupWindow above.
+    startup_layout: List[StartupWindow] = field(default_factory=list)
 
     # UI settings
     theme: str = "dark"  # dark | light | auto
@@ -140,6 +161,10 @@ class Config:
                 for r in self.repos
             ],
             "workspace_dirs": self.workspace_dirs,
+            "startup_layout": [
+                {"window_name": w.window_name, "path": w.path, "auto_resume": w.auto_resume}
+                for w in self.startup_layout
+            ],
             "theme": self.theme,
             "font_size": self.font_size,
             "scrollback": self.scrollback,
@@ -280,6 +305,22 @@ def load_config(path: Optional[Path] = None) -> Config:
     # Workspace directories
     if "workspace_dirs" in data:
         config.workspace_dirs = [str(d) for d in data["workspace_dirs"]]
+
+    # Startup layout (windows ensured on startup)
+    if "startup_layout" in data and isinstance(data["startup_layout"], list):
+        config.startup_layout = []
+        for w in data["startup_layout"]:
+            if not isinstance(w, dict):
+                continue
+            name = w.get("window_name") or w.get("name")
+            path = w.get("path") or w.get("cwd")
+            if not name or not path:
+                continue
+            config.startup_layout.append(StartupWindow(
+                window_name=str(name),
+                path=str(path),
+                auto_resume=bool(w.get("auto_resume", False)),
+            ))
 
     return config
 

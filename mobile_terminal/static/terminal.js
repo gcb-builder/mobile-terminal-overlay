@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v383 ===');
+console.log('=== TERMINAL.JS v386 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -2964,6 +2964,46 @@ function populateRepoDropdown() {
             showNewWindowModal();
         });
         repoDropdown.appendChild(newWindowOpt);
+
+        // Restore Workspace — re-applies startup_layout from config.
+        // Most useful after WSL/host restart: instead of manually
+        // creating each window + tapping Continue per pane, one tap
+        // ensures every configured window exists and (where opted-in)
+        // resumes the last agent session in it.
+        const restoreOpt = document.createElement('button');
+        restoreOpt.className = 'nav-action-option';
+        restoreOpt.textContent = 'Restore Workspace';
+        restoreOpt.title = 'Ensure configured windows exist; auto-resume agents where enabled.';
+        restoreOpt.addEventListener('click', async () => {
+            repoDropdown.classList.add('hidden');
+            restoreOpt.disabled = true;
+            const original = restoreOpt.textContent;
+            restoreOpt.textContent = 'Restoring…';
+            try {
+                const resp = await apiFetch('/api/setup/restore', { method: 'POST' });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    ctx.showToast(data.error || 'Restore failed', 'warning');
+                    return;
+                }
+                const r = data.result || {};
+                const created = (r.created || []).length;
+                const skipped = (r.skipped || []).length;
+                const resumed = (r.resumed || []).length;
+                const errors = (r.errors || []).length;
+                let msg = `Created ${created}, skipped ${skipped}, resumed ${resumed}`;
+                if (errors) msg += `, ${errors} error(s)`;
+                ctx.showToast(msg, errors ? 'warning' : 'success', 4000);
+                // Refresh targets so the new windows appear in nav.
+                if (typeof loadTargets === 'function') loadTargets();
+            } catch (e) {
+                ctx.showToast('Restore failed: ' + e.message, 'warning');
+            } finally {
+                restoreOpt.disabled = false;
+                restoreOpt.textContent = original;
+            }
+        });
+        repoDropdown.appendChild(restoreOpt);
     }
 
     // Section 3: Other Sessions
@@ -11475,6 +11515,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=383', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=386', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

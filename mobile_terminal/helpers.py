@@ -752,6 +752,88 @@ async def ensure_tmux_setup(config) -> dict:
     return result
 
 
+async def ensure_startup_layout(config, runtime=None) -> dict:
+    """Ensure every window in config.startup_layout exists in the
+    tmux session. Idempotent — windows that already exist are left
+    untouched (no agent disturbance, no cwd change). Newly-created
+    windows with auto_resume=True get a ``claude --continue`` sent
+    to them after a short delay so the agent's last session resumes.
+
+    Returns {"created": [...], "skipped": [...], "resumed": [...],
+    "errors": [...]} for telemetry. Safe to call repeatedly — used
+    both at startup and from POST /api/setup/restore.
+    """
+    result = {"created": [], "skipped": [], "resumed": [], "errors": []}
+    layout = getattr(config, "startup_layout", None) or []
+    if not layout:
+        return result
+
+    session = config.session_name
+    if not _tmux_session_exists(session):
+        result["errors"].append(f"session '{session}' does not exist")
+        return result
+
+    existing = _list_session_windows(session)
+    existing_names = {w.get("window_name") for w in existing}
+
+    for entry in layout:
+        if entry.window_name in existing_names:
+            result["skipped"].append(entry.window_name)
+            continue
+        # Resolve ~ in path
+        cwd = str(Path(entry.path).expanduser())
+        if not Path(cwd).exists():
+            msg = f"startup_layout: path missing for window '{entry.window_name}': {cwd}"
+            logger.warning(msg)
+            result["errors"].append(msg)
+            continue
+        try:
+            proc = await run_subprocess(
+                ["tmux", "new-window", "-a", "-t", session,
+                 "-n", entry.window_name, "-c", cwd],
+                capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode != 0:
+                msg = f"startup_layout: failed to create '{entry.window_name}': {proc.stderr.strip()}"
+                logger.warning(msg)
+                result["errors"].append(msg)
+                continue
+            result["created"].append(entry.window_name)
+            logger.info(f"startup_layout: created window '{entry.window_name}' (cwd={cwd})")
+        except Exception as e:
+            result["errors"].append(f"create '{entry.window_name}': {e}")
+            continue
+
+        # Optional auto-resume — runs the agent's resume command in
+        # the just-created window. Deferred 600ms so the shell prompt
+        # is ready to receive the keystrokes.
+        if entry.auto_resume:
+            target = f"{session}:{entry.window_name}"
+            async def _resume(target=target, name=entry.window_name):
+                await asyncio.sleep(0.6)
+                try:
+                    await run_subprocess(
+                        ["tmux", "send-keys", "-t", target, "-l", "claude --continue"],
+                        timeout=5,
+                    )
+                    await run_subprocess(
+                        ["tmux", "send-keys", "-t", target, "Enter"],
+                        timeout=5,
+                    )
+                    logger.info(f"startup_layout: resumed agent in '{name}'")
+                except Exception as e:
+                    logger.warning(f"startup_layout: resume failed for '{name}': {e}")
+            asyncio.create_task(_resume())
+            result["resumed"].append(entry.window_name)
+
+    logger.info(
+        f"ensure_startup_layout: created={len(result['created'])} "
+        f"skipped={len(result['skipped'])} resumed={len(result['resumed'])} "
+        f"errors={len(result['errors'])}"
+    )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Process management helpers
 # ---------------------------------------------------------------------------
