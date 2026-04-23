@@ -22,20 +22,43 @@ QUEUE_DIR = Path.home() / ".cache" / "mobile-overlay" / "queue"
 BACKLOG_DIR = Path.home() / ".cache" / "mobile-overlay" / "backlog"
 
 
-def get_queue_file(session: str, pane_id: Optional[str] = None) -> Path:
-    """Get the queue file path for a session (optionally scoped by pane)."""
+def _safe_session(session: str) -> str:
+    return session.replace("/", "_").replace(":", "_")
+
+
+def repo_key_for_cwd(session: str, cwd: str) -> str:
+    """Derive a stable scope key for a session+repo. The path is
+    sanitized the same way the backlog already does (every non-alnum
+    becomes underscore), so the same repo always lands on the same
+    file regardless of which pane index it was bound to at any moment.
+    """
+    return f"{_safe_session(session)}__{_sanitize_project(cwd)}"
+
+
+def get_queue_file(session: str, pane_id: Optional[str] = None,
+                   repo_key: Optional[str] = None) -> Path:
+    """Path to the queue jsonl for a scope.
+
+    Scope resolution order (most-specific first):
+      1. ``repo_key`` if provided — the new stable per-repo keying
+      2. ``pane_id`` — legacy ephemeral per-pane keying (kept for
+         backwards-compat reads + lazy migration)
+      3. session-only — last fallback for unscoped queues
+    """
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
-    # Sanitize session name for filename
-    safe_name = session.replace("/", "_").replace(":", "_")
+    if repo_key:
+        return QUEUE_DIR / f"{repo_key}.jsonl"
+    safe_name = _safe_session(session)
     if pane_id:
         safe_pane = pane_id.replace("/", "_").replace(":", "_").replace(".", "_")
         return QUEUE_DIR / f"{safe_name}_{safe_pane}.jsonl"
     return QUEUE_DIR / f"{safe_name}.jsonl"
 
 
-def load_queue_from_disk(session: str, pane_id: Optional[str] = None) -> list:
+def load_queue_from_disk(session: str, pane_id: Optional[str] = None,
+                         repo_key: Optional[str] = None) -> list:
     """Load queue items from JSONL file."""
-    queue_file = get_queue_file(session, pane_id)
+    queue_file = get_queue_file(session, pane_id, repo_key)
     items = []
     if queue_file.exists():
         try:
@@ -49,9 +72,10 @@ def load_queue_from_disk(session: str, pane_id: Optional[str] = None) -> list:
     return items
 
 
-def save_queue_to_disk(session: str, items: list, pane_id: Optional[str] = None):
+def save_queue_to_disk(session: str, items: list, pane_id: Optional[str] = None,
+                       repo_key: Optional[str] = None):
     """Save queue items to JSONL file."""
-    queue_file = get_queue_file(session, pane_id)
+    queue_file = get_queue_file(session, pane_id, repo_key)
     try:
         QUEUE_DIR.mkdir(parents=True, exist_ok=True)
         with open(queue_file, "w") as f:
@@ -61,7 +85,8 @@ def save_queue_to_disk(session: str, items: list, pane_id: Optional[str] = None)
         logger.error(f"Error saving queue for {session}: {e}")
 
 
-def get_sent_ids_file(session: str, pane_id: Optional[str] = None) -> Path:
+def get_sent_ids_file(session: str, pane_id: Optional[str] = None,
+                      repo_key: Optional[str] = None) -> Path:
     """Sidecar file holding recently-sent item ids for replay protection.
 
     Lives next to the queue JSONL so it shares the same mkdir/dir scheme,
@@ -69,18 +94,19 @@ def get_sent_ids_file(session: str, pane_id: Optional[str] = None) -> Path:
     sent-id bookkeeping (a corrupt sent-ids file must never block queue
     operations).
     """
-    base = get_queue_file(session, pane_id)
+    base = get_queue_file(session, pane_id, repo_key)
     return base.with_suffix(".sent.jsonl")
 
 
-def load_sent_ids_from_disk(session: str, pane_id: Optional[str] = None) -> list:
+def load_sent_ids_from_disk(session: str, pane_id: Optional[str] = None,
+                            repo_key: Optional[str] = None) -> list:
     """Load recently-sent id snapshots from disk.
 
     Returns a list of {id, sent_at, item: <full QueueItem dict>} entries.
     Caller is responsible for TTL filtering — this function reads as-is
     so the same file can be inspected for debugging.
     """
-    f = get_sent_ids_file(session, pane_id)
+    f = get_sent_ids_file(session, pane_id, repo_key)
     out = []
     if f.exists():
         try:
@@ -94,13 +120,14 @@ def load_sent_ids_from_disk(session: str, pane_id: Optional[str] = None) -> list
     return out
 
 
-def save_sent_ids_to_disk(session: str, entries: list, pane_id: Optional[str] = None):
+def save_sent_ids_to_disk(session: str, entries: list, pane_id: Optional[str] = None,
+                          repo_key: Optional[str] = None):
     """Write recently-sent id snapshots to disk.
 
     Each entry is a dict {id, sent_at, item}. Caller passes an already-
     pruned list — this function writes verbatim.
     """
-    f = get_sent_ids_file(session, pane_id)
+    f = get_sent_ids_file(session, pane_id, repo_key)
     try:
         QUEUE_DIR.mkdir(parents=True, exist_ok=True)
         with open(f, "w") as fh:
@@ -110,20 +137,22 @@ def save_sent_ids_to_disk(session: str, entries: list, pane_id: Optional[str] = 
         logger.error(f"Error saving sent-ids for {session}: {e}")
 
 
-def get_tomb_file(session: str, pane_id: Optional[str] = None) -> Path:
+def get_tomb_file(session: str, pane_id: Optional[str] = None,
+                  repo_key: Optional[str] = None) -> Path:
     """Sidecar file holding tombstoned (removed) item ids.
 
     Stops cross-device localStorage replay: when one client deletes
     item X, the server records the tombstone so a different client
     that still has X locally can't resurrect it via reconcileQueue.
     """
-    base = get_queue_file(session, pane_id)
+    base = get_queue_file(session, pane_id, repo_key)
     return base.with_suffix(".tomb.jsonl")
 
 
-def load_tombs_from_disk(session: str, pane_id: Optional[str] = None) -> dict:
+def load_tombs_from_disk(session: str, pane_id: Optional[str] = None,
+                         repo_key: Optional[str] = None) -> dict:
     """Returns {id: removed_at} dict. Caller TTL-filters."""
-    f = get_tomb_file(session, pane_id)
+    f = get_tomb_file(session, pane_id, repo_key)
     out = {}
     if f.exists():
         try:
@@ -138,10 +167,51 @@ def load_tombs_from_disk(session: str, pane_id: Optional[str] = None) -> dict:
     return out
 
 
-def save_tombs_to_disk(session: str, tombs: dict, pane_id: Optional[str] = None):
+def migrate_pane_to_repo(session: str, pane_id: str, repo_key: str) -> dict:
+    """Atomically rename pane-keyed queue files to repo-keyed names.
+
+    For each of the three sidecar files (.jsonl, .sent.jsonl,
+    .tomb.jsonl): if the pane-keyed file exists AND the repo-keyed
+    one doesn't, Path.replace() the old to new. Atomic per file on
+    Linux (rename(2) is atomic across same filesystem). Idempotent —
+    re-running after a successful migration is a no-op.
+
+    Returns a dict {moved: [...], skipped: [...], errors: [...]}.
+    """
+    out = {"moved": [], "skipped": [], "errors": []}
+    for suffix in ("jsonl", "sent.jsonl", "tomb.jsonl"):
+        if suffix == "jsonl":
+            old = get_queue_file(session, pane_id=pane_id)
+            new = get_queue_file(session, repo_key=repo_key)
+        elif suffix == "sent.jsonl":
+            old = get_sent_ids_file(session, pane_id=pane_id)
+            new = get_sent_ids_file(session, repo_key=repo_key)
+        else:
+            old = get_tomb_file(session, pane_id=pane_id)
+            new = get_tomb_file(session, repo_key=repo_key)
+        if not old.exists():
+            out["skipped"].append(suffix)
+            continue
+        if new.exists():
+            # Both exist — leave alone, the new file is canonical.
+            # (Old file lingers as orphan; could be cleaned up later.)
+            out["skipped"].append(suffix)
+            continue
+        try:
+            old.replace(new)
+            out["moved"].append(f"{old.name} -> {new.name}")
+        except Exception as e:
+            out["errors"].append(f"{suffix}: {e}")
+    if out["moved"]:
+        logger.info(f"queue migration {pane_id} -> {repo_key}: {out['moved']}")
+    return out
+
+
+def save_tombs_to_disk(session: str, tombs: dict, pane_id: Optional[str] = None,
+                       repo_key: Optional[str] = None):
     """Write tombstones {id: removed_at} verbatim. Caller has already
     pruned past-TTL entries."""
-    f = get_tomb_file(session, pane_id)
+    f = get_tomb_file(session, pane_id, repo_key)
     try:
         QUEUE_DIR.mkdir(parents=True, exist_ok=True)
         with open(f, "w") as fh:
@@ -908,11 +978,41 @@ class CommandQueue:
 
     @staticmethod
     def _parse_key(key: str) -> tuple:
-        """Inverse of _queue_key: split 'session:pane' back to (session, pane_id)."""
+        """Inverse of _queue_key. Returns (session, scope) where scope
+        is either a pane_id (legacy `session:pane_id` form) or a
+        repo-keyed string (new `session__sanitized_cwd` form). The
+        caller usually only cares about the session for filtering
+        in _process_loop."""
+        if "__" in key:
+            session, _ = key.split("__", 1)
+            return (session, None)  # repo-keyed; pane unknown without lookup
         if ":" in key:
             session, pane_id = key.split(":", 1)
             return (session, pane_id)
         return (key, None)
+
+    def _resolve_repo_key(self, session: str, pane_id: Optional[str]) -> Optional[str]:
+        """Resolve (session, pane_id) → repo_key by looking up the pane's
+        cwd. Returns None if cwd resolution fails (caller should fall
+        back to the legacy pane-id key). Cached via helpers'
+        _PANE_CWD_CACHE so repeated calls are cheap."""
+        if not pane_id:
+            return None
+        from mobile_terminal.helpers import _get_pane_cwd_sync
+        cwd = _get_pane_cwd_sync(session, pane_id)
+        if not cwd:
+            return None
+        return repo_key_for_cwd(session, cwd)
+
+    def _queue_key_resolved(self, session: str, pane_id: Optional[str] = None) -> str:
+        """Like _queue_key, but tries to resolve to a repo-keyed scope
+        first. Used by all the storage-touching public methods so the
+        queue follows the cwd, not the ephemeral pane index. Falls
+        back to the legacy pane-keyed form when cwd is unresolvable."""
+        repo_key = self._resolve_repo_key(session, pane_id)
+        if repo_key:
+            return repo_key
+        return self._queue_key(session, pane_id)
 
     @staticmethod
     def _queue_key(session: str, pane_id: Optional[str] = None) -> str:
@@ -922,17 +1022,30 @@ class CommandQueue:
         return session
 
     def _get_queue(self, session: str, pane_id: Optional[str] = None) -> List[QueueItem]:
-        """Get or create queue for session+pane, loading from disk if needed."""
-        key = self._queue_key(session, pane_id)
+        """Get or create queue for session+pane, loading from disk if
+        needed. Pivots to repo-keyed scope if pane's cwd is resolvable;
+        triggers a one-time pane→repo file migration on first access
+        so existing pane-keyed jsonl files move over without losing data.
+        """
+        repo_key = self._resolve_repo_key(session, pane_id)
+        key = repo_key or self._queue_key_resolved(session, pane_id)
         if key not in self._queues:
             self._queues[key] = []
-            # Load from disk on first access
+            # First access — migrate legacy pane-keyed file to the new
+            # repo-keyed name (no-op if already migrated, or if cwd
+            # couldn't be resolved). Then load.
             if key not in self._loaded_sessions:
-                self._load_from_disk(session, pane_id)
+                if repo_key and pane_id:
+                    try:
+                        migrate_pane_to_repo(session, pane_id, repo_key)
+                    except Exception as e:
+                        logger.warning(f"queue migrate failed for {pane_id} -> {repo_key}: {e}")
+                self._load_from_disk(session, pane_id, repo_key=repo_key)
                 self._loaded_sessions.add(key)
         return self._queues[key]
 
-    def _load_from_disk(self, session: str, pane_id: Optional[str] = None):
+    def _load_from_disk(self, session: str, pane_id: Optional[str] = None,
+                        repo_key: Optional[str] = None):
         """Load queue + recently-sent ids from disk for a session+pane.
 
         Sent ids survive the restart so reconcileQueue from a client
@@ -941,8 +1054,10 @@ class CommandQueue:
         wiped on every restart, which is exactly when the bug bites
         (server restart between drain and client reconnect).
         """
-        key = self._queue_key(session, pane_id)
-        items_data = load_queue_from_disk(session, pane_id)
+        # Internal dict-key matches the storage scope: repo_key when
+        # the pane resolved to one, otherwise legacy pane-keyed.
+        key = repo_key or self._queue_key_resolved(session, pane_id)
+        items_data = load_queue_from_disk(session, pane_id, repo_key=repo_key)
         items = []
         for data in items_data:
             try:
@@ -967,7 +1082,7 @@ class CommandQueue:
 
         # Restore the recently-sent cache, applying TTL on read so
         # entries from a long-stopped server don't leak in.
-        sent_data = load_sent_ids_from_disk(session, pane_id)
+        sent_data = load_sent_ids_from_disk(session, pane_id, repo_key=repo_key)
         if sent_data:
             now = time.time()
             cache = {}
@@ -996,7 +1111,7 @@ class CommandQueue:
                 logger.info(f"Loaded {len(cache)} replay-protect entries for {key}")
 
         # Restore tombstones, applying TTL on read.
-        tomb_data = load_tombs_from_disk(session, pane_id)
+        tomb_data = load_tombs_from_disk(session, pane_id, repo_key=repo_key)
         if tomb_data:
             now = time.time()
             tombs = {tid: ts for tid, ts in tomb_data.items()
@@ -1012,7 +1127,8 @@ class CommandQueue:
         rewrites both. Cheap (small files, written rarely), and keeps
         the on-disk state self-consistent after any restart.
         """
-        key = self._queue_key(session, pane_id)
+        repo_key = self._resolve_repo_key(session, pane_id)
+        key = repo_key or self._queue_key_resolved(session, pane_id)
         queue = self._queues.get(key, [])
         items_data = [asdict(item) for item in queue]
 
@@ -1023,7 +1139,7 @@ class CommandQueue:
         # lost. Compares the in-memory queue we're about to write
         # against whatever's currently on disk.
         try:
-            prev_on_disk = {d.get("id") for d in load_queue_from_disk(session, pane_id)}
+            prev_on_disk = {d.get("id") for d in load_queue_from_disk(session, pane_id, repo_key=repo_key)}
             new_ids = {d.get("id") for d in items_data}
             disappeared = prev_on_disk - new_ids
             if disappeared:
@@ -1041,7 +1157,7 @@ class CommandQueue:
         # Persist the recently-sent cache too. Prune past-TTL entries
         # before writing so the file stays bounded over time.
         sent_cache = self._recently_sent.get(key, {})
-        if sent_cache or get_sent_ids_file(session, pane_id).exists():
+        if sent_cache or get_sent_ids_file(session, pane_id, repo_key=repo_key).exists():
             now = time.time()
             entries = []
             for sid, (item, sent_at) in sent_cache.items():
@@ -1052,16 +1168,16 @@ class CommandQueue:
                     "sent_at": sent_at,
                     "item": asdict(item),
                 })
-            save_sent_ids_to_disk(session, entries, pane_id)
+            save_sent_ids_to_disk(session, entries, pane_id, repo_key=repo_key)
 
         # Persist tombstones, prune past-TTL entries.
         tomb_cache = self._tombstones.get(key, {})
-        if tomb_cache or get_tomb_file(session, pane_id).exists():
+        if tomb_cache or get_tomb_file(session, pane_id, repo_key=repo_key).exists():
             now = time.time()
             kept = {tid: ts for tid, ts in tomb_cache.items()
                     if now - ts <= self.TOMBSTONE_TTL_SECONDS}
             self._tombstones[key] = kept
-            save_tombs_to_disk(session, kept, pane_id)
+            save_tombs_to_disk(session, kept, pane_id, repo_key=repo_key)
 
     def _classify_policy(self, text: str) -> str:
         """Determine if command is safe or unsafe."""
@@ -1104,7 +1220,7 @@ class CommandQueue:
         the prompt the user thought was done.
         """
         queue = self._get_queue(session, pane_id)
-        key = self._queue_key(session, pane_id)
+        key = self._queue_key_resolved(session, pane_id)
 
         # Idempotency check: if ID provided and exists, return existing
         if item_id:
@@ -1183,7 +1299,7 @@ class CommandQueue:
         for i, item in enumerate(queue):
             if item.id == item_id:
                 queue.pop(i)
-                key = self._queue_key(session, pane_id)
+                key = self._queue_key_resolved(session, pane_id)
                 self._tombstones.setdefault(key, {})[item_id] = time.time()
                 self._save_to_disk(session, pane_id)
                 return True
@@ -1249,7 +1365,7 @@ class CommandQueue:
                 return item  # idempotent — already marked
             item.status = "sent"
             item.sent_at = time.time()
-            key = self._queue_key(session, pane_id)
+            key = self._queue_key_resolved(session, pane_id)
             self._recently_sent.setdefault(key, {})[item.id] = (item, item.sent_at)
             self._prune_old_sent(session, pane_id)
             self._save_to_disk(session, pane_id)
@@ -1265,7 +1381,7 @@ class CommandQueue:
 
         Returns True if anything was dropped (so callers can persist).
         """
-        key = self._queue_key(session, pane_id)
+        key = self._queue_key_resolved(session, pane_id)
         queue = self._queues.get(key)
         if not queue:
             return False
@@ -1284,18 +1400,18 @@ class CommandQueue:
 
     def pause(self, session: str, pane_id: Optional[str] = None) -> None:
         """Pause queue processing for a session+pane."""
-        key = self._queue_key(session, pane_id)
+        key = self._queue_key_resolved(session, pane_id)
         self._paused[key] = True
 
     def resume(self, session: str, pane_id: Optional[str] = None) -> None:
         """Resume queue processing for a session+pane."""
-        key = self._queue_key(session, pane_id)
+        key = self._queue_key_resolved(session, pane_id)
         self._paused[key] = False
         self._wake()
 
     def is_paused(self, session: str, pane_id: Optional[str] = None) -> bool:
         """Check if queue is paused."""
-        key = self._queue_key(session, pane_id)
+        key = self._queue_key_resolved(session, pane_id)
         return self._paused.get(key, False)
 
     def flush(self, session: str, pane_id: Optional[str] = None) -> int:
@@ -1491,7 +1607,7 @@ class CommandQueue:
             # broadcast and re-asks via reconcileQueue, the next enqueue
             # with this id will return is_new=False instead of running
             # the prompt a second time.
-            key = self._queue_key(session, pane_id)
+            key = self._queue_key_resolved(session, pane_id)
             self._recently_sent.setdefault(key, {})[item.id] = (item, item.sent_at)
 
             # Update PTY-input bookkeeping so other code (e.g. desktop
@@ -1590,12 +1706,40 @@ class CommandQueue:
             # dict.
             keys = list(self._queues.keys())
 
+            # For repo-keyed scopes we need to map back to a live pane
+            # in the current session. Build {repo_key -> pane_id} once
+            # per pass so we don't re-shell out per key.
+            from mobile_terminal.helpers import _list_session_windows
+            repo_to_pane: Dict[str, str] = {}
+            try:
+                wins = _list_session_windows(current_session)
+                for w in wins:
+                    pane = f"{w.get('window_index')}:0"
+                    cwd = w.get("cwd")
+                    if cwd:
+                        rk = repo_key_for_cwd(current_session, cwd)
+                        # Prefer the active_target's pane when multiple
+                        # panes share the same cwd.
+                        active = getattr(self._app.state, "active_target", None)
+                        if rk not in repo_to_pane or pane == active:
+                            repo_to_pane[rk] = pane
+            except Exception as e:
+                logger.debug(f"_process_loop pane-map failed: {e}")
+
             for key in keys:
                 if not self._running:
                     break
-                session, pane_id = self._parse_key(key)
+                session, parsed_pane = self._parse_key(key)
                 # Runtime is bound to one tmux session — skip foreign queues.
                 if session != current_session:
+                    continue
+                # Resolve pane to deliver to: legacy keys carry it inline;
+                # repo-keyed scopes look it up in repo_to_pane.
+                pane_id = parsed_pane or repo_to_pane.get(key)
+                if not pane_id:
+                    # No live pane currently maps to this repo — skip.
+                    # The queue is preserved on disk for whenever a
+                    # pane in that cwd next exists.
                     continue
                 if self.is_paused(session, pane_id):
                     continue

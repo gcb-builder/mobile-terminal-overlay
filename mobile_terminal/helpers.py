@@ -17,7 +17,7 @@ import subprocess
 import termios
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -517,6 +517,76 @@ def _match_repo_to_window(repo, windows: list) -> Optional[dict]:
             continue
 
     return None
+
+
+# In-memory cache for pane→cwd lookups to avoid spamming tmux on
+# every /api/queue/list call. 30s TTL is short enough that a user
+# `cd`'ing in a pane is reflected quickly, long enough that the
+# repeated polls during normal MTO operation are amortized.
+_PANE_CWD_CACHE: Dict[str, tuple] = {}  # key="session:pane_id" -> (cwd, ts)
+_PANE_CWD_TTL = 30.0
+
+
+def _get_pane_cwd_sync(session: str, pane_id: Optional[str]) -> Optional[str]:
+    """Synchronous cwd lookup. Shares the cache with the async version
+    so calls from sync code paths (CommandQueue methods) get the
+    cached result if a recent async lookup populated it."""
+    if not session or not pane_id:
+        return None
+    cache_key = f"{session}:{pane_id}"
+    now = time.time()
+    cached = _PANE_CWD_CACHE.get(cache_key)
+    if cached and now - cached[1] < _PANE_CWD_TTL:
+        return cached[0]
+    target = get_tmux_target(session, pane_id)
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", target, "-p", "#{pane_current_path}"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode != 0:
+            return None
+        cwd = (result.stdout or "").strip()
+        if not cwd:
+            return None
+        _PANE_CWD_CACHE[cache_key] = (cwd, now)
+        return cwd
+    except Exception as e:
+        logger.debug(f"_get_pane_cwd_sync error for {target}: {e}")
+        return None
+
+
+async def _get_pane_cwd(session: str, pane_id: Optional[str]) -> Optional[str]:
+    """Resolve a pane's current working directory.
+
+    Used by CommandQueue to derive a stable repo-keyed filename
+    instead of using the ephemeral pane index (which shifts when
+    windows are killed/created and caused the queue-on-wrong-pane bug).
+    Cached 30s in-process — clears naturally on restart.
+    """
+    if not session or not pane_id:
+        return None
+    cache_key = f"{session}:{pane_id}"
+    now = time.time()
+    cached = _PANE_CWD_CACHE.get(cache_key)
+    if cached and now - cached[1] < _PANE_CWD_TTL:
+        return cached[0]
+    target = get_tmux_target(session, pane_id)
+    try:
+        result = await run_subprocess(
+            ["tmux", "display-message", "-t", target, "-p", "#{pane_current_path}"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode != 0:
+            return None
+        cwd = (result.stdout or "").strip()
+        if not cwd:
+            return None
+        _PANE_CWD_CACHE[cache_key] = (cwd, now)
+        return cwd
+    except Exception as e:
+        logger.debug(f"_get_pane_cwd error for {target}: {e}")
+        return None
 
 
 def _get_pane_command(pane_id: str) -> Optional[str]:

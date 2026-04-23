@@ -16,8 +16,8 @@ class TestQueueBasics:
         self.q = CommandQueue()
         # Bypass disk load/save
         self.q._loaded_sessions = set()
-        self.q._load_from_disk = lambda *a: None
-        self.q._save_to_disk = lambda *a: None
+        self.q._load_from_disk = lambda *a, **kw: None
+        self.q._save_to_disk = lambda *a, **kw: None
 
     def test_enqueue_returns_new_item(self):
         item, is_new = self.q.enqueue("sess", "echo hello")
@@ -83,8 +83,8 @@ class TestQueuePaneScoping:
     def setup_method(self):
         self.q = CommandQueue()
         self.q._loaded_sessions = set()
-        self.q._load_from_disk = lambda *a: None
-        self.q._save_to_disk = lambda *a: None
+        self.q._load_from_disk = lambda *a, **kw: None
+        self.q._save_to_disk = lambda *a, **kw: None
 
     def test_different_panes_are_isolated(self):
         self.q.enqueue("sess", "cmd1", pane_id="0:0")
@@ -142,8 +142,8 @@ class TestPolicyClassification:
         # Test via enqueue with explicit policy
         q = CommandQueue()
         q._loaded_sessions = set()
-        q._load_from_disk = lambda *a: None
-        q._save_to_disk = lambda *a: None
+        q._load_from_disk = lambda *a, **kw: None
+        q._save_to_disk = lambda *a, **kw: None
         item, _ = q.enqueue("sess", "sudo rm -rf /", policy="safe")
         assert item.policy == "safe"
 
@@ -156,8 +156,8 @@ class TestQueuePauseResume:
     def setup_method(self):
         self.q = CommandQueue()
         self.q._loaded_sessions = set()
-        self.q._load_from_disk = lambda *a: None
-        self.q._save_to_disk = lambda *a: None
+        self.q._load_from_disk = lambda *a, **kw: None
+        self.q._save_to_disk = lambda *a, **kw: None
 
     def test_default_not_paused(self):
         assert self.q.is_paused("sess") is False
@@ -182,8 +182,8 @@ class TestQueueReorder:
     def setup_method(self):
         self.q = CommandQueue()
         self.q._loaded_sessions = set()
-        self.q._load_from_disk = lambda *a: None
-        self.q._save_to_disk = lambda *a: None
+        self.q._load_from_disk = lambda *a, **kw: None
+        self.q._save_to_disk = lambda *a, **kw: None
 
     def test_reorder_moves_item(self):
         self.q.enqueue("sess", "a", item_id="a1")
@@ -270,8 +270,8 @@ class TestGetNextUnsafe:
     def setup_method(self):
         self.q = CommandQueue()
         self.q._loaded_sessions = set()
-        self.q._load_from_disk = lambda *a: None
-        self.q._save_to_disk = lambda *a: None
+        self.q._load_from_disk = lambda *a, **kw: None
+        self.q._save_to_disk = lambda *a, **kw: None
 
     def test_returns_first_unsafe_queued(self):
         self.q.enqueue("sess", "ls", policy="safe", item_id="s1")
@@ -300,8 +300,8 @@ class TestAutoEligible:
     def setup_method(self):
         self.q = CommandQueue()
         self.q._loaded_sessions = set()
-        self.q._load_from_disk = lambda *a: None
-        self.q._save_to_disk = lambda *a: None
+        self.q._load_from_disk = lambda *a, **kw: None
+        self.q._save_to_disk = lambda *a, **kw: None
 
     def test_new_items_default_to_not_eligible(self):
         item, _ = self.q.enqueue("sess", "ls", policy="safe", item_id="A")
@@ -413,8 +413,8 @@ class TestReplayProtection:
     def setup_method(self):
         self.q = CommandQueue()
         self.q._loaded_sessions = set()
-        self.q._load_from_disk = lambda *a: None
-        self.q._save_to_disk = lambda *a: None
+        self.q._load_from_disk = lambda *a, **kw: None
+        self.q._save_to_disk = lambda *a, **kw: None
 
     def _mark_sent(self, session, item_id, ts=None):
         """Simulate what _send_item does on a successful drain."""
@@ -541,8 +541,8 @@ class TestSentItemPrune:
     def setup_method(self):
         self.q = CommandQueue()
         self.q._loaded_sessions = set()
-        self.q._load_from_disk = lambda *a: None
-        self.q._save_to_disk = lambda *a: None
+        self.q._load_from_disk = lambda *a, **kw: None
+        self.q._save_to_disk = lambda *a, **kw: None
 
     def _mark_sent(self, session, item_id, ts):
         key = self.q._queue_key(session)
@@ -655,8 +655,8 @@ class TestWakeup:
     def setup_method(self):
         self.q = CommandQueue()
         self.q._loaded_sessions = set()
-        self.q._load_from_disk = lambda *a: None
-        self.q._save_to_disk = lambda *a: None
+        self.q._load_from_disk = lambda *a, **kw: None
+        self.q._save_to_disk = lambda *a, **kw: None
 
     def test_wake_is_safe_before_loop_starts(self):
         # _wakeup_event is None until _process_loop binds it. _wake()

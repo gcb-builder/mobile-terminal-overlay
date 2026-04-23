@@ -70,6 +70,20 @@ curl -s -X POST http://127.0.0.1:8080/api/setup/restore | jq
 # Or use the "Restore Workspace" button in the workspace nav menu.
 ```
 
+## Per-repo queue (sibling change)
+
+Queue items are stored per **repo**, not per pane index. When you
+kill a tmux window and a different one shifts into that index, your
+queue follows the cwd, not the index. The on-disk filename is
+`<session>__<sanitized-repo-path>.jsonl` (matches the backlog
+keying scheme). Existing `<session>_<window>_<pane>.jsonl` files
+are migrated lazily on first access.
+
+If two panes have the same cwd, they share one queue file —
+intentional, matches the backlog model.
+
+See `.claude/plans/queue-by-repo.md` for design notes.
+
 ## Roadmap
 
 This is v1 of the session-restore plan. v2–v6 (multi-layout, team
