@@ -193,8 +193,20 @@ def migrate_pane_to_repo(session: str, pane_id: str, repo_key: str) -> dict:
             out["skipped"].append(suffix)
             continue
         if new.exists():
-            # Both exist — leave alone, the new file is canonical.
-            # (Old file lingers as orphan; could be cleaned up later.)
+            # Both exist — pre-fix, _save_to_disk wrote to the pane-keyed
+            # name while loads read from the repo-keyed name, leaving the
+            # repo-keyed file stale. Use mtime to recover: if the pane-keyed
+            # file was modified more recently, treat the pane-keyed as
+            # authoritative and overwrite the repo-keyed copy. Otherwise
+            # leave the repo-keyed file alone and the old one lingers as
+            # orphan (already-migrated case).
+            try:
+                if old.stat().st_mtime > new.stat().st_mtime:
+                    old.replace(new)
+                    out["moved"].append(f"{old.name} -> {new.name} (recovered, old was newer)")
+                    continue
+            except Exception as e:
+                out["errors"].append(f"{suffix} mtime-recover: {e}")
             out["skipped"].append(suffix)
             continue
         try:
@@ -1161,7 +1173,7 @@ class CommandQueue:
         except Exception as e:
             logger.debug(f"queue diag check failed: {e}")
 
-        save_queue_to_disk(session, items_data, pane_id)
+        save_queue_to_disk(session, items_data, pane_id, repo_key=repo_key)
 
         # Persist the recently-sent cache too. Prune past-TTL entries
         # before writing so the file stays bounded over time.

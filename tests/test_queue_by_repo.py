@@ -96,14 +96,19 @@ def test_migrate_pane_to_repo_is_idempotent(tmp_path, monkeypatch):
     assert second["errors"] == []
 
 
-def test_migrate_skips_when_new_file_already_exists(tmp_path, monkeypatch):
-    """If both old and new exist (unusual, e.g. partial prior migration),
-    leave the new file alone — don't clobber it with the old."""
+def test_migrate_skips_when_new_file_is_newer(tmp_path, monkeypatch):
+    """Both files exist and new is newer — leave new alone, treat old as
+    an orphan from a successful prior migration."""
     monkeypatch.setattr("mobile_terminal.models.QUEUE_DIR", tmp_path)
     (tmp_path / "claude_3_0.jsonl").write_text('{"text":"old"}\n')
     repo_key = repo_key_for_cwd("claude", "/home/me/dev/foo")
     new_path = tmp_path / f"{repo_key}.jsonl"
     new_path.write_text('{"text":"new"}\n')
+    # Force new to be newer
+    import os, time
+    now = time.time()
+    os.utime(tmp_path / "claude_3_0.jsonl", (now - 100, now - 100))
+    os.utime(new_path, (now, now))
 
     out = migrate_pane_to_repo("claude", "3:0", repo_key)
     assert "jsonl" in out["skipped"]
@@ -111,6 +116,34 @@ def test_migrate_skips_when_new_file_already_exists(tmp_path, monkeypatch):
     assert json.loads(new_path.read_text().strip())["text"] == "new"
     # Old file still there (orphan, can be cleaned up later)
     assert (tmp_path / "claude_3_0.jsonl").exists()
+
+
+def test_migrate_recovers_when_old_file_is_newer(tmp_path, monkeypatch):
+    """Recovery path for the v=400-and-earlier _save_to_disk bug:
+    saves went to the pane-keyed file while loads read repo-keyed,
+    so the pane-keyed file accumulated changes that the repo-keyed
+    file never received. When mtime says old > new, treat the
+    pane-keyed file as authoritative and overwrite the repo-keyed
+    copy. Items the user dequeued/sent then stop reappearing."""
+    monkeypatch.setattr("mobile_terminal.models.QUEUE_DIR", tmp_path)
+    (tmp_path / "claude_3_0.jsonl").write_text('{"text":"new authoritative"}\n')
+    repo_key = repo_key_for_cwd("claude", "/home/me/dev/foo")
+    new_path = tmp_path / f"{repo_key}.jsonl"
+    new_path.write_text('{"text":"stale"}\n')
+    # Force old (pane-keyed) to be NEWER than the repo-keyed file
+    import os, time
+    now = time.time()
+    os.utime(new_path, (now - 100, now - 100))
+    os.utime(tmp_path / "claude_3_0.jsonl", (now, now))
+
+    out = migrate_pane_to_repo("claude", "3:0", repo_key)
+    moved_jsonl = [m for m in out["moved"] if m.startswith("claude_3_0.jsonl ->")]
+    assert len(moved_jsonl) == 1
+    assert "recovered" in moved_jsonl[0]
+    # repo-keyed file now holds the recovered (newer) content
+    assert json.loads(new_path.read_text().strip())["text"] == "new authoritative"
+    # Old pane-keyed file is gone (replaced via Path.replace())
+    assert not (tmp_path / "claude_3_0.jsonl").exists()
 
 
 def test_migrate_no_old_files_is_clean_skip(tmp_path, monkeypatch):
