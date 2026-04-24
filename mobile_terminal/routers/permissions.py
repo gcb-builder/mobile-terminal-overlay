@@ -3,7 +3,7 @@ import logging
 from dataclasses import asdict
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
@@ -133,3 +133,96 @@ def register(app: FastAPI, deps):
             app.state._test_permission = None
             return {"perm": perm}
         return {"perm": None}
+
+    # ── Decide endpoint ─────────────────────────────────────────────────
+    # Bridge between the client-side terminal scraper (extractPermissionPrompt)
+    # and the server-side policy engine. The client detects a permission
+    # prompt visually (it's better at parsing Claude's TUI rendering than the
+    # server's regex) and POSTs here. The server runs policy.evaluate, fires
+    # y/n via runtime if allow/deny, writes audit, and returns the decision.
+    # On needs_human the client falls back to showing its own banner.
+    #
+    # Has SIDE EFFECTS (may inject keystrokes). Not read-only — name reflects
+    # that. Dedup window prevents the client scraper and server scanner from
+    # double-firing on the same perm.
+
+    _decide_dedup: dict = {}  # f"{pane}:{tool}:{hash(target)}" -> ts
+    DECIDE_DEDUP_TTL = 30.0
+
+    @app.post("/api/permissions/decide")
+    async def permissions_decide(
+        request: Request,
+        _auth=Depends(deps.verify_token),
+    ):
+        """Run policy on a client-detected permission and fire y/n if allowed."""
+        import time as _time
+        from mobile_terminal.permission_policy import normalize_request
+
+        body = await request.json()
+        tool = (body.get("tool") or "").strip()
+        target = (body.get("target") or "").strip()
+        repo = (body.get("repo") or "").strip()
+        source_pane = (body.get("source_pane") or "").strip()
+
+        if not tool:
+            return JSONResponse({"error": "tool required"}, status_code=400)
+        if not source_pane:
+            return JSONResponse({"error": "source_pane required"}, status_code=400)
+
+        # Dedup: same {pane,tool,target} within TTL → already handled.
+        # Hash the full target so two different `Bash: ls` calls in the same
+        # pane don't collide with each other across time but a re-detect of
+        # the same in-flight perm does.
+        dedup_key = f"{source_pane}:{tool}:{hash(target)}"
+        now = _time.time()
+        # Sweep stale entries occasionally to keep the dict bounded
+        if len(_decide_dedup) > 100:
+            for k, ts in list(_decide_dedup.items()):
+                if now - ts > DECIDE_DEDUP_TTL:
+                    del _decide_dedup[k]
+        last = _decide_dedup.get(dedup_key, 0)
+        if now - last < DECIDE_DEDUP_TTL:
+            return {"decision": "already_handled", "reason": "dedup", "rule_id": None}
+
+        # Build PermissionRequest and evaluate
+        perm = {"tool": tool, "target": target}
+        repo_path = repo or str(deps.get_current_repo_path() or "")
+        req = normalize_request(perm, repo_path)
+        policy = app.state.permission_policy
+        decision = policy.evaluate(req)
+        policy.audit(req, decision)
+
+        # Side-effect: fire y/n if allow/deny. Dedup AFTER firing so a
+        # transient error doesn't poison the key.
+        runtime = app.state.runtime
+        session = app.state.current_session
+        if decision.action == "allow":
+            from mobile_terminal.helpers import get_tmux_target
+            tmux_t = get_tmux_target(session, source_pane) if session else source_pane
+            try:
+                await runtime.send_keys(tmux_t, "y", literal=True)
+                await runtime.send_keys(tmux_t, "Enter")
+                _decide_dedup[dedup_key] = now
+                logger.info(f"[decide] auto-allow {tool} in {source_pane}: {decision.reason}")
+            except Exception as e:
+                logger.warning(f"[decide] send_keys failed for {source_pane}: {e}")
+                return JSONResponse({"error": "send failed"}, status_code=500)
+        elif decision.action == "deny":
+            from mobile_terminal.helpers import get_tmux_target
+            tmux_t = get_tmux_target(session, source_pane) if session else source_pane
+            try:
+                await runtime.send_keys(tmux_t, "n", literal=True)
+                await runtime.send_keys(tmux_t, "Enter")
+                _decide_dedup[dedup_key] = now
+                logger.info(f"[decide] auto-deny {tool} in {source_pane}: {decision.reason}")
+            except Exception as e:
+                logger.warning(f"[decide] send_keys failed for {source_pane}: {e}")
+                return JSONResponse({"error": "send failed"}, status_code=500)
+        # needs_human: do NOT dedup — user may dismiss banner and want a
+        # second chance to be re-prompted on the same pending perm.
+
+        return {
+            "decision": decision.action,  # "allow" | "deny" | "prompt"
+            "reason": decision.reason,
+            "rule_id": decision.rule_id,
+        }

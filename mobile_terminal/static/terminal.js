@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v397 ===');
+console.log('=== TERMINAL.JS v398 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7350,7 +7350,64 @@ function extractPermissionPrompt(terminalContent) {
         target: permTarget,
     };
 
-    showPromptBanner();
+    // Bridge to server policy: ask the server to decide before showing
+    // the banner. If the policy has a matching allow/deny rule (incl.
+    // bypass_hard_guard), the server fires y/n directly and writes audit;
+    // we skip the banner. On needs_human / timeout / error → show banner
+    // (failsafe). Server has its own dedup so a re-detect within 30s
+    // returns already_handled and we still skip.
+    askServerToDecide(pendingPrompt);
+}
+
+async function askServerToDecide(perm) {
+    if (!perm || !perm.tool) {
+        showPromptBanner();
+        return;
+    }
+    const sourcePane = ctx.activeTarget || '';
+    if (!sourcePane) {
+        showPromptBanner();
+        return;
+    }
+    // 1s timeout — keep UX latency tight; banner appears if server is slow.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 1000);
+    try {
+        const resp = await apiFetch('/api/permissions/decide', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                tool: perm.tool,
+                target: perm.target || '',
+                source_pane: sourcePane,
+            }),
+            signal: ctrl.signal,
+        });
+        clearTimeout(timer);
+        if (!resp.ok) { showPromptBanner(); return; }
+        const data = await resp.json();
+        if (data.decision === 'allow' || data.decision === 'already_handled') {
+            // Server fired (or had already fired) — clear the pending prompt
+            // and toast so the user sees what happened.
+            const verb = data.decision === 'allow' ? 'Auto-approved' : 'Already handled';
+            const reason = data.reason ? ` (${data.reason})` : '';
+            try { ctx.showToast(`${verb}${reason}: ${perm.tool}`, 'info', 2500); } catch {}
+            clearPendingPrompt();
+            return;
+        }
+        if (data.decision === 'deny') {
+            try { ctx.showToast(`Auto-denied (${data.reason}): ${perm.tool}`, 'warning', 3000); } catch {}
+            clearPendingPrompt();
+            return;
+        }
+        // needs_human / prompt → fall through to banner
+        showPromptBanner();
+    } catch (e) {
+        clearTimeout(timer);
+        // Timeout, network error, abort — failsafe to banner so user can
+        // still respond manually.
+        showPromptBanner();
+    }
 }
 
 /**
@@ -11552,6 +11609,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=397', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=398', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
