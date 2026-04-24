@@ -306,19 +306,25 @@ def register(app: FastAPI, deps):
                     # Check for permission prompt in terminal. Window must
                     # be generous (-S -50): the box can be 15+ lines and
                     # status indicators above push the question higher.
-                    # Either signal counts: the literal question, or a
-                    # numbered `❯ N.` selector on a single line (anchored
-                    # via re.MULTILINE so the input-box ❯ + a numbered
-                    # list line later in agent prose don't false-match).
-                    # Detector inside check_sync re-confirms before firing.
+                    # Strip box-drawing chars first so `│ ❯ 1. Yes` matches
+                    # the anchored selector regex (Claude wraps the box).
+                    # Either signal counts: a question phrase or a numbered
+                    # selector on a single line. Detector check_sync confirms.
                     try:
                         cap = subprocess.run(
                             ["tmux", "capture-pane", "-p", "-t", tmux_t, "-S", "-50"],
                             capture_output=True, text=True, timeout=2,
                         )
                         pane_text = cap.stdout or ""
-                        has_prompt = "do you want to proceed?" in pane_text.lower()
-                        has_selector = re.search(r'^[ \t]*[❯>][ \t]+\d+\.[ \t]+', pane_text, re.MULTILINE) is not None
+                        stripped = re.sub(r'[│╭╮╰╯─┌┐└┘├┤┬┴┼]', ' ', pane_text)
+                        low = stripped.lower()
+                        has_prompt = (
+                            "do you want to proceed?" in low
+                            or "allow this action?" in low
+                            or "approve this" in low
+                            or "permission to" in low
+                        )
+                        has_selector = re.search(r'^[ \t]*[❯>][ \t]+\d+\.[ \t]+', stripped, re.MULTILINE) is not None
                         if not (has_prompt or has_selector):
                             continue
                     except Exception as e:

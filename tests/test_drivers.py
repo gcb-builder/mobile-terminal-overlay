@@ -32,6 +32,7 @@ from mobile_terminal.drivers.claude import (
     AUTO_COMPACT_FRAC,
     ClaudeDriver,
     _find_unresolved_tool_use,
+    _has_visible_permission_prompt,
     _resolve_context_limit,
 )
 from mobile_terminal.drivers.codex import CodexDriver, find_codex_log_file
@@ -402,6 +403,89 @@ class TestFindUnresolvedToolUse:
 # ---------------------------------------------------------------------------
 # Observation Dataclass
 # ---------------------------------------------------------------------------
+
+class TestVisiblePermissionPromptStrip:
+    """The visible-prompt check used to anchor regex against raw capture
+    text. Claude wraps prompts in box-drawing chars so `│  ❯ 1. Yes`
+    failed to match `^[ \\t]*[❯>]`. The 794:0 PROMPT-DETECTED:
+    Auto-approved ratio in production traced back to this — scanner
+    never fired. After v=405 the function strips box chars first."""
+
+    def _patch(self, monkeypatch, capture_text, title=""):
+        import subprocess
+        def fake_run(cmd, **kw):
+            class R: pass
+            r = R()
+            r.returncode = 0
+            if "display-message" in cmd:
+                r.stdout = title
+            else:
+                r.stdout = capture_text
+            return r
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+    def test_box_wrapped_selector_matches(self, monkeypatch):
+        """`│  ❯ 1. Yes` (box-drawn) is the canonical Claude permission
+        rendering — must be detected."""
+        capture = "\n".join([
+            "╭─ Bash ────────────────────────────────╮",
+            "│  git commit -m \"Fix bug\"              │",
+            "│                                       │",
+            "│  Allow this action?                   │",
+            "│  ❯ 1. Yes                             │",
+            "│    2. Yes, and don't ask again        │",
+            "│    3. Reject                          │",
+            "╰───────────────────────────────────────╯",
+        ])
+        self._patch(monkeypatch, capture)
+        assert _has_visible_permission_prompt("claude:4.0") is True
+
+    def test_unboxed_selector_matches(self, monkeypatch):
+        capture = "\n".join([
+            " Do you want to proceed?",
+            " ❯ 2. Yes, allow reading from gcbbuilder/ from this project",
+            "   1. Yes, just this once",
+            "   3. No",
+        ])
+        self._patch(monkeypatch, capture)
+        assert _has_visible_permission_prompt("claude:2.0") is True
+
+    def test_session_feedback_nag_does_not_match(self, monkeypatch):
+        """The nag uses `1:` not `1.` — must NOT match."""
+        capture = "\n".join([
+            "● How is Claude doing this session? (optional)",
+            "  1: Bad    2: Fine   3: Good   0: Dismiss",
+            "❯",
+        ])
+        self._patch(monkeypatch, capture)
+        assert _has_visible_permission_prompt("claude:2.0") is False
+
+    def test_numbered_prose_does_not_match(self, monkeypatch):
+        """Agent listing options as prose (`  1. temperature=0`) without
+        a `❯` selector must NOT match."""
+        capture = "\n".join([
+            "Possible approaches:",
+            "  1. temperature=0 + seed=N in the VLM request",
+            "  2. Cache VLM scores to disk",
+            "  3. Re-enable prefix caching",
+            "Want me to do that?",
+            "❯ ",  # input box
+        ])
+        self._patch(monkeypatch, capture)
+        assert _has_visible_permission_prompt("claude:3.0") is False
+
+    def test_signal_detection_pending_title_matches(self, monkeypatch):
+        """Older Claude Code sets the pane title — short-circuit on it."""
+        self._patch(monkeypatch, "no prompt visible", title="✳ Signal Detection Pending")
+        assert _has_visible_permission_prompt("claude:2.0") is True
+
+    def test_question_text_alternatives(self, monkeypatch):
+        """Match other question phrases beyond 'do you want to proceed?'."""
+        for q in ["Allow this action?", "Approve this command?", "Permission to write to file?"]:
+            capture = f"Some preamble\n{q}\nNo selector here just text"
+            self._patch(monkeypatch, capture)
+            assert _has_visible_permission_prompt("claude:4.0") is True, f"failed for: {q}"
+
 
 class TestContextLimitAndPct:
     def test_resolve_limit_opus_4_7_is_1m(self):

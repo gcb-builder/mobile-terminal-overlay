@@ -196,6 +196,37 @@ def register(app: FastAPI, deps):
         # transient error doesn't poison the key.
         runtime = app.state.runtime
         session = app.state.current_session
+
+        async def _suppress_other_paths(verb: str):
+            """Tell the rest of the system this perm was just handled.
+
+            - Stamp the scanner's cooldown dict so the 3s scan loop
+              doesn't fire y/n again for the same pane within ~5s.
+            - Push permission_auto to the active client so its scraper
+              suppresses the banner for 5s (_permAutoApprovedAt path).
+            Without this, the user sees a second banner appear seconds
+            after /decide already fired — same prompt still in scrollback,
+            other detectors haven't been told it's resolved.
+            """
+            try:
+                if not hasattr(app.state, "permission_scanner_cooldown"):
+                    app.state.permission_scanner_cooldown = {}
+                app.state.permission_scanner_cooldown[source_pane] = now
+            except Exception as e:
+                logger.debug(f"[decide] scanner-cooldown stamp failed: {e}")
+            try:
+                sink = app.state.active_client
+                if sink is not None:
+                    await deps.send_typed(sink, "permission_auto", {
+                        "decision": verb,
+                        "tool": tool,
+                        "target": target[:80],
+                        "reason": decision.reason,
+                        "pane": source_pane,
+                    }, level="info")
+            except Exception as e:
+                logger.debug(f"[decide] permission_auto emit failed: {e}")
+
         if decision.action == "allow":
             from mobile_terminal.helpers import get_tmux_target
             tmux_t = get_tmux_target(session, source_pane) if session else source_pane
@@ -204,6 +235,7 @@ def register(app: FastAPI, deps):
                 await runtime.send_keys(tmux_t, "Enter")
                 _decide_dedup[dedup_key] = now
                 logger.info(f"[decide] auto-allow {tool} in {source_pane}: {decision.reason}")
+                await _suppress_other_paths("allow")
             except Exception as e:
                 logger.warning(f"[decide] send_keys failed for {source_pane}: {e}")
                 return JSONResponse({"error": "send failed"}, status_code=500)
@@ -215,6 +247,7 @@ def register(app: FastAPI, deps):
                 await runtime.send_keys(tmux_t, "Enter")
                 _decide_dedup[dedup_key] = now
                 logger.info(f"[decide] auto-deny {tool} in {source_pane}: {decision.reason}")
+                await _suppress_other_paths("deny")
             except Exception as e:
                 logger.warning(f"[decide] send_keys failed for {source_pane}: {e}")
                 return JSONResponse({"error": "send failed"}, status_code=500)

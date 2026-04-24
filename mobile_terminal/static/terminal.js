@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v401 ===');
+console.log('=== TERMINAL.JS v406 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7308,16 +7308,64 @@ function extractPermissionPrompt(terminalContent) {
     askServerToDecide(pendingPrompt);
 }
 
+// Per-(pane,tool,target) timestamp of the last /decide POST. The scraper
+// polls roughly once per second and the prompt's promptId hash drifts as
+// Claude TUI re-renders (cursor blink, timestamp tick), so dismissedPrompts
+// alone doesn't suppress repeats reliably. Without this client-side throttle
+// the scraper would fire ~14 POSTs per 19s for the same in-scrollback prompt
+// — server's 30s dedup catches them but the chatter is wasteful.
+const _decideRecentByKey = new Map();
+const _DECIDE_CLIENT_TTL_MS = 3000;
+
+function _decideKey(perm, sourcePane) {
+    return `${sourcePane}|${perm.tool}|${(perm.target || '').slice(0, 80)}`;
+}
+
 async function askServerToDecide(perm) {
-    if (!perm || !perm.tool) {
+    if (!perm) {
         showPromptBanner();
         return;
+    }
+    // Tool extraction is best-effort — for prompts like Claude's
+    // "Contains command_substitution" pre-check, the box header with
+    // the tool name is often outside the captured window or formatted
+    // unexpectedly. Default to "Bash" so the server can still consult
+    // the policy. y is the universal accept key in Claude's TUI, so
+    // even if the prompt is actually for Edit/Write, firing y still
+    // approves it. The rule lookup remains correct for cases where
+    // the tool IS extracted (Edit/Write/Read prompts with proper headers).
+    if (!perm.tool) {
+        perm.tool = 'Bash';
     }
     const sourcePane = ctx.activeTarget || '';
     if (!sourcePane) {
         showPromptBanner();
         return;
     }
+    // Client throttle: at most one /decide call per 3s for the same
+    // (pane, tool, target). Same key shape as the server's dedup so the
+    // mental model lines up. Stops the scraper from spamming the server
+    // every poll while a prompt sits in scrollback.
+    const dkey = _decideKey(perm, sourcePane);
+    const nowMs = Date.now();
+    if (_decideRecentByKey.size > 200) {
+        for (const [k, t] of _decideRecentByKey) {
+            if (nowMs - t > _DECIDE_CLIENT_TTL_MS) _decideRecentByKey.delete(k);
+        }
+    }
+    const lastAt = _decideRecentByKey.get(dkey) || 0;
+    if (nowMs - lastAt < _DECIDE_CLIENT_TTL_MS) {
+        // Recent call for the same prompt — drop the banner without
+        // re-asking. Server already fired (or is firing) the answer.
+        if (perm.id) {
+            if (dismissedPrompts.size > 500) dismissedPrompts.clear();
+            dismissedPrompts.add(perm.id);
+        }
+        clearPendingPrompt();
+        return;
+    }
+    _decideRecentByKey.set(dkey, nowMs);
+
     // 1s timeout — keep UX latency tight; banner appears if server is slow.
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 1000);
@@ -7337,15 +7385,29 @@ async function askServerToDecide(perm) {
         const data = await resp.json();
         if (data.decision === 'allow' || data.decision === 'already_handled') {
             // Server fired (or had already fired) — clear the pending prompt
-            // and toast so the user sees what happened.
-            const verb = data.decision === 'allow' ? 'Auto-approved' : 'Already handled';
-            const reason = data.reason ? ` (${data.reason})` : '';
-            try { ctx.showToast(`${verb}${reason}: ${perm.tool}`, 'info', 2500); } catch {}
+            // and remember the id so the scraper doesn't re-build a banner
+            // for the same prompt while it's still in scrollback. Only toast
+            // on the FIRST fire (allow). already_handled means a subsequent
+            // scraper poll re-detected the same prompt mid-render and hit
+            // the server's 30s dedup — that's the dedup working as intended,
+            // no point spamming the user with a toast each cycle.
+            if (data.decision === 'allow') {
+                const reason = data.reason ? ` (${data.reason})` : '';
+                try { ctx.showToast(`Auto-approved${reason}: ${perm.tool}`, 'info', 2500); } catch {}
+            }
+            if (perm.id) {
+                if (dismissedPrompts.size > 500) dismissedPrompts.clear();
+                dismissedPrompts.add(perm.id);
+            }
             clearPendingPrompt();
             return;
         }
         if (data.decision === 'deny') {
             try { ctx.showToast(`Auto-denied (${data.reason}): ${perm.tool}`, 'warning', 3000); } catch {}
+            if (perm.id) {
+                if (dismissedPrompts.size > 500) dismissedPrompts.clear();
+                dismissedPrompts.add(perm.id);
+            }
             clearPendingPrompt();
             return;
         }
@@ -7569,10 +7631,16 @@ function sendPromptChoice(choice) {
         return;
     }
 
-    // Mark as answered if we have a prompt
+    // Mark as answered if we have a prompt + remember its id so the
+    // terminal scraper doesn't re-build a banner for the same prompt
+    // text the next poll cycle (Claude TUI keeps rendering the prompt
+    // for a moment after we send the answer; without this guard the
+    // banner snaps back as soon as clearPendingPrompt's 1.5s elapses).
     if (pendingPrompt) {
         pendingPrompt.answered = true;
         pendingPrompt.sentChoice = choice;
+        if (dismissedPrompts.size > 500) dismissedPrompts.clear();
+        dismissedPrompts.add(pendingPrompt.id);
     }
 
     // Update button UI to show selected state (without full re-render)
@@ -11558,6 +11626,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=401', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=406', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

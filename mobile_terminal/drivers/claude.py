@@ -11,6 +11,7 @@ Extracts Claude-specific logic from server.py:
 import hashlib
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -498,12 +499,14 @@ def _has_visible_permission_prompt(tmux_target: str) -> bool:
     on slower-rendering hardware.
 
     Either of these visual signals counts as a permission prompt:
-    - the literal "do you want to proceed?" question (Bash/Edit/Write
-      style 3-option boxes)
-    - a `❯ N.` numbered selector (also matches 2-option Yes/No boxes
-      and AskUserQuestion variants where the question text differs).
-    The session-feedback nag uses `1:` not `1.`, so the period in the
-    regex keeps that out.
+    - any of several question text patterns ("do you want to proceed?",
+      "allow this action?", "approve this?", etc.)
+    - a `❯ N.` numbered selector (catches 2-option Yes/No boxes and
+      AskUserQuestion variants where the question text differs).
+    Box-drawing chars (│╭╮╰╯─...) are stripped before matching because
+    Claude wraps the box in `│  ❯ 1. Yes               │`-style lines —
+    without the strip the anchored regex misses the selector entirely.
+    The session-feedback nag uses `1:` not `1.`, so the period kept it out.
     """
     try:
         import subprocess
@@ -518,12 +521,18 @@ def _has_visible_permission_prompt(tmux_target: str) -> bool:
             capture_output=True, text=True, timeout=2,
         )
         pane_text = capture_result.stdout or ""
-        has_prompt = "do you want to proceed?" in pane_text.lower()
-        # Selector must be on a single line: leading ws, then ❯/>, then
-        # space, then digit-period-space. Without this, the input-box ❯
-        # on one line + a numbered list on the next (Claude prose with
-        # "2. Cache..." etc) falsely matches when joined by \n.
-        has_selector = re.search(r"^[ \t]*[❯>][ \t]+\d+\.[ \t]+", pane_text, re.MULTILINE) is not None
+        # Strip box-drawing chars to whitespace so regex anchors line up.
+        stripped = re.sub(r"[│╭╮╰╯─┌┐└┘├┤┬┴┼]", " ", pane_text)
+        low = stripped.lower()
+        has_prompt = (
+            "do you want to proceed?" in low
+            or "allow this action?" in low
+            or "approve this" in low
+            or "permission to" in low
+        )
+        has_selector = re.search(
+            r"^[ \t]*[❯>][ \t]+\d+\.[ \t]+", stripped, re.MULTILINE
+        ) is not None
         return has_prompt or has_selector
     except Exception:
         return False
