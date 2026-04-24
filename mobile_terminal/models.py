@@ -487,6 +487,11 @@ class PermissionRule:
     created_at: float
     created_from: str       # banner | menu | default
     note: Optional[str] = None
+    # Opt-in: when True AND the rule matches, the high-risk hard_guard
+    # in policy.evaluate is bypassed. Use sparingly — only mark trusted
+    # repos where you've accepted that all Bash (including rm -rf, sudo,
+    # git push --force) should auto-approve.
+    bypass_hard_guard: bool = False
 
 
 @dataclass

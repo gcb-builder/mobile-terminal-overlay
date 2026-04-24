@@ -314,104 +314,177 @@ class ClaudePermissionDetector:
 
     def set_log_file(self, path: Path):
         self.log_file = Path(path) if path else None
-        try:
-            self.last_log_size = self.log_file.stat().st_size if self.log_file and self.log_file.exists() else 0
-        except Exception:
-            self.last_log_size = 0
+        # last_log_size kept for backward-compat with callers that still
+        # poke at it; the new check_sync ignores it. State-query semantics
+        # mean we always re-scan the recent tail rather than chase deltas.
+        self.last_log_size = 0
 
     def check_sync(self, session: str, target: str, tmux_target: str) -> Optional[dict]:
-        """Check for pending permission request. Returns payload or None."""
+        """Return the currently-pending permission as {tool, target, id}, or None.
+
+        State query (NOT incremental): walks the recent JSONL tail, finds
+        the most recent assistant tool_use whose tool_use_id has no matching
+        user tool_result, and confirms a permission prompt is visible in
+        tmux. The dedup key is the real tool_use_id, so the same prompt
+        only fires once even across many polls until it's resolved.
+        """
         if not self.log_file or not self.log_file.exists():
             return None
 
+        # mtime/size cache — re-parse only when file changed
         try:
-            current_size = self.log_file.stat().st_size
+            st = self.log_file.stat()
         except Exception:
             return None
-        if current_size <= self.last_log_size:
-            return None
+        cache_key = (st.st_mtime, st.st_size)
+        cached = getattr(self, "_unresolved_cache", None)
+        if cached and cached[0] == cache_key:
+            tool_info = cached[1]
+        else:
+            tool_info = _find_unresolved_tool_use(self.log_file)
+            self._unresolved_cache = (cache_key, tool_info)
 
-        new_text = self._read_new_entries(current_size)
-        self.last_log_size = current_size
-
-        if not new_text:
-            return None
-
-        tool_info = self._extract_last_tool_use(new_text)
         if not tool_info:
+            logger.debug(f"[detector] no unresolved tool_use in {self.log_file.name} (size={st.st_size})")
             return None
 
-        # Confirm Claude is actually waiting for permission approval.
-        # Check 1: pane title (older Claude Code sets "Signal Detection Pending")
-        # Check 2: terminal content contains the permission prompt pattern
-        try:
-            import subprocess
-            title_result = subprocess.run(
-                ["tmux", "display-message", "-p", "-t", tmux_target, "#{pane_title}"],
-                capture_output=True, text=True, timeout=2,
-            )
-            title_ok = "Signal Detection Pending" in (title_result.stdout or "")
-
-            if not title_ok:
-                # Fall back to checking terminal content for permission prompt
-                capture_result = subprocess.run(
-                    ["tmux", "capture-pane", "-p", "-t", tmux_target, "-S", "-20"],
-                    capture_output=True, text=True, timeout=2,
-                )
-                pane_text = capture_result.stdout or ""
-                # Claude Code permission prompt: "Do you want to proceed?" + numbered options with ❯
-                has_prompt = ("Do you want to proceed?" in pane_text
-                              or "do you want to proceed?" in pane_text.lower())
-                has_selector = re.search(r'[❯>]\s*\d+\.', pane_text) is not None
-                if not (has_prompt and has_selector):
-                    return None
-        except Exception:
+        # Confirm Claude is visibly waiting (defends against parser bugs
+        # or a tool_result that hasn't landed in JSONL yet).
+        if not _has_visible_permission_prompt(tmux_target):
+            logger.info(f"[detector] unresolved tool_use {tool_info['id'][:25]} ({tool_info['name']}) but no visible prompt in {tmux_target}")
             return None
 
-        payload_id = f"{tool_info['name']}:{hash(str(tool_info.get('target', '')))}"
+        payload_id = tool_info["id"]
         if payload_id == self.last_sent_id:
+            logger.info(f"[detector] dedup: tool_use {payload_id[:25]} already fired")
             return None
+        logger.info(f"[detector] returning perm: id={payload_id[:25]} name={tool_info['name']} target={tool_info['target'][:60]}")
         self.last_sent_id = payload_id
 
         return {
             "tool": tool_info["name"],
             "target": tool_info.get("target", ""),
-            "context": tool_info.get("context", ""),
+            "context": "",
             "id": payload_id,
         }
 
-    def _read_new_entries(self, current_size):
-        try:
-            with open(self.log_file, 'r') as f:
-                f.seek(self.last_log_size)
-                return f.read()
-        except Exception:
-            return ""
-
-    def _extract_last_tool_use(self, new_text):
-        last_tool = None
-        for line in new_text.strip().split('\n'):
-            if not line.strip():
-                continue
-            try:
-                entry = json.loads(line)
-                if entry.get('type') != 'assistant':
-                    continue
-                content = entry.get('message', {}).get('content', [])
-                if not isinstance(content, list):
-                    continue
-                for block in content:
-                    if isinstance(block, dict) and block.get('type') == 'tool_use':
-                        name = block.get('name', '')
-                        inp = block.get('input', {})
-                        target = inp.get('command') or inp.get('file_path') or inp.get('pattern') or ''
-                        last_tool = {"name": name, "target": str(target)[:200], "context": ""}
-            except json.JSONDecodeError:
-                continue
-        return last_tool
-
     def clear(self):
         self.last_sent_id = None
+        self._unresolved_cache = None
+
+
+def _find_unresolved_tool_use(log_file: Path, max_bytes: int = 1_048_576) -> Optional[dict]:
+    """Scan the last `max_bytes` of a Claude JSONL session log; return the
+    most recent assistant tool_use whose tool_use_id does NOT have a
+    corresponding user tool_result. Returns None if all tool_uses in the
+    window are resolved (or none exist).
+
+    Reads the *tail* of the file (default 1MB). For session logs that
+    routinely fit within this window — i.e., every realistic case — the
+    answer is exact. For pathologically long logs, may miss a tool_use
+    older than the window; in that case, no auto-fire happens, the user
+    gets a push notification, and they tap Allow.
+    """
+    try:
+        fsize = log_file.stat().st_size
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            if fsize > max_bytes:
+                f.seek(fsize - max_bytes)
+                f.readline()  # drop the partial first line
+            text = f.read()
+    except Exception:
+        return None
+
+    tool_uses: dict = {}      # id → {id, name, target, order}
+    resolved: set = set()     # tool_use_ids that have a tool_result
+    order = 0
+
+    for line in text.split("\n"):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        order += 1
+        msg_type = entry.get("type", "")
+        content = entry.get("message", {}).get("content", [])
+        if not isinstance(content, list):
+            continue
+        if msg_type == "assistant":
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                tid = block.get("id", "")
+                if not tid:
+                    continue
+                inp = block.get("input", {}) if isinstance(block.get("input"), dict) else {}
+                target = (
+                    inp.get("command")
+                    or inp.get("file_path")
+                    or inp.get("pattern")
+                    or ""
+                )
+                tool_uses[tid] = {
+                    "id": tid,
+                    "name": block.get("name", ""),
+                    "target": str(target)[:200],
+                    "order": order,
+                }
+        elif msg_type == "user":
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                rid = block.get("tool_use_id", "")
+                if rid:
+                    resolved.add(rid)
+
+    pending = [info for tid, info in tool_uses.items() if tid not in resolved]
+    if not pending:
+        return None
+    pending.sort(key=lambda i: i["order"], reverse=True)
+    return pending[0]
+
+
+def _has_visible_permission_prompt(tmux_target: str) -> bool:
+    """Confirm via tmux that a permission prompt is currently rendered.
+
+    The capture window must be generous: Claude's permission box for Bash
+    can run 15+ lines (header + command + question + options + footer) and
+    the agent's status indicator above ("Embellishing… 3m 27s…") pushes
+    the question line further up. -S -50 keeps the question in view even
+    on slower-rendering hardware.
+
+    Either of these visual signals counts as a permission prompt:
+    - the literal "do you want to proceed?" question (Bash/Edit/Write
+      style 3-option boxes)
+    - a `❯ N.` numbered selector (also matches 2-option Yes/No boxes
+      and AskUserQuestion variants where the question text differs).
+    The session-feedback nag uses `1:` not `1.`, so the period in the
+    regex keeps that out.
+    """
+    try:
+        import subprocess
+        title_result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", tmux_target, "#{pane_title}"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if "Signal Detection Pending" in (title_result.stdout or ""):
+            return True
+        capture_result = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", tmux_target, "-S", "-50"],
+            capture_output=True, text=True, timeout=2,
+        )
+        pane_text = capture_result.stdout or ""
+        has_prompt = "do you want to proceed?" in pane_text.lower()
+        # Selector must be on a single line: leading ws, then ❯/>, then
+        # space, then digit-period-space. Without this, the input-box ❯
+        # on one line + a numbered list on the next (Claude prose with
+        # "2. Cache..." etc) falsely matches when joined by \n.
+        has_selector = re.search(r"^[ \t]*[❯>][ \t]+\d+\.[ \t]+", pane_text, re.MULTILINE) is not None
+        return has_prompt or has_selector
+    except Exception:
+        return False
 
 
 class BacklogCandidateDetector:

@@ -163,15 +163,23 @@ class PermissionPolicy:
         if self.mode == "manual":
             return PermissionDecision("prompt", "mode_manual", None, req.risk)
 
-        # 2. Hard safety guard
-        if req.risk == "high" and self.mode != "unrestricted":
-            return PermissionDecision("prompt", "hard_guard", None, req.risk)
-
-        # 3. Deny rules (most specific first)
+        # 2. Deny rules (most specific first) — always honored, even
+        # before hard_guard (deny wins regardless of risk).
         for rule in self._match_rules(req, action="deny"):
             return PermissionDecision("deny", f"{rule.scope}_rule", rule.id, req.risk)
 
-        # 4. Allow rules (most specific first)
+        # 3. Allow rules with hard_guard bypass — explicit opt-in by the
+        # user when adding the rule. Lets per-repo "trust this repo for
+        # all Bash" rules cover high-risk commands too. Without this an
+        # allow rule for trusted dev repos was ignored on rm -rf, sudo,
+        # git push --force etc., forcing a banner tap every time.
+        if req.risk == "high" and self.mode != "unrestricted":
+            for rule in self._match_rules(req, action="allow"):
+                if rule.bypass_hard_guard:
+                    return PermissionDecision("allow", f"{rule.scope}_rule", rule.id, req.risk)
+            return PermissionDecision("prompt", "hard_guard", None, req.risk)
+
+        # 4. Allow rules (most specific first) — non-high-risk path.
         for rule in self._match_rules(req, action="allow"):
             return PermissionDecision("allow", f"{rule.scope}_rule", rule.id, req.risk)
 
@@ -204,7 +212,8 @@ class PermissionPolicy:
     def add_rule(self, tool: str, matcher_type: str, matcher: str,
                  scope: str, scope_value: Optional[str], action: str,
                  created_from: str = "banner",
-                 note: Optional[str] = None) -> PermissionRule:
+                 note: Optional[str] = None,
+                 bypass_hard_guard: bool = False) -> PermissionRule:
         """Create and persist a new rule. Deduplicates against existing rules."""
         # Normalize empty matcher to tool_only
         if not matcher:
@@ -218,7 +227,18 @@ class PermissionPolicy:
                     and existing.matcher == matcher and existing.scope == scope
                     and existing.scope_value == scope_value
                     and existing.action == action):
-                logger.debug("Duplicate rule skipped: %s %s:%s", tool, matcher_type, matcher)
+                # Upgrade-only: if the new request asks to bypass hard_guard
+                # but the existing rule doesn't, flip the flag and persist.
+                # Never downgrade — once a user explicitly trusted a repo,
+                # don't silently revoke it on a later vanilla "Allow" click.
+                if bypass_hard_guard and not existing.bypass_hard_guard:
+                    existing.bypass_hard_guard = True
+                    if scope != "session":
+                        self.save()
+                    logger.info("Upgraded rule to bypass_hard_guard: %s %s:%s in %s",
+                                tool, matcher_type, matcher, scope_value)
+                else:
+                    logger.debug("Duplicate rule skipped: %s %s:%s", tool, matcher_type, matcher)
                 return existing
 
         # Also skip command/path rules if a broader tool_only rule already exists
@@ -243,6 +263,7 @@ class PermissionPolicy:
             created_at=time.time(),
             created_from=created_from,
             note=note,
+            bypass_hard_guard=bypass_hard_guard,
         )
         if scope == "session":
             self._session_rules.append(rule)
@@ -300,6 +321,7 @@ class PermissionPolicy:
                         created_at=rd.get("created_at", 0),
                         created_from=rd.get("created_from", "menu"),
                         note=rd.get("note"),
+                        bypass_hard_guard=rd.get("bypass_hard_guard", False),
                     ))
                 except (KeyError, TypeError) as e:
                     logger.warning("Skipping invalid permission rule: %s", e)

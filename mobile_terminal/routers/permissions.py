@@ -33,6 +33,7 @@ def register(app: FastAPI, deps):
         action: str = Query("allow"),
         created_from: str = Query("banner"),
         note: str = Query(""),
+        bypass_hard_guard: bool = Query(False),
         _auth=Depends(deps.verify_token),
     ):
         """Create a new permission rule."""
@@ -52,6 +53,7 @@ def register(app: FastAPI, deps):
             action=action,
             created_from=created_from,
             note=note or None,
+            bypass_hard_guard=bypass_hard_guard,
         )
         return {"status": "ok", "rule": asdict(rule)}
 

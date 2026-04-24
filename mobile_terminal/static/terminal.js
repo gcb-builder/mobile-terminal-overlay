@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v391 ===');
+console.log('=== TERMINAL.JS v397 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -10097,6 +10097,12 @@ async function createPermissionRule(perm, scope) {
         }
     }
     const hasMatcher = isCommand ? !!baseCmd : !!pathTarget;
+    // Per-repo "Always allow" means *literally always* for that repo —
+    // including high-risk Bash like rm -rf, sudo, git push --force. The
+    // server-side hard_guard otherwise re-prompts on those even with a
+    // matching allow rule, which defeats the user's stated intent. Global
+    // scope keeps hard_guard on (broader blast radius).
+    const bypassHardGuard = (scope === 'repo');
     const params = new URLSearchParams({
         tool,
         matcher_type: hasMatcher ? (isCommand ? 'command' : 'path') : 'tool_only',
@@ -10104,6 +10110,7 @@ async function createPermissionRule(perm, scope) {
         scope,
         scope_value: scope === 'repo' ? (perm.repo || '') : '',
         action: 'allow',
+        bypass_hard_guard: bypassHardGuard ? 'true' : 'false',
         created_from: 'banner',
         token: ctx.token,
     });
@@ -11545,6 +11552,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=391', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=397', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

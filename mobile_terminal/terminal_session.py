@@ -36,6 +36,7 @@ from uuid import uuid4
 
 from mobile_terminal.helpers import (
     find_utf8_boundary,
+    get_project_id,
     get_tmux_target,
     strip_ansi,
 )
@@ -247,6 +248,21 @@ async def tail_sender(state: TerminalSessionState, app, deps) -> None:
                     detector = app.state.permission_detector
                     session = app.state.current_session
                     target = app.state.active_target
+                    # Re-bind the singleton detector to the ACTIVE pane's
+                    # log file every check. Previously, the singleton was
+                    # hijacked by whichever pane wrote most recently
+                    # (logs.py:monitor_log_file_for_target), so banner
+                    # detection silently looked at the wrong pane → flaky
+                    # banners on multi-pane sessions.
+                    detect_fn = getattr(app.state, '_detect_target_log_file', None)
+                    if session and target and detect_fn:
+                        from pathlib import Path as _Path
+                        claude_dir = _Path.home() / ".claude" / "projects" / get_project_id(deps.get_current_repo_path())
+                        if claude_dir.exists():
+                            active_log = detect_fn(target, session, claude_dir)
+                            if active_log and (not detector.log_file or detector.log_file != active_log):
+                                detector.set_log_file(active_log)
+                                detector.last_sent_id = None  # fresh pane = fresh dedup
                     if session and detector.log_file:
                         tmux_t = get_tmux_target(session, target)
                         perm = await asyncio.get_event_loop().run_in_executor(

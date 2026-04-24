@@ -28,7 +28,7 @@ from mobile_terminal.drivers.base import (
     tail_jsonl,
     find_claude_log_file,
 )
-from mobile_terminal.drivers.claude import ClaudeDriver
+from mobile_terminal.drivers.claude import ClaudeDriver, _find_unresolved_tool_use
 from mobile_terminal.drivers.codex import CodexDriver, find_codex_log_file
 from mobile_terminal.drivers.gemini import GeminiDriver, _extract_title_detail
 from mobile_terminal.drivers.generic import GenericDriver
@@ -259,6 +259,139 @@ class TestGenericPermissionDetection:
         ctx._pane_snapshot = "Confirm deletion? (yes/no)\n"
         driver.detect_permission_wait(ctx, obs)
         assert obs.waiting_reason == "permission"
+
+
+# ---------------------------------------------------------------------------
+# _find_unresolved_tool_use — state-query for "is permission pending now?"
+# ---------------------------------------------------------------------------
+
+def _claude_tool_use(tool_use_id: str, name: str, target_input: dict) -> str:
+    """Build an assistant entry that emits a tool_use with a real id."""
+    return json.dumps({
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "id": tool_use_id, "name": name, "input": target_input}
+            ]
+        },
+    })
+
+
+def _claude_tool_result(tool_use_id: str, content: str = "ok") -> str:
+    """Build a user entry that resolves a tool_use."""
+    return json.dumps({
+        "type": "user",
+        "message": {
+            "content": [
+                {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
+            ]
+        },
+    })
+
+
+class TestFindUnresolvedToolUse:
+    def test_returns_none_for_missing_file(self, tmp_path):
+        assert _find_unresolved_tool_use(tmp_path / "nonexistent.jsonl") is None
+
+    def test_returns_none_for_empty_file(self, tmp_path):
+        path = tmp_path / "empty.jsonl"
+        path.write_text("")
+        assert _find_unresolved_tool_use(path) is None
+
+    def test_all_resolved_returns_none(self, tmp_path):
+        path = _write_jsonl(tmp_path, [
+            _claude_tool_use("toolu_a", "Bash", {"command": "ls"}),
+            _claude_tool_result("toolu_a"),
+            _claude_tool_use("toolu_b", "Read", {"file_path": "/x"}),
+            _claude_tool_result("toolu_b"),
+        ])
+        assert _find_unresolved_tool_use(path) is None
+
+    def test_returns_most_recent_unresolved(self, tmp_path):
+        """Most recent unresolved tool_use wins, even if older ones are also unresolved."""
+        path = _write_jsonl(tmp_path, [
+            _claude_tool_use("toolu_old", "Read", {"file_path": "/x"}),
+            # toolu_old never gets a result (unusual but possible)
+            _claude_tool_use("toolu_new", "Bash", {"command": "rm -rf /tmp/x"}),
+            # toolu_new also unresolved (currently waiting on permission)
+        ])
+        result = _find_unresolved_tool_use(path)
+        assert result is not None
+        assert result["id"] == "toolu_new"
+        assert result["name"] == "Bash"
+        assert result["target"] == "rm -rf /tmp/x"
+
+    def test_resolved_then_pending(self, tmp_path):
+        """The realistic case: prior tools resolved, latest one pending."""
+        path = _write_jsonl(tmp_path, [
+            _claude_tool_use("toolu_1", "Read", {"file_path": "/a"}),
+            _claude_tool_result("toolu_1"),
+            _claude_tool_use("toolu_2", "Bash", {"command": "git status"}),
+            _claude_tool_result("toolu_2"),
+            _claude_tool_use("toolu_3", "Bash", {"command": "git push"}),
+            # toolu_3 unresolved → pending permission
+        ])
+        result = _find_unresolved_tool_use(path)
+        assert result is not None
+        assert result["id"] == "toolu_3"
+        assert result["name"] == "Bash"
+        assert result["target"] == "git push"
+
+    def test_skips_corrupt_lines(self, tmp_path):
+        path = tmp_path / "log.jsonl"
+        path.write_text(
+            _claude_tool_use("toolu_1", "Bash", {"command": "ls"}) + "\n"
+            + "this is not valid json\n"
+            + _claude_tool_use("toolu_2", "Bash", {"command": "pwd"}) + "\n"
+        )
+        result = _find_unresolved_tool_use(path)
+        assert result is not None
+        assert result["id"] == "toolu_2"  # most recent valid
+
+    def test_tool_use_without_id_is_ignored(self, tmp_path):
+        """Defensive: tool_use entries missing the id field can't be tracked."""
+        no_id_entry = json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "x"}}]
+            },
+        })
+        path = tmp_path / "log.jsonl"
+        path.write_text(no_id_entry + "\n")
+        assert _find_unresolved_tool_use(path) is None
+
+    def test_uses_file_path_when_no_command(self, tmp_path):
+        path = _write_jsonl(tmp_path, [
+            _claude_tool_use("toolu_e", "Edit", {"file_path": "/foo/bar.py"}),
+        ])
+        result = _find_unresolved_tool_use(path)
+        assert result is not None
+        assert result["target"] == "/foo/bar.py"
+
+    def test_truncates_long_target(self, tmp_path):
+        long_cmd = "echo " + "x" * 500
+        path = _write_jsonl(tmp_path, [
+            _claude_tool_use("toolu_l", "Bash", {"command": long_cmd}),
+        ])
+        result = _find_unresolved_tool_use(path)
+        assert result is not None
+        assert len(result["target"]) <= 200
+
+    def test_reads_only_tail_of_huge_file(self, tmp_path):
+        """File >max_bytes — we must still find the tail's most recent unresolved."""
+        # Pad with ~50KB of resolved entries, then add unresolved at end.
+        padding = "\n".join(
+            _claude_tool_use(f"old_{i}", "Read", {"file_path": "/p"}) + "\n"
+            + _claude_tool_result(f"old_{i}")
+            for i in range(200)
+        )
+        tail = _claude_tool_use("toolu_tail", "Bash", {"command": "deploy"})
+        path = tmp_path / "big.jsonl"
+        path.write_text(padding + "\n" + tail + "\n")
+        # Tight max_bytes to force tail-only read
+        result = _find_unresolved_tool_use(path, max_bytes=2048)
+        assert result is not None
+        assert result["id"] == "toolu_tail"
 
 
 # ---------------------------------------------------------------------------

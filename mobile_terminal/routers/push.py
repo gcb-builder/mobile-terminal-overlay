@@ -303,16 +303,23 @@ def register(app: FastAPI, deps):
                     if time.time() - last_approved.get(target_id, 0) < 5:
                         continue
 
-                    # Check for permission prompt in terminal
+                    # Check for permission prompt in terminal. Window must
+                    # be generous (-S -50): the box can be 15+ lines and
+                    # status indicators above push the question higher.
+                    # Either signal counts: the literal question, or a
+                    # numbered `❯ N.` selector on a single line (anchored
+                    # via re.MULTILINE so the input-box ❯ + a numbered
+                    # list line later in agent prose don't false-match).
+                    # Detector inside check_sync re-confirms before firing.
                     try:
                         cap = subprocess.run(
-                            ["tmux", "capture-pane", "-p", "-t", tmux_t, "-S", "-15"],
+                            ["tmux", "capture-pane", "-p", "-t", tmux_t, "-S", "-50"],
                             capture_output=True, text=True, timeout=2,
                         )
                         pane_text = cap.stdout or ""
                         has_prompt = "do you want to proceed?" in pane_text.lower()
-                        has_selector = re.search(r'[❯>]\s*\d+\.', pane_text) is not None
-                        if not (has_prompt and has_selector):
+                        has_selector = re.search(r'^[ \t]*[❯>][ \t]+\d+\.[ \t]+', pane_text, re.MULTILINE) is not None
+                        if not (has_prompt or has_selector):
                             continue
                     except Exception as e:
                         logger.debug(f"[permission_scanner] capture error {target_id}: {e}")
@@ -356,39 +363,12 @@ def register(app: FastAPI, deps):
                             logger.info(f"[permission_scanner] no log file found for {target_id}")
                             continue
 
-                    # Extract tool info from JSONL
+                    # check_sync is now a state query: returns the
+                    # currently-unresolved tool_use (if any) regardless of
+                    # whether JSONL grew since last call. Internal mtime/
+                    # size cache keeps this cheap on no-op polls.
                     perm = det.check_sync(session, target_id, tmux_t)
                     if not perm:
-                        # Re-scan recent entries with fresh detector. Inherit
-                        # det.last_sent_id so the rescan can dedup against the
-                        # permission we already answered — otherwise this path
-                        # re-fires y on the same tool_use after the 5s cooldown
-                        # whenever JSONL hasn't grown (i.e. agent went idle).
-                        det2 = ClaudePermissionDetector()
-                        det2.set_log_file(det.log_file)
-                        det2.last_sent_id = det.last_sent_id
-                        try:
-                            fsize = det.log_file.stat().st_size
-                            det2.last_log_size = max(0, fsize - 10240)
-                        except Exception:
-                            pass
-                        perm = det2.check_sync(session, target_id, tmux_t)
-                        if perm:
-                            det.last_log_size = det2.last_log_size
-                            det.last_sent_id = det2.last_sent_id
-
-                    if not perm:
-                        # JSONL says no unresolved tool_use right now — even
-                        # though capture-pane shows prompt-shaped text. The
-                        # prior synthesize-from-terminal fallback fired y
-                        # here based on visual heuristics alone, which is
-                        # how stray y's landed after the agent had moved
-                        # on (TUI buffer still showed an answered prompt).
-                        # The only authoritative "Claude is blocked on
-                        # permission" signal is JSONL; without it, refuse
-                        # to send keystrokes. If JSONL is genuinely broken,
-                        # the push-notification path will still fire and
-                        # the user can tap Allow.
                         logger.info(
                             f"[permission_scanner] JSONL has no unresolved perm "
                             f"for {target_id} — skipping auto-fire (capture-pattern only)"
