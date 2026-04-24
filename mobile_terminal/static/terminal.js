@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v398 ===');
+console.log('=== TERMINAL.JS v399 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -868,9 +868,6 @@ async function refreshActivePrompt(signal) {
         // Strip ANSI codes
         let content = stripAnsi(data.content);
 
-        // Extract context usage before cleaning strips it
-        extractContextUsage(content);
-
         // Detect permission prompts from RAW terminal content (before cleaning
         // strips box-drawing chars that contain the tool name)
         extractPermissionPrompt(content);
@@ -921,62 +918,14 @@ function stopActivePrompt() {
     }
 }
 
-/**
- * Extract context usage from Claude Code's status bar.
- * Looks for patterns like "XX% context left" or "context left until auto-compact".
- */
+// Context pill is driven solely by /api/status/phase (updateContextFromBackend).
+// A previous extractContextUsage() also scraped Claude TUI for "X% context
+// left" patterns and updated the same pill — but Claude's TUI value is
+// computed against the auto-compact threshold (~80–90% of window) while the
+// backend uses the raw window limit, so the two pollers disagreed and the
+// pill flickered. Backend is the single source of truth now.
 let lastContextPct = -1;
 let contextAlertSent = false;
-
-function extractContextUsage(content) {
-    const pill = document.getElementById('contextPill');
-    if (!pill) return;
-
-    // Claude Code shows: "XX% context left until auto-compact" or similar
-    // Also: "Context left until auto-compact: XX%"
-    const patterns = [
-        /(\d+)%\s*context\s*left/i,
-        /context\s*left[^:]*?:\s*(\d+)%/i,
-        /(\d+)%\s*remaining/i,
-    ];
-
-    let remaining = -1;
-    for (const pat of patterns) {
-        const m = content.match(pat);
-        if (m) {
-            remaining = parseInt(m[1], 10);
-            break;
-        }
-    }
-
-    if (remaining < 0 || remaining > 100) {
-        // No context indicator found — hide pill if agent not running
-        if (lastContextPct < 0) pill.classList.add('hidden');
-        return;
-    }
-
-    // Avoid unnecessary DOM updates
-    if (remaining === lastContextPct) return;
-    lastContextPct = remaining;
-
-    const used = 100 - remaining;
-    pill.textContent = `ctx ${remaining}%`;
-    pill.classList.remove('hidden', 'ctx-ok', 'ctx-warn', 'ctx-critical');
-
-    if (remaining > 30) {
-        pill.classList.add('ctx-ok');
-    } else if (remaining > 15) {
-        pill.classList.add('ctx-warn');
-    } else {
-        pill.classList.add('ctx-critical');
-    }
-
-    // Toast warning at 15% remaining (once per session)
-    if (remaining <= 15 && !contextAlertSent) {
-        contextAlertSent = true;
-        showToast(`Context low: ${remaining}% remaining`, 'warning', 5000);
-    }
-}
 
 /**
  * Update context pill from backend /api/status/phase data.
@@ -11609,6 +11558,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=398', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=399', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
