@@ -32,6 +32,32 @@ _phase_cache: dict = {"log_path": "", "mtime": 0.0, "size": 0, "result": None}
 # Team phase cache: key → {mtime, size, result} — per-pane caching
 _team_phase_cache: dict = {}
 
+# Per-model context window. Substring match against the JSONL `model` field
+# from the latest assistant entry (e.g. "claude-opus-4-7-20251015").
+# Order matters — first match wins, so put more specific keys first.
+_MODEL_CONTEXT_LIMITS = [
+    ("opus-4-7", 1_000_000),     # 1M context (long-context beta)
+    ("opus-4",   200_000),
+    ("sonnet-4", 200_000),
+    ("haiku-4",  200_000),
+]
+
+# Auto-compact triggers around this fraction of the raw context window.
+# Claude Code's TUI "X% context left until auto-compact" indicator is also
+# computed against this threshold, so the MTO pill matches what the user
+# sees in Claude when its indicator is visible.
+AUTO_COMPACT_FRAC = 0.85
+
+
+def _resolve_context_limit(model_name: str, fallback: int) -> int:
+    """Return the context window size for a given Claude model string."""
+    if not model_name:
+        return fallback
+    for key, limit in _MODEL_CONTEXT_LIMITS:
+        if key in model_name:
+            return limit
+    return fallback
+
 
 class ClaudeDriver(BaseAgentDriver):
     """Driver for Claude Code CLI agent."""
@@ -39,6 +65,8 @@ class ClaudeDriver(BaseAgentDriver):
     _agent_id = "claude"
     _display_name = "Claude"
     _process_name = "claude"
+    # Default for older / unknown models. Model-specific overrides in
+    # _MODEL_CONTEXT_LIMITS below.
     _context_limit = 200_000
 
     def find_log_file(self, repo_path: Path) -> Optional[Path]:
@@ -96,14 +124,22 @@ class ClaudeDriver(BaseAgentDriver):
         if log_file:
             self._parse_phase_and_permission(ctx, obs, log_file)
 
-        # 6. Compute context percentage
-        # Claude Code can extend context to 1M; bump limit when usage exceeds 200k
+        # 6. Compute context percentage against the auto-compact threshold.
+        # The pill in the UI reads context_pct; clients want "X% used vs.
+        # the point where Claude starts auto-compacting" rather than raw
+        # window usage, because auto-compact is the actionable boundary
+        # (history gets summarized/dropped). Push notifications also fire
+        # on this metric so warnings come BEFORE auto-compact rather than
+        # after.
         if obs.context_used is not None:
-            limit = self._context_limit
-            if obs.context_used > limit * 0.95:
-                limit = 1_000_000
+            model = getattr(obs, "_claude_model", "") or ""
+            limit = _resolve_context_limit(model, self._context_limit)
             obs.context_limit = limit
-            obs.context_pct = min(round((obs.context_used / limit) * 100, 1), 100.0)
+            compact_threshold = limit * AUTO_COMPACT_FRAC
+            obs.context_pct = min(
+                round((obs.context_used / compact_threshold) * 100, 1),
+                100.0,
+            )
 
         return obs
 
@@ -151,6 +187,7 @@ class ClaudeDriver(BaseAgentDriver):
             "permission_tool": None,
             "permission_target": None,
             "context_used": None,
+            "model": "",
         }
 
         # Check pane_title for signal detection
@@ -175,7 +212,7 @@ class ClaudeDriver(BaseAgentDriver):
             if msg_type != "assistant":
                 continue
 
-            # Extract token usage from most recent assistant entry
+            # Extract token usage + model from most recent assistant entry
             if result["context_used"] is None:
                 usage = msg.get("usage", {})
                 if usage:
@@ -185,6 +222,8 @@ class ClaudeDriver(BaseAgentDriver):
                              + usage.get("output_tokens", 0))
                     if total > 0:
                         result["context_used"] = total
+                        if not result["model"]:
+                            result["model"] = msg.get("model", "")
 
             content = msg.get("content", [])
             if isinstance(content, str) or not isinstance(content, list):
@@ -298,6 +337,9 @@ class ClaudeDriver(BaseAgentDriver):
         obs.permission_tool = result.get("permission_tool")
         obs.permission_target = result.get("permission_target")
         obs.context_used = result.get("context_used")
+        # Stash the parsed model on a private attr so observe() can use
+        # it when picking the per-model context limit (avoids re-parsing).
+        obs._claude_model = result.get("model", "")
 
 
 class ClaudePermissionDetector:

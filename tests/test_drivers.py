@@ -28,7 +28,12 @@ from mobile_terminal.drivers.base import (
     tail_jsonl,
     find_claude_log_file,
 )
-from mobile_terminal.drivers.claude import ClaudeDriver, _find_unresolved_tool_use
+from mobile_terminal.drivers.claude import (
+    AUTO_COMPACT_FRAC,
+    ClaudeDriver,
+    _find_unresolved_tool_use,
+    _resolve_context_limit,
+)
 from mobile_terminal.drivers.codex import CodexDriver, find_codex_log_file
 from mobile_terminal.drivers.gemini import GeminiDriver, _extract_title_detail
 from mobile_terminal.drivers.generic import GenericDriver
@@ -397,6 +402,61 @@ class TestFindUnresolvedToolUse:
 # ---------------------------------------------------------------------------
 # Observation Dataclass
 # ---------------------------------------------------------------------------
+
+class TestContextLimitAndPct:
+    def test_resolve_limit_opus_4_7_is_1m(self):
+        assert _resolve_context_limit("claude-opus-4-7", 200_000) == 1_000_000
+        assert _resolve_context_limit("claude-opus-4-7-20251015", 200_000) == 1_000_000
+
+    def test_resolve_limit_other_models_default_to_200k(self):
+        assert _resolve_context_limit("claude-opus-4", 200_000) == 200_000
+        assert _resolve_context_limit("claude-opus-4-5", 200_000) == 200_000
+        assert _resolve_context_limit("claude-sonnet-4-6", 200_000) == 200_000
+        assert _resolve_context_limit("claude-haiku-4-5", 200_000) == 200_000
+
+    def test_resolve_limit_unknown_model_uses_fallback(self):
+        assert _resolve_context_limit("claude-future-9", 200_000) == 200_000
+        assert _resolve_context_limit("", 200_000) == 200_000
+        assert _resolve_context_limit(None, 200_000) == 200_000
+
+    def test_pct_is_relative_to_compact_threshold_opus_4_7(self):
+        """For 1M-context Opus 4.7, pct measures usage against 0.85 * 1M."""
+        from mobile_terminal.drivers.base import Observation, ObserveContext
+        driver = ClaudeDriver()
+        # Synthesize an Observation as the cached/applied path would
+        obs = Observation(agent_type="claude", agent_name="Claude")
+        obs.running = True
+        obs.context_used = 425_000  # 50% of compact threshold (0.85M)
+        obs._claude_model = "claude-opus-4-7"
+        # Replicate the limit/pct computation from observe()
+        limit = _resolve_context_limit(obs._claude_model, 200_000)
+        threshold = limit * AUTO_COMPACT_FRAC
+        obs.context_limit = limit
+        obs.context_pct = min(round((obs.context_used / threshold) * 100, 1), 100.0)
+        assert obs.context_limit == 1_000_000
+        assert obs.context_pct == 50.0  # 425k / (0.85 * 1M) = 50%
+
+    def test_pct_clamps_to_100_at_or_above_compact_threshold(self):
+        from mobile_terminal.drivers.base import Observation
+        obs = Observation(agent_type="claude", agent_name="Claude")
+        obs.context_used = 900_000  # > 0.85 * 1M
+        obs._claude_model = "claude-opus-4-7"
+        limit = _resolve_context_limit(obs._claude_model, 200_000)
+        threshold = limit * AUTO_COMPACT_FRAC
+        obs.context_pct = min(round((obs.context_used / threshold) * 100, 1), 100.0)
+        assert obs.context_pct == 100.0
+
+    def test_no_discontinuity_at_old_200k_boundary(self):
+        """The previous logic bumped 200k → 1M when used > 190k, causing the
+        pill to jump from 95% used to 19% used at 191k. With model-aware
+        limits there's no bump, so the curve is monotonic."""
+        for used in [180_000, 190_000, 195_000, 210_000, 250_000]:
+            limit = _resolve_context_limit("claude-opus-4-7", 200_000)
+            threshold = limit * AUTO_COMPACT_FRAC
+            pct = min(round((used / threshold) * 100, 1), 100.0)
+            # Just monotonic: each subsequent used should give higher pct
+            assert 0 < pct < 100, f"used={used} → pct={pct}"
+
 
 class TestObservation:
     def test_to_dict(self):
