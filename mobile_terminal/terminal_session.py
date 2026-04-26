@@ -81,6 +81,127 @@ class TerminalSessionState:
 # ── Shared runners ─────────────────────────────────────────────────────
 
 
+def ensure_central_reader(app) -> None:
+    """Spawn central_pty_reader if not already running.
+
+    Idempotent — call from anywhere that just spawned the PTY (WS/SSE
+    connect, repo switch, etc.). Cancels stale tasks (PTY died, task
+    exited) and creates a fresh one.
+    """
+    existing = getattr(app.state, "central_pty_task", None)
+    if existing is not None and not existing.done():
+        return  # already running
+    app.state._central_reader_stop = False
+    app.state.central_pty_task = asyncio.create_task(
+        central_pty_reader(app), name="central_pty_reader"
+    )
+    logger.info("[central_pty_reader] spawned")
+
+
+async def central_pty_reader(app) -> None:
+    """C1: single PTY reader that broadcasts to all registered sinks.
+
+    Replaces the per-handler `read_from_terminal` which spawned a
+    separate task per WS/SSE connection — fine under the kicker (one
+    handler at a time) but races on the PTY fd if multiple handlers
+    coexist (the multi-sink target). This task lives on app.state and
+    runs for the PTY's lifetime; on PTY death it exits and the spawn
+    helper recreates it after the next PTY spawn.
+
+    Per-sink filtering: full-mode sinks get raw bytes via
+    `sink_registry.broadcast(FRAME_OUTPUT, ...)`; tail-mode sinks
+    receive compact JSON via the per-handler `tail_sender`. The writer
+    (`_sink_writer` in transport.py) drops FRAME_OUTPUT for tail-mode
+    sinks at delivery time.
+
+    Buffers (output_buffer, recent_buffer, pty_batch, pane_buffers)
+    live on app.state — they're shared across all sinks now, not
+    per-handler.
+    """
+    from mobile_terminal.transport import FRAME_OUTPUT
+
+    runtime = app.state.runtime
+    loop = asyncio.get_event_loop()
+
+    while not getattr(app.state, "_central_reader_stop", False):
+        try:
+            data = await loop.run_in_executor(
+                None, lambda: runtime.pty_read(4096)
+            )
+            if not data:
+                continue  # 1s select timeout, no data — loop
+
+            # Output side bookkeeping (used by quiet-wait / queue drain).
+            app.state.input_queue.update_output_ts()
+
+            # Persistent ring buffer for full-mode reconnect catchup.
+            app.state.output_buffer.write(data)
+
+            # Per-pane delta buffer (since=N reconnects).
+            try:
+                pbuf = get_or_create_pane_buffer(
+                    app.state.pane_buffers,
+                    app.state.current_session,
+                    app.state.active_target,
+                )
+                pbuf.append(data)
+            except Exception as e:
+                logger.debug(f"pane buffer append failed: {e}")
+
+            # Recent buffer for tail extraction. Now app-state-shared
+            # (was per-handler in pre-C1 read_from_terminal). All
+            # tail_sender instances read from the same buffer.
+            recent = app.state.recent_buffer
+            recent.extend(data)
+            if len(recent) > RECENT_BUFFER_MAX:
+                app.state.recent_buffer = recent[-RECENT_BUFFER_MAX:]
+
+            # Stage into pty_batch (also app-state). On flush interval,
+            # broadcast bytes to all sinks via FRAME_OUTPUT — full-mode
+            # writers send them, tail-mode writers drop (handled in
+            # _sink_writer).
+            batch = app.state.pty_batch
+            batch.extend(data)
+            if len(batch) > PTY_FLUSH_MAX_BYTES * 4:
+                # Drop oldest if we're falling behind; respect UTF-8.
+                keep_from = len(batch) - PTY_FLUSH_MAX_BYTES
+                while keep_from < len(batch) and (batch[keep_from] & 0xC0) == 0x80:
+                    keep_from += 1
+                app.state.pty_batch = batch[keep_from:]
+                batch = app.state.pty_batch
+
+            now = time.time()
+            if (now - app.state.pty_batch_flush_time) >= PTY_FLUSH_INTERVAL and batch:
+                cut_pos = find_utf8_boundary(batch, PTY_FLUSH_MAX_BYTES)
+                send_data = bytes(batch[:cut_pos])
+                app.state.pty_batch = batch[cut_pos:]
+                app.state.pty_batch_flush_time = now
+                # Broadcast to all sinks; writer filters by mode.
+                registry = getattr(app.state, "sink_registry", None)
+                if registry is not None and len(registry) > 0:
+                    await registry.broadcast(FRAME_OUTPUT, send_data)
+
+        except EOFError as e:
+            logger.warning(f"[central_pty_reader] PTY EOF: {e}")
+            app.state.pty_died = True
+            break
+        except Exception as e:
+            logger.error(f"[central_pty_reader] error: {e}", exc_info=True)
+            break
+
+    # Final flush so the last bytes don't get stranded.
+    try:
+        from mobile_terminal.transport import FRAME_OUTPUT as _FO
+        batch = app.state.pty_batch
+        registry = getattr(app.state, "sink_registry", None)
+        if batch and registry is not None and len(registry) > 0:
+            await registry.broadcast(_FO, bytes(batch))
+            app.state.pty_batch = bytearray()
+    except Exception:
+        pass
+    logger.info("[central_pty_reader] exited")
+
+
 async def read_from_terminal(state: TerminalSessionState, app) -> None:
     """Drain the PTY and forward bytes to the sink (full mode only).
 
@@ -92,6 +213,10 @@ async def read_from_terminal(state: TerminalSessionState, app) -> None:
     Coalesces output into <= ``PTY_FLUSH_MAX_BYTES`` chunks per
     ``PTY_FLUSH_INTERVAL`` to keep mobile clients from drowning. UTF-8
     boundary respected on cuts so multi-byte chars never split.
+
+    DEPRECATED in C1: replaced by central_pty_reader. Kept until the
+    transport handlers stop spawning it (C1 step 2). After that, this
+    function is unreachable and can be removed.
     """
     sink = state.sink
     runtime = state.runtime
@@ -204,24 +329,27 @@ async def tail_sender(state: TerminalSessionState, app, deps) -> None:
     """
     sink = state.sink
     runtime = state.runtime
-    perm_check_counter = 0
     candidate_check_counter = 0
 
-    while app.state.active_client is sink and not state.connection_closed:
+    # C2: was `app.state.active_client is sink` (single-sink); now
+    # registry membership so multiple sinks can each have their own
+    # tail_sender.
+    while sink in app.state.sink_registry and not state.connection_closed:
         try:
             await asyncio.sleep(TAIL_INTERVAL)
 
-            # Pane switched? Drop stale buffer, reset seq.
+            # Pane switched? Reset seq. Buffer is shared on app.state
+            # (C1) so we don't clear it here — central reader owns it.
             current_epoch = app.state.target_epoch
             if current_epoch != state.last_target_epoch:
-                state.recent_buffer = bytearray()
                 state.last_target_epoch = current_epoch
                 state.tail_seq = 0
 
-            # 1) Tail snapshot
-            if sink.client_mode == "tail" and state.recent_buffer and not state.connection_closed:
+            # 1) Tail snapshot — read from app.state.recent_buffer (shared).
+            shared_recent = getattr(app.state, "recent_buffer", state.recent_buffer)
+            if sink.client_mode == "tail" and shared_recent and not state.connection_closed:
                 try:
-                    text = bytes(state.recent_buffer[-8192:]).decode("utf-8", errors="replace")
+                    text = bytes(shared_recent[-8192:]).decode("utf-8", errors="replace")
                     plain = strip_ansi(text)
                     lines = plain.split("\n")[-50:]
                     # Filter Claude CLI nag prompt that scrolls in periodically
@@ -240,66 +368,15 @@ async def tail_sender(state: TerminalSessionState, app, deps) -> None:
                         break
                     logger.debug(f"Tail extraction error: {e}")
 
-            # 2) Permission detection
-            perm_check_counter += 1
-            if perm_check_counter >= 5 and not state.connection_closed:
-                perm_check_counter = 0
-                try:
-                    detector = app.state.permission_detector
-                    session = app.state.current_session
-                    target = app.state.active_target
-                    # Re-bind the singleton detector to the ACTIVE pane's
-                    # log file every check. Previously, the singleton was
-                    # hijacked by whichever pane wrote most recently
-                    # (logs.py:monitor_log_file_for_target), so banner
-                    # detection silently looked at the wrong pane → flaky
-                    # banners on multi-pane sessions.
-                    detect_fn = getattr(app.state, '_detect_target_log_file', None)
-                    if session and target and detect_fn:
-                        from pathlib import Path as _Path
-                        claude_dir = _Path.home() / ".claude" / "projects" / get_project_id(deps.get_current_repo_path())
-                        if claude_dir.exists():
-                            active_log = detect_fn(target, session, claude_dir)
-                            if active_log and (not detector.log_file or detector.log_file != active_log):
-                                detector.set_log_file(active_log)
-                                detector.last_sent_id = None  # fresh pane = fresh dedup
-                    if session and detector.log_file:
-                        tmux_t = get_tmux_target(session, target)
-                        perm = await asyncio.get_event_loop().run_in_executor(
-                            None, detector.check_sync, session, target, tmux_t
-                        )
-                        if perm:
-                            from mobile_terminal.permission_policy import normalize_request
-                            policy = app.state.permission_policy
-                            req = normalize_request(perm, deps.get_current_repo_path())
-                            decision = policy.evaluate(req)
-                            policy.audit(req, decision)
-
-                            if decision.action == "allow":
-                                await runtime.send_keys(tmux_t, "y", literal=True)
-                                await runtime.send_keys(tmux_t, "Enter")
-                                await deps.send_typed(sink, "permission_auto",
-                                    {"decision": "allow", "tool": req.tool,
-                                     "target": req.target, "reason": decision.reason},
-                                    level="info")
-                            elif decision.action == "deny":
-                                await runtime.send_keys(tmux_t, "n", literal=True)
-                                await runtime.send_keys(tmux_t, "Enter")
-                                await deps.send_typed(sink, "permission_auto",
-                                    {"decision": "deny", "tool": req.tool,
-                                     "target": req.target, "reason": decision.reason},
-                                    level="warning")
-                            else:
-                                perm["repo"] = str(deps.get_current_repo_path() or "")
-                                perm["risk"] = req.risk
-                                # Stamp the prompting pane so the client can
-                                # send Allow/Deny back to THAT pane, not to
-                                # whatever app.state.active_target happens to
-                                # be when another client switched panes.
-                                perm["source_pane"] = target
-                                await deps.send_typed(sink, "permission_request", perm, level="urgent")
-                except Exception as e:
-                    logger.debug(f"Permission check error: {e}")
+            # 2) Permission detection — REMOVED in v=446. The legacy
+            # auto-fire path here sent "y\nEnter" without race protection
+            # and raced the daemon (which uses "1" + Backspace cleanup).
+            # Confirmed orphan-y at 13:17:40 2026-04-26: daemon fired
+            # race-protected, this path also fired and the "y" landed in
+            # chat input → submitted as user message. Daemon
+            # (permission_daemon.py) owns allow/deny/needs-human now —
+            # primary tick + scanner backstop in push.py both delegate
+            # to daemon.evaluate_and_fire.
 
             # 3) Backlog candidate detection (no-op until re-enabled)
             candidate_check_counter += 1
@@ -356,7 +433,8 @@ async def desktop_activity_monitor(state: TerminalSessionState, app, deps) -> No
     desktop_active = False
     desktop_since = 0.0
 
-    while app.state.active_client is sink and not state.connection_closed:
+    # C2: was `app.state.active_client is sink`; registry membership now.
+    while sink in app.state.sink_registry and not state.connection_closed:
         await asyncio.sleep(DESKTOP_POLL_INTERVAL)
         try:
             session = app.state.current_session

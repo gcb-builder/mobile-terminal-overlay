@@ -118,11 +118,10 @@ def register(app: FastAPI, deps):
             "risk": classify_risk(tool, target),
             "source_pane": source_pane or app.state.active_target,
         }
-        # Store for polling clients and try direct send
+        # Store for polling clients and broadcast to all connected sinks.
         app.state._test_permission = perm
-        sink = app.state.active_client
-        if sink is not None:
-            await deps.send_typed(sink, "permission_request", perm, level="urgent")
+        from mobile_terminal.transport import broadcast_typed
+        await broadcast_typed(app, "permission_request", perm, level="urgent")
         return {"status": "ok", "perm": perm}
 
     @app.get("/api/permissions/test")
@@ -134,128 +133,67 @@ def register(app: FastAPI, deps):
             return {"perm": perm}
         return {"perm": None}
 
-    # ── Decide endpoint ─────────────────────────────────────────────────
-    # Bridge between the client-side terminal scraper (extractPermissionPrompt)
-    # and the server-side policy engine. The client detects a permission
-    # prompt visually (it's better at parsing Claude's TUI rendering than the
-    # server's regex) and POSTs here. The server runs policy.evaluate, fires
-    # y/n via runtime if allow/deny, writes audit, and returns the decision.
-    # On needs_human the client falls back to showing its own banner.
-    #
-    # Has SIDE EFFECTS (may inject keystrokes). Not read-only — name reflects
-    # that. Dedup window prevents the client scraper and server scanner from
-    # double-firing on the same perm.
-
-    _decide_dedup: dict = {}  # f"{pane}:{tool}:{hash(target)}" -> ts
-    DECIDE_DEDUP_TTL = 30.0
-
-    @app.post("/api/permissions/decide")
-    async def permissions_decide(
-        request: Request,
+    @app.get("/api/permissions/waiting")
+    async def permissions_waiting(
+        pane: str = "",
         _auth=Depends(deps.verify_token),
     ):
-        """Run policy on a client-detected permission and fire y/n if allowed."""
-        import time as _time
-        from mobile_terminal.permission_policy import normalize_request
+        """Return whether Claude has a permission prompt pending for the
+        given tmux pane (e.g. "1:0", "2:0").
 
-        body = await request.json()
-        tool = (body.get("tool") or "").strip()
-        target = (body.get("target") or "").strip()
-        repo = (body.get("repo") or "").strip()
-        source_pane = (body.get("source_pane") or "").strip()
+        Resolves pane → cwd via tmux display-message, then reads
+        ~/.claude/sessions/{pid}.json and reports status="waiting" +
+        waitingFor="approve <Tool>" for that cwd. Used by the client
+        scraper to skip building a banner when no real prompt is live
+        — eliminates false positives where the scraper detects
+        prompt-shape text in scrollback OR in MTO chat content quoting
+        prompt strings.
 
-        if not tool:
-            return JSONResponse({"error": "tool required"}, status_code=400)
-        if not source_pane:
-            return JSONResponse({"error": "source_pane required"}, status_code=400)
+        Response: {"waiting": bool, "tool": str|null, "sessionId": str|null}
+        """
+        import subprocess
+        from mobile_terminal.helpers import get_tmux_target
+        from mobile_terminal.permission_daemon import _load_waiting_sessions
 
-        # Dedup: same {pane,tool,target} within TTL → already handled.
-        # Hash the full target so two different `Bash: ls` calls in the same
-        # pane don't collide with each other across time but a re-detect of
-        # the same in-flight perm does.
-        dedup_key = f"{source_pane}:{tool}:{hash(target)}"
-        now = _time.time()
-        # Sweep stale entries occasionally to keep the dict bounded
-        if len(_decide_dedup) > 100:
-            for k, ts in list(_decide_dedup.items()):
-                if now - ts > DECIDE_DEDUP_TTL:
-                    del _decide_dedup[k]
-        last = _decide_dedup.get(dedup_key, 0)
-        if now - last < DECIDE_DEDUP_TTL:
-            return {"decision": "already_handled", "reason": "dedup", "rule_id": None}
+        if not pane:
+            return {"waiting": False, "tool": None, "sessionId": None}
 
-        # Build PermissionRequest and evaluate
-        perm = {"tool": tool, "target": target}
-        repo_path = repo or str(deps.get_current_repo_path() or "")
-        req = normalize_request(perm, repo_path)
-        policy = app.state.permission_policy
-        decision = policy.evaluate(req)
-        policy.audit(req, decision)
+        # Resolve pane → cwd
+        try:
+            session = app.state.current_session
+            tmux_t = get_tmux_target(session, pane)
+            result = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", tmux_t, "#{pane_current_path}"],
+                capture_output=True, text=True, timeout=2,
+            )
+            cwd = result.stdout.strip() if result.returncode == 0 else ""
+        except Exception:
+            cwd = ""
 
-        # Side-effect: fire y/n if allow/deny. Dedup AFTER firing so a
-        # transient error doesn't poison the key.
-        runtime = app.state.runtime
-        session = app.state.current_session
+        if not cwd:
+            return {"waiting": False, "tool": None, "sessionId": None}
 
-        async def _suppress_other_paths(verb: str):
-            """Tell the rest of the system this perm was just handled.
+        try:
+            sessions = _load_waiting_sessions()
+        except Exception:
+            return {"waiting": False, "tool": None, "sessionId": None}
+        if cwd in sessions:
+            entry = sessions[cwd]
+            return {
+                "waiting": True,
+                "tool": entry.get("tool"),
+                "sessionId": entry.get("sessionId"),
+            }
+        return {"waiting": False, "tool": None, "sessionId": None}
 
-            - Stamp the scanner's cooldown dict so the 3s scan loop
-              doesn't fire y/n again for the same pane within ~5s.
-            - Push permission_auto to the active client so its scraper
-              suppresses the banner for 5s (_permAutoApprovedAt path).
-            Without this, the user sees a second banner appear seconds
-            after /decide already fired — same prompt still in scrollback,
-            other detectors haven't been told it's resolved.
-            """
-            try:
-                if not hasattr(app.state, "permission_scanner_cooldown"):
-                    app.state.permission_scanner_cooldown = {}
-                app.state.permission_scanner_cooldown[source_pane] = now
-            except Exception as e:
-                logger.debug(f"[decide] scanner-cooldown stamp failed: {e}")
-            try:
-                sink = app.state.active_client
-                if sink is not None:
-                    await deps.send_typed(sink, "permission_auto", {
-                        "decision": verb,
-                        "tool": tool,
-                        "target": target[:80],
-                        "reason": decision.reason,
-                        "pane": source_pane,
-                    }, level="info")
-            except Exception as e:
-                logger.debug(f"[decide] permission_auto emit failed: {e}")
-
-        if decision.action == "allow":
-            from mobile_terminal.helpers import get_tmux_target
-            tmux_t = get_tmux_target(session, source_pane) if session else source_pane
-            try:
-                await runtime.send_keys(tmux_t, "y", literal=True)
-                await runtime.send_keys(tmux_t, "Enter")
-                _decide_dedup[dedup_key] = now
-                logger.info(f"[decide] auto-allow {tool} in {source_pane}: {decision.reason}")
-                await _suppress_other_paths("allow")
-            except Exception as e:
-                logger.warning(f"[decide] send_keys failed for {source_pane}: {e}")
-                return JSONResponse({"error": "send failed"}, status_code=500)
-        elif decision.action == "deny":
-            from mobile_terminal.helpers import get_tmux_target
-            tmux_t = get_tmux_target(session, source_pane) if session else source_pane
-            try:
-                await runtime.send_keys(tmux_t, "n", literal=True)
-                await runtime.send_keys(tmux_t, "Enter")
-                _decide_dedup[dedup_key] = now
-                logger.info(f"[decide] auto-deny {tool} in {source_pane}: {decision.reason}")
-                await _suppress_other_paths("deny")
-            except Exception as e:
-                logger.warning(f"[decide] send_keys failed for {source_pane}: {e}")
-                return JSONResponse({"error": "send failed"}, status_code=500)
-        # needs_human: do NOT dedup — user may dismiss banner and want a
-        # second chance to be re-prompted on the same pending perm.
-
-        return {
-            "decision": decision.action,  # "allow" | "deny" | "prompt"
-            "reason": decision.reason,
-            "rule_id": decision.rule_id,
-        }
+    # Phase 4 (2026-04-25): /api/permissions/decide endpoint removed.
+    # The client-side scraper (extractPermissionPrompt in terminal.js) used
+    # to POST visual detections here so the server could fire y/n. That path
+    # had no JSONL correlation — a stale "Read" selector left in scrollback
+    # would re-trigger when the agent posted unrelated chat, causing a
+    # spurious "1" injection. Auto-fire authority now lives exclusively in
+    # the server-side daemon (permission_daemon.py) and scanner (push.py),
+    # both of which correlate against the JSONL unresolved-tool_use state
+    # and refuse to fire when no real perm is pending. The client scraper
+    # still runs to populate the tap-to-approve banner UI, but no longer
+    # calls a server endpoint to fire on its behalf.

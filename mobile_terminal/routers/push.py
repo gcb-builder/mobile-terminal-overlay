@@ -1,4 +1,5 @@
 """Routes for push notifications."""
+import asyncio
 import json
 import logging
 import re
@@ -38,7 +39,9 @@ def register(app: FastAPI, deps):
         """Send push only if no active client and cooldown expired."""
         if not app.state.config.push_enabled:
             return
-        if app.state.active_client is not None:
+        # Skip the push if any sink is connected — the user will see the
+        # event in-app already.
+        if len(app.state.sink_registry) > 0:
             return
         cooldowns = {"permission": 30, "completed": 300, "crashed": 60, "context_warn": 600, "context_high": 300}
         min_interval = cooldowns.get(push_type, 30)
@@ -140,28 +143,27 @@ def register(app: FastAPI, deps):
                 if obs.active:
                     _last_activity_time = time.time()
 
-                # === Permission push (with policy auto-approval) ===
-                if app.state.active_client is None:
+                # === Permission push notification (needs-human only) ===
+                # v=447: removed allow/deny auto-fire — PermissionDaemon
+                # owns those, with race-protected staged Enter. Keeping
+                # only the needs-human push path here, since the daemon
+                # emits banners (in-app) but not OS push notifications.
+                # Auto-fire ran in parallel with the daemon and produced
+                # double-fire orphans when no client was connected
+                # (symmetric to the with-client tail_sender case fixed
+                # in v=446).
+                if len(app.state.sink_registry) == 0:
                     detector = app.state.permission_detector
                     if detector.log_file:
                         perm = detector.check_sync(session, target, ctx.tmux_target)
                         if perm:
-                            # Evaluate policy before deciding to push
                             from mobile_terminal.permission_policy import normalize_request
                             policy = app.state.permission_policy
                             req = normalize_request(perm, deps.get_current_repo_path())
                             decision = policy.evaluate(req)
                             policy.audit(req, decision)
 
-                            if decision.action == "allow":
-                                runtime = app.state.runtime
-                                await runtime.send_keys(ctx.tmux_target, "y", literal=True)
-                                await runtime.send_keys(ctx.tmux_target, "Enter")
-                                _perm_pending_since = 0
-                            elif decision.action == "deny":
-                                runtime = app.state.runtime
-                                await runtime.send_keys(ctx.tmux_target, "n", literal=True)
-                                await runtime.send_keys(ctx.tmux_target, "Enter")
+                            if decision.action in ("allow", "deny"):
                                 _perm_pending_since = 0
                             else:
                                 # Needs human — send push notification after delay
@@ -250,155 +252,51 @@ def register(app: FastAPI, deps):
     # policy, independent of which pane the client is viewing.
 
     async def permission_scanner():
-        """Scan all panes for permission prompts and auto-approve."""
-        import asyncio
-        from mobile_terminal.drivers.claude import ClaudePermissionDetector
-        from mobile_terminal.permission_policy import normalize_request
-        from mobile_terminal.helpers import get_tmux_target, get_project_id
+        """Permission scanner backstop (v=433).
 
-        logger.info("[permission_scanner] Started — scanning all panes every 3s")
+        Was: a parallel permission system with its own parsing, JSONL
+        lookup, cooldowns, and staged-Enter logic — duplicating the
+        daemon's work and drifting in subtle ways (missed Edit/Write
+        prompts because its phrase list was outdated, audited before
+        firing, etc.).
 
-        # Per-pane detectors keyed by target_id
-        detectors: dict[str, ClaudePermissionDetector] = {}
-        # Track last-seen prompt per pane to avoid re-processing.
-        # Lifted to app.state so the /api/terminal/text handler can bump
-        # this when it forwards a banner-Allow y/n response — without
-        # that, the scanner wouldn't know the user already answered and
-        # could fire its own y on the now-cleared screen, which lands
-        # as a stray turn after the agent is ready again.
-        if not hasattr(app.state, "permission_scanner_cooldown"):
-            app.state.permission_scanner_cooldown = {}
-        last_approved: dict[str, float] = app.state.permission_scanner_cooldown
-        # Per-pane hash of the last APPROVED prompt's capture-pane text.
-        # If the next scan returns the same hash, the captured screen
-        # hasn't changed since approval (likely tmux capture lag or the
-        # agent not yet rendering past the prompt) — skip to prevent
-        # firing a duplicate y that lands as a stray turn after the
-        # agent has actually moved on.
-        last_approved_hash: dict[str, str] = {}
+        Now: a 3s timing backstop that lists panes and delegates to
+        ``daemon.evaluate_and_fire()``. Daemon owns interpretation,
+        correlation (Cases 1, 1b, 2, 3), policy evaluation, dedup,
+        race-protected staged Enter, audit, and banner emission. Per-
+        pane scanner-local cooldowns are gone — the daemon's
+        ``fired_perms`` set + PRECHECK_REFIRE_TTL are authoritative.
 
-        def _scan_panes_sync(session: str) -> list:
-            """Scan all panes for permission prompts. Runs in executor thread
-            to avoid SIGCHLD handler conflicts with subprocess.run."""
-            results = []
+        Why keep the scanner at all? Daemon polls every 2s. If a daemon
+        tick fails or hits a long executor queue, scanner's 3s tick
+        still calls into the same code with the same dedup, so a
+        legitimate fire isn't dropped. Pure timing redundancy, not a
+        second code path.
+        """
+        from mobile_terminal.helpers import get_tmux_target
+
+        logger.info("[permission_scanner] Started — 3s backstop tick (delegates to daemon)")
+
+        def _list_panes_sync(session: str) -> list:
             try:
-                list_result = subprocess.run(
+                r = subprocess.run(
                     ["tmux", "list-panes", "-s", "-t", session, "-F",
-                     "#{window_index}:#{pane_index}|#{pane_current_path}|#{pane_id}"],
+                     "#{window_index}:#{pane_index}|#{pane_current_path}"],
                     capture_output=True, text=True, timeout=3,
                 )
-                if list_result.returncode != 0 or not list_result.stdout.strip():
-                    return results
-
-                pane_lines = list_result.stdout.strip().split("\n")
-                for line in pane_lines:
-                    parts = line.split("|")
-                    if len(parts) < 3:
-                        continue
-                    target_id = parts[0]
-                    pane_cwd = parts[1]
-                    tmux_t = get_tmux_target(session, target_id)
-
-                    # Skip if recently approved (cooldown 5s)
-                    if time.time() - last_approved.get(target_id, 0) < 5:
-                        continue
-
-                    # Check for permission prompt in terminal. Window must
-                    # be generous (-S -50): the box can be 15+ lines and
-                    # status indicators above push the question higher.
-                    # Strip box-drawing chars first so `│ ❯ 1. Yes` matches
-                    # the anchored selector regex (Claude wraps the box).
-                    # Either signal counts: a question phrase or a numbered
-                    # selector on a single line. Detector check_sync confirms.
-                    try:
-                        cap = subprocess.run(
-                            ["tmux", "capture-pane", "-p", "-t", tmux_t, "-S", "-50"],
-                            capture_output=True, text=True, timeout=2,
-                        )
-                        pane_text = cap.stdout or ""
-                        stripped = re.sub(r'[│╭╮╰╯─┌┐└┘├┤┬┴┼]', ' ', pane_text)
-                        low = stripped.lower()
-                        has_prompt = (
-                            "do you want to proceed?" in low
-                            or "allow this action?" in low
-                            or "approve this" in low
-                            or "permission to" in low
-                        )
-                        has_selector = re.search(r'^[ \t]*[❯>][ \t]+\d+\.[ \t]+', stripped, re.MULTILINE) is not None
-                        if not (has_prompt or has_selector):
-                            continue
-                    except Exception as e:
-                        logger.debug(f"[permission_scanner] capture error {target_id}: {e}")
-                        continue
-
-                    # Dedup: if the captured screen is byte-for-byte the
-                    # same as the LAST one we approved on this pane, the
-                    # agent hasn't visibly progressed — likely capture-pane
-                    # lag or a still-rendered stale prompt. Firing y here
-                    # would land on an already-answered prompt and become
-                    # a stray turn.
-                    import hashlib
-                    pane_hash = hashlib.md5(pane_text.encode("utf-8", "replace")).hexdigest()
-                    if last_approved_hash.get(target_id) == pane_hash:
-                        logger.info(f"[permission_scanner] skip dup-hash in {target_id}")
-                        continue
-
-                    logger.info(f"[permission_scanner] PROMPT DETECTED in {target_id} ({Path(pane_cwd).name})")
-
-                    # Resolve JSONL log
-                    repo_path = Path(pane_cwd)
-                    project_id = get_project_id(repo_path)
-                    claude_dir = Path.home() / ".claude" / "projects" / project_id
-                    if not claude_dir.exists():
-                        logger.info(f"[permission_scanner] no claude dir for {repo_path.name}: {claude_dir}")
-                        continue
-
-                    # Get or create per-pane detector
-                    if target_id not in detectors:
-                        detectors[target_id] = ClaudePermissionDetector()
-                    det = detectors[target_id]
-
-                    # Find log file
-                    detect_fn = getattr(app.state, '_detect_target_log_file', None)
-                    if not det.log_file and detect_fn:
-                        log_file = detect_fn(target_id, session, claude_dir)
-                        if log_file:
-                            det.set_log_file(log_file)
-                            logger.info(f"[permission_scanner] log file for {target_id}: {log_file.name}")
-                        else:
-                            logger.info(f"[permission_scanner] no log file found for {target_id}")
-                            continue
-
-                    # check_sync is now a state query: returns the
-                    # currently-unresolved tool_use (if any) regardless of
-                    # whether JSONL grew since last call. Internal mtime/
-                    # size cache keeps this cheap on no-op polls.
-                    perm = det.check_sync(session, target_id, tmux_t)
-                    if not perm:
-                        logger.info(
-                            f"[permission_scanner] JSONL has no unresolved perm "
-                            f"for {target_id} — skipping auto-fire (capture-pattern only)"
-                        )
-                        continue
-
-                    # Evaluate policy
-                    policy = app.state.permission_policy
-                    req = normalize_request(perm, repo_path)
-                    decision = policy.evaluate(req)
-                    policy.audit(req, decision)
-
-                    results.append({
-                        "target_id": target_id,
-                        "tmux_t": tmux_t,
-                        "repo_name": repo_path.name,
-                        "perm": perm,
-                        "req": req,
-                        "decision": decision,
-                        "pane_hash": pane_hash,
-                    })
             except Exception as e:
-                logger.warning(f"[permission_scanner] scan error: {e}", exc_info=True)
-            return results
+                logger.debug(f"[permission_scanner] list_panes failed: {e}")
+                return []
+            if r.returncode != 0 or not r.stdout.strip():
+                return []
+            out = []
+            for line in r.stdout.strip().split("\n"):
+                parts = line.split("|", 1)
+                if len(parts) < 2:
+                    continue
+                target_id, pane_cwd = parts
+                out.append((target_id, pane_cwd, get_tmux_target(session, target_id)))
+            return out
 
         scan_count = 0
         while True:
@@ -407,47 +305,19 @@ def register(app: FastAPI, deps):
                 session = app.state.current_session
                 if not session:
                     continue
+                daemon = getattr(app.state, "permission_daemon", None)
+                if daemon is None:
+                    # Daemon should always be up; if not, scanner can't help
+                    # because we don't keep the duplicate logic anymore.
+                    continue
                 scan_count += 1
                 if scan_count <= 3 or scan_count % 100 == 0:
                     logger.info(f"[permission_scanner] scan #{scan_count}")
 
                 loop = asyncio.get_event_loop()
-                hits = await loop.run_in_executor(None, _scan_panes_sync, session)
-
-                for hit in hits:
-                    target_id = hit["target_id"]
-                    tmux_t = hit["tmux_t"]
-                    decision = hit["decision"]
-                    perm = hit["perm"]
-                    req = hit["req"]
-
-                    if decision.action == "allow":
-                        runtime = app.state.runtime
-                        await runtime.send_keys(tmux_t, "y", literal=True)
-                        await runtime.send_keys(tmux_t, "Enter")
-                        last_approved[target_id] = time.time()
-                        last_approved_hash[target_id] = hit["pane_hash"]
-                        logger.info(f"[permission_scanner] Auto-approved {perm['tool']} "
-                                    f"in {target_id} ({hit['repo_name']}): {decision.reason}")
-                        sink = app.state.active_client
-                        if sink:
-                            await deps.send_typed(sink, "permission_auto",
-                                {"decision": "allow", "tool": req.tool,
-                                 "target": req.target, "reason": decision.reason,
-                                 "pane": target_id, "repo": hit["repo_name"]},
-                                level="info")
-                    elif decision.action == "deny":
-                        runtime = app.state.runtime
-                        await runtime.send_keys(tmux_t, "n", literal=True)
-                        await runtime.send_keys(tmux_t, "Enter")
-                        last_approved[target_id] = time.time()
-                        last_approved_hash[target_id] = hit["pane_hash"]
-                        logger.info(f"[permission_scanner] Auto-denied {perm['tool']} "
-                                    f"in {target_id}: {decision.reason}")
-                    else:
-                        logger.debug(f"[permission_scanner] Needs human: {perm['tool']} "
-                                     f"in {target_id}: {decision.reason}")
-
+                panes = await loop.run_in_executor(None, _list_panes_sync, session)
+                for target_id, pane_cwd, tmux_t in panes:
+                    await daemon.evaluate_and_fire(session, target_id, pane_cwd, tmux_t)
             except Exception as e:
                 logger.warning(f"[permission_scanner] loop error: {e}", exc_info=True)
 

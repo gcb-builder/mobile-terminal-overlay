@@ -40,7 +40,7 @@ function processMarkdownQueue(deadline) {
 
     while (markdownParseQueue.length > 0 && (performance.now() - start) < timeLimit) {
         const el = markdownParseQueue.shift();
-        if (el.dataset.markdown && el.isConnected) {
+        if (el.dataset.markdown) {
             try {
                 el.innerHTML = marked.parse(el.dataset.markdown);
                 delete el.dataset.markdown;

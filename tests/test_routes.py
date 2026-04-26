@@ -31,10 +31,16 @@ def test_route_inventory():
     assert "/api/activity" in paths
     assert "/api/preview/logs" in paths
     assert "/api/preview/logs/list" in paths
-    assert "/api/permissions/decide" in paths
+    # /api/permissions/decide deleted in Phase 4 (2026-04-25) — daemon +
+    # scanner own auto-fire authority via JSONL correlation; the client
+    # scraper no longer POSTs to fire on its behalf.
+    assert "/api/permissions/decide" not in paths
+    # /api/permissions/waiting added in v=432 — client scraper queries
+    # this before showing a banner to suppress false positives.
+    assert "/api/permissions/waiting" in paths
 
     # Total route count (adjust as routers are extracted)
     builtin_paths = {"/docs", "/docs/oauth2-redirect", "/openapi.json", "/redoc"}
     route_count = len([r for r in app.routes
                        if hasattr(r, "methods") and r.path not in builtin_paths])
-    assert route_count >= 101, f"Expected >=101 custom routes, got {route_count}"
+    assert route_count >= 100, f"Expected >=100 custom routes, got {route_count}"

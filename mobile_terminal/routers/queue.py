@@ -6,6 +6,8 @@ from typing import Optional
 from fastapi import Depends, FastAPI, Query
 from fastapi.responses import JSONResponse
 
+from mobile_terminal.transport import broadcast_raw
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,17 +43,14 @@ def register(app: FastAPI, deps):
         # any connected client picks up every queue change in every pane
         # and writes them into the currently-visible queue, causing the
         # cross-pane bleed users have been seeing.
-        if is_new and app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "queue_update",
-                    "action": "add",
-                    "session": session,
-                    "pane_id": pane_id,
-                    "item": asdict(item),
-                })
-            except Exception:
-                pass
+        if is_new:
+            await broadcast_raw(app, {
+                "type": "queue_update",
+                "action": "add",
+                "session": session,
+                "pane_id": pane_id,
+                "item": asdict(item),
+            })
 
         return {"status": "ok", "item": asdict(item), "is_new": is_new}
 
@@ -82,19 +81,15 @@ def register(app: FastAPI, deps):
 
         success = app.state.command_queue.dequeue(session, item_id, pane_id)
 
-        if success and app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "queue_update",
-                    "action": "remove",
-                    "session": session,
-                    "pane_id": pane_id,
-                    "item": {"id": item_id},
-                })
-            except Exception:
-                pass
-
-        if not success:
+        if success:
+            await broadcast_raw(app, {
+                "type": "queue_update",
+                "action": "remove",
+                "session": session,
+                "pane_id": pane_id,
+                "item": {"id": item_id},
+            })
+        else:
             return JSONResponse({"error": "Queue item not found"}, status_code=404)
         return {"status": "ok"}
 
@@ -113,17 +108,13 @@ def register(app: FastAPI, deps):
         if item is None:
             return JSONResponse({"error": "Queue item not found or not queued"}, status_code=404)
 
-        if app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "queue_update",
-                    "action": "update",
-                    "session": session,
-                    "pane_id": pane_id,
-                    "item": asdict(item),
-                })
-            except Exception:
-                pass
+        await broadcast_raw(app, {
+            "type": "queue_update",
+            "action": "update",
+            "session": session,
+            "pane_id": pane_id,
+            "item": asdict(item),
+        })
 
         return {"status": "ok", "item": asdict(item)}
 
@@ -142,18 +133,14 @@ def register(app: FastAPI, deps):
         if item is None:
             return JSONResponse({"error": "Queue item not found"}, status_code=404)
 
-        if app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "queue_sent",
-                    "id": item.id,
-                    "sent_at": item.sent_at,
-                    "backlog_id": item.backlog_id,
-                    "session": session,
-                    "pane_id": pane_id,
-                })
-            except Exception:
-                pass
+        await broadcast_raw(app, {
+            "type": "queue_sent",
+            "id": item.id,
+            "sent_at": item.sent_at,
+            "backlog_id": item.backlog_id,
+            "session": session,
+            "pane_id": pane_id,
+        })
 
         return {"status": "ok", "item": asdict(item)}
 
@@ -182,17 +169,13 @@ def register(app: FastAPI, deps):
 
         app.state.command_queue.pause(session, pane_id)
 
-        if app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "queue_state",
-                    "session": session,
-                    "pane_id": pane_id,
-                    "paused": True,
-                    "count": len(app.state.command_queue.list_items(session, pane_id)),
-                })
-            except Exception:
-                pass
+        await broadcast_raw(app, {
+            "type": "queue_state",
+            "session": session,
+            "pane_id": pane_id,
+            "paused": True,
+            "count": len(app.state.command_queue.list_items(session, pane_id)),
+        })
 
         return {"status": "ok", "paused": True}
 
@@ -206,17 +189,13 @@ def register(app: FastAPI, deps):
 
         app.state.command_queue.resume(session, pane_id)
 
-        if app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "queue_state",
-                    "session": session,
-                    "pane_id": pane_id,
-                    "paused": False,
-                    "count": len(app.state.command_queue.list_items(session, pane_id)),
-                })
-            except Exception:
-                pass
+        await broadcast_raw(app, {
+            "type": "queue_state",
+            "session": session,
+            "pane_id": pane_id,
+            "paused": False,
+            "count": len(app.state.command_queue.list_items(session, pane_id)),
+        })
 
         return {"status": "ok", "paused": False}
 
@@ -235,17 +214,13 @@ def register(app: FastAPI, deps):
 
         count = app.state.command_queue.flush(session, pane_id)
 
-        if app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "queue_state",
-                    "session": session,
-                    "pane_id": pane_id,
-                    "paused": False,
-                    "count": 0,
-                })
-            except Exception:
-                pass
+        await broadcast_raw(app, {
+            "type": "queue_state",
+            "session": session,
+            "pane_id": pane_id,
+            "paused": False,
+            "count": 0,
+        })
 
         return {"status": "ok", "cleared": count}
 

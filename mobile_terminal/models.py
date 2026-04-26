@@ -744,15 +744,20 @@ class InputQueue:
         """Called when PTY output is received."""
         self._last_output_ts = time.time()
 
-    async def send(self, msg_id: str, data: bytes, websocket) -> bool:
+    async def send(self, msg_id: str, data: bytes, app=None) -> bool:
         """
         Queue a send request and wait for ACK.
         Returns True if send was acknowledged, False on timeout.
+
+        Phase 3.2: takes the FastAPI app (instead of a single websocket)
+        so the ACK can be broadcast to every connected sink. Each client
+        ignores ACKs whose msg_id isn't in its outstanding-id set, so
+        fan-out is safe.
         """
         event = asyncio.Event()
         self._pending_acks[msg_id] = event
 
-        await self._queue.put((msg_id, data, websocket))
+        await self._queue.put((msg_id, data, app))
 
         try:
             # Wait for ACK with timeout
@@ -794,7 +799,7 @@ class InputQueue:
 
         while self._running:
             try:
-                msg_id, data, websocket = await asyncio.wait_for(
+                msg_id, data, app = await asyncio.wait_for(
                     self._queue.get(), timeout=1.0
                 )
             except asyncio.TimeoutError:
@@ -814,15 +819,14 @@ class InputQueue:
                     self._runtime.pty_write(data)
                     self._last_send_ts = time.time()
 
-                    # Send ACK to client
-                    if websocket:
-                        try:
-                            await websocket.send_json({
-                                "type": "ack",
-                                "id": msg_id
-                            })
-                        except Exception:
-                            pass
+                    # Broadcast ACK to all connected sinks (clients
+                    # filter by msg_id; unknown ids are no-ops).
+                    if app is not None:
+                        from mobile_terminal.transport import broadcast_raw
+                        await broadcast_raw(app, {
+                            "type": "ack",
+                            "id": msg_id,
+                        })
 
                     # Mark as acknowledged internally
                     self.ack(msg_id)
@@ -1585,7 +1589,6 @@ class CommandQueue:
 
         try:
             runtime = self._app.state.runtime
-            websocket = self._app.state.active_client
 
             if not runtime.has_fd:
                 item.status = "failed"
@@ -1643,20 +1646,17 @@ class CommandQueue:
             except Exception:
                 pass
 
-            # Notify client. Include session+pane so views for other panes
-            # can ignore it (prevents queue list cross-pollination).
-            if websocket:
-                try:
-                    await websocket.send_json({
-                        "type": "queue_sent",
-                        "id": item.id,
-                        "sent_at": item.sent_at,
-                        "backlog_id": item.backlog_id,
-                        "session": session,
-                        "pane_id": pane_id,
-                    })
-                except Exception:
-                    pass
+            # Notify all clients. Include session+pane so views for other
+            # panes can ignore it (prevents queue list cross-pollination).
+            from mobile_terminal.transport import broadcast_raw
+            await broadcast_raw(self._app, {
+                "type": "queue_sent",
+                "id": item.id,
+                "sent_at": item.sent_at,
+                "backlog_id": item.backlog_id,
+                "session": session,
+                "pane_id": pane_id,
+            })
 
             return True
 

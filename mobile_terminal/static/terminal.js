@@ -20,7 +20,7 @@ import { initBacklog, handleBacklogMessage, handleCandidateMessage,
          refreshBacklogList, reloadBacklogForProject, addBacklogItem,
          updateBacklogStatus } from './src/features/backlog.js';
 import { initPermissions, loadPermissions } from './src/features/permissions.js';
-import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js';
+import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js?v=445';
 import { initDocs } from './src/features/docs.js';
 import { initToolOutput } from './src/features/tool-output.js';
 import { initHistory, loadHistory, loadGitStatus } from './src/features/history.js';
@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v406 ===');
+console.log('=== TERMINAL.JS v441 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7122,8 +7122,15 @@ function clearPendingPrompt() {
 function extractPermissionPrompt(terminalContent) {
     if (!terminalContent) return;
 
-    // Suppress for 5s after auto-approval (terminal still shows old prompt briefly)
-    if (Date.now() - _permAutoApprovedAt < 5000) return;
+    // Suppress for 30s after auto-approval. Phase 4 made auto-fires
+    // server-side; they leave the prompt in scrollback for variable
+    // duration depending on Claude's render lag. 5s wasn't always
+    // enough — banner came back. dismissedPrompts.add (in the
+    // permission_auto handler) is the long-term backstop; this short
+    // window keeps the banner from flashing during the window where
+    // the scrollback is freshest and Claude hasn't yet drawn the new
+    // command output.
+    if (Date.now() - _permAutoApprovedAt < 30000) return;
 
     // Skip Claude's session rating prompt — not actionable
     if (ctx.agentType === 'claude' && /How is Claude doing/i.test(terminalContent)) return;
@@ -7212,7 +7219,18 @@ function extractPermissionPrompt(terminalContent) {
         return;
     }
 
-    const promptId = simpleHash(questionLine + choices.map(c => c.label).join(''));
+    // Include the captured terminal context above the question so two
+    // distinct permission prompts that happen to share the same question
+    // text + choice labels (e.g. "Do you want to proceed?" + "Yes/No"
+    // appears for every Bash perm) get distinct ids. Otherwise the
+    // dismissedPrompts cache will skip every subsequent prompt with the
+    // same shape — exactly what we just hit with repeated psql perms.
+    // Window: 6 lines above the question line (the typical box body
+    // showing the command/file path being approved).
+    const contextLines = lines.slice(Math.max(0, questionLineIdx - 6), questionLineIdx)
+                              .map(l => l.replace(/[│╭╮╰╯─┌┐└┘├┤┬┴┼\s]/g, ''))
+                              .join('|');
+    const promptId = simpleHash(questionLine + choices.map(c => c.label).join('') + contextLines);
 
     // Check if dismissed
     if (dismissedPrompts.has(promptId)) {
@@ -7299,124 +7317,56 @@ function extractPermissionPrompt(terminalContent) {
         target: permTarget,
     };
 
-    // Bridge to server policy: ask the server to decide before showing
-    // the banner. If the policy has a matching allow/deny rule (incl.
-    // bypass_hard_guard), the server fires y/n directly and writes audit;
-    // we skip the banner. On needs_human / timeout / error → show banner
-    // (failsafe). Server has its own dedup so a re-detect within 30s
-    // returns already_handled and we still skip.
-    askServerToDecide(pendingPrompt);
+    // v=432: ask the server whether Claude actually has a permission
+    // pending in the active pane's cwd. The scraper finds prompt-shape
+    // text in many false-positive places (MTO chat content quoting
+    // prompt strings, stale scrollback after a manual answer). The
+    // /api/permissions/waiting endpoint reads ~/.claude/sessions/{pid}.json
+    // and tells us authoritatively whether a real prompt is live.
+    // If not waiting → drop the pending prompt + don't show banner.
+    // If error / timeout → fall through to current behavior (show banner).
+    confirmAndShowBanner(promptId);
 }
 
-// Per-(pane,tool,target) timestamp of the last /decide POST. The scraper
-// polls roughly once per second and the prompt's promptId hash drifts as
-// Claude TUI re-renders (cursor blink, timestamp tick), so dismissedPrompts
-// alone doesn't suppress repeats reliably. Without this client-side throttle
-// the scraper would fire ~14 POSTs per 19s for the same in-scrollback prompt
-// — server's 30s dedup catches them but the chatter is wasteful.
-const _decideRecentByKey = new Map();
-const _DECIDE_CLIENT_TTL_MS = 3000;
-
-function _decideKey(perm, sourcePane) {
-    return `${sourcePane}|${perm.tool}|${(perm.target || '').slice(0, 80)}`;
-}
-
-async function askServerToDecide(perm) {
-    if (!perm) {
-        showPromptBanner();
-        return;
-    }
-    // Tool extraction is best-effort — for prompts like Claude's
-    // "Contains command_substitution" pre-check, the box header with
-    // the tool name is often outside the captured window or formatted
-    // unexpectedly. Default to "Bash" so the server can still consult
-    // the policy. y is the universal accept key in Claude's TUI, so
-    // even if the prompt is actually for Edit/Write, firing y still
-    // approves it. The rule lookup remains correct for cases where
-    // the tool IS extracted (Edit/Write/Read prompts with proper headers).
-    if (!perm.tool) {
-        perm.tool = 'Bash';
-    }
+/**
+ * v=432: server-side confirmation gate. Calls /api/permissions/waiting
+ * and only shows the banner if Claude is actually waiting on an
+ * approval for the active pane. Eliminates false-positive banners
+ * built from prompt-shape text in scrollback or MTO chat content.
+ */
+async function confirmAndShowBanner(promptId) {
     const sourcePane = ctx.activeTarget || '';
     if (!sourcePane) {
+        // Without a pane context we can't disambiguate — keep legacy
+        // behavior and show the banner.
         showPromptBanner();
         return;
     }
-    // Client throttle: at most one /decide call per 3s for the same
-    // (pane, tool, target). Same key shape as the server's dedup so the
-    // mental model lines up. Stops the scraper from spamming the server
-    // every poll while a prompt sits in scrollback.
-    const dkey = _decideKey(perm, sourcePane);
-    const nowMs = Date.now();
-    if (_decideRecentByKey.size > 200) {
-        for (const [k, t] of _decideRecentByKey) {
-            if (nowMs - t > _DECIDE_CLIENT_TTL_MS) _decideRecentByKey.delete(k);
-        }
-    }
-    const lastAt = _decideRecentByKey.get(dkey) || 0;
-    if (nowMs - lastAt < _DECIDE_CLIENT_TTL_MS) {
-        // Recent call for the same prompt — drop the banner without
-        // re-asking. Server already fired (or is firing) the answer.
-        if (perm.id) {
-            if (dismissedPrompts.size > 500) dismissedPrompts.clear();
-            dismissedPrompts.add(perm.id);
-        }
-        clearPendingPrompt();
-        return;
-    }
-    _decideRecentByKey.set(dkey, nowMs);
-
-    // 1s timeout — keep UX latency tight; banner appears if server is slow.
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 1000);
     try {
-        const resp = await apiFetch('/api/permissions/decide', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                tool: perm.tool,
-                target: perm.target || '',
-                source_pane: sourcePane,
-            }),
-            signal: ctrl.signal,
-        });
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 800);
+        const resp = await apiFetch(
+            `/api/permissions/waiting?pane=${encodeURIComponent(sourcePane)}`,
+            { signal: ctrl.signal }
+        );
         clearTimeout(timer);
         if (!resp.ok) { showPromptBanner(); return; }
         const data = await resp.json();
-        if (data.decision === 'allow' || data.decision === 'already_handled') {
-            // Server fired (or had already fired) — clear the pending prompt
-            // and remember the id so the scraper doesn't re-build a banner
-            // for the same prompt while it's still in scrollback. Only toast
-            // on the FIRST fire (allow). already_handled means a subsequent
-            // scraper poll re-detected the same prompt mid-render and hit
-            // the server's 30s dedup — that's the dedup working as intended,
-            // no point spamming the user with a toast each cycle.
-            if (data.decision === 'allow') {
-                const reason = data.reason ? ` (${data.reason})` : '';
-                try { ctx.showToast(`Auto-approved${reason}: ${perm.tool}`, 'info', 2500); } catch {}
-            }
-            if (perm.id) {
+        if (data.waiting) {
+            showPromptBanner();
+        } else {
+            // No real prompt in this pane's cwd → false positive.
+            // Dismiss + remember id so the scraper doesn't bounce on
+            // the next scrape.
+            console.debug('[PermissionPrompt] suppressed false positive — sessions/ says not waiting');
+            if (promptId) {
                 if (dismissedPrompts.size > 500) dismissedPrompts.clear();
-                dismissedPrompts.add(perm.id);
+                dismissedPrompts.add(promptId);
             }
             clearPendingPrompt();
-            return;
         }
-        if (data.decision === 'deny') {
-            try { ctx.showToast(`Auto-denied (${data.reason}): ${perm.tool}`, 'warning', 3000); } catch {}
-            if (perm.id) {
-                if (dismissedPrompts.size > 500) dismissedPrompts.clear();
-                dismissedPrompts.add(perm.id);
-            }
-            clearPendingPrompt();
-            return;
-        }
-        // needs_human / prompt → fall through to banner
-        showPromptBanner();
     } catch (e) {
-        clearTimeout(timer);
-        // Timeout, network error, abort — failsafe to banner so user can
-        // still respond manually.
+        // Timeout / network error → failsafe to legacy behavior
         showPromptBanner();
     }
 }
@@ -10017,8 +9967,18 @@ function handleTypedMessage(msg) {
                 d.decision === 'allow' ? 'info' : 'warning', 4000);
             // Suppress permission banner for a few seconds (terminal still shows old prompt)
             _permAutoApprovedAt = Date.now();
-            // Clear any existing permission banner that was shown before auto-approve
+            // Clear any existing permission banner that was shown before
+            // auto-approve. Crucially, also add the promptId to
+            // dismissedPrompts so the scraper doesn't re-build the same
+            // banner once the 5s _permAutoApprovedAt window expires —
+            // stale scrollback often shows the resolved prompt for >5s
+            // after Claude has moved on, especially after server-side
+            // auto-fires (Phase 4) that don't share dismissedPrompts.
             if (pendingPrompt && pendingPrompt.kind === 'permission') {
+                if (pendingPrompt.id) {
+                    if (dismissedPrompts.size > 500) dismissedPrompts.clear();
+                    dismissedPrompts.add(pendingPrompt.id);
+                }
                 clearPendingPrompt();
             }
             hidePermissionBanner();
@@ -10035,6 +9995,17 @@ function handleTypedMessage(msg) {
 function handlePermissionRequest(payload) {
     const banner = document.getElementById('permissionBanner');
     if (!banner) return;
+
+    // Cross-pane suppression: server emits permission_request for the pane
+    // that ASKED (source_pane), but the user may be viewing a different
+    // pane. A tap here would send y/n out of context, and the banner
+    // would linger after the user already moved on. Symmetric to the
+    // pane-switch auto-dismiss at the top of selectTarget(). v=442
+    // exposed this — pre-v=442 the message never reached the client.
+    if (payload.source_pane && ctx.activeTarget && payload.source_pane !== ctx.activeTarget) {
+        console.log(`[perm] suppress banner — source_pane=${payload.source_pane} != activeTarget=${ctx.activeTarget}`);
+        return;
+    }
 
     activePermissionId = payload.id;
     activePermissionPayload = payload;
@@ -11626,6 +11597,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=406', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=445', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

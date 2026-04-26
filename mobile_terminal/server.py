@@ -76,8 +76,24 @@ def create_app(config: Config) -> FastAPI:
     runtime = TmuxRuntime()
     app.state.runtime = runtime
 
+    # Phase 3.1 — multi-sink scaffolding. SinkRegistry is the long-term
+    # home for connected clients; active_client stays in place as the
+    # single-sink legacy storage that ~50 call sites across the codebase
+    # still mutate. 3.2 migrates outbound senders to registry.broadcast,
+    # 3.3 migrates the PTY reader, 3.4 drops the kicker. After 3.4 the
+    # active_client field is dead weight and gets removed.
+    from mobile_terminal.transport import SinkRegistry
+    app.state.sink_registry = SinkRegistry()
     app.state.active_client = None
     app.state.read_task = None
+    # Phase 3.3 (C1): central PTY reader state. Pre-C1 these were
+    # per-handler in TerminalSessionState; now app-state-shared so a
+    # single reader task can broadcast to all sinks.
+    app.state.recent_buffer = bytearray()
+    app.state.pty_batch = bytearray()
+    app.state.pty_batch_flush_time = 0.0
+    app.state.central_pty_task = None
+    app.state._central_reader_stop = False
     app.state.current_session = config.session_name  # Track current session
     app.state.last_ws_connect = 0  # Timestamp of last WebSocket connection
     app.state.ws_connect_lock = asyncio.Lock()  # Prevent concurrent connection handling
@@ -1249,15 +1265,25 @@ def create_app(config: Config) -> FastAPI:
         if session not in valid_sessions:
             return JSONResponse({"error": f"Unknown session: {session}"}, status_code=400)
 
-        # Close current WebSocket connection
-        if app.state.active_client is not None:
-            try:
-                await app.state.active_client.close(code=4003)  # 4003 = switching repos
-            except Exception:
-                pass
-            app.state.active_client = None
+        # C2 (Phase 3.4): repo switch broadcasts a typed event instead
+        # of force-closing the connection. Each client decides whether
+        # to reattach or stay (multi-device pattern: laptop drops, phone
+        # follows). Was: close(code=4003) on active_client.
+        try:
+            from mobile_terminal.transport import broadcast_typed
+            await broadcast_typed(app, "repo_change", {"session": session}, level="info")
+        except Exception as e:
+            logger.debug(f"repo_change broadcast failed: {e}")
 
-        # Cancel read task
+        # Cancel central PTY reader so the next connection picks up the
+        # fresh PTY for the new session.
+        cpr = getattr(app.state, "central_pty_task", None)
+        if cpr is not None and not cpr.done():
+            app.state._central_reader_stop = True
+            cpr.cancel()
+        app.state.central_pty_task = None
+
+        # Cancel legacy read_task (per-handler — should be None after C1).
         if app.state.read_task is not None:
             app.state.read_task.cancel()
             app.state.read_task = None
@@ -1659,6 +1685,17 @@ def create_app(config: Config) -> FastAPI:
         if perm_scanner_fn:
             app.state.permission_scanner_task = asyncio.create_task(perm_scanner_fn())
 
+        # Start PermissionDaemon (Phase 1 — read-only shadow detector,
+        # runs alongside the scanner above for comparison; does NOT inject
+        # keys or emit banners). Lives in its own module so it can be
+        # removed cleanly if the rebuild is rolled back.
+        try:
+            from mobile_terminal.permission_daemon import PermissionDaemon
+            app.state.permission_daemon = PermissionDaemon(app, deps)
+            await app.state.permission_daemon.start()
+        except Exception as e:
+            logger.warning(f"PermissionDaemon failed to start: {e}", exc_info=True)
+
     @app.on_event("shutdown")
     async def shutdown():
         """Cleanup on shutdown."""
@@ -1671,6 +1708,9 @@ def create_app(config: Config) -> FastAPI:
         perm_task = getattr(app.state, 'permission_scanner_task', None)
         if perm_task and not perm_task.done():
             perm_task.cancel()
+        daemon = getattr(app.state, 'permission_daemon', None)
+        if daemon is not None:
+            await daemon.stop()
 
         if app.state.runtime.has_fd:
             app.state.runtime.close_fd()

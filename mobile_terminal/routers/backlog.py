@@ -6,6 +6,8 @@ from typing import Optional
 from fastapi import Depends, FastAPI, Query
 from fastapi.responses import JSONResponse
 
+from mobile_terminal.transport import broadcast_raw
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,15 +67,11 @@ def register(app: FastAPI, deps):
             origin = "api_report" if source == "agent" else "manual"
         item = app.state.backlog_store.add(project, summary, prompt, source, origin)
 
-        if app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "backlog_update",
-                    "action": "add",
-                    "item": asdict(item),
-                })
-            except Exception:
-                pass
+        await broadcast_raw(app, {
+            "type": "backlog_update",
+            "action": "add",
+            "item": asdict(item),
+        })
 
         return {"status": "ok", "item": asdict(item)}
 
@@ -93,15 +91,11 @@ def register(app: FastAPI, deps):
         if item is None:
             return JSONResponse({"error": "Backlog item not found"}, status_code=404)
 
-        if app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "backlog_update",
-                    "action": "update",
-                    "item": asdict(item),
-                })
-            except Exception:
-                pass
+        await broadcast_raw(app, {
+            "type": "backlog_update",
+            "action": "update",
+            "item": asdict(item),
+        })
 
         return {"status": "ok", "item": asdict(item)}
 
@@ -115,17 +109,13 @@ def register(app: FastAPI, deps):
         project = _resolve_project(project)
         success = app.state.backlog_store.remove(project, id)
 
-        if success and app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "backlog_update",
-                    "action": "remove",
-                    "item": {"id": id},
-                })
-            except Exception:
-                pass
-
-        if not success:
+        if success:
+            await broadcast_raw(app, {
+                "type": "backlog_update",
+                "action": "remove",
+                "item": {"id": id},
+            })
+        else:
             return JSONResponse({"error": "Backlog item not found"}, status_code=404)
         return {"status": "ok"}
 
@@ -163,15 +153,11 @@ def register(app: FastAPI, deps):
             source="agent", origin="jsonl_candidate",
         )
 
-        if app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "backlog_update",
-                    "action": "add",
-                    "item": asdict(item),
-                })
-            except Exception:
-                pass
+        await broadcast_raw(app, {
+            "type": "backlog_update",
+            "action": "add",
+            "item": asdict(item),
+        })
 
         return {"status": "ok", "item": asdict(item), "candidate_id": id}
 
@@ -186,15 +172,12 @@ def register(app: FastAPI, deps):
         cstore = app.state.candidate_store
         dismissed = cstore.dismiss(project, id)
 
-        if dismissed and app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "backlog_candidate",
-                    "action": "dismissed",
-                    "candidate_id": id,
-                })
-            except Exception:
-                pass
+        if dismissed:
+            await broadcast_raw(app, {
+                "type": "backlog_candidate",
+                "action": "dismissed",
+                "candidate_id": id,
+            })
 
         if not dismissed:
             return JSONResponse({"error": "Candidate not found"}, status_code=404)

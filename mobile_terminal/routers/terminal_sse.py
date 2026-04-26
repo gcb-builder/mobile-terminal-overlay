@@ -30,13 +30,31 @@ logger = logging.getLogger(__name__)
 
 
 class SSESink:
-    """ClientSink backed by an asyncio.Queue for SSE streaming."""
+    """ClientSink backed by an asyncio.Queue for SSE streaming.
+
+    Has TWO queues:
+      - ``self._queue`` (private): SSE-frame-encoded strings, drained by
+        the SSE generator and pushed out as "event: ..." frames.
+      - ``self.queue`` (registry): tagged (kind, payload) frames pushed by
+        broadcast_*. The per-sink writer task in transport.py drains
+        this and calls send_json / send_bytes / send_text, which in turn
+        encode + put into self._queue.
+    """
 
     def __init__(self) -> None:
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._connected: bool = True
         self.client_mode: str = "tail"
         self._last_overflow_log: float = 0.0
+        # Registry per-sink queue prereqs (mirrors WebSocketSink). Owned
+        # by SinkRegistry's writer task; producers append via
+        # transport._enqueue_frame, the writer drains under queue_lock.
+        from collections import deque
+        self.queue: deque = deque()
+        self.queue_event: asyncio.Event = asyncio.Event()
+        self.queue_lock: asyncio.Lock = asyncio.Lock()
+        self.drops_output: int = 0
+        self.drops_control: int = 0
 
     # ---- ClientSink protocol ------------------------------------------------
 
@@ -121,28 +139,9 @@ def register(app: FastAPI, deps):
         # Close any existing connection (single-client mode, cross-transport).
         # Bounded with a short timeout: if the previous client is on a
         # dead network (mobile WiFi→cellular switch, etc.) the close
-        # frame would otherwise wait at the TCP layer until the OS
-        # timeout (30-120s), blocking this new connection's setup and
-        # forcing the client into a reconnect-storm. 1s is plenty for a
-        # healthy close; anything longer is a dead socket and we just
-        # abandon it — the OLD handler's gather will tear it down once
-        # its tasks notice active_client changed.
-        if app.state.active_client is not None:
-            try:
-                await asyncio.wait_for(
-                    app.state.active_client.close(code=4002),
-                    timeout=1.0,
-                )
-                logger.info("Closed previous client connection (cross-transport)")
-            except asyncio.TimeoutError:
-                logger.warning("Previous client close timed out — abandoning (likely dead socket)")
-            except Exception:
-                pass
-        if app.state.read_task is not None:
-            app.state.read_task.cancel()
-            app.state.read_task = None
-
-        app.state.active_client = sink
+        # C2 (Phase 3.4): kicker removed. Multiple sinks coexist now.
+        app.state.active_client = sink  # legacy field — "most recent"
+        await app.state.sink_registry.register(sink)
 
         # Spawn tmux if not already running. Fresh PTY = drop pane
         # buffers for this session (see WS handler comment) and the
@@ -270,10 +269,11 @@ def register(app: FastAPI, deps):
             different shapes per transport.
             """
             KEEPALIVE_INTERVAL = 25
-            while app.state.active_client is sink and not state.connection_closed:
+            # C2: predicate is registry membership.
+            while sink in app.state.sink_registry and not state.connection_closed:
                 try:
                     await asyncio.sleep(KEEPALIVE_INTERVAL)
-                    if app.state.active_client is sink and not state.connection_closed:
+                    if sink in app.state.sink_registry and not state.connection_closed:
                         await sink._enqueue(": keepalive\n\n")
                 except Exception:
                     break
@@ -285,12 +285,20 @@ def register(app: FastAPI, deps):
         # ---- SSE generator ---------------------------------------------------
 
         async def event_generator():
-            # Spawn background tasks
-            read_task = asyncio.create_task(_tsess.read_from_terminal(state, app))
-            app.state.read_task = read_task
+            # C1 (Phase 3.3): central PTY reader runs at app level —
+            # this handler no longer spawns its own read_from_terminal.
+            _tsess.ensure_central_reader(app)
             keepalive_task = asyncio.create_task(server_keepalive())
             tail_task = asyncio.create_task(_tsess.tail_sender(state, app, deps))
             desktop_task = asyncio.create_task(_tsess.desktop_activity_monitor(state, app, deps))
+
+            # Track which path triggered the loop exit so the close log can
+            # explain it. Without this, "SSE connection closed" hides four
+            # different root causes (sink replaced, sentinel, HTTP disconnect,
+            # cancellation) — making SSE-flap RCA impossible.
+            close_reason = "unknown"
+            connect_at = time.time()
+            frames_yielded = 0
 
             try:
                 while sink.is_connected:
@@ -303,34 +311,47 @@ def register(app: FastAPI, deps):
                         continue
 
                     if frame is None:
-                        # Sentinel — stream is done
+                        # Sentinel — stream is done (someone called sink.close())
+                        close_reason = "sentinel"
                         break
 
                     yield frame
+                    frames_yielded += 1
 
                     # Check if client disconnected
                     if await request.is_disconnected():
+                        close_reason = "http_disconnect"
                         break
+                else:
+                    # while-condition false: sink.is_connected = False (e.g.,
+                    # cross-transport kicker called .close() on this sink).
+                    close_reason = "sink_disconnected"
             except asyncio.CancelledError:
-                pass
+                close_reason = "cancelled"
             except Exception as e:
-                logger.error(f"SSE generator error: {e}")
+                close_reason = f"exception:{type(e).__name__}"
+                logger.error(f"SSE generator error: {e}", exc_info=True)
             finally:
                 state.connection_closed = True
-                read_task.cancel()
                 keepalive_task.cancel()
                 tail_task.cancel()
                 desktop_task.cancel()
                 if app.state.active_client is sink:
                     app.state.active_client = None
                     app.state.read_task = None
+                # Phase 3.2 bridge: always unregister, idempotent.
+                await app.state.sink_registry.unregister(sink)
 
                 if state.pty_died:
                     logger.warning("SSE stream ended — PTY died")
                     runtime.close_fd()
 
                 sink._connected = False
-                logger.info("SSE connection closed")
+                lifetime = time.time() - connect_at
+                logger.info(
+                    f"SSE connection closed: reason={close_reason} "
+                    f"lifetime={lifetime:.1f}s frames={frames_yielded}"
+                )
 
         return StreamingResponse(
             event_generator(),
@@ -402,21 +423,8 @@ def register(app: FastAPI, deps):
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)
 
-        # If this looks like a permission/menu response (single-char y/n
-        # or yes/no, single digit, or empty Enter), bump the
-        # permission_scanner cooldown for this pane so the scanner
-        # doesn't fire its own y a few seconds later on the now-cleared
-        # prompt — that landed as a stray turn after the agent was ready.
-        try:
-            t = (text_data or "").strip().lower()
-            if t in ("y", "n", "yes", "no", "") or (len(t) == 1 and t.isdigit()):
-                cd = getattr(app.state, "permission_scanner_cooldown", None)
-                if cd is not None and target:
-                    cd[target] = time.time()
-                    logger.info(f"[TEXT-SEND] bumped scanner cooldown for {target} (response={t!r})")
-        except Exception:
-            pass
-
+        # (was: bumping app.state.permission_scanner_cooldown — removed v=438
+        # for the same reason as terminal_io.py.)
         app.state.last_ws_input_time = time.time()
         return {"ok": True}
 

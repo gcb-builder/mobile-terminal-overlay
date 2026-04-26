@@ -153,7 +153,9 @@ class TestHardGuardBypass:
         assert r1.json()["reason"] == "repo_rule"
         # Server should have sent y + Enter
         assert len(sent) == 2
-        assert sent[0][1] == "y"
+        # v=408: send "1" (option-1 = Yes) instead of "y" — Claude's
+        # multi-option prompts don't accept "y" as a valid choice.
+        assert sent[0][1] == "1"
         assert sent[1][1] == "Enter"
         # Audit should have an entry
         assert audit.exists()
@@ -259,7 +261,9 @@ class TestHardGuardBypass:
         assert r.json()["decision"] == "allow"
         assert r.json()["reason"] == "repo_rule"
         assert len(sent) == 2
-        assert sent[0][1] == "y"
+        # v=408: send "1" (option-1 = Yes) instead of "y" — Claude's
+        # multi-option prompts don't accept "y" as a valid choice.
+        assert sent[0][1] == "1"
 
     def test_decide_endpoint_rejects_missing_fields(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient

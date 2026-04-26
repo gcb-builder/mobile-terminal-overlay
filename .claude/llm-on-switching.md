@@ -158,194 +158,390 @@ slots:
 
 | Need | Status | Gap |
 |---|---|---|
-| Centralized service files | Done | `llm-infra/services/` |
+| Centralized service files | Done (Phase 1) | 10 files in `llm-infra/services/`, all deployed as symlinks |
 | Start/stop via systemd | Done | `model_manager.py` uses systemd backend |
 | Conflict detection (GPU) | Done | `_LLM_TYPES` in model_manager |
 | Idle timeout + auto-stop | Done | Reaper loop |
 | Clean public API on model_manager | Done | `is_running()` public, no private access from callers |
-| **Auto-swap-back to default** | **Partial** | Reaper stops idle models but doesn't restart default |
-| **HTTP endpoint for cross-repo** | **Missing** | `ensure_model()` only callable within SecondBrain |
-| **geo-cv models in orchestrator** | **Missing** | Only fast/reason/vision/embed registered |
-| **Orchestrator as standalone** | **Missing** | Embedded in SecondBrain's FastAPI app |
-| **Mamba restart_interval** | **Missing** | No concept of periodic restarts |
+| Auto-swap-back to default | Done (Phase 2) | Reaper auto-starts default_slot after reaping |
+| HTTP endpoint for cross-repo | Done (Phase 2) | `POST http://localhost:8099/ensure?slot=` |
+| geo-cv models in orchestrator | Done (Phase 2) | `geocv_vlm` slot in config.yaml |
+| Orchestrator as standalone | Done (Phase 2) | `gpu-orchestrator.service` on port 8099 |
+| Mamba restart_interval | Done (Phase 2) | `/ping` returns `restart_needed` at threshold |
+| SecondBrain calls orchestrator | Done (Phase 3) | `OrchestratorBackend` in model_backend.py, reaper removed |
+| geo-cv calls orchestrator | Done (Phase 4) | `_maybe_restart_vlm()` calls /ping, /stop, /ensure on 8099 |
 
 ## 5. Implementation Plan
 
-### Phase 1: Service file consolidation (no code changes)
+### Phase 1: Service file consolidation — DONE (2026-03-30)
 
-1. Add `DO_NOT_TRACK=1` environment to all `llm-infra/services/*.service` files.
-2. Fix `--limit-mm-per-prompt` JSON format in `vllm-vlm-vl.service` (vLLM 0.17 change).
-3. Ensure all services have `KillMode=control-group` and `TimeoutStopSec=60`.
-4. Create `vllm-geocv-9b.service` for Qwen3.5-9B Mamba:
-   ```ini
-   [Unit]
-   Description=vLLM geo-cv VLM (Qwen3.5-9B Mamba hybrid)
-   After=network-online.target
-   Conflicts=vllm-fast.service vllm-fast-q35.service vllm-reason.service vllm-vision.service
+All 10 service files consolidated in `llm-infra/services/` as single source of truth:
 
-   [Service]
-   Type=simple
-   Environment="DO_NOT_TRACK=1"
-   ExecStart=%h/dev/secondbrain/.venv-vllm-0.17/bin/python \
-     -m vllm.entrypoints.openai.api_server \
-     --model %h/dev/secondbrain/data/models/Qwen3.5-9B \
-     --served-model-name Qwen/Qwen3.5-9B \
-     --max-model-len 4096 --host 127.0.0.1 --port 8002 \
-     --gpu-memory-utilization 0.70 --max-num-batched-tokens 4096 \
-     --mamba-ssm-cache-dtype float32 --dtype bfloat16 \
-     --max-cudagraph-capture-size 8
-   KillSignal=SIGTERM
-   KillMode=control-group
-   TimeoutStopSec=60
+- `DO_NOT_TRACK=1` on all 10 files
+- `KillMode=control-group` on all 9 vLLM files (embed-cpu has no KillMode, CPU-only)
+- `TimeoutStopSec=60` on all vLLM files (embed-cpu keeps 10)
+- All Conflicts= lines updated to include vllm-fast-27b and vllm-vision
+- All paths normalized to `llm-infra/.venv-vllm-0.17` and `llm-infra/models/` (symlinks to secondbrain)
+- 3 new files: `vllm-fast-27b.service`, `vllm-vision.service`, `vllm-geocv-9b.service`
+- `install-services.sh` updated (10 services, removed tuvok-api)
+- `start-all.sh` no longer symlinks from secondbrain — calls `install-services.sh` instead
+- `README.md` updated with full port mapping
+- All 10 deployed as symlinks via `install-services.sh`
+- SecondBrain `profile.json` references same service names — no changes needed
+- Running processes (geo-cv eval, embed-cpu) unaffected
 
-   [Install]
-   WantedBy=default.target
-   ```
-5. Run `install-services.sh` to deploy all files to `~/.config/systemd/user/`.
+### Phase 2: Standalone orchestrator — DONE (2026-03-30)
 
-### Phase 2: Standalone orchestrator
+Created `llm-infra/orchestrator/` with config-driven GPU model lifecycle management:
 
-**Prep done:** model_manager.py cleaned up — public `is_running()` method, all private `_models`/`_is_active` access removed from callers. Extraction surface is now clean.
-
-1. Create `llm-infra/orchestrator/` directory.
-2. Extract `model_manager.py` from SecondBrain:
-   - Replace `ModelType` enum with config-driven slots from `config.yaml`.
-   - Generalize `ensure_model()`, `stop_model()`, `record_request()`.
-   - Add `restart_interval` support: track request count per slot, auto-stop→start when threshold reached.
-   - Add swap-back: when a non-default model is reaped, auto-start `default_slot`.
-3. Create `server.py` — minimal FastAPI (~100 lines):
-   - `POST /ensure?slot=` — stop conflicts, start, wait for health, return.
-   - `POST /stop?slot=` — stop model.
-   - `POST /ping?slot=` — update idle tracker.
-   - `GET /status` — all slots with state/idle/model/VRAM.
-   - `POST /config` — runtime config updates.
-4. Create `gpu-orchestrator.service`:
-   ```ini
-   [Unit]
-   Description=GPU Model Orchestrator
-   After=network.target
-
-   [Service]
-   Type=simple
-   ExecStart=%h/dev/tools/llm-infra/orchestrator/venv/bin/uvicorn \
-     orchestrator.server:app --host 127.0.0.1 --port 8099
-   Restart=always
-   RestartSec=3
-
-   [Install]
-   WantedBy=default.target
-   ```
-5. Add to `start-all.sh`.
+- `model_manager.py` — generalized from SecondBrain's, config-driven slots (not enum)
+  - `ensure()` — stop GPU conflicts, start service, wait for health
+  - `stop()` — stop a slot
+  - `ping()` — update idle tracker, returns `restart_needed` when restart_interval exceeded
+  - `get_status()` — all slots with state, idle time, request count
+  - `update_config()` — runtime idle timeout and default slot changes
+  - Idle reaper — discovers external starts, reaps idle models, auto-starts default_slot after reap
+  - `restart_interval` support for Mamba degradation (geocv_vlm: every 40 requests)
+- `server.py` — FastAPI on port 8099 (~60 lines): /ensure, /stop, /ping, /status, /config, /health
+- `config.yaml` — 9 slots (fast, fast_alt, fast_legacy, reason, vision, vision_embed, vlm_legacy, geocv_vlm, embed)
+- `requirements.txt` — fastapi, uvicorn, httpx, pyyaml
+- `gpu-orchestrator.service` — always-on systemd service, Restart=always
+- Added to `install-services.sh` (auto-enabled on boot)
+- Verified: all endpoints responding, detects embed-cpu as running, reaper active
 
 ### Phase 3: SecondBrain integration
 
-Replace SecondBrain's `model_manager.py` (~250 lines) with a thin HTTP client:
+Replace SecondBrain's `model_manager.py` internals with a thin HTTP client that preserves the existing public API.
+
+#### What changes
+
+**1. New `OrchestratorBackend` replaces `SystemdBackend`**
+
+Add a new `ModelBackend` subclass that delegates to the orchestrator. The `ModelBackend` abstraction already exists (`model_backend.py`) with `SystemdBackend` (Linux) and `ExternalBackend` (macOS/remote). The orchestrator client is a third backend:
+
+**Slot name vs service name:** The `ModelBackend` interface passes `service` (the systemd unit name, e.g., `"vllm-fast-27b"`), but the orchestrator expects slot names (`"fast"`). Rather than add a reverse lookup to the orchestrator, change model_manager.py to pass the **slot name** (the `ModelType` value) to the backend. This is a one-line change at each call site inside model_manager:
 
 ```python
+# Before (passes service name):
+await self._backend.start(info.service)
+# After (passes slot name):
+await self._backend.start(model_type.value)  # "fast", "reason", "vision"
+```
+
+`SystemdBackend` needs the service name, `OrchestratorBackend` needs the slot name. Resolve with a slot→service mapping on the backend:
+
+```python
+class OrchestratorBackend(ModelBackend):
+    """Delegate lifecycle to the standalone GPU orchestrator (port 8099)."""
+
+    def __init__(self, base_url: str = "http://localhost:8099"):
+        self._base = base_url
+        self._client = httpx.AsyncClient(base_url=base_url, timeout=5.0)
+
+    async def start(self, slot: str) -> bool:
+        resp = await self._client.post("/ensure", params={"slot": slot}, timeout=120)
+        return resp.status_code == 200
+
+    async def stop(self, slot: str) -> bool:
+        resp = await self._client.post("/stop", params={"slot": slot}, timeout=30)
+        return resp.status_code == 200
+
+    def is_active(self, slot: str) -> bool:
+        import httpx as httpx_sync
+        try:
+            resp = httpx_sync.get(f"{self._base}/status", timeout=5)
+            if resp.status_code != 200:
+                return False
+            return resp.json().get(slot, {}).get("status") == "running"
+        except httpx_sync.HTTPError:
+            return False
+
+    async def assign(self, slot: str, profile: "ModelProfile") -> None:
+        # Model assignment still needs local service file rewrite —
+        # orchestrator doesn't own service file contents.
+        from app.services.model_catalog import write_service
+        write_service(slot, profile)
+
+    async def ping(self, slot: str) -> None:
+        """Update orchestrator idle tracker."""
+        try:
+            await self._client.post("/ping", params={"slot": slot}, timeout=5)
+        except httpx.HTTPError:
+            pass  # fire-and-forget
+
+    async def close(self):
+        await self._client.aclose()
+```
+
+And `SystemdBackend` wraps the slot→service lookup internally:
+
+```python
+class SystemdBackend(ModelBackend):
+    def __init__(self, slot_services: dict[str, str]):
+        # e.g. {"fast": "vllm-fast-27b", "reason": "vllm-reason", "vision": "vllm-vision"}
+        self._services = slot_services
+
+    async def start(self, slot: str) -> bool:
+        return self._systemctl("start", self._services[slot])
+
+    async def stop(self, slot: str) -> bool:
+        return self._systemctl("stop", self._services[slot])
+
+    def is_active(self, slot: str) -> bool:
+        return self._check_active(self._services[slot])
+    # ...
+```
+
+This makes the `ModelBackend` interface slot-oriented (not service-oriented), which is the right abstraction. Both backends receive `"fast"` and resolve it to their own mechanism — orchestrator HTTP or systemctl.
+
+Key design notes:
+- **Shared `httpx.AsyncClient`** with connection pooling — no per-call client creation.
+- **`is_active()` reads `/status` response** — flat dict keyed by slot name, each with `"status": "running"/"stopped"/"starting"`. NOT nested under `"slots"`.
+- **`assign()` stays local** — the orchestrator manages lifecycle (start/stop) but doesn't own service file contents. Model assignment (rewriting systemd units) remains a SecondBrain concern via `model_catalog.write_service()`.
+- **`ping()` added** — new method not in base `ModelBackend`. Called after each LLM request to update idle tracking.
+
+**2. Backend selection in `create_default_backend()`**
+
+```python
+def create_default_backend() -> ModelBackend:
+    profile = get_profile()
+    if profile.platform == "linux" and _orchestrator_reachable():
+        return OrchestratorBackend()
+    if profile.platform == "linux":
+        return SystemdBackend()  # fallback if orchestrator not installed yet
+    return ExternalBackend()
+```
+
+This allows gradual migration — `SystemdBackend` still works if orchestrator isn't running. `ExternalBackend` (macOS) is unaffected.
+
+**3. Remove the reaper loop from model_manager**
+
+The orchestrator owns idle tracking and reaping. Remove from `model_manager.py`:
+- The 60s `_reaper_loop` background task
+- `_reap_idle_models()`
+
+**But** keep the sweep logic accessible. The `pre_reap_sweep` and `post_reap_vision_sweep` contain SecondBrain business logic (invoice extraction, categorization, matching, vision batch). These are not model management — they're application-level workflows that happen to coincide with model lifecycle.
+
+**Move sweep orchestration to `heartbeat.py`:**
+
+Currently `full_sweep` already lives in `heartbeat.py` and runs on a 3 AM cron. But the reaper also triggers mini-sweeps opportunistically before stopping idle models. After removing the reaper:
+- The **3 AM `full_sweep`** continues unchanged — it calls `ensure_model("fast")`, runs LLM work, calls `ensure_model("vision")`, runs vision batch, then lets the orchestrator reap when idle.
+- **Opportunistic mini-sweeps are lost** — the reaper's "drain pending work before stopping" behavior goes away. This is acceptable: the 3 AM sweep catches everything, and interactive work (chat, manual upload) calls `ensure_model` on demand.
+- If opportunistic sweeps are needed later, add a heartbeat beat that runs every 15 min and checks for pending work. Separate concern from model lifecycle.
+
+**4. `model_names` dict — keep reading from profile**
+
+`model_manager.model_names[ModelType.FAST]` returns the served model name (e.g., `"Qwen/Qwen3.5-27B"`). Callers use this to construct chat completion requests. This comes from `profile.json` capabilities, not from the orchestrator. **Keep it as-is** — read from profile at init time. The orchestrator doesn't need to know or return model names.
+
+**5. Add `/ping` calls after LLM requests**
+
+Each LLM call site should ping the orchestrator to update idle tracking:
+
+```python
+result = await llm_call(...)
+await model_manager.ping("fast")  # fire-and-forget, via OrchestratorBackend
+```
+
+Add `ping()` as a pass-through on `ModelManager`:
+
+```python
+async def ping(self, model_type: ModelType) -> None:
+    info = self._models.get(model_type)
+    if info and hasattr(self._backend, "ping"):
+        await self._backend.ping(info.service)
+```
+
+**6. Fallback when orchestrator is down**
+
+Decision: trust `Restart=always` on `gpu-orchestrator.service` (Q1 option a). If orchestrator is unreachable, `ensure_model()` returns `False` and callers handle it the same way they handle "model failed to start" today. No direct systemctl fallback — that reintroduces the reaper-kills-external-starts problem.
+
+The `create_default_backend()` check at startup provides a softer fallback: if the orchestrator isn't installed/running when SecondBrain starts, it falls back to `SystemdBackend`. But once `OrchestratorBackend` is selected, it stays — no runtime fallback to systemctl.
+
+#### What does NOT change
+
+- **Call sites** — all 8 callers already use the public API (`ensure_model`, `is_running`). The slot mapping is internal to model_manager. No caller changes needed.
+- **`assign_model()`** — stays in model_manager. Calls `model_catalog.write_service()` locally, then delegates start/stop to orchestrator backend. Used for runtime model swaps (e.g., switching fast from 27B to 35B).
+- **`model_names` dict** — populated from `profile.json` at init. Not affected by backend change.
+- **`model_backend.py`** — `SystemdBackend` and `ExternalBackend` remain for non-orchestrator environments. `OrchestratorBackend` is added alongside them.
+- **heartbeat.py** — `full_sweep` still runs on cron. It calls `ensure_model("fast")` and `ensure_model("vision")` as before — those now go through the orchestrator.
+- **`.env` config** — `FAST_MODEL_NAME`, `FAST_SERVICE` still used for LLM endpoint URL construction. The orchestrator handles service lifecycle, but SecondBrain still needs to know which port to send chat completions to.
+
+#### Call sites (no changes needed, for reference)
+
+| File | Uses | Model type |
+|---|---|---|
+| `brain_router.py` | `ensure_model("fast")` | chat, tool calling, retry |
+| `invoice_extractor.py` | `ensure_model("fast")` | invoice field extraction |
+| `finance_llm_categorization.py` | `ensure_model("fast")` | transaction categorization |
+| `finance_llm_matching.py` | `ensure_model("fast")` | transaction matching |
+| `finance_counterparty_resolution.py` | `ensure_model("fast")` | counterparty resolution |
+| `entity_resolution.py` | `ensure_model("fast")` | entity dedup |
+| `document_vision.py` | `ensure_model("vision")` | batch doc OCR |
+| `memory_extractor.py` / `memory_consolidator.py` | `ensure_model("fast")` | memory ops |
+| `heartbeat.py` (`full_sweep`) | `ensure_model("fast")`, `ensure_model("vision")` | 3 AM sweep |
+
+#### Risks
+
+- **Sweep atomicity (Q4)** — `full_sweep` does fast→vision→stop in sequence (~6 min). With an external orchestrator, geo-cv could steal the GPU between steps. In practice the 15-min idle timeout makes this unlikely — geo-cv batches are long-running and won't start mid-sweep by coincidence. If it becomes a problem, the lease concept (Q4 option a) can be added later.
+- **Orchestrator latency** — adds ~5ms per `/ensure` call (localhost HTTP). Negligible vs model startup time (~35s).
+- **Lost opportunistic sweeps** — the reaper's "drain work before stopping" is removed. The 3 AM sweep covers this, but pending work between sweeps waits longer. Acceptable tradeoff; add a periodic heartbeat beat later if needed.
+
+#### Estimated scope
+
+~100 lines removed (reaper loop, `_reap_idle_models`, `_pre_reap_sweep` trigger). ~80 lines added (`OrchestratorBackend`, `ping()` pass-through, backend selection). `SystemdBackend` and `ExternalBackend` stay. Medium effort, low risk if orchestrator is stable. Can be done in one session.
+
+### Phase 4: geo-cv integration — DONE (2026-04-01)
+
+Replaced geo-cv's subprocess-based vLLM management with orchestrator HTTP calls in `src/pipeline_v2/orchestrator.py` (lines 6205-6282).
+
+#### What exists today
+
+The eval pipeline (`eval_validated_listings.py` / orchestrator module) has:
+- `_maybe_restart_vlm()` — kills vLLM via `pkill -f vllm`, starts via `subprocess.Popen`, waits for health
+- Auto-restart every ~40 VLM calls (Mamba state corruption detection)
+- Health check wait loop after restart
+- Hardcoded vLLM command-line args, paths, and ports
+
+**Problem:** `pkill` doesn't kill orphaned EngineCore processes. When the API server dies but EngineCore survives (reparented to PID 1), the restart launches a second EngineCore that fails to bind the GPU or silently shares VRAM. This caused 2 ghost VRAM failures on 2026-03-30 alone.
+
+#### What changes
+
+| Current (subprocess) | Phase 4 (orchestrator) | Benefit |
+|---|---|---|
+| `pkill -f vllm` | `POST /stop?slot=geocv_vlm` | Clean shutdown via `systemctl stop` — `KillMode=control-group` kills ALL cgroup processes including orphan EngineCores |
+| `subprocess.Popen(vllm...)` | `POST /ensure?slot=geocv_vlm` | Orchestrator handles GPU conflicts (stops 27B first if running), waits for health |
+| No idle tracking | `POST /ping` every ~10 listings | Prevents orchestrator reaper from killing 9B mid-batch |
+| Ghost VRAM on failure | Orchestrator uses systemd | `Restart=always` + `KillMode=control-group` eliminates ghost VRAM |
+| Hardcoded paths/ports | Read from orchestrator `/status` | Single source of truth for model endpoints |
+
+#### Implementation
+
+**1. Replace `_maybe_restart_vlm()` with orchestrator calls:**
+
+```python
+import httpx
+
 ORCHESTRATOR = "http://localhost:8099"
 
-async def ensure_model(slot: str) -> bool:
-    resp = await httpx.post(f"{ORCHESTRATOR}/ensure?slot={slot}", timeout=120)
+def ensure_vlm() -> bool:
+    """Start geo-cv VLM via orchestrator. Blocks until healthy."""
+    resp = httpx.post(f"{ORCHESTRATOR}/ensure?slot=geocv_vlm", timeout=120)
+    return resp.status_code == 200 and resp.json().get("ok", False)
+
+def stop_vlm() -> bool:
+    """Stop geo-cv VLM via orchestrator. Clean cgroup shutdown."""
+    resp = httpx.post(f"{ORCHESTRATOR}/stop?slot=geocv_vlm", timeout=30)
     return resp.status_code == 200
 
-async def stop_model(slot: str) -> bool:
-    resp = await httpx.post(f"{ORCHESTRATOR}/stop?slot={slot}", timeout=30)
-    return resp.status_code == 200
-
-async def record_request(slot: str):
-    await httpx.post(f"{ORCHESTRATOR}/ping?slot={slot}", timeout=5)
+def ping_vlm() -> dict:
+    """Update idle tracker. Returns restart_needed if threshold exceeded."""
+    resp = httpx.post(f"{ORCHESTRATOR}/ping?slot=geocv_vlm", timeout=5)
+    return resp.json() if resp.status_code == 200 else {}
 ```
 
-Call sites to update:
-- `brain_router.py` — chat, tool calling, retry logic
-- `invoice_extractor.py` — invoice field extraction
-- `finance_llm_categorization.py` — transaction categorization
-- `finance_llm_matching.py` — transaction matching
-- `finance_counterparty_resolution.py` — counterparty resolution
-- `entity_resolution.py` — entity dedup
-- `document_vision.py` — batch doc OCR
-- `memory_extractor.py` / `memory_consolidator.py`
-
-### Phase 4: geo-cv integration
-
-Add orchestrator preflight to batch scripts (no pipeline code changes):
+**2. Eval loop integration:**
 
 ```python
-# Before scoring
-httpx.post("http://localhost:8099/ensure?slot=geocv_vlm", timeout=120)
+# Before scoring batch
+ensure_vlm()
 
-# During scoring (every ~10 listings)
-httpx.post("http://localhost:8099/ping?slot=geocv_vlm", timeout=5)
+for i, listing in enumerate(listings):
+    # Score listing via VLM on port 8002
+    result = score_listing(listing)
 
-# Mamba degradation restart (every ~40 listings)
-httpx.post("http://localhost:8099/stop?slot=geocv_vlm", timeout=30)
-httpx.post("http://localhost:8099/ensure?slot=geocv_vlm", timeout=120)
+    # Ping every 10 listings to prevent reaper kill
+    if i % 10 == 0:
+        ping_result = ping_vlm()
 
-# After scoring — orchestrator auto-starts default_slot after idle timeout
+    # Mamba degradation restart every ~40 listings
+    # geo-cv initiates explicitly — it knows when degradation happens (Q3 option c)
+    if i > 0 and i % 40 == 0:
+        stop_vlm()
+        ensure_vlm()
+
+# After batch — let orchestrator reap and swap back to default
 ```
 
-For embedding precompute:
+**3. Fallback when orchestrator is down:**
+
+If orchestrator is unreachable, fall back to current subprocess method. Unlike SecondBrain (where fallback reintroduces the reaper conflict), geo-cv has no reaper — direct subprocess is safe as a degraded mode. Log a warning.
+
+```python
+def ensure_vlm() -> bool:
+    try:
+        resp = httpx.post(f"{ORCHESTRATOR}/ensure?slot=geocv_vlm", timeout=120)
+        if resp.status_code == 200 and resp.json().get("ok"):
+            return True
+    except httpx.HTTPError:
+        logger.warning("Orchestrator unreachable, falling back to subprocess")
+    return _start_vlm_subprocess()  # existing method, kept as fallback
+```
+
+**4. Remove hardcoded paths/ports:**
+
+The VLM endpoint URL (`http://127.0.0.1:8002/v1`) can be read from orchestrator `/status` response (the `geocv_vlm` slot knows its health URL). But for simplicity, keep the port hardcoded in geo-cv config — it's stable and matches `config.yaml`.
+
+#### Embedding precompute (batch, not production)
+
+For large-batch embedding precompute (thousands of images via vLLM pooling mode):
+
 ```python
 httpx.post("http://localhost:8099/ensure?slot=vision_embed", timeout=120)
 # ... run batch ...
 httpx.post("http://localhost:8099/stop?slot=vision_embed", timeout=30)
 ```
 
-### Phase 5: Cleanup
+Per-listing production embedding uses in-process HuggingFace (no orchestrator needed).
 
-- Retire `Qwen3-VL-30B-A3B` local VLM (deprecated by 9B + remote APIs).
-- Evaluate removing `DeepSeek-R1-8B` (rare JSON fallback — retry on 27B instead).
-- Symlink service files from `llm-infra/services/` → `~/.config/systemd/user/` instead of copying, so fixes propagate immediately.
+#### Open question answers from geo-cv experience
+
+**Q2 (concurrent /ensure):** Option (a) with timeout. geo-cv batch scoring can wait 2 minutes for the GPU. If SecondBrain is mid-sweep, geo-cv retries. Batch is not latency-sensitive.
+
+**Q3 (Mamba restart vs in-flight):** Option (c). geo-cv initiates restarts explicitly. It knows exactly when degradation happens (every ~40 calls). The orchestrator doesn't need to track Mamba state — geo-cv calls stop + ensure when it detects the threshold.
+
+#### Estimated scope
+
+~50 lines removed (`_maybe_restart_vlm()` subprocess logic, hardcoded vLLM paths). ~40 lines added (orchestrator HTTP client, ping loop, fallback). Low risk — orchestrator is already running and tested. The subprocess fallback means no regression if orchestrator is down.
+
+### Phase 5: Cleanup — DONE (2026-04-02)
+
+- Removed `fast_legacy` slot (Qwen3-32B-AWQ) from orchestrator config — replaced by 27B
+- Removed `vlm_legacy` slot (Qwen3-VL-30B-A3B) from orchestrator config — deprecated by 9B + remote APIs
+- Service files (`vllm-fast.service`, `vllm-vlm-vl.service`) kept on disk but unregistered in orchestrator
+- `DeepSeek-R1-8B` (`reason` slot) kept — still referenced by SecondBrain as JSON fallback; evaluate removal later based on usage logs
+- Symlink deployment already done in Phase 1
+- SecondBrain `start-all.sh` and `install-services.sh` already updated (done in separate session) — no longer references `infra/systemd-user/` for vLLM services
+- Orchestrator restarted, 7 active slots confirmed
 
 ## 6. Open Questions
 
-### Q1: Orchestrator availability
+### Q1: Orchestrator availability — DECIDED: option (a)
 
-If `gpu-orchestrator.service` crashes, neither SecondBrain nor geo-cv can start models. Options:
-- **a)** Trust `Restart=always` — downtime is ~3s, acceptable.
-- **b)** Clients fall back to direct `systemctl` calls when orchestrator is unreachable. Adds complexity and reintroduces the reaper-kills-external-starts problem.
-- **c)** Orchestrator is so simple (~100 lines) that crashes are unlikely. Monitor via systemd `OnFailure=` notification.
+Trust `Restart=always` — downtime is ~3s, acceptable. SecondBrain falls back to `SystemdBackend` if orchestrator is down at startup. geo-cv falls back to subprocess method if orchestrator is unreachable mid-batch.
 
-### Q2: Concurrent `/ensure` — who wins?
+### Q2: Concurrent `/ensure` — DECIDED: option (a) with timeout
 
-SecondBrain sweep calls `ensure?slot=fast` while geo-cv calls `ensure?slot=geocv_vlm` simultaneously. The orchestrator needs a mutex, but what's the policy?
-- **a)** First-come-first-served — whoever grabs the lock wins, other blocks until slot is free.
-- **b)** Priority-based — SecondBrain (interactive) preempts geo-cv (batch). Requires a priority field per slot.
-- **c)** Reject with 409 Conflict — let the client retry. Simple but noisy.
+First-come-first-served. geo-cv batch scoring can wait 2 minutes for the GPU. If SecondBrain is mid-sweep, geo-cv blocks on `/ensure` until the slot is free. Batch is not latency-sensitive. The orchestrator's per-slot `asyncio.Lock` already provides this behavior.
 
-### Q3: Mamba restart vs in-flight requests
+### Q3: Mamba restart vs in-flight requests — DECIDED: option (c)
 
-`restart_interval: 40` triggers stop→start after 40 requests. If a VLM call is in-flight, it gets a connection error. Options:
-- **a)** Orchestrator tracks in-flight count, waits for zero before restarting.
-- **b)** geo-cv's responsibility — retry on 503/connection error. Simpler orchestrator.
-- **c)** geo-cv initiates restarts explicitly (current Phase 4 pattern) instead of orchestrator auto-restarting.
+geo-cv initiates restarts explicitly. It knows exactly when degradation happens (every ~40 VLM calls). The orchestrator doesn't need to track Mamba state — geo-cv calls `stop` + `ensure` when it detects the threshold. The `restart_interval` field in config.yaml is informational; `/ping` returns `restart_needed: true` as a hint, but the client decides when to act.
 
-### Q4: Sweep atomicity
+### Q4: Sweep atomicity — DECIDED: option (b), revisit if needed
 
-SecondBrain sweep does stop-fast→start-vision→stop-vision in sequence (~6 min). If geo-cv calls `/ensure?slot=geocv_vlm` between steps 6 and 7, it steals the GPU. Options:
-- **a)** Add a "lease" or "transaction" concept — `POST /lease?slots=fast,vision&duration=600` locks both slots for the caller.
-- **b)** The 15-min idle timeout is sufficient — geo-cv batches are long-running and unlikely to start mid-sweep by coincidence.
-- **c)** SecondBrain sweep calls `/ensure` for each step individually, and if preempted, retries after the other model is reaped.
+SecondBrain-specific concern. The sweep (fast→vision→stop, ~6 min) is a SecondBrain workflow managed by `heartbeat.py`. The 15-min idle timeout provides sufficient margin — geo-cv batches are long-running and won't start mid-sweep by coincidence. If it becomes a problem, add a lease concept later.
 
-### Q5: Should `embed-cpu` be orchestrator-managed?
+### Q5: Should `embed-cpu` be orchestrator-managed? — DECIDED: option (b)
 
-Config shows it as a slot with `conflict_group: null`. It's always-on and has no GPU conflicts. Options:
-- **a)** Remove from orchestrator config — leave as standalone systemd service. Less complexity, same outcome.
-- **b)** Keep in orchestrator for unified `/status` visibility, but never stop/swap it.
+Keep in orchestrator for `/status` visibility only. `embed-cpu` is SecondBrain-specific (text embeddings for RAG), always-on, CPU-only, no GPU conflicts. The orchestrator never stops or swaps it — it just shows up in `/status` so operators can see the full picture.
 
-### Q6: vLLM venv ownership
+### Q6: vLLM venv ownership — RESOLVED: option (c)
 
-The `vllm-geocv-9b.service` references `secondbrain/.venv-vllm-0.17/`. If the orchestrator lives in `llm-infra/`, geo-cv's service depending on SecondBrain's venv is a coupling problem. Options:
-- **a)** Move the vLLM venv to `llm-infra/.venv-vllm/` — all services reference it. Single install point.
-- **b)** Each repo maintains its own venv — duplication but no cross-repo dependency.
-- **c)** Symlink `llm-infra/.venv-vllm` → `secondbrain/.venv-vllm-0.17/` as a short-term bridge.
+All service files now reference `llm-infra/.venv-vllm-0.17/` which is a symlink to `secondbrain/.venv-vllm-0.17/`. Single install point, no duplication. Applied in Phase 1.
 
-### Q7: Service file symlinks vs copies
+### Q7: Service file symlinks vs copies — RESOLVED
 
-Phase 5 proposes symlinks from `llm-infra/services/` → `~/.config/systemd/user/`. systemd resolves symlinks at `daemon-reload` time, so edits to the source propagate after reload. But the current approach uses copies via `install-services.sh`. Questions:
-- Was there a specific reason copies were chosen over symlinks? (Permissions, SELinux, WSL quirk?)
-- Does `systemctl --user` handle symlinks correctly on this WSL2 setup?
-- Worth testing before committing to Phase 5.
+`install-services.sh` now uses `ln -sf` (symlinks). Tested and working on WSL2. All 11 service files are symlinks from `~/.config/systemd/user/` → `llm-infra/services/`. `daemon-reload` picks up changes after editing the source. Applied in Phase 1.
 
 ## 7. Operational Reference
 

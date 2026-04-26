@@ -184,12 +184,9 @@ def register(app: FastAPI, deps):
         # Atomic write: text + carriage return
         data = (text + "\r").encode("utf-8")
 
-        # Queue the send (will wait for quiet period and send ACK)
-        success = await app.state.input_queue.send(
-            msg_id,
-            data,
-            app.state.active_client
-        )
+        # Queue the send (will wait for quiet period and send ACK).
+        # Pass `app` so the writer can broadcast the ACK to every sink.
+        success = await app.state.input_queue.send(msg_id, data, app)
 
         if success:
             return {"status": "ok", "id": msg_id}
@@ -255,15 +252,11 @@ def register(app: FastAPI, deps):
         except Exception as e:
             return JSONResponse({"error": str(e), "id": msg_id}, status_code=500)
 
-        # Send ACK via WebSocket if connected
-        if app.state.active_client:
-            try:
-                await app.state.active_client.send_json({
-                    "type": "ack",
-                    "id": msg_id
-                })
-            except Exception:
-                pass
+        # Broadcast ACK to all sinks. Each client tracks its own
+        # outstanding msg_ids; an ACK for an unknown id is a noop client-
+        # side, so fan-out is safe.
+        from mobile_terminal.transport import broadcast_raw
+        await broadcast_raw(app, {"type": "ack", "id": msg_id})
 
         return {"status": "ok", "id": msg_id, "key": tmux_key}
 
@@ -311,28 +304,13 @@ def register(app: FastAPI, deps):
             logger.info("WebSocket connection accepted")
 
             # Close any existing connection (single client mode).
-            # Bounded with a 1s timeout: a dead socket (e.g. mobile
-            # network switch where the previous client is unreachable)
-            # would otherwise wait at the TCP layer until the OS timeout
-            # (30-120s), blocking this connection's setup past the
-            # client's 2s hello-timeout and triggering a reconnect storm.
-            if app.state.active_client is not None:
-                try:
-                    await asyncio.wait_for(
-                        app.state.active_client.close(code=4002),
-                        timeout=1.0,
-                    )
-                    logger.info("Closed previous WebSocket connection")
-                except asyncio.TimeoutError:
-                    logger.warning("Previous client close timed out — abandoning (likely dead socket)")
-                except Exception:
-                    pass
-            if app.state.read_task is not None:
-                app.state.read_task.cancel()
-                app.state.read_task = None
-
+            # C2 (Phase 3.4): kicker removed. Multiple WS+SSE clients
+            # can coexist now — each sink lives in sink_registry, the
+            # central PTY reader broadcasts to all, per-handler tail_sender
+            # serves its own sink. No more close-prior on connect.
             sink = WebSocketSink(websocket)
-            app.state.active_client = sink
+            app.state.active_client = sink  # legacy field — "most recent"
+            await app.state.sink_registry.register(sink)
         finally:
             if app.state.ws_connect_lock.locked():
                 app.state.ws_connect_lock.release()
@@ -463,7 +441,9 @@ def register(app: FastAPI, deps):
         async def write_to_terminal():
             """Read from WebSocket and write to terminal."""
             nonlocal last_pong_time
-            while app.state.active_client is sink and not state.connection_closed:
+            # C2: was `app.state.active_client is sink` (single-sink); now
+            # check sink_registry membership so multiple sinks can coexist.
+            while sink in app.state.sink_registry and not state.connection_closed:
                 try:
                     message = await websocket.receive()
 
@@ -529,18 +509,11 @@ def register(app: FastAPI, deps):
                                         except Exception as e:
                                             logger.warning(f"tmux send-keys Enter failed: {e}")
                                     app.state.last_ws_input_time = time.time()
-                                    # Mirror the SSE handler: bump scanner
-                                    # cooldown when this looks like a
-                                    # permission/menu response so the scanner
-                                    # doesn't double-fire on the cleared prompt.
-                                    try:
-                                        t = (text_data or "").strip().lower()
-                                        if t in ("y", "n", "yes", "no", "") or (len(t) == 1 and t.isdigit()):
-                                            cd = getattr(app.state, "permission_scanner_cooldown", None)
-                                            if cd is not None and target:
-                                                cd[target] = time.time()
-                                    except Exception:
-                                        pass
+                                    # (was: bumping app.state.permission_scanner_cooldown
+                                    # to suppress the old scanner's own cooldown loop;
+                                    # removed v=438 — after v=433 scanner uses the
+                                    # shared fired_perms dedup, this dict was a dead
+                                    # write to a never-initialized attribute.)
                                 elif msg_type == "set_mode":
                                     # Client requests output mode change
                                     new_mode = data.get("mode", "tail")
@@ -623,12 +596,12 @@ def register(app: FastAPI, deps):
                     break
                 except (OSError, IOError) as e:
                     # Terminal write errors are fatal (terminal closed, etc.)
-                    if app.state.active_client is sink:
+                    if sink in app.state.sink_registry:
                         logger.error(f"Error writing to terminal: {e}")
                     break
                 except Exception as e:
                     # Log but continue on other errors (malformed messages, etc.)
-                    if app.state.active_client is sink:
+                    if sink in app.state.sink_registry:
                         logger.warning(f"Ignoring malformed message: {e}")
                     continue
 
@@ -636,10 +609,11 @@ def register(app: FastAPI, deps):
             """Send periodic pings and detect ghost connections via pong timeout."""
             SERVER_PING_INTERVAL = 15  # Send ping every 15s
             PONG_TIMEOUT = 30  # Consider dead if no pong for 30s
-            while app.state.active_client is sink and not state.connection_closed:
+            # C2: predicate is registry membership (was active_client identity).
+            while sink in app.state.sink_registry and not state.connection_closed:
                 try:
                     await asyncio.sleep(SERVER_PING_INTERVAL)
-                    if app.state.active_client is sink and not state.connection_closed:
+                    if sink in app.state.sink_registry and not state.connection_closed:
                         # Check if client responded to previous ping
                         pong_age = time.time() - last_pong_time
                         if pong_age > PONG_TIMEOUT:
@@ -657,16 +631,17 @@ def register(app: FastAPI, deps):
         # tail_sender and desktop_activity_monitor live in
         # mobile_terminal.terminal_session — see PR4.
 
-        # Run all tasks concurrently
-        read_task = asyncio.create_task(_tsess.read_from_terminal(state, app))
-        app.state.read_task = read_task
+        # C1 (Phase 3.3): central PTY reader runs at app level — this
+        # handler no longer spawns its own read_from_terminal. Just
+        # ensure the central task is alive (idempotent).
+        _tsess.ensure_central_reader(app)
         write_task = asyncio.create_task(write_to_terminal())
         keepalive_task = asyncio.create_task(server_keepalive())
         tail_task = asyncio.create_task(_tsess.tail_sender(state, app, deps))
         desktop_task = asyncio.create_task(_tsess.desktop_activity_monitor(state, app, deps))
 
         try:
-            await asyncio.gather(read_task, write_task, keepalive_task, tail_task, desktop_task)
+            await asyncio.gather(write_task, keepalive_task, tail_task, desktop_task)
         except asyncio.CancelledError:
             # Normal termination when connection is replaced or closed
             pass
@@ -675,7 +650,6 @@ def register(app: FastAPI, deps):
         finally:
             # Signal tasks to stop sending before canceling
             state.connection_closed = True
-            read_task.cancel()
             write_task.cancel()
             keepalive_task.cancel()
             tail_task.cancel()
@@ -683,6 +657,10 @@ def register(app: FastAPI, deps):
             if app.state.active_client is sink:
                 app.state.active_client = None
                 app.state.read_task = None
+            # Phase 3.2 bridge: always unregister from SinkRegistry on
+            # disconnect, even if active_client was already cleared by
+            # the kicker. Idempotent — safe to call when not registered.
+            await app.state.sink_registry.unregister(sink)
 
             # Close with appropriate code
             if state.pty_died:
