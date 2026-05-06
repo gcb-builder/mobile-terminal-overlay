@@ -865,6 +865,10 @@ class QueueItem:
     # enqueues never fire on their own. Manual Send / Run buttons
     # ignore this flag — those are explicit user actions.
     auto_eligible: bool = False
+    # Set True by _send_item when called from the auto-drain path so
+    # the Previous list can show what fired without the user watching,
+    # and the prune logic can hold those items longer than manual sends.
+    auto_fired: bool = False
 
 
 class CommandQueue:
@@ -878,6 +882,18 @@ class CommandQueue:
     QUIET_MS = 400           # Wait for output quiet before sending
     COOLDOWN_MS = 250        # Between sends
     CHECK_INTERVAL_MS = 100  # How often to check ready state
+
+    # Arming countdown: when an item passes _check_ready, the processor
+    # broadcasts queue_arming and waits this long before firing. Any
+    # client input during the window aborts the fire (last_ws_input_time
+    # check), and the user sees a banner with a Cancel button.
+    AUTO_FIRE_COUNTDOWN_MS = 3000
+
+    # After a disarm (cancel or not_ready at the end of the countdown),
+    # don't immediately re-arm the same pane — gives the user / agent
+    # time to settle. Without this, the next loop tick would pick up
+    # the same eligible item and start arming again instantly.
+    DISARM_COOLDOWN_SECONDS = 5
 
     # Patterns indicating terminal is ready for input (shell/REPL prompts).
     # Excludes interactive prompts like [y/n] and [1-9] — those indicate
@@ -954,6 +970,12 @@ class CommandQueue:
     # grows indefinitely and every reconcile re-renders all history.
     SENT_VISIBLE_TTL_SECONDS = 300
 
+    # Auto-fired items (status='sent' AND auto_fired=True) hold longer
+    # so the user can audit what the processor sent while they weren't
+    # watching. 24h matches SENT_ID_TTL_SECONDS / TOMBSTONE_TTL_SECONDS
+    # — the ⚡ history survives a full day of phone-in-pocket gaps.
+    SENT_VISIBLE_AUTO_TTL_SECONDS = 86400
+
     # Tombstone TTL for explicitly-removed item ids. Generous because
     # mobile clients can stay backgrounded for a long time before
     # reconnecting and trying to re-upload their stale localStorage.
@@ -985,6 +1007,19 @@ class CommandQueue:
         # specific event loop at __init__ time (CommandQueue is constructed
         # before uvicorn starts the loop).
         self._wakeup_event: Optional[asyncio.Event] = None
+        # Per-pane arming registry: key → item_id currently in countdown.
+        # Prevents the loop from spawning a second arm task for the same
+        # pane while one is already waiting out the countdown.
+        self._arming: Dict[str, str] = {}
+        # Per-pane disarm cooldown: key → unix-ts after which the loop
+        # may re-arm. Set when an arm aborts so we don't immediately
+        # re-pick the same item.
+        self._disarm_cooldown: Dict[str, float] = {}
+        # Per-pane "auto-drain is actively running" flag. Two-step gate:
+        # is_paused (the master switch) must be False AND this must be
+        # True for the processor to fire. Tap Run sets this to True;
+        # Stop / queue empty / disarm-on-cancel resets to False.
+        self._auto_drain_running: Dict[str, bool] = {}
 
     def set_app(self, app):
         """Set the FastAPI app reference for accessing state."""
@@ -1095,6 +1130,7 @@ class CommandQueue:
                     sent_at=data.get("sent_at"),
                     error=data.get("error"),
                     auto_eligible=bool(data.get("auto_eligible", False)),
+                    auto_fired=bool(data.get("auto_fired", False)),
                 )
                 # Only load items that are still queued (not sent/failed)
                 if item.status in ("queued", "pending"):
@@ -1127,6 +1163,8 @@ class CommandQueue:
                         sent_at=sent_at,
                         error=item_dict.get("error"),
                         backlog_id=item_dict.get("backlog_id"),
+                        auto_eligible=bool(item_dict.get("auto_eligible", False)),
+                        auto_fired=bool(item_dict.get("auto_fired", False)),
                     )
                     cache[sid] = (item, sent_at)
                 except Exception as e:
@@ -1157,23 +1195,55 @@ class CommandQueue:
         queue = self._queues.get(key, [])
         items_data = [asdict(item) for item in queue]
 
-        # Diagnostic: catch any save that drops previously-persisted
-        # ids without going through dequeue/mark_sent. Narrows down
-        # "item vanished from disk without a trace" bugs by logging
-        # exactly which save path shrank the queue and which ids were
-        # lost. Compares the in-memory queue we're about to write
-        # against whatever's currently on disk.
+        # Defensive guard: refuse to silently shrink the on-disk queue.
+        # Items can legitimately leave only via dequeue (tombstone), flush
+        # (caller_name=='flush'), or _send_item/mark_sent (status='sent'
+        # AND id present in _recently_sent cache). Any other shrink is
+        # the key-resolution race symptom: a sibling _get_queue used a
+        # different key (e.g. tmux-flake fallback to legacy "claude:2:0"),
+        # so the in-memory list under THIS key is stale-empty and would
+        # blow away the real on-disk content. Refuse the write, dump
+        # state for forensics, and let the next mutation try again.
         try:
-            prev_on_disk = {d.get("id") for d in load_queue_from_disk(session, pane_id, repo_key=repo_key)}
+            prev_on_disk = {d.get("id"): d for d in load_queue_from_disk(session, pane_id, repo_key=repo_key)}
             new_ids = {d.get("id") for d in items_data}
-            disappeared = prev_on_disk - new_ids
+            disappeared = set(prev_on_disk.keys()) - new_ids
             if disappeared:
                 import inspect
                 caller = inspect.stack()[1].function if len(inspect.stack()) > 1 else "?"
-                logger.warning(
-                    f"[QUEUE-DIAG] save dropped {len(disappeared)} id(s) from "
-                    f"{key} (caller={caller}): {[d[:8] for d in disappeared]}"
-                )
+                tombs_for_key = self._tombstones.get(key, {})
+                sent_for_key = self._recently_sent.get(key, {})
+                # Each disappeared id must be accounted for by either a
+                # tombstone (explicit remove) or the recently-sent cache
+                # (auto/manual fire). Anything else is suspicious.
+                unaccounted = [
+                    did for did in disappeared
+                    if did not in tombs_for_key and did not in sent_for_key
+                ]
+                if unaccounted and caller != "flush":
+                    backup_path = get_queue_file(session, pane_id, repo_key=repo_key).with_suffix(".jsonl.last-good")
+                    try:
+                        with open(backup_path, "w") as fh:
+                            for d in prev_on_disk.values():
+                                fh.write(json.dumps(d) + "\n")
+                    except Exception as be:
+                        logger.error(f"[QUEUE-GUARD] backup write failed: {be}")
+                    logger.error(
+                        f"[QUEUE-GUARD] REFUSING to shrink {key}: would drop "
+                        f"{len(unaccounted)} unaccounted id(s) (caller={caller}). "
+                        f"In-memory has {len(items_data)} items, on-disk had "
+                        f"{len(prev_on_disk)}. Likely a key-resolution race — "
+                        f"in-memory queue was loaded under a different key. "
+                        f"Snapshot saved to {backup_path}. "
+                        f"Unaccounted ids: {[d[:8] for d in unaccounted]}"
+                    )
+                    return  # ABORT save; preserve the real on-disk state
+                if disappeared:
+                    logger.warning(
+                        f"[QUEUE-DIAG] save dropped {len(disappeared)} id(s) from "
+                        f"{key} (caller={caller}, all accounted for): "
+                        f"{[d[:8] for d in disappeared]}"
+                    )
         except Exception as e:
             logger.debug(f"queue diag check failed: {e}")
 
@@ -1310,10 +1380,13 @@ class CommandQueue:
             backlog_id=backlog_id,
         )
         queue.append(item)
+        # Safety: any new enqueue forces auto-fire OFF for this pane so a
+        # freshly-added item never auto-fires without the user explicitly
+        # re-enabling. The user has to (a) ⚡-flag the item AND (b) re-arm
+        # the master switch — both deliberate actions — before it fires.
+        key = self._queue_key_resolved(session, pane_id)
+        self._paused[key] = True
         self._save_to_disk(session, pane_id)
-        # Kick the processor so a freshly-queued safe item doesn't have to
-        # wait for the next idle poll to be drained.
-        self._wake()
         return (item, True)
 
     def dequeue(self, session: str, item_id: str, pane_id: Optional[str] = None) -> bool:
@@ -1411,13 +1484,12 @@ class CommandQueue:
         if not queue:
             return False
         now = time.time()
-        kept = [
-            item for item in queue
-            if not (
-                item.status == "sent"
-                and (now - (item.sent_at or 0)) > self.SENT_VISIBLE_TTL_SECONDS
-            )
-        ]
+        def _expired(item):
+            if item.status != "sent":
+                return False
+            ttl = self.SENT_VISIBLE_AUTO_TTL_SECONDS if item.auto_fired else self.SENT_VISIBLE_TTL_SECONDS
+            return (now - (item.sent_at or 0)) > ttl
+        kept = [item for item in queue if not _expired(item)]
         if len(kept) == len(queue):
             return False
         self._queues[key] = kept
@@ -1434,10 +1506,38 @@ class CommandQueue:
         self._paused[key] = False
         self._wake()
 
-    def is_paused(self, session: str, pane_id: Optional[str] = None) -> bool:
-        """Check if queue is paused."""
+    def is_auto_drain_running(self, session: str, pane_id: Optional[str] = None) -> bool:
+        """Whether the user has explicitly tapped Run to begin draining.
+        Default False — even with the master switch ON, the processor
+        does NOT fire until this flag is set."""
         key = self._queue_key_resolved(session, pane_id)
-        return self._paused.get(key, False)
+        return self._auto_drain_running.get(key, False)
+
+    def start_auto_drain(self, session: str, pane_id: Optional[str] = None) -> None:
+        """Begin processing ⚡-flagged items. Caller should ensure the
+        master switch is on (is_paused() False); start has no effect
+        otherwise — the processor still gates on both flags."""
+        key = self._queue_key_resolved(session, pane_id)
+        self._auto_drain_running[key] = True
+        self._wake()
+
+    def stop_auto_drain(self, session: str, pane_id: Optional[str] = None) -> None:
+        """Stop the active drain. Items stay queued/⚡-flagged for the
+        next Run tap. Does not touch the master switch."""
+        key = self._queue_key_resolved(session, pane_id)
+        self._auto_drain_running[key] = False
+
+    def is_paused(self, session: str, pane_id: Optional[str] = None) -> bool:
+        """Check if auto-fire is disabled for this pane.
+
+        Default True — auto-fire is OFF until the user explicitly enables
+        it via Resume / Auto-fire ON. This is the safety inversion: the
+        old default let the processor fire ⚡-flagged items the moment the
+        user marked them, which surprised users who thought ⚡ alone was
+        not enough to trigger a send.
+        """
+        key = self._queue_key_resolved(session, pane_id)
+        return self._paused.get(key, True)
 
     def flush(self, session: str, pane_id: Optional[str] = None) -> int:
         """Clear all queued items. Returns count cleared."""
@@ -1571,7 +1671,7 @@ class CommandQueue:
 
         return False
 
-    async def _send_item(self, session: str, item: QueueItem, pane_id: Optional[str] = None) -> bool:
+    async def _send_item(self, session: str, item: QueueItem, pane_id: Optional[str] = None, auto: bool = False) -> bool:
         """Send a single item to the terminal.
 
         Uses ``send_text_to_pane`` (tmux send-keys -l with bracketed-paste
@@ -1625,6 +1725,8 @@ class CommandQueue:
 
             item.status = "sent"
             item.sent_at = time.time()
+            if auto:
+                item.auto_fired = True
             # Prune visibly-stale sent items from the queue while we're
             # writing anyway — keeps the disk file bounded and stops
             # reconcile from re-rendering ancient history.
@@ -1665,6 +1767,94 @@ class CommandQueue:
             item.error = str(e)
             self._save_to_disk(session, pane_id)  # Persist failed status
             return False
+
+    async def _arm_and_fire(self, session: str, item: QueueItem, pane_id: Optional[str], key: str) -> None:
+        """Broadcast the countdown banner, wait, then fire or disarm.
+
+        Aborts if any of these happen during the countdown:
+        - last_ws_input_time bumps (user typed, sent something, or hit
+          Cancel which posts to /api/queue/cancel_arm)
+        - the item is no longer queued (manually sent / removed)
+        - _check_ready becomes False (agent transitioned to busy)
+        On abort, sets a per-pane cooldown so the loop won't immediately
+        re-pick the same item.
+        """
+        from mobile_terminal.transport import broadcast_raw
+        try:
+            arm_at = time.time()
+            countdown_ms = self.AUTO_FIRE_COUNTDOWN_MS
+
+            await broadcast_raw(self._app, {
+                "type": "queue_arming",
+                "id": item.id,
+                "session": session,
+                "pane_id": pane_id,
+                "countdown_ms": countdown_ms,
+                "text": item.text[:120],
+            })
+
+            await asyncio.sleep(countdown_ms / 1000)
+
+            disarm_reason = None
+            last_input = getattr(self._app.state, "last_ws_input_time", 0)
+            if last_input and last_input > arm_at:
+                disarm_reason = "user_input"
+            else:
+                fresh_queue = self._queues.get(key) or []
+                fresh = next((i for i in fresh_queue if i.id == item.id), None)
+                if not fresh or fresh.status != "queued" or not fresh.auto_eligible:
+                    disarm_reason = "item_changed"
+                elif self.is_paused(session, pane_id):
+                    disarm_reason = "paused"
+                elif not await self._check_ready(session, pane_id):
+                    disarm_reason = "not_ready"
+
+            if disarm_reason is not None:
+                self._disarm_cooldown[key] = time.time() + self.DISARM_COOLDOWN_SECONDS
+                # User-driven disarm (typed input or hit Cancel) means
+                # stop the whole drain — they've expressed intent to take
+                # over. System-driven disarm (not_ready / item_changed)
+                # keeps the drain running so the next loop cycle retries.
+                if disarm_reason in ("user_input", "manual_cancel"):
+                    self._auto_drain_running[key] = False
+                    await broadcast_raw(self._app, {
+                        "type": "queue_state",
+                        "session": session,
+                        "pane_id": pane_id,
+                        "paused": self.is_paused(session, pane_id),
+                        "running": False,
+                        "count": len(self._queues.get(key, [])),
+                    })
+                await broadcast_raw(self._app, {
+                    "type": "queue_disarmed",
+                    "id": item.id,
+                    "session": session,
+                    "pane_id": pane_id,
+                    "reason": disarm_reason,
+                })
+                return
+
+            await self._send_item(session, item, pane_id, auto=True)
+            # If no more queued+eligible items remain, auto-stop the drain
+            # so the Run button reverts to "▶ Run" and the user gets a
+            # clear "batch done" signal.
+            remaining = self._queues.get(key) or []
+            more = any(i.status == "queued" and i.auto_eligible for i in remaining)
+            if not more:
+                self._auto_drain_running[key] = False
+                await broadcast_raw(self._app, {
+                    "type": "queue_state",
+                    "session": session,
+                    "pane_id": pane_id,
+                    "paused": self.is_paused(session, pane_id),
+                    "running": False,
+                    "count": len(remaining),
+                })
+        except Exception as e:
+            logger.warning(f"_arm_and_fire failed for id={item.id[:8]}: {e}")
+            self._disarm_cooldown[key] = time.time() + self.DISARM_COOLDOWN_SECONDS
+        finally:
+            self._arming.pop(key, None)
 
     async def send_next_unsafe(self, session: str, item_id: Optional[str] = None, pane_id: Optional[str] = None) -> Optional[QueueItem]:
         """Manually send the next unsafe item (or specific item)."""
@@ -1770,6 +1960,20 @@ class CommandQueue:
                 if self.is_paused(session, pane_id):
                     continue
 
+                # Two-step gate: master switch must be ON (above) AND the
+                # user must have explicitly tapped Run (below). This is
+                # the safety pause between "armed" and "actually firing".
+                if not self.is_auto_drain_running(session, pane_id):
+                    continue
+
+                # Skip panes that already have an arm task in flight or
+                # are in the post-disarm cooldown window.
+                if key in self._arming:
+                    continue
+                cooldown_until = self._disarm_cooldown.get(key, 0)
+                if cooldown_until and time.time() < cooldown_until:
+                    continue
+
                 queue = self._queues.get(key) or []
                 if not queue:
                     continue
@@ -1793,8 +1997,11 @@ class CommandQueue:
                 if not await self._check_ready(session, pane_id):
                     continue
 
-                await self._send_item(session, item, pane_id)
-                await asyncio.sleep(self.COOLDOWN_MS / 1000)
+                # Spawn the arm-and-fire task and continue the loop.
+                # The task broadcasts a countdown banner, waits for any
+                # user input or item-state change to abort, then fires.
+                self._arming[key] = item.id
+                asyncio.create_task(self._arm_and_fire(session, item, pane_id, key))
 
     def start(self):
         """Start the processor loop."""

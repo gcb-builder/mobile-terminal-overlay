@@ -159,19 +159,21 @@ class TestQueuePauseResume:
         self.q._load_from_disk = lambda *a, **kw: None
         self.q._save_to_disk = lambda *a, **kw: None
 
-    def test_default_not_paused(self):
-        assert self.q.is_paused("sess") is False
+    def test_default_paused(self):
+        # Default flipped: auto-fire OFF until the user explicitly arms it.
+        assert self.q.is_paused("sess") is True
 
     def test_pause_and_resume(self):
-        self.q.pause("sess")
-        assert self.q.is_paused("sess") is True
         self.q.resume("sess")
         assert self.q.is_paused("sess") is False
+        self.q.pause("sess")
+        assert self.q.is_paused("sess") is True
 
     def test_pause_per_pane(self):
-        self.q.pause("sess", pane_id="0:0")
-        assert self.q.is_paused("sess", pane_id="0:0") is True
-        assert self.q.is_paused("sess", pane_id="1:0") is False
+        self.q.resume("sess", pane_id="0:0")
+        assert self.q.is_paused("sess", pane_id="0:0") is False
+        # Other panes still paused by default.
+        assert self.q.is_paused("sess", pane_id="1:0") is True
 
 
 # ---------------------------------------------------------------------------
@@ -666,18 +668,16 @@ class TestWakeup:
         assert self.q._wakeup_event is None
         self.q._wake()  # Must not raise.
 
-    def test_enqueue_calls_wake(self):
-        # Bind a fake event so we can observe the set() call without
-        # spinning up a real asyncio loop.
-        class FakeEvent:
-            def __init__(self):
-                self.set_called = False
-            def set(self):
-                self.set_called = True
-        fake = FakeEvent()
-        self.q._wakeup_event = fake
+    def test_enqueue_pauses_pane(self):
+        # New behavior: every enqueue forces the pane into paused state
+        # so a freshly-added item never auto-fires until the user
+        # explicitly re-arms (Auto-fire ON) and ⚡-flags it. The processor
+        # wake on enqueue is intentionally gone — waking only to discover
+        # paused=True is wasted work.
+        self.q.resume("sess")
+        assert self.q.is_paused("sess") is False
         self.q.enqueue("sess", "echo hi")
-        assert fake.set_called is True
+        assert self.q.is_paused("sess") is True
 
     def test_resume_calls_wake(self):
         class FakeEvent:
@@ -691,3 +691,90 @@ class TestWakeup:
         fake.set_called = False  # Reset after pause (which doesn't wake).
         self.q.resume("sess")
         assert fake.set_called is True, "resume must wake the processor"
+
+
+# ---------------------------------------------------------------------------
+# Save guard: refuse to wipe on disk when in-memory queue diverges (e.g.
+# tmux flake re-keys an in-memory bucket to legacy fallback while save
+# resolves to the repo key)
+# ---------------------------------------------------------------------------
+
+class TestSaveGuardKeyRace:
+    def setup_method(self, tmp_path=None):
+        import tempfile, os
+        from pathlib import Path
+        from mobile_terminal import models
+        # Isolate disk writes
+        self.tmpdir = tempfile.mkdtemp()
+        models.QUEUE_DIR = Path(self.tmpdir) / "queue"
+        models.QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+        self.q = CommandQueue()
+
+    def test_save_refused_when_in_memory_diverges_from_disk(self):
+        """If _resolve_repo_key flakes (returns None, then real key on
+        next call), the in-memory queue ends up under the legacy key but
+        save resolves to the repo key — would write empty over the real
+        repo file. The guard must refuse and preserve the on-disk items.
+        """
+        import unittest.mock as mock
+        import json
+        from mobile_terminal.models import save_queue_to_disk, get_queue_file
+        repo_key = "claude__home_test_repo_a"
+        # Seed the repo file with 5 items
+        seed = [
+            {"id": f"id-{i}", "text": f"t-{i}", "policy": "safe",
+             "status": "queued", "created_at": 0, "sent_at": None,
+             "error": None, "backlog_id": None,
+             "auto_eligible": False, "auto_fired": False}
+            for i in range(5)
+        ]
+        save_queue_to_disk("claude", seed, repo_key=repo_key)
+
+        # Flaky resolver: odd calls fail, even calls succeed
+        n = [0]
+        def flaky(session, pane_id):
+            n[0] += 1
+            return None if n[0] % 2 == 1 else repo_key
+
+        with mock.patch.object(self.q, '_resolve_repo_key', side_effect=flaky):
+            self.q.enqueue("claude", "new-item", pane_id="raceA")
+
+        # On-disk content must still have the 5 seed items
+        on_disk = []
+        with open(get_queue_file("claude", repo_key=repo_key)) as fh:
+            for line in fh:
+                try:
+                    on_disk.append(json.loads(line))
+                except: pass
+        assert len(on_disk) >= 5, f"expected ≥5 items preserved, got {len(on_disk)}"
+        seed_ids = {d["id"] for d in seed}
+        kept_ids = {d.get("id") for d in on_disk}
+        assert seed_ids.issubset(kept_ids), f"seed items lost: {seed_ids - kept_ids}"
+
+    def test_flush_is_allowed_to_clear(self):
+        """The guard must not block legitimate flush calls — flush is the
+        explicit 'clear everything' action and shrinking IS the intent."""
+        import json
+        from mobile_terminal.models import save_queue_to_disk, get_queue_file
+        repo_key = "claude__home_test_repo_b"
+        seed = [{"id": f"f-{i}", "text": f"x-{i}", "policy": "safe",
+                 "status": "queued", "created_at": 0, "sent_at": None,
+                 "error": None, "backlog_id": None,
+                 "auto_eligible": False, "auto_fired": False} for i in range(3)]
+        save_queue_to_disk("claude", seed, repo_key=repo_key)
+        # Pre-load the bucket (no key race here)
+        self.q._queues[repo_key] = []
+        # Manually re-seed in-memory to match disk
+        from mobile_terminal.models import QueueItem
+        for d in seed:
+            self.q._queues[repo_key].append(QueueItem(**{k: d[k] for k in ('id','text','policy','status','created_at','sent_at','error','backlog_id','auto_eligible','auto_fired')}))
+        self.q._loaded_sessions.add(repo_key)
+        # Mock resolver to consistently return repo_key
+        import unittest.mock as mock
+        with mock.patch.object(self.q, '_resolve_repo_key', return_value=repo_key):
+            self.q.flush("claude", pane_id="any")
+        # On-disk should now be empty
+        on_disk_lines = []
+        with open(get_queue_file("claude", repo_key=repo_key)) as fh:
+            on_disk_lines = [l for l in fh if l.strip()]
+        assert len(on_disk_lines) == 0, f"flush should empty file, got {len(on_disk_lines)} lines"

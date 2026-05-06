@@ -713,7 +713,18 @@ class PermissionDaemon:
 
         perm = _correlate(target_id, pane_cwd, jsonl_unresolved, visible, session_waiting)
         if not perm:
-            self._eval_cache[target_id] = (cap_hash, None)
+            # v=450: do NOT cache negative results. The cap_hash is purely
+            # a function of the pane capture, but a "None" outcome can
+            # come from a transient state where the prompt is visible but
+            # sessions/{pid}.json hasn't flipped to waiting yet. Caching
+            # that None means subsequent ticks return None even after
+            # sessions/ catches up — daemon silently never fires again
+            # for that pane until the capture changes (could be minutes
+            # for a pending Edit prompt). Confirmed 2026-04-27 on
+            # secondbrain attention-list.tsx Edit prompt: visible 14min,
+            # sessions=waiting, daemon never re-evaluated. Positive
+            # cache below still saves the ~47 redundant parses/min that
+            # v=436 was protecting against.
             return None
 
         # Run policy
@@ -868,7 +879,38 @@ class PermissionDaemon:
                     except Exception:
                         still_waiting = True  # default: send Enter (current behavior)
                     if still_waiting:
-                        await runtime.send_keys(tmux_t, "Enter")
+                        # v=453: visible-selector double-check before Enter.
+                        # sessions/{pid}.json status updates lag the visible
+                        # prompt by 50-200ms — the recheck can say "still
+                        # waiting" while the prompt has actually resolved
+                        # (either by our "1" or by an internal Claude
+                        # transition). If the selector is gone, sending
+                        # Enter only submits whatever's in chat input,
+                        # producing an orphan "1" message. Confirmed bug
+                        # 2026-04-28 pane 1:0 Edit precheck:b84936e:
+                        # still_waiting=True, daemon sent Enter, history.jsonl
+                        # got a stray "1" submitted to the agent.
+                        try:
+                            cap = subprocess.run(
+                                ["tmux", "capture-pane", "-p", "-t", tmux_t, "-S", "-15"],
+                                capture_output=True, text=True, timeout=2,
+                            )
+                            post_capture = cap.stdout if cap.returncode == 0 else ""
+                        except Exception:
+                            post_capture = ""
+                        if post_capture and not _SELECTOR_RE.search(post_capture):
+                            logger.info(
+                                f"[perm_daemon] skip Enter — selector vanished "
+                                f"despite sessions=waiting ({perm.signal} "
+                                f"{perm.stable_id[:16]} pane={perm.pane}); "
+                                f'sent Backspace to clear orphan "1"'
+                            )
+                            try:
+                                await runtime.send_keys(tmux_t, "BSpace")
+                            except Exception:
+                                pass
+                        else:
+                            await runtime.send_keys(tmux_t, "Enter")
                     else:
                         # "1" was consumed by Claude's prompt (status flipped to
                         # busy) OR landed in chat input. Either way, send a

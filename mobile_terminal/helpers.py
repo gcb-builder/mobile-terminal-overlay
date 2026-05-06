@@ -530,7 +530,17 @@ _PANE_CWD_TTL = 30.0
 def _get_pane_cwd_sync(session: str, pane_id: Optional[str]) -> Optional[str]:
     """Synchronous cwd lookup. Shares the cache with the async version
     so calls from sync code paths (CommandQueue methods) get the
-    cached result if a recent async lookup populated it."""
+    cached result if a recent async lookup populated it.
+
+    Fail-soft: if tmux returns an error or times out but we have ANY
+    cached value (even past TTL), return that instead of None. This
+    prevents the queue's repo-key resolution from flapping between
+    "claude__home_…_secondbrain" (cache hit) and the legacy "claude:2:0"
+    fallback (cache miss + tmux flake) — which used to silently re-key
+    the in-memory queue to the legacy bucket while saves still went to
+    the repo file, wiping it. Only return None when tmux succeeds AND
+    the result is empty AND we have no prior cached value.
+    """
     if not session or not pane_id:
         return None
     cache_key = f"{session}:{pane_id}"
@@ -545,15 +555,16 @@ def _get_pane_cwd_sync(session: str, pane_id: Optional[str]) -> Optional[str]:
             capture_output=True, text=True, timeout=2,
         )
         if result.returncode != 0:
-            return None
+            # tmux failed — prefer the stale cached value over None.
+            return cached[0] if cached else None
         cwd = (result.stdout or "").strip()
         if not cwd:
-            return None
+            return cached[0] if cached else None
         _PANE_CWD_CACHE[cache_key] = (cwd, now)
         return cwd
     except Exception as e:
-        logger.debug(f"_get_pane_cwd_sync error for {target}: {e}")
-        return None
+        logger.debug(f"_get_pane_cwd_sync error for {target}: {e}; returning cached={cached}")
+        return cached[0] if cached else None
 
 
 async def _get_pane_cwd(session: str, pane_id: Optional[str]) -> Optional[str]:

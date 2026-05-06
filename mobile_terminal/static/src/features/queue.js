@@ -12,6 +12,7 @@ import { escapeHtml } from '../utils.js';
 // Module-local state
 let queueItems = [];
 let queuePaused = false;
+let queueRunning = false;
 let queueAutoSend = sessionStorage.getItem('mto_queue_autosend') === 'true'; // default: off (manual)
 
 // Whether the "Previous" (sent items) section is expanded. Persists across
@@ -95,11 +96,28 @@ function loadQueueFromStorage() {
 
 function updatePauseButton() {
     if (!queuePauseBtn) return;
-    queuePauseBtn.textContent = queuePaused ? 'Resume' : 'Hold';
+    queuePauseBtn.textContent = queuePaused ? 'Auto-fire OFF' : 'Auto-fire ON';
     queuePauseBtn.title = queuePaused
-        ? 'Release: ⚡ auto-sends will resume'
-        : 'Hold all ⚡ auto-sends. Items stay in queue; tap Resume to release.';
+        ? 'Auto-fire is OFF. ⚡-flagged items wait. Tap to enable, then press Run to start.'
+        : 'Auto-fire is ON (armed). Tap Run to start firing ⚡-flagged items.';
     queuePauseBtn.classList.toggle('paused', queuePaused);
+    updateRunButton();
+}
+
+function updateRunButton() {
+    if (!queueSendNext) return;
+    if (queueRunning) {
+        queueSendNext.textContent = '⏹ Stop';
+        queueSendNext.title = 'Stop the active drain. Items stay queued.';
+        queueSendNext.disabled = false;
+    } else {
+        queueSendNext.textContent = '▶ Run';
+        queueSendNext.title = queuePaused
+            ? 'Turn Auto-fire ON first.'
+            : 'Begin firing ⚡-flagged items with the 3s countdown banner.';
+        queueSendNext.disabled = queuePaused;
+    }
+    queueSendNext.classList.toggle('running', queueRunning);
 }
 
 function updateAutoToggle() {
@@ -135,6 +153,9 @@ function renderQueueRowHtml(item) {
         actions += '<button class="queue-send-btn" data-id="' + eid + '">Send</button>';
         actions += '<button class="queue-edit-btn" data-id="' + eid + '">Edit</button>';
     } else if (isSent) {
+        if (item.auto_fired) {
+            actions += '<span class="queue-item-auto-fired-badge" title="Auto-fired by the queue processor">&#x26A1;</span>';
+        }
         actions += '<button class="queue-item-requeue" data-id="' + eid + '" title="Re-queue">&#x21BA;</button>';
     }
     actions += '<button class="queue-item-remove" data-id="' + eid + '">&times;</button>';
@@ -413,6 +434,7 @@ export async function refreshQueueList() {
             const data = await resp.json();
             queueItems = data.items || [];
             queuePaused = data.paused || false;
+            queueRunning = data.running || false;
             updatePauseButton();
             renderQueueList();
         }
@@ -532,6 +554,33 @@ export async function removeQueueItem(itemId) {
         await ctx.apiFetch(`/api/queue/remove?${params}`, { method: 'POST' });
     } catch (e) {
         console.error('Failed to remove queue item from server:', e);
+    }
+}
+
+async function toggleAutoDrain() {
+    if (!ctx.currentSession) return;
+    if (queuePaused && !queueRunning) {
+        // Switch is OFF; ignore taps. Button is also disabled in CSS,
+        // but guard against bypass.
+        return;
+    }
+    const willRun = !queueRunning;
+    // Optimistic flip for instant feedback
+    queueRunning = willRun;
+    updateRunButton();
+    const endpoint = willRun ? '/api/queue/start_auto_drain' : '/api/queue/stop_auto_drain';
+    const params = new URLSearchParams({ session: ctx.currentSession, token: ctx.token });
+    if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
+    try {
+        const resp = await ctx.apiFetch(`${endpoint}?${params}`, { method: 'POST' });
+        if (!resp.ok) {
+            queueRunning = !willRun;
+            updateRunButton();
+        }
+    } catch (e) {
+        console.error('Failed to toggle auto-drain:', e);
+        queueRunning = !willRun;
+        updateRunButton();
     }
 }
 
@@ -712,6 +761,7 @@ export async function reconcileQueue() {
             const data = await resp.json();
             serverItems = data.items || [];
             queuePaused = data.paused || false;
+            queueRunning = data.running || false;
             updatePauseButton();
         }
     } catch (e) {
@@ -800,10 +850,87 @@ export function handleQueueMessage(msg) {
 
         case 'queue_state':
             queuePaused = msg.paused;
+            if (typeof msg.running === 'boolean') queueRunning = msg.running;
             updatePauseButton();
             updateQueueBadge(msg.count);
             break;
+
+        case 'queue_arming':
+            showArmingBanner(msg.id, msg.text || '', msg.countdown_ms || 3000);
+            break;
+
+        case 'queue_disarmed':
+            hideArmingBanner(msg.id, msg.reason);
+            break;
     }
+}
+
+// ── Arming banner ─────────────────────────────────────────────────────
+// Server broadcasts queue_arming when an item passes _check_ready and
+// is about to fire after a countdown. The banner shows what's about to
+// fire and a Cancel button. Any user input during the countdown also
+// aborts the fire (the server's _arm_and_fire re-checks last_ws_input_time).
+
+let armingBannerTimer = null;
+let armingItemId = null;
+
+function ensureArmingBanner() {
+    // The banner element lives in index.html at the top of the page so
+    // it stays visible even when the queue drawer is collapsed. Wire
+    // the Cancel button on first lookup.
+    const banner = document.getElementById('queueArmingBanner');
+    if (banner && !banner.dataset.wired) {
+        const cancelBtn = banner.querySelector('.queue-arming-cancel');
+        if (cancelBtn) cancelBtn.addEventListener('click', cancelArming);
+        banner.dataset.wired = 'true';
+    }
+    return banner;
+}
+
+function showArmingBanner(itemId, text, countdownMs) {
+    const banner = ensureArmingBanner();
+    armingItemId = itemId;
+    banner.classList.remove('hidden');
+    const previewEl = banner.querySelector('.queue-arming-preview');
+    if (previewEl) previewEl.textContent = text ? '— ' + (text.length > 60 ? text.slice(0, 60) + '…' : text) : '';
+    const countdownEl = banner.querySelector('.queue-arming-countdown');
+    let remaining = Math.ceil(countdownMs / 1000);
+    if (countdownEl) countdownEl.textContent = String(remaining);
+    if (armingBannerTimer) clearInterval(armingBannerTimer);
+    armingBannerTimer = setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+            clearInterval(armingBannerTimer);
+            armingBannerTimer = null;
+            return;
+        }
+        if (countdownEl) countdownEl.textContent = String(remaining);
+    }, 1000);
+}
+
+function hideArmingBanner(itemId, reason) {
+    const banner = document.getElementById('queueArmingBanner');
+    if (!banner) return;
+    if (itemId && armingItemId && itemId !== armingItemId) return;
+    banner.classList.add('hidden');
+    armingItemId = null;
+    if (armingBannerTimer) {
+        clearInterval(armingBannerTimer);
+        armingBannerTimer = null;
+    }
+}
+
+async function cancelArming() {
+    if (!ctx.currentSession) return;
+    const params = new URLSearchParams({ session: ctx.currentSession, token: ctx.token });
+    if (ctx.activeTarget) params.set('pane_id', ctx.activeTarget);
+    try {
+        await ctx.apiFetch(`/api/queue/cancel_arm?${params}`, { method: 'POST' });
+    } catch (e) {
+        console.warn('cancel_arm failed:', e);
+    }
+    // Hide locally for snappy feedback; server will also broadcast disarm.
+    hideArmingBanner(armingItemId, 'manual_cancel');
 }
 
 /**
@@ -952,16 +1079,18 @@ export function initQueue() {
     queueAutoToggle = document.getElementById('queueAutoToggle');
 
     if (queuePauseBtn) queuePauseBtn.addEventListener('click', toggleQueuePause);
-    // queueSendNext ("Run") is wired in terminal.js to call sendNextUnsafe()
+    // Run/Stop button is the auto-drain start signal: tap to begin
+    // firing ⚡-flagged items (countdown + fire), tap again to stop.
+    // Only enabled when the master switch is ON.
+    if (queueSendNext) queueSendNext.addEventListener('click', toggleAutoDrain);
     if (queueFlush) queueFlush.addEventListener('click', flushQueue);
 
+    // queueAutoToggle removed from index.html (was the misleading
+    // "Auto/Manual" label which only affected new-item policy default,
+    // not auto-fire). Keep the lookup harmless in case stale HTML is
+    // cached — if the element is still around, do nothing with it.
     if (queueAutoToggle) {
-        updateAutoToggle();
-        queueAutoToggle.addEventListener('click', () => {
-            queueAutoSend = !queueAutoSend;
-            sessionStorage.setItem('mto_queue_autosend', queueAutoSend);
-            updateAutoToggle();
-        });
+        queueAutoToggle.style.display = 'none';
     }
 
     // Single delegated click handler on queueList — replaces N

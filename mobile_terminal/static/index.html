@@ -22,7 +22,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=445">
+    <link rel="stylesheet" href="/static/styles.css?v=460">
 </head>
 <body>
     <div class="app">
@@ -89,6 +89,16 @@
             <span class="preview-label">Preview Mode</span>
             <span id="previewTimestamp" class="preview-timestamp"></span>
             <button type="button" id="previewBackToLive" class="preview-back-btn">Back to Live</button>
+        </div>
+
+        <!-- Auto-fire countdown banner: shown when the queue processor is
+             about to fire a ⚡-flagged item. Cancel aborts the fire; any
+             user input also aborts via last_ws_input_time on the server. -->
+        <div id="queueArmingBanner" class="queue-arming-banner hidden">
+            <span class="queue-arming-icon">&#x26A1;</span>
+            <span class="queue-arming-text">Auto-firing in <span class="queue-arming-countdown">3</span>s</span>
+            <span class="queue-arming-preview"></span>
+            <button type="button" class="queue-arming-cancel">Cancel</button>
         </div>
 
         <!-- Recap banner: most recent end-of-turn recap from agent log -->
@@ -697,8 +707,7 @@
                 <div class="queue-tab-header">
                     <span class="queue-title">Command Queue</span>
                     <span id="queueCount" class="queue-count">0</span>
-                    <button type="button" id="queueAutoToggle" class="queue-auto-toggle active" title="Toggle auto-send">Auto</button>
-                    <button type="button" id="queuePauseBtn" class="queue-pause-btn" title="Hold all ⚡ auto-sends. Items stay in queue; tap Resume to release.">Hold</button>
+                    <button type="button" id="queuePauseBtn" class="queue-pause-btn paused" title="Master switch for auto-fire. ⚡-flagged items only fire when this is ON.">Auto-fire OFF</button>
                 </div>
                 <div id="queueList" class="queue-list"></div>
                 <div class="queue-tab-footer">
@@ -959,6 +968,6 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script defer src="/static/terminal.js?v=445"></script>
+    <script defer src="/static/terminal.js?v=460"></script>
 </body>
 </html>

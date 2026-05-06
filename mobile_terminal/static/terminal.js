@@ -15,13 +15,13 @@ import { initCollapse, scheduleCollapse, scheduleSuperCollapse, applyCollapseSyn
 import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          reconcileQueue, reloadQueueForTarget, refreshQueueList,
          getQueueItems, isQueuePaused, saveQueueToStorage,
-         popNextQueueItem, requeueItem, removeQueueItem } from './src/features/queue.js';
+         popNextQueueItem, requeueItem, removeQueueItem } from './src/features/queue.js?v=459';
 import { initBacklog, handleBacklogMessage, handleCandidateMessage,
          refreshBacklogList, reloadBacklogForProject, addBacklogItem,
          updateBacklogStatus } from './src/features/backlog.js';
 import { initPermissions, loadPermissions } from './src/features/permissions.js';
 import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js?v=445';
-import { initDocs } from './src/features/docs.js';
+import { initDocs } from './src/features/docs.js?v=452';
 import { initToolOutput } from './src/features/tool-output.js';
 import { initHistory, loadHistory, loadGitStatus } from './src/features/history.js';
 import { initTeam, activateTeamView, startTeamCardRefresh, stopTeamCardRefresh,
@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v441 ===');
+console.log('=== TERMINAL.JS v460 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1720,7 +1720,8 @@ function handleJsonMessage(msg) {
     }
 
     // Handle queue messages
-    if (msg.type === 'queue_update' || msg.type === 'queue_sent' || msg.type === 'queue_state') {
+    if (msg.type === 'queue_update' || msg.type === 'queue_sent' || msg.type === 'queue_state'
+        || msg.type === 'queue_arming' || msg.type === 'queue_disarmed') {
         handleQueueMessage(msg);
         // Auto-complete linked backlog item when queue item is sent
         if (msg.type === 'queue_sent' && msg.backlog_id) {
@@ -4179,9 +4180,10 @@ function setupEventListeners() {
         sidebarToggle.addEventListener('click', () => openToolPanel('team'));
     }
 
-    // Queue "Run" button — send next queued command immediately
-    const queueRunBtn = document.getElementById('queueSendNext');
-    if (queueRunBtn) queueRunBtn.addEventListener('click', () => sendNextUnsafe());
+    // Queue "Run" button click is now wired in queue.js as the
+    // start/stop toggle for auto-drain (▶ Run / ⏹ Stop). The old
+    // sendNextUnsafe() bypass was removed — to send one specific item
+    // immediately, use the per-row Send button instead.
 
     // Key mapping for control and quick buttons
     const keyMap = {
@@ -7607,7 +7609,16 @@ function sendPromptChoice(choice) {
     if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
         const choiceStr = String(choice).trim();
         console.log('[sendPromptChoice] Sending choice:', choiceStr);
-        sendTextAtomic(choiceStr, true);
+        // v=449: route to source_pane when set (server-emitted
+        // permission_request stamps the asking pane). Falls through to
+        // the active pane for scraper-built prompts where source_pane
+        // was always the active pane anyway.
+        const targetPane = pendingPrompt && pendingPrompt.source_pane;
+        if (targetPane && targetPane !== ctx.activeTarget) {
+            sendTextAtomicToPane(choiceStr, true, targetPane);
+        } else {
+            sendTextAtomic(choiceStr, true);
+        }
         setTerminalBusy(true);
         captureSnapshot('user_send');
 
@@ -9993,9 +10004,6 @@ function handleTypedMessage(msg) {
  * Show permission banner when Claude needs tool approval
  */
 function handlePermissionRequest(payload) {
-    const banner = document.getElementById('permissionBanner');
-    if (!banner) return;
-
     // Cross-pane suppression: server emits permission_request for the pane
     // that ASKED (source_pane), but the user may be viewing a different
     // pane. A tap here would send y/n out of context, and the banner
@@ -10007,17 +10015,43 @@ function handlePermissionRequest(payload) {
         return;
     }
 
+    // v=449: route through the scraper-style #promptBanner instead of the
+    // hardcoded #permissionBanner. User prefers the unified layout
+    // (Yes/Yes-don't-ask-again/No labels matching Claude's TUI, plus
+    // Always/Always·Repo). Hide the legacy banner on the way through so
+    // both don't appear simultaneously.
+    const legacyBanner = document.getElementById('permissionBanner');
+    if (legacyBanner) legacyBanner.classList.add('hidden');
+
     activePermissionId = payload.id;
     activePermissionPayload = payload;
     permissionShownAt = Date.now();
-    document.getElementById('permissionTool').textContent = payload.tool || 'Tool';
-    document.getElementById('permissionTarget').textContent = payload.target || '';
-    document.getElementById('permissionPreview').textContent = payload.context || payload.target || '';
-    document.getElementById('permissionContext')?.classList.add('hidden');
-    banner.classList.remove('hidden');
 
-    // Permission banner supersedes prompt banner
-    hidePromptBanner();
+    const tool = payload.tool || 'Tool';
+    const target = payload.target || '';
+    const context = payload.context || '';
+    // Compose the banner text so the tap-to-expand reveals the file
+    // snippet that the legacy banner exposed via "More…".
+    const text = context
+        ? `${tool}: ${target}\n${context}`
+        : `${tool}: ${target}`;
+
+    pendingPrompt = {
+        id: payload.id,
+        kind: 'permission',
+        text,
+        choices: [
+            { num: 1, label: '1. Yes', description: '' },
+            { num: 2, label: "2. Yes, and don't ask again", description: '' },
+            { num: 3, label: '3. No', description: '' },
+        ],
+        answered: false,
+        sentChoice: null,
+        tool,
+        target,
+        source_pane: payload.source_pane || null,
+    };
+    showPromptBanner();
 }
 
 /**
@@ -11597,6 +11631,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=445', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=460', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

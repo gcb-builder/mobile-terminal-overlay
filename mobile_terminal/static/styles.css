@@ -2672,15 +2672,21 @@ html, body {
 }
 
 .queue-pause-btn {
+    /* Auto-fire ON = loud/warning so it's obvious the queue is armed.
+       Auto-fire OFF (the .paused state) = muted/safe. */
     padding: 4px 12px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--warning, #e3b341);
     border-radius: 4px;
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
+    background: var(--warning, #e3b341);
+    color: #000;
     font-size: 12px;
-    font-weight: 500;
+    font-weight: 600;
     cursor: pointer;
     min-height: 28px;
+}
+
+.queue-pause-btn::before {
+    content: "\26A1\A0"; /* ⚡ + nbsp */
 }
 
 .queue-pause-btn:active {
@@ -2688,9 +2694,14 @@ html, body {
 }
 
 .queue-pause-btn.paused {
-    background: var(--warning, #e3b341);
-    color: #000;
-    border-color: var(--warning, #e3b341);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border-color: var(--border);
+    font-weight: 500;
+}
+
+.queue-pause-btn.paused::before {
+    content: "\23F8\A0"; /* ⏸ + nbsp */
 }
 .queue-auto-toggle {
     padding: 4px 10px;
@@ -2863,6 +2874,67 @@ html, body {
     font-size: 10px;
     color: var(--success);
     margin-left: 6px;
+}
+
+.queue-item-auto-fired-badge {
+    color: var(--warning);
+    font-size: 12px;
+    flex-shrink: 0;
+    line-height: 1;
+    align-self: center;
+    opacity: 0.9;
+}
+
+/* Auto-fire countdown banner — appears above the queue list when the
+ * server broadcasts queue_arming. Tapping Cancel (or any user input)
+ * aborts the fire on the server side. */
+.queue-arming-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin: 0 0 8px 0;
+    background: color-mix(in srgb, var(--warning) 18%, var(--bg));
+    border: 1px solid var(--warning);
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text);
+}
+.queue-arming-banner.hidden { display: none; }
+.queue-arming-icon {
+    color: var(--warning);
+    font-size: 16px;
+    line-height: 1;
+}
+.queue-arming-text { white-space: nowrap; }
+.queue-arming-countdown {
+    font-weight: 600;
+    color: var(--warning);
+    min-width: 1ch;
+    display: inline-block;
+    text-align: center;
+}
+.queue-arming-preview {
+    flex: 1;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+}
+.queue-arming-cancel {
+    background: transparent;
+    border: 1px solid var(--warning);
+    color: var(--warning);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.queue-arming-cancel:hover {
+    background: var(--warning);
+    color: var(--bg);
 }
 
 .queue-item-requeue {
@@ -3070,6 +3142,19 @@ html, body {
 .queue-action-btn.primary:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+}
+
+.queue-action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.queue-action-btn.running {
+    background: var(--warning, #e3b341);
+    color: #000;
+}
+.queue-action-btn.running:active {
+    background: #c79529;
 }
 
 .queue-action-btn.secondary {
@@ -4853,6 +4938,11 @@ html, body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    /* Shrink so trailing buttons (Copy) stay in-frame on narrow
+       mobile widths; without min-width:0 a nowrap path refuses to
+       shrink past its content and pushes siblings off-screen. */
+    flex: 1 1 0;
+    min-width: 0;
 }
 
 .file-viewer-content {

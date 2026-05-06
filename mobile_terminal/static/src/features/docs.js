@@ -241,12 +241,14 @@ export function initDocs() {
                     <div class="file-viewer-header">
                         <button class="file-back-btn" id="fileBackBtn">&larr; Back</button>
                         <span class="file-viewer-path">${escapeHtml(filePath)}</span>
+                        <button class="docs-copy-btn" id="docsFileCopyBtn">Copy</button>
                     </div>
                     <div class="file-viewer-content ${isMarkdown ? 'markdown-content' : 'code-content'}">
                         ${isMarkdown ? marked.parse(data.content || '') : `<pre>${escapeHtml(data.content || '')}</pre>`}
                     </div>
                 </div>
             `;
+            wireDocCopy('docsFileCopyBtn', data.content || '');
 
             document.getElementById('fileBackBtn').addEventListener('click', () => {
                 loadSearchTab();
@@ -355,6 +357,28 @@ export function initDocs() {
         }
     }
 
+    // v=451: shared "Copy raw doc text" affordance for context, touch,
+    // session viewer, and file viewer — same shape as plan copy button.
+    function docCopyButtonHtml(btnId) {
+        return '<div class="docs-plan-actions">'
+            + `<button class="docs-copy-btn" id="${btnId}">Copy</button>`
+            + '</div>';
+    }
+    function wireDocCopy(btnId, rawText) {
+        const btn = document.getElementById(btnId);
+        if (!btn) return;
+        btn.addEventListener('click', async () => {
+            if (!rawText) return;
+            try {
+                await navigator.clipboard.writeText(rawText);
+                btn.textContent = 'Copied';
+                setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+            } catch (e) {
+                ctx.showToast?.('Copy failed', 'error');
+            }
+        });
+    }
+
     // Context tab
     async function loadContextTab() {
         try {
@@ -362,11 +386,14 @@ export function initDocs() {
             const data = await response.json();
 
             if (data.exists && data.content) {
+                let rendered;
                 try {
-                    docsModalBody.innerHTML = marked.parse(data.content);
+                    rendered = marked.parse(data.content);
                 } catch (e) {
-                    docsModalBody.innerHTML = `<pre>${escapeHtml(data.content)}</pre>`;
+                    rendered = `<pre>${escapeHtml(data.content)}</pre>`;
                 }
+                docsModalBody.innerHTML = docCopyButtonHtml('docsContextCopyBtn') + rendered;
+                wireDocCopy('docsContextCopyBtn', data.content);
             } else {
                 docsModalBody.innerHTML = '<div class="docs-empty">No .claude/CONTEXT.md found</div>';
             }
@@ -383,11 +410,14 @@ export function initDocs() {
             const data = await response.json();
 
             if (data.exists && data.content) {
+                let rendered;
                 try {
-                    docsModalBody.innerHTML = marked.parse(data.content);
+                    rendered = marked.parse(data.content);
                 } catch (e) {
-                    docsModalBody.innerHTML = `<pre>${escapeHtml(data.content)}</pre>`;
+                    rendered = `<pre>${escapeHtml(data.content)}</pre>`;
                 }
+                docsModalBody.innerHTML = docCopyButtonHtml('docsTouchCopyBtn') + rendered;
+                wireDocCopy('docsTouchCopyBtn', data.content);
             } else {
                 docsModalBody.innerHTML = '<div class="docs-empty">No .claude/touch-summary.md found</div>';
             }
@@ -515,13 +545,16 @@ export function initDocs() {
             let html = `<button class="docs-back-btn" id="docsSessionBack">\u2190 Back to sessions</button>`;
             html += `<div style="margin-bottom: 8px; color: var(--text-muted); font-size: 12px;">Session: ${escapeHtml(shortId)}</div>`;
 
-            if (data.exists && data.content) {
+            const hasContent = data.exists && data.content;
+            if (hasContent) {
+                html += docCopyButtonHtml('docsSessionCopyBtn');
                 html += `<pre style="white-space: pre-wrap; font-size: 12px; line-height: 1.5;">${escapeHtml(data.content)}</pre>`;
             } else {
                 html += '<div class="docs-empty">Session log is empty or not found</div>';
             }
 
             docsModalBody.innerHTML = html;
+            if (hasContent) wireDocCopy('docsSessionCopyBtn', data.content);
 
             document.getElementById('docsSessionBack')?.addEventListener('click', () => {
                 viewingSessionId = null;
