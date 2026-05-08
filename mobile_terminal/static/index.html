@@ -22,7 +22,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=460">
+    <link rel="stylesheet" href="/static/styles.css?v=467">
 </head>
 <body>
     <div class="app">
@@ -666,6 +666,8 @@
         <!-- Bottom items (closest to right thumb) are last in DOM -->
         <div id="fabMenu" class="fab-menu hidden">
             <button type="button" class="fab-menu-item" data-action="launchTeam"><span class="fab-icon">&#x1F680;</span>Launch Team</button>
+            <button type="button" class="fab-menu-item" data-action="gitCommit"><span class="fab-icon">&#x1F4DD;</span>Git Commit</button>
+            <button type="button" class="fab-menu-item" data-action="gitPush"><span class="fab-icon">&#x2B06;</span>Git Push</button>
             <button type="button" class="fab-menu-item" data-tab="mcp"><span class="fab-icon">&#x2699;</span>MCP</button>
             <button type="button" class="fab-menu-item" data-tab="env"><span class="fab-icon">&#x1F511;</span>Env</button>
             <button type="button" class="fab-menu-item" data-tab="plugins"><span class="fab-icon">&#x1F9E9;</span>Plugins</button>
@@ -968,6 +970,6 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script defer src="/static/terminal.js?v=460"></script>
+    <script defer src="/static/terminal.js?v=467"></script>
 </body>
 </html>

@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v460 ===');
+console.log('=== TERMINAL.JS v467 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -3837,6 +3837,8 @@ async function updateAgentPhase() {
         updateProcessesPill(data.descendant_count);
         const prevPhase = lastPhase?.phase;
         lastPhase = data;
+        // Refresh Phrases button suggestion whenever phase changes.
+        if (typeof updatePhrasesButton === 'function') updatePhrasesButton();
 
         const phase = data.phase;
         const agentRunning = data.agent_running ?? data.claude_running;
@@ -6151,33 +6153,216 @@ function switchToTeamView() {
  * Append standard action buttons (Git, Stop, Compose, •••) to a bar element.
  */
 function appendStandardActionButtons(bar) {
-    const gitBtn = document.createElement('button');
-    gitBtn.className = 'action-bar-btn action-bar-git';
-    gitBtn.textContent = 'Commit';
-    gitBtn.addEventListener('click', () => onGitButtonClick(gitBtn));
-    bar.appendChild(gitBtn);
-    updateGitButton(gitBtn);
-
-    const btn3 = document.createElement('button');
-    btn3.className = 'action-bar-btn action-bar-stop';
-    btn3.textContent = 'Stop';
-    btn3.addEventListener('click', () => {
+    // Order (left → right): Stop · Compose · Phrases · ••• menu.
+    // Stop is leftmost because it's the highest-stakes interrupt;
+    // Compose next because it's the most-tapped action; Phrases sits
+    // beside Compose since both feed input into the agent; ••• stays
+    // rightmost as the rare "more options" surface. Git actions live
+    // inside the ••• FAB menu (rarely tapped — agent commits via policy).
+    const stopBtn = document.createElement('button');
+    stopBtn.className = 'action-bar-btn action-bar-stop';
+    stopBtn.textContent = 'Stop';
+    stopBtn.addEventListener('click', () => {
         sendStopInterrupt();
         showToast('Interrupt sent', 'success');
     });
-    bar.appendChild(btn3);
+    bar.appendChild(stopBtn);
 
-    const btn4 = document.createElement('button');
-    btn4.className = 'action-bar-btn action-bar-compose';
-    btn4.textContent = 'Compose';
-    btn4.addEventListener('click', () => { if (composeBtn) composeBtn.click(); });
-    bar.appendChild(btn4);
+    const composeBarBtn = document.createElement('button');
+    composeBarBtn.className = 'action-bar-btn action-bar-compose';
+    composeBarBtn.textContent = 'Compose';
+    composeBarBtn.addEventListener('click', () => { if (composeBtn) composeBtn.click(); });
+    bar.appendChild(composeBarBtn);
 
-    const btn1 = document.createElement('button');
-    btn1.className = 'action-bar-btn';
-    btn1.innerHTML = '&bull;&bull;&bull;';
-    btn1.addEventListener('click', () => toggleFabMenu());
-    bar.appendChild(btn1);
+    const phrasesBtn = document.createElement('button');
+    phrasesBtn.className = 'action-bar-btn action-bar-phrases';
+    phrasesBtn.dataset.phrase = '';   // current best-guess phrase
+    phrasesBtn.setAttribute('aria-haspopup', 'menu');
+    phrasesBtn.setAttribute('aria-expanded', 'false');
+    phrasesBtn.title = 'Tap: send the suggested phrase immediately. Long-press: pick another.';
+    updatePhrasesButton(phrasesBtn);
+
+    // Long-press detection: 500ms threshold opens the full popover.
+    // Short tap fires the suggested phrase via prefillCompose.
+    // gestureHandled suppresses the browser's own contextmenu event
+    // that mobile fires from long-press at ~500ms — without this it
+    // calls togglePhrasesPopover a SECOND time and closes the popover
+    // immediately (visible as a flicker right after the haptic).
+    let pressTimer = null;
+    let longPressFired = false;
+    let gestureHandled = false;
+    const startPress = () => {
+        longPressFired = false;
+        gestureHandled = false;
+        clearTimeout(pressTimer);
+        pressTimer = setTimeout(() => {
+            longPressFired = true;
+            gestureHandled = true;
+            togglePhrasesPopover(phrasesBtn);
+        }, 500);
+    };
+    const cancelPress = () => clearTimeout(pressTimer);
+    phrasesBtn.addEventListener('mousedown', startPress);
+    phrasesBtn.addEventListener('touchstart', startPress, { passive: true });
+    phrasesBtn.addEventListener('mouseup', cancelPress);
+    phrasesBtn.addEventListener('mouseleave', cancelPress);
+    phrasesBtn.addEventListener('touchend', cancelPress);
+    phrasesBtn.addEventListener('touchcancel', cancelPress);
+    phrasesBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (longPressFired) {
+            longPressFired = false;
+            return;  // long-press already opened the popover
+        }
+        const phrase = phrasesBtn.dataset.phrase || "What's next?";
+        prefillInputWithPhrase(phrase);
+    });
+    // Right-click (desktop) opens the popover. On mobile, long-press
+    // ALSO fires this event ~500ms in — same time as our timer — so
+    // we skip if our long-press already handled this gesture.
+    phrasesBtn.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (gestureHandled) {
+            gestureHandled = false;
+            return;
+        }
+        togglePhrasesPopover(phrasesBtn);
+    });
+    bar.appendChild(phrasesBtn);
+
+    const menuBtn = document.createElement('button');
+    menuBtn.className = 'action-bar-btn';
+    menuBtn.innerHTML = '&bull;&bull;&bull;';
+    menuBtn.addEventListener('click', () => toggleFabMenu());
+    bar.appendChild(menuBtn);
+}
+
+// Quick-phrase set surfaced above the Phrases button. Tap a phrase →
+// prefillCompose() opens the compose modal with the text already
+// filled in, so the user can edit/extend before sending. Order
+// matters: most-frequent first (top of expanded popover).
+const QUICK_PHRASES = [
+    "What's next?",
+    "Prepare todos",
+    "Start implementation",
+    "Continue",
+    "Looks good, proceed",
+    "Summarize what we did",
+];
+
+/**
+ * Pick the most-likely phrase for a single-tap shortcut. Reads
+ * lastPhase (driver phase + permission state) plus activePermissionPayload
+ * (banner up). Falls back to "What's next?" when no signal narrows it.
+ */
+function pickBestPhrase() {
+    const phase = (typeof lastPhase === 'object' && lastPhase) ? lastPhase.phase : null;
+    const permTool = (typeof lastPhase === 'object' && lastPhase) ? lastPhase.permission_tool : null;
+    const bannerUp = typeof activePermissionPayload !== 'undefined' && activePermissionPayload;
+    if (bannerUp || permTool) return "Looks good, proceed";
+    if (phase === 'working' || phase === 'streaming') return "Continue";
+    if (phase === 'planning') return "Prepare todos";
+    if (phase === 'waiting') return "Looks good, proceed";
+    return "What's next?";
+}
+
+/** Refresh the action-bar Phrases button label to the current best pick. */
+function updatePhrasesButton(btnArg) {
+    const btn = btnArg || document.querySelector('.action-bar-phrases');
+    if (!btn) return;
+    const phrase = pickBestPhrase();
+    btn.dataset.phrase = phrase;
+    btn.textContent = '💬 ' + phrase;
+}
+window.updatePhrasesButton = updatePhrasesButton;
+
+/** Forward-declare so prefillInputWithPhrase can call sendLogCommand
+ *  even though sendLogCommand is defined later in this file. */
+// (sendLogCommand is hoisted via async function declaration below.)
+
+/** Prefill the main inline input (#logInput) with the chosen phrase
+ *  and immediately submit it (mirrors the Enter-key path). The phrases
+ *  are short, well-known prompts — no editing step needed. */
+function prefillInputWithPhrase(text) {
+    const input = document.getElementById('logInput');
+    if (!input) {
+        // Fallback to compose modal if the inline input isn't present
+        if (typeof prefillCompose === 'function') prefillCompose(text);
+        return;
+    }
+    input.value = text;
+    delete input.dataset.autoSuggestion;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    // Auto-send: same path as pressing Enter in the input.
+    if (typeof sendLogCommand === 'function') {
+        sendLogCommand();
+    }
+}
+
+// Tracks when the popover opened so we can ignore the synthetic click
+// that fires right after a long-press touchend (which would otherwise
+// close the popover immediately).
+let phrasesPopoverOpenedAt = 0;
+
+function togglePhrasesPopover(anchorBtn) {
+    let pop = document.getElementById('phrasesPopover');
+    if (pop && !pop.classList.contains('hidden')) {
+        closePhrasesPopover();
+        return;
+    }
+    if (!pop) {
+        pop = document.createElement('div');
+        pop.id = 'phrasesPopover';
+        pop.className = 'phrases-popover';
+        pop.setAttribute('role', 'menu');
+        pop.innerHTML = QUICK_PHRASES.map(text =>
+            '<button type="button" class="phrases-popover-item" role="menuitem">'
+            + escapeHtml(text) + '</button>'
+        ).join('');
+        document.body.appendChild(pop);
+        pop.addEventListener('click', (e) => {
+            // Stop bubble so the document outside-click handler doesn't
+            // also fire and double-close on every item tap.
+            e.stopPropagation();
+            const item = e.target.closest('.phrases-popover-item');
+            if (!item) return;
+            const text = item.textContent;
+            closePhrasesPopover();
+            prefillInputWithPhrase(text);
+        });
+    }
+    // Position above the anchor button
+    const rect = anchorBtn.getBoundingClientRect();
+    pop.style.left = Math.max(8, rect.left) + 'px';
+    pop.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
+    pop.classList.remove('hidden');
+    anchorBtn.setAttribute('aria-expanded', 'true');
+    phrasesPopoverOpenedAt = Date.now();
+    // Outside-tap close handler. Guarded against the synthetic click
+    // that touchend fires after a long-press (arrives within ~50ms of
+    // open). Stays attached until explicit close so subsequent outside
+    // taps still dismiss.
+    document.addEventListener('click', _phrasesOutsideClickHandler);
+}
+
+function _phrasesOutsideClickHandler(e) {
+    // Guard 1: ignore clicks within 350ms of opening — covers the
+    // touchend→click that immediately follows a long-press.
+    if (Date.now() - phrasesPopoverOpenedAt < 350) return;
+    // Guard 2: ignore taps inside the popover or on the anchor button.
+    if (e.target.closest('#phrasesPopover')) return;
+    if (e.target.closest('.action-bar-phrases')) return;
+    closePhrasesPopover();
+}
+
+function closePhrasesPopover() {
+    const pop = document.getElementById('phrasesPopover');
+    if (pop) pop.classList.add('hidden');
+    document.querySelectorAll('.action-bar-phrases').forEach(b =>
+        b.setAttribute('aria-expanded', 'false')
+    );
+    document.removeEventListener('click', _phrasesOutsideClickHandler);
+    phrasesPopoverOpenedAt = 0;
 }
 
 /**
@@ -8946,6 +9131,14 @@ function setupPreviewHandlers() {
                 document.getElementById('docsModal')?.classList.remove('hidden');
                 return;
             }
+            if (action === 'gitCommit') {
+                promptGitCommit();
+                return;
+            }
+            if (action === 'gitPush') {
+                doGitPush();
+                return;
+            }
             if (tab) openSurface(tab);
         });
     });
@@ -10026,6 +10219,7 @@ function handlePermissionRequest(payload) {
     activePermissionId = payload.id;
     activePermissionPayload = payload;
     permissionShownAt = Date.now();
+    if (typeof updatePhrasesButton === 'function') updatePhrasesButton();
 
     const tool = payload.tool || 'Tool';
     const target = payload.target || '';
@@ -10063,6 +10257,7 @@ function hidePermissionBanner() {
     activePermissionId = null;
     activePermissionPayload = null;
     permissionShownAt = 0;
+    if (typeof updatePhrasesButton === 'function') updatePhrasesButton();
 }
 
 /**
@@ -11631,6 +11826,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=460', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=467', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
