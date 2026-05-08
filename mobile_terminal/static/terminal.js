@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v467 ===');
+console.log('=== TERMINAL.JS v468 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1319,8 +1319,15 @@ function sendKeyDebounced(key, force = false) {
  * any user-facing "stop the agent" action.
  */
 function sendStopInterrupt() {
+    // Ctrl+C interrupts the agent's work; ESC exits any modal Claude
+    // had open; Ctrl+U clears the TUI input buffer so any half-typed
+    // command the user composed before tapping Stop doesn't merge with
+    // their next message (the lingering input was invisible in MTO's
+    // #logInput because that's a separate field, causing the agent to
+    // see merged text on the next send).
     sendKeyDebounced('\x03', true);
     setTimeout(() => sendKeyDebounced('\x1b', true), 100);
+    setTimeout(() => sendKeyDebounced('\x15', true), 250);
 }
 
 /**
@@ -11826,6 +11833,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=467', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=468', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
