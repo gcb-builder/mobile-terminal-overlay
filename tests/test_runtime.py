@@ -40,7 +40,8 @@ class TestPtyOps:
     def test_pty_read_delegates_to_os_read(self):
         rt = TmuxRuntime()
         rt._master_fd = 42
-        with patch("os.read", return_value=b"data") as mock_read:
+        with patch("select.select", return_value=([42], [], [])), \
+                patch("os.read", return_value=b"data") as mock_read:
             result = rt.pty_read(1024)
             mock_read.assert_called_once_with(42, 1024)
             assert result == b"data"
@@ -344,12 +345,13 @@ class TestInputQueueIntegration:
             mock_write.assert_called_once_with(b"test data")
 
     def test_send_signature_no_master_fd(self):
-        """Verify InputQueue.send() no longer takes master_fd parameter."""
+        """Verify InputQueue.send() no longer takes master_fd/websocket parameters."""
         from mobile_terminal.models import InputQueue
         import inspect
         sig = inspect.signature(InputQueue.send)
         param_names = list(sig.parameters.keys())
         assert "master_fd" not in param_names
+        assert "websocket" not in param_names
         assert "msg_id" in param_names
         assert "data" in param_names
-        assert "websocket" in param_names
+        assert "app" in param_names
