@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v468 ===');
+console.log('=== TERMINAL.JS v469 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -4277,6 +4277,18 @@ function setupEventListeners() {
                 return;
             }
 
+            // Enter: use the same tmux send-keys path as the main input
+            // submit button. Codex's TUI can treat a raw carriage-return
+            // byte differently from a real terminal Enter key, which leaves
+            // the prompt staged until the user presses Enter again.
+            if (keyName === 'enter') {
+                sendTextAtomic('', true);
+                setTerminalBusy(true);
+                scheduleEarlyBusyCheck();
+                captureSnapshot('quick_enter');
+                return;
+            }
+
             // Up/Down/Tab: send with sync-back to input box
             if (keyName === 'up' || keyName === 'down') {
                 sendKeyWithSync(key, 100);
@@ -6728,12 +6740,14 @@ function renderLogEntries(contentOrMessages, cached = false) {
 
         let role, text;
 
+        const toolLine = trimmed.match(/^(?:(.+?)\s+)?•\s+/);
+
         if (trimmed.startsWith('$ ')) {
             role = 'user';
             text = trimmed.slice(2);
-        } else if (trimmed.startsWith('• ')) {
+        } else if (toolLine) {
             role = 'tool';
-            text = trimmed;
+            text = trimmed.slice(toolLine[1] ? toolLine[1].length + 1 : 0);
         } else {
             role = 'assistant';
             text = trimmed;
@@ -6885,7 +6899,7 @@ function createLogCard(msg) {
             continue;
         }
         if (block.role === 'tool') {
-            const toolMatch = block.text.match(/^• (\w+):?\s*(.*)/s);
+            const toolMatch = block.text.match(/^•\s+([\w.-]+):?\s*(.*)/s);
             if (toolMatch) {
                 const toolName = toolMatch[1];
                 const toolDetail = toolMatch[2] || '';
@@ -11833,6 +11847,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=468', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=469', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
