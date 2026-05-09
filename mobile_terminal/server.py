@@ -763,6 +763,9 @@ def create_app(config: Config) -> FastAPI:
                         "command": startup_cmd,
                         "repo_label": audit_label
                     })
+                    monitor = getattr(app.state, "_monitor_log_file_for_target", None)
+                    if monitor:
+                        asyncio.create_task(monitor(pane_id, require_active=False))
 
                 asyncio.create_task(_send_and_audit())
 
@@ -1720,5 +1723,4 @@ def create_app(config: Config) -> FastAPI:
 
 
 # spawn_tmux has been moved to TmuxRuntime.spawn() in runtime.py
-
 

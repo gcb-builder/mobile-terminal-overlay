@@ -196,6 +196,18 @@ def register(app: FastAPI, deps):
                 cmd_parts = driver.start_command()
                 cmd_str = " ".join(shlex.quote(part) for part in cmd_parts)
                 await app.state.runtime.send_keys(target, cmd_str, "Enter")
+                monitor = getattr(app.state, "_monitor_log_file_for_target", None)
+                if monitor:
+                    try:
+                        pane_result = await run_subprocess(
+                            ["tmux", "display-message", "-t", target, "-p", "#{window_index}:#{pane_index}"],
+                            capture_output=True, text=True, timeout=2,
+                        )
+                        pane_id = pane_result.stdout.strip() if pane_result.returncode == 0 else ""
+                        if pane_id:
+                            asyncio.create_task(monitor(pane_id, require_active=False))
+                    except Exception:
+                        pass
             except Exception as e:
                 ar["ok"] = False
                 ar["error"] = f"Failed to start {driver.display_name()}: {e}"

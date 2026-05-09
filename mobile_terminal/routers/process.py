@@ -545,6 +545,9 @@ def register(app: FastAPI, deps):
                 "repo_label": repo_label,
                 "agent_type": driver.id(),
             })
+            monitor = getattr(app.state, "_monitor_log_file_for_target", None)
+            if monitor:
+                asyncio.create_task(monitor(pane_id, require_active=False))
 
             return {
                 "success": True,

@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import Depends, FastAPI, Query
 from fastapi.responses import JSONResponse
 
-from mobile_terminal.drivers import ObserveContext
+from mobile_terminal.drivers import ObserveContext, get_driver
 from mobile_terminal.helpers import (
     run_subprocess, get_tmux_target,
     get_cached_capture, set_cached_capture,
@@ -45,6 +45,48 @@ TEAM_ROLES = {
 def register(app: FastAPI, deps):
     """Register team coordination routes."""
 
+    def _driver_for_agent_type(agent_type: str):
+        if agent_type == app.state.driver.id():
+            return app.state.driver
+        return get_driver(agent_type)
+
+    def _agent_type_from_log_path(path: Path) -> Optional[str]:
+        parts = set(path.parts)
+        if ".codex" in parts:
+            return "codex"
+        if ".claude" in parts:
+            return "claude"
+        return None
+
+    async def _resolve_driver_for_team_pane(target_id: str, shell_pid: Optional[int]):
+        cached = app.state.target_log_mapping.get(target_id)
+        if cached:
+            if isinstance(cached, dict):
+                agent_type = cached.get("agent_type")
+                if agent_type:
+                    return _driver_for_agent_type(agent_type)
+                cached_path = cached.get("path")
+            else:
+                cached_path = cached
+            if cached_path:
+                agent_type = _agent_type_from_log_path(Path(cached_path))
+                if agent_type:
+                    return _driver_for_agent_type(agent_type)
+
+        if shell_pid:
+            for agent_type in ("codex", "claude"):
+                try:
+                    result = await run_subprocess(
+                        ["pgrep", "-f", agent_type, "-P", str(shell_pid)],
+                        capture_output=True, text=True, timeout=2,
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        return _driver_for_agent_type(agent_type)
+                except Exception:
+                    pass
+
+        return app.state.driver
+
     @app.get("/api/team/state")
     async def get_team_state(
         session: Optional[str] = Query(None),
@@ -65,7 +107,6 @@ def register(app: FastAPI, deps):
 
         leader = None
         agents = []
-        driver = app.state.driver
         roles_map = load_team_roles()
         for line in result.stdout.strip().split("\n"):
             parts = line.split("|")
@@ -76,6 +117,7 @@ def register(app: FastAPI, deps):
             window_name = parts[2]
             pane_pid_str = parts[3] if len(parts) > 3 else ""
             pane_title = parts[4] if len(parts) > 4 else ""
+            shell_pid = int(pane_pid_str) if pane_pid_str.isdigit() else None
 
             if window_name == "leader":
                 role = "leader"
@@ -91,10 +133,11 @@ def register(app: FastAPI, deps):
                 session_name=sess,
                 target=target_id,
                 tmux_target=get_tmux_target(sess, target_id),
-                shell_pid=int(pane_pid_str) if pane_pid_str.isdigit() else None,
+                shell_pid=shell_pid,
                 pane_title=pane_title,
                 repo_path=cwd_path if cwd_path.exists() else None,
             )
+            driver = await _resolve_driver_for_team_pane(target_id, shell_pid)
             loop = asyncio.get_event_loop()
             obs = await loop.run_in_executor(None, driver.observe, ctx)
             git_info = deps.get_git_info_cached(cwd_path)
@@ -103,12 +146,15 @@ def register(app: FastAPI, deps):
             # can exclude it (avoids showing team member logs in central view)
             if obs.log_paths and target_id not in app.state.target_log_mapping:
                 app.state.target_log_mapping[target_id] = {
-                    "path": str(obs.log_paths[0]), "pinned": False,
+                    "path": str(obs.log_paths[0]),
+                    "pinned": False,
+                    "agent_type": obs.agent_type,
                 }
 
             entry = {
                 "target_id": target_id,
                 "agent_name": name,
+                "agent_type": obs.agent_type,
                 "team_role": role,
                 "cwd": cwd,
                 "phase": obs.phase,

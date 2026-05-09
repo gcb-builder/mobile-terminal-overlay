@@ -22,6 +22,8 @@ from .base import (
     Observation,
     ObserveContext,
     find_claude_log_file,
+    normalize_tool_content,
+    summarize_tool_result,
     tail_jsonl,
 )
 
@@ -87,6 +89,162 @@ class ClaudeDriver(BaseAgentDriver):
             phase_detection=True,
             pane_title_signal=True,
         )
+
+    def parse_log_messages(self, log_file: Path, limit: int = 200) -> list:
+        """Parse Claude JSONL into the frontend's conversation message shape."""
+        raw_content = log_file.read_text(errors="replace")
+        lines_list = raw_content.strip().split("\n")
+        conversation = []
+        pending_tool_uses = {}
+
+        for line in lines_list:
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = entry.get("type")
+            message = entry.get("message", {})
+
+            if msg_type == "user":
+                content = message.get("content", "")
+                if isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict) or block.get("type") != "tool_result":
+                            continue
+                        tool_use_id = block.get("tool_use_id", "")
+                        if not tool_use_id or tool_use_id not in pending_tool_uses:
+                            continue
+                        conv_idx, tool_name, tool_detail = pending_tool_uses.pop(tool_use_id)
+                        result_content = block.get("content", "")
+                        is_error = block.get("is_error", False)
+                        summary = summarize_tool_result(tool_name, result_content, is_error)
+                        orig = conversation[conv_idx]
+                        text = orig["text"] if isinstance(orig, dict) else orig
+                        conversation[conv_idx] = {
+                            "text": text,
+                            "tool": {
+                                "name": tool_name,
+                                "detail": tool_detail,
+                                "tool_use_id": tool_use_id,
+                                "result_summary": summary,
+                                "result_status": "error" if is_error else "ok",
+                            },
+                        }
+                elif isinstance(content, str) and content.strip():
+                    cleaned = re.sub(
+                        r"<(?:system-reminder|task-notification)[^>]*>[\s\S]*?</(?:system-reminder|task-notification)>",
+                        "",
+                        content,
+                    ).strip()
+                    if cleaned:
+                        conversation.append(f"$ {cleaned}")
+
+            elif msg_type == "assistant":
+                content = message.get("content", [])
+                if isinstance(content, str):
+                    if content.strip():
+                        conversation.append(f"{self.display_name()}: {content}")
+                elif isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "text":
+                            text = block.get("text", "")
+                            if text.strip():
+                                conversation.append(f"{self.display_name()}: {text}")
+                            continue
+                        if block.get("type") != "tool_use":
+                            continue
+
+                        tool_name = block.get("name", "tool")
+                        tool_id = block.get("id", "")
+                        tool_input = block.get("input", {})
+                        tool_detail = ""
+                        if tool_name == "Bash":
+                            tool_detail = tool_input.get("command", "")[:200]
+                            conversation.append(f"{self.display_name()} • Bash: {tool_detail}")
+                        elif tool_name in ("Read", "Edit", "Write", "Glob", "Grep"):
+                            tool_detail = (
+                                tool_input.get("file_path")
+                                or tool_input.get("path")
+                                or tool_input.get("pattern", "")
+                            )[:100]
+                            conversation.append(f"{self.display_name()} • {tool_name}: {tool_detail}")
+                        elif tool_name == "AskUserQuestion":
+                            questions = tool_input.get("questions", [])
+                            for q in questions:
+                                qtext = q.get("question", "")
+                                opts = q.get("options", [])
+                                conversation.append(f"{self.display_name()} ❓ {qtext}")
+                                for i, opt in enumerate(opts, 1):
+                                    label = opt.get("label", "")
+                                    desc = opt.get("description", "")
+                                    conversation.append(f"  {i}. {label}" + (f" - {desc}" if desc else ""))
+                        elif tool_name == "EnterPlanMode":
+                            conversation.append(f"{self.display_name()} 📋 Entering plan mode...")
+                        elif tool_name == "ExitPlanMode":
+                            plan = (tool_input.get("plan") or "").strip()
+                            if plan:
+                                conversation.append(f"{self.display_name()} 📋 Plan:\n{plan}")
+                            else:
+                                conversation.append(f"{self.display_name()} ✅ Exiting plan mode")
+                        elif tool_name == "Task":
+                            desc = tool_input.get("description", "")
+                            agent_type = tool_input.get("subagent_type", "")
+                            if desc:
+                                conversation.append(f"{self.display_name()} 🤖 Task ({agent_type}): {desc[:80]}")
+                            else:
+                                conversation.append(f"{self.display_name()} 🤖 Task: {agent_type}")
+                        elif tool_name == "TodoWrite":
+                            todos = tool_input.get("todos", [])
+                            in_progress = [t for t in todos if t.get("status") == "in_progress"]
+                            if in_progress:
+                                conversation.append(
+                                    f"{self.display_name()} 📝 {in_progress[0].get('activeForm', 'Working...')}"
+                                )
+                        else:
+                            conversation.append(f"{self.display_name()} • {tool_name}")
+
+                        if (
+                            tool_name not in ("AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "Task", "TodoWrite")
+                            and tool_id
+                        ):
+                            pending_tool_uses[tool_id] = (len(conversation) - 1, tool_name, tool_detail)
+
+            elif msg_type == "system" and entry.get("subtype") == "away_summary":
+                recap_text = entry.get("content", "")
+                if isinstance(recap_text, str) and recap_text.strip():
+                    conversation.append(f"{self.display_name()} 🪞 recap: {recap_text.strip()}")
+
+        return conversation[-limit:] if len(conversation) > limit else conversation
+
+    def get_tool_output(self, log_file: Path, tool_use_id: str) -> Optional[dict]:
+        """Return a Claude tool_result payload by tool_use_id."""
+        raw = log_file.read_text(errors="replace")
+        for line in reversed(raw.strip().split("\n")):
+            if not line.strip() or tool_use_id not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("type") != "user":
+                continue
+            content = entry.get("message", {}).get("content", "")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "tool_result" or block.get("tool_use_id") != tool_use_id:
+                    continue
+                result_content = normalize_tool_content(block.get("content", ""))
+                is_error = block.get("is_error", False)
+                return {"content": result_content, "is_error": is_error}
+        return None
 
     def observe(self, ctx: ObserveContext) -> Observation:
         """Full Claude observation: PID + JSONL phase + permission detection."""

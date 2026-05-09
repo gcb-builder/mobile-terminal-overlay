@@ -12,11 +12,20 @@ scrollback scraping is unreliable. JSONL logs are the primary signal.
 """
 
 import logging
+import json
 import time
 from pathlib import Path
 from typing import Optional
 
-from .base import BaseAgentDriver, DriverCapabilities, Observation, ObserveContext, tail_jsonl
+from .base import (
+    BaseAgentDriver,
+    DriverCapabilities,
+    Observation,
+    ObserveContext,
+    normalize_tool_content,
+    summarize_tool_result,
+    tail_jsonl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +33,7 @@ logger = logging.getLogger(__name__)
 _codex_phase_cache: dict = {}
 
 
-def find_codex_log_file() -> Optional[Path]:
+def find_codex_log_file(repo_path: Optional[Path] = None) -> Optional[Path]:
     """Find the most recent Codex session JSONL log.
 
     Codex writes session logs to ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl.
@@ -34,7 +43,18 @@ def find_codex_log_file() -> Optional[Path]:
     if not sessions_dir.exists():
         return None
 
+    files = list_codex_log_files(repo_path)
+    return files[0] if files else None
+
+
+def list_codex_log_files(repo_path: Optional[Path] = None) -> list[Path]:
+    """List Codex rollout logs newest-first."""
+    sessions_dir = Path.home() / ".codex" / "sessions"
+    if not sessions_dir.exists():
+        return []
+
     # Walk YYYY/MM/DD dirs in reverse chronological order
+    found = []
     try:
         year_dirs = sorted(sessions_dir.iterdir(), reverse=True)
     except Exception:
@@ -57,11 +77,45 @@ def find_codex_log_file() -> Optional[Path]:
             for day_dir in day_dirs:
                 if not day_dir.is_dir():
                     continue
-                jsonl_files = list(day_dir.glob("rollout-*.jsonl"))
-                if jsonl_files:
-                    return max(jsonl_files, key=lambda f: f.stat().st_mtime)
+                found.extend(day_dir.glob("rollout-*.jsonl"))
 
-    return None
+    files = sorted(found, key=lambda f: f.stat().st_mtime, reverse=True)
+    if repo_path is None:
+        return files
+    return [f for f in files if _codex_log_matches_repo(f, repo_path)]
+
+
+def _codex_log_matches_repo(log_file: Path, repo_path: Path) -> bool:
+    """Return True when rollout session_meta cwd belongs to repo_path."""
+    try:
+        repo = repo_path.resolve()
+    except Exception:
+        repo = repo_path
+    try:
+        with log_file.open("r", encoding="utf-8", errors="replace") as f:
+            for _ in range(20):
+                line = f.readline()
+                if not line:
+                    break
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") != "session_meta":
+                    continue
+                cwd = entry.get("payload", {}).get("cwd", "")
+                if not cwd:
+                    return False
+                try:
+                    cwd_path = Path(cwd).resolve()
+                except Exception:
+                    cwd_path = Path(cwd)
+                return cwd_path == repo or repo in cwd_path.parents
+    except Exception:
+        return False
+    return False
 
 
 class CodexDriver(BaseAgentDriver):
@@ -77,9 +131,7 @@ class CodexDriver(BaseAgentDriver):
     _context_limit = 200_000
 
     def find_log_file(self, repo_path: Path) -> Optional[Path]:
-        # Codex logs are global (~/.codex/sessions/), not repo-scoped.
-        # repo_path accepted for interface conformance but not used.
-        return find_codex_log_file()
+        return find_codex_log_file(repo_path)
 
     def ready_patterns(self) -> list[str]:
         return ["codex", "Codex", " > "]
@@ -95,6 +147,108 @@ class CodexDriver(BaseAgentDriver):
             pane_title_signal=False,
         )
 
+    def parse_log_messages(self, log_file: Path, limit: int = 200) -> list:
+        """Parse Codex rollout JSONL into the frontend's log message shape."""
+        raw_content = log_file.read_text(errors="replace")
+        conversation = []
+        pending_tool_uses = {}
+
+        for line in raw_content.strip().split("\n"):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            event_type = entry.get("type", "")
+            payload = entry.get("payload", {})
+            if not isinstance(payload, dict):
+                payload = {}
+
+            if event_type == "notification" and entry.get("event") == "approval-requested":
+                tool_name = payload.get("tool", "") or payload.get("name", "") or "tool"
+                conversation.append(f"{self.display_name()} ⚠ Approval needed: {tool_name}")
+                continue
+
+            if event_type != "response_item":
+                continue
+
+            payload_type = payload.get("type", "")
+
+            if payload_type == "message":
+                role = payload.get("role", "")
+                if role not in ("user", "assistant"):
+                    continue
+                text = self._extract_content_text(payload.get("content", []))
+                if not text:
+                    continue
+                if role == "user":
+                    conversation.append(f"$ {text}")
+                else:
+                    conversation.append(f"{self.display_name()}: {text}")
+                continue
+
+            if payload_type == "function_call":
+                tool_name = payload.get("name", "") or "tool"
+                tool_id = payload.get("call_id", "") or payload.get("id", "")
+                detail = self._function_call_detail(tool_name, payload.get("arguments", ""))
+                label = f"{self.display_name()} • {tool_name}"
+                if detail:
+                    label += f": {detail}"
+                conversation.append(label)
+                if tool_id:
+                    pending_tool_uses[tool_id] = (len(conversation) - 1, tool_name, detail)
+                continue
+
+            if payload_type == "function_call_output":
+                tool_id = payload.get("call_id", "")
+                if not tool_id or tool_id not in pending_tool_uses:
+                    continue
+                conv_idx, tool_name, tool_detail = pending_tool_uses.pop(tool_id)
+                result_content = normalize_tool_content(payload.get("output", ""))
+                is_error = self._tool_output_is_error(result_content)
+                summary = summarize_tool_result(tool_name, result_content, is_error)
+                orig = conversation[conv_idx]
+                text = orig["text"] if isinstance(orig, dict) else orig
+                conversation[conv_idx] = {
+                    "text": text,
+                    "tool": {
+                        "name": tool_name,
+                        "detail": tool_detail,
+                        "tool_use_id": tool_id,
+                        "result_summary": summary,
+                        "result_status": "error" if is_error else "ok",
+                    },
+                }
+
+        return conversation[-limit:] if len(conversation) > limit else conversation
+
+    def get_tool_output(self, log_file: Path, tool_use_id: str) -> Optional[dict]:
+        """Return a Codex function_call_output payload by call_id."""
+        raw = log_file.read_text(errors="replace")
+        for line in reversed(raw.strip().split("\n")):
+            if not line.strip() or tool_use_id not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            payload = entry.get("payload", {})
+            if (
+                entry.get("type") != "response_item"
+                or not isinstance(payload, dict)
+                or payload.get("type") != "function_call_output"
+                or payload.get("call_id") != tool_use_id
+            ):
+                continue
+            result_content = normalize_tool_content(payload.get("output", ""))
+            return {
+                "content": result_content,
+                "is_error": self._tool_output_is_error(result_content),
+            }
+        return None
+
     def observe(self, ctx: ObserveContext) -> Observation:
         """Full Codex observation: PID + JSONL phase detection."""
         obs = Observation(
@@ -106,7 +260,7 @@ class CodexDriver(BaseAgentDriver):
         self.is_running(ctx, obs)
 
         # 2. Find session log
-        log_file = find_codex_log_file()
+        log_file = find_codex_log_file(ctx.repo_path)
         if log_file:
             obs.log_paths = [log_file]
 
@@ -311,6 +465,49 @@ class CodexDriver(BaseAgentDriver):
             return str(desc)[:60]
 
         return ""
+
+    @staticmethod
+    def _extract_content_text(content) -> str:
+        """Extract display text from Codex message content blocks."""
+        if isinstance(content, str):
+            return content.strip()
+        if not isinstance(content, list):
+            return ""
+        parts = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            text = block.get("text") or block.get("input_text") or block.get("output_text")
+            if text:
+                parts.append(str(text))
+        return "\n".join(parts).strip()
+
+    @staticmethod
+    def _function_call_detail(tool_name: str, arguments) -> str:
+        """Best-effort readable detail for a Codex function_call."""
+        if isinstance(arguments, str):
+            arg_text = arguments
+            try:
+                arguments = json.loads(arguments) if arguments.strip() else {}
+            except json.JSONDecodeError:
+                return arg_text[:200]
+        if not isinstance(arguments, dict):
+            return ""
+        if tool_name == "exec_command":
+            return str(arguments.get("cmd", ""))[:200]
+        if tool_name in ("apply_patch",):
+            return "patch"
+        for key in ("path", "ref_id", "target", "pattern", "query", "message"):
+            if arguments.get(key):
+                return str(arguments[key])[:200]
+        return ""
+
+    @staticmethod
+    def _tool_output_is_error(output: str) -> bool:
+        """Infer failed command output from Codex's command summary text."""
+        if "Process exited with code " not in output:
+            return False
+        return "Process exited with code 0" not in output
 
     @staticmethod
     def _apply_result(obs: Observation, result: dict) -> None:

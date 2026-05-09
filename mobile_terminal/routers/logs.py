@@ -10,8 +10,10 @@ from typing import Optional
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
+from mobile_terminal.drivers import get_driver
+from mobile_terminal.drivers.base import summarize_tool_result
 from mobile_terminal.helpers import (
-    get_project_id, run_subprocess, strip_ansi,
+    get_project_id, get_tmux_target, run_subprocess,
     get_cached_capture, set_cached_capture,
     get_cached_log, set_cached_log,
     get_cached_tool_output, set_cached_tool_output,
@@ -24,62 +26,7 @@ logger = logging.getLogger(__name__)
 
 def _summarize_tool_result(tool_name: str, content, is_error: bool) -> str:
     """Summarize a tool_result into a short badge string."""
-    # Normalize content to string
-    if isinstance(content, list):
-        # tool_result content can be a list of {type: "text", text: "..."}
-        parts = []
-        for block in content:
-            if isinstance(block, dict):
-                parts.append(block.get('text', ''))
-            elif isinstance(block, str):
-                parts.append(block)
-        text = '\n'.join(parts)
-    elif isinstance(content, str):
-        text = content
-    else:
-        text = str(content) if content else ''
-
-    if is_error:
-        # First non-empty line, stripped of ANSI escapes
-        first_line = ''
-        for ln in text.strip().split('\n'):
-            stripped = strip_ansi(ln).strip()
-            if stripped:
-                first_line = stripped[:60]
-                break
-        return f"ERR: {first_line}" if first_line else 'ERR'
-
-    line_count = len(text.split('\n')) if text.strip() else 0
-
-    if tool_name == 'Bash':
-        if line_count == 0:
-            return 'OK'
-        return f"OK {line_count}L"
-    elif tool_name == 'Read':
-        if line_count == 0:
-            return '0L'
-        return f"{line_count}L"
-    elif tool_name == 'Grep':
-        # Count "files with matches" style: lines that look like file paths
-        file_count = 0
-        for ln in text.strip().split('\n'):
-            if ln.strip() and not ln.startswith(' '):
-                file_count += 1
-        if line_count == 0:
-            return '0 matches'
-        return f"{file_count}F {line_count}L"
-    elif tool_name in ('Edit', 'Write'):
-        return 'OK'
-    elif tool_name == 'Glob':
-        file_count = len([ln for ln in text.strip().split('\n') if ln.strip()]) if text.strip() else 0
-        if file_count == 1:
-            return '1 file'
-        return f"{file_count} files"
-    else:
-        # Generic: show line count or short text inline
-        if line_count == 0:
-            return 'OK'
-        return f"{line_count}L"
+    return summarize_tool_result(tool_name, content, is_error)
 
 
 def register(app: FastAPI, deps):
@@ -87,14 +34,28 @@ def register(app: FastAPI, deps):
 
     # --- Helper functions (closures over app for state access) ---
 
-    def get_log_cache_path(project_id: str) -> Path:
+    def get_log_cache_path(
+        project_id: str,
+        target_id: Optional[str] = None,
+        agent_type: Optional[str] = None,
+    ) -> Path:
         """Get the cache file path for a project's log."""
         LOG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        if target_id or agent_type:
+            suffix = "__".join(
+                re.sub(r"[^A-Za-z0-9_.-]+", "_", part)
+                for part in (agent_type or "agent", target_id or "target")
+            )
+            return LOG_CACHE_DIR / f"{project_id}__{suffix}.log"
         return LOG_CACHE_DIR / f"{project_id}.log"
 
-    def read_cached_log(project_id: str) -> Optional[str]:
+    def read_cached_log(
+        project_id: str,
+        target_id: Optional[str] = None,
+        agent_type: Optional[str] = None,
+    ) -> Optional[str]:
         """Read cached log content if it exists."""
-        cache_path = get_log_cache_path(project_id)
+        cache_path = get_log_cache_path(project_id, target_id, agent_type)
         if cache_path.exists():
             try:
                 return cache_path.read_text(errors="replace")
@@ -102,23 +63,138 @@ def register(app: FastAPI, deps):
                 logger.warning(f"Error reading log cache: {e}")
         return None
 
-    def write_log_cache(project_id: str, content: str):
+    def write_log_cache(
+        project_id: str,
+        content: str,
+        target_id: Optional[str] = None,
+        agent_type: Optional[str] = None,
+    ):
         """Write log content to cache."""
-        cache_path = get_log_cache_path(project_id)
+        cache_path = get_log_cache_path(project_id, target_id, agent_type)
         try:
             cache_path.write_text(content)
         except Exception as e:
             logger.warning(f"Error writing log cache: {e}")
 
-    async def monitor_log_file_for_target(target_id: str):
+    def _driver_for_agent_type(agent_type: str):
+        if agent_type == app.state.driver.id():
+            return app.state.driver
+        return get_driver(agent_type)
+
+    def _agent_type_from_log_path(path: Path) -> Optional[str]:
+        parts = set(path.parts)
+        if ".codex" in parts:
+            return "codex"
+        if ".claude" in parts:
+            return "claude"
+        return None
+
+    async def resolve_driver_for_target(target_id: Optional[str]):
+        """Resolve the agent driver for a pane, falling back to configured default."""
+        if target_id:
+            cached = app.state.target_log_mapping.get(target_id)
+            if cached:
+                if isinstance(cached, dict):
+                    agent_type = cached.get("agent_type")
+                    if agent_type:
+                        return _driver_for_agent_type(agent_type)
+                    cached_path = cached.get("path")
+                else:
+                    cached_path = cached
+                if cached_path:
+                    agent_type = _agent_type_from_log_path(Path(cached_path))
+                    if agent_type:
+                        return _driver_for_agent_type(agent_type)
+
+            ctx = await deps.build_observe_context(target_id)
+            if ctx and ctx.shell_pid:
+                for agent_type in ("codex", "claude"):
+                    try:
+                        result = await run_subprocess(
+                            ["pgrep", "-f", agent_type, "-P", str(ctx.shell_pid)],
+                            capture_output=True, text=True, timeout=2,
+                        )
+                        if result.returncode == 0 and result.stdout.strip():
+                            return _driver_for_agent_type(agent_type)
+                    except Exception:
+                        pass
+
+        return app.state.driver
+
+    async def monitor_log_file_for_target(target_id: str, require_active: bool = True):
         """
         Background task that monitors log file modifications to detect which
         .jsonl file belongs to the selected target.
 
         Watches for 10 seconds and associates any modified file with the target.
         """
-        repo_path = deps.get_current_repo_path()
+        repo_path = None
+        try:
+            tmux_target = get_tmux_target(app.state.current_session, target_id)
+            result = await run_subprocess(
+                ["tmux", "display-message", "-t", tmux_target, "-p", "#{pane_current_path}"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                repo_path = Path(result.stdout.strip())
+        except Exception:
+            repo_path = None
         if not repo_path:
+            repo_path = deps.get_current_repo_path()
+        if not repo_path:
+            return
+
+        monitor_driver = await resolve_driver_for_target(target_id)
+        if monitor_driver.id() == "codex":
+            from mobile_terminal.drivers.codex import list_codex_log_files
+
+            initial_files = list_codex_log_files(repo_path)
+            initial_mtimes = {}
+            for f in initial_files:
+                try:
+                    initial_mtimes[str(f)] = f.stat().st_mtime
+                except Exception:
+                    pass
+
+            logger.debug(f"Starting codex log file monitor for target {target_id}")
+            for _ in range(20):
+                await asyncio.sleep(0.5)
+
+                if require_active and app.state.active_target != target_id:
+                    logger.debug(f"Target changed, stopping codex monitor for {target_id}")
+                    return
+                if target_id in app.state.target_log_mapping:
+                    return
+
+                claimed_paths = set()
+                for tid, mapping in app.state.target_log_mapping.items():
+                    if tid == target_id:
+                        continue
+                    p = Path(mapping["path"]) if isinstance(mapping, dict) else Path(mapping)
+                    claimed_paths.add(str(p))
+
+                candidates = []
+                for f in list_codex_log_files(repo_path):
+                    if str(f) in claimed_paths:
+                        continue
+                    try:
+                        current_mtime = f.stat().st_mtime
+                    except Exception:
+                        continue
+                    if str(f) not in initial_mtimes or current_mtime > initial_mtimes.get(str(f), 0):
+                        candidates.append(f)
+
+                if candidates:
+                    log_file = max(candidates, key=lambda f: f.stat().st_mtime)
+                    app.state.target_log_mapping[target_id] = {
+                        "path": str(log_file),
+                        "pinned": False,
+                        "agent_type": "codex",
+                    }
+                    logger.info(f"Monitor detected codex log file for target {target_id}: {log_file.name}")
+                    return
+
+            logger.debug(f"Codex monitor timeout for target {target_id}, no file changes detected")
             return
 
         project_id = get_project_id(repo_path)
@@ -158,7 +234,11 @@ def register(app: FastAPI, deps):
                     current_mtime = f.stat().st_mtime
                     if current_mtime > initial_mtimes.get(str(f), 0):
                         # File was modified - associate with this target (not pinned)
-                        app.state.target_log_mapping[target_id] = {"path": str(f), "pinned": False}
+                        app.state.target_log_mapping[target_id] = {
+                            "path": str(f),
+                            "pinned": False,
+                            "agent_type": "claude",
+                        }
                         app.state.permission_detector.set_log_file(f)
                         if hasattr(app.state, 'candidate_detector'):
                             app.state.candidate_detector.set_log_file(f)
@@ -326,13 +406,103 @@ def register(app: FastAPI, deps):
         if not repo_path:
             return {"exists": False, "content": "", "error": "No repo path found"}
 
+        pane_driver = await resolve_driver_for_target(target_id)
+
+        # Non-Claude drivers own their log layout/parsing. Keep the
+        # frontend contract identical: messages + joined content + path.
+        if pane_driver.id() != "claude":
+            project_id = get_project_id(repo_path)
+
+            def return_driver_cached():
+                cached = read_cached_log(project_id, target_id, pane_driver.id())
+                if cached:
+                    return {
+                        "exists": True,
+                        "content": cached,
+                        "path": str(repo_path),
+                        "session": app.state.current_session,
+                        "cached": True,
+                    }
+                return {
+                    "exists": False,
+                    "content": "",
+                    "path": str(repo_path),
+                    "session": app.state.current_session,
+                }
+
+            cached_mapping = app.state.target_log_mapping.get(target_id) if target_id else None
+            log_file = None
+            if cached_mapping:
+                mapped_path = Path(cached_mapping["path"] if isinstance(cached_mapping, dict) else cached_mapping)
+                if mapped_path.exists():
+                    log_file = mapped_path
+            if log_file is None:
+                if session_id and pane_driver.id() == "codex":
+                    from mobile_terminal.drivers.codex import list_codex_log_files
+                    log_file = next((f for f in list_codex_log_files(repo_path) if f.stem == session_id), None)
+                else:
+                    log_file = pane_driver.find_log_file(repo_path)
+            if not log_file or not log_file.exists():
+                return return_driver_cached()
+
+            try:
+                file_stat = log_file.stat()
+                file_mtime = file_stat.st_mtime
+                cached_result = get_cached_log(project_id, target_id, file_mtime)
+                if (
+                    cached_result
+                    and cached_result.get("agent_log_format") == 2
+                    and cached_result.get("agent_type") == pane_driver.id()
+                ):
+                    return cached_result
+
+                messages = pane_driver.parse_log_messages(log_file, limit)
+                if not messages:
+                    return return_driver_cached()
+
+                def redact_secrets(text):
+                    text = re.sub(r'(sk-[a-zA-Z0-9]{20,})', '[REDACTED_API_KEY]', text)
+                    text = re.sub(r'(ghp_[a-zA-Z0-9]{36,})', '[REDACTED_GITHUB_TOKEN]', text)
+                    return text
+
+                redacted_messages = []
+                for m in messages:
+                    if isinstance(m, dict) and "text" in m:
+                        mm = dict(m)
+                        mm["text"] = redact_secrets(mm["text"])
+                        redacted_messages.append(mm)
+                    else:
+                        redacted_messages.append(redact_secrets(str(m)))
+
+                content = "\n\n".join(
+                    m["text"] if isinstance(m, dict) else m
+                    for m in redacted_messages
+                )
+                write_log_cache(project_id, content, target_id, pane_driver.id())
+                result = {
+                    "exists": True,
+                    "content": content,
+                    "messages": redacted_messages,
+                    "path": str(log_file),
+                    "session": app.state.current_session,
+                    "modified": file_mtime,
+                    "truncated": len(messages) >= limit,
+                    "agent_type": pane_driver.id(),
+                    "agent_log_format": 2,
+                }
+                set_cached_log(project_id, target_id, file_mtime, result)
+                return result
+            except Exception as e:
+                logger.error(f"Error reading {pane_driver.id()} log file: {e}")
+                return JSONResponse({"error": str(e)}, status_code=500)
+
         # Convert repo path to Claude's project identifier format
         project_id = get_project_id(repo_path)
         claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
 
         # Helper to return cached content
         def return_cached():
-            cached = read_cached_log(project_id)
+            cached = read_cached_log(project_id, target_id, pane_driver.id())
             if cached:
                 return {
                     "exists": True,
@@ -372,12 +542,60 @@ def register(app: FastAPI, deps):
             file_stat = log_file.stat()
             file_mtime = file_stat.st_mtime
             cached_result = get_cached_log(project_id, target_id, file_mtime)
-            if cached_result:
+            if (
+                cached_result
+                and cached_result.get("agent_log_format") == 2
+                and cached_result.get("agent_type") == pane_driver.id()
+            ):
                 logger.debug(f"Log cache hit for {log_file.name}")
                 return cached_result
         except Exception as e:
             logger.debug(f"Log cache check failed: {e}")
             file_mtime = 0
+
+        try:
+            messages = pane_driver.parse_log_messages(log_file, limit)
+            if not messages:
+                return return_cached()
+
+            def redact_secrets(text):
+                text = re.sub(r'(sk-[a-zA-Z0-9]{20,})', '[REDACTED_API_KEY]', text)
+                text = re.sub(r'(ghp_[a-zA-Z0-9]{36,})', '[REDACTED_GITHUB_TOKEN]', text)
+                return text
+
+            redacted_messages = []
+            for m in messages:
+                if isinstance(m, dict) and "text" in m:
+                    mm = dict(m)
+                    mm["text"] = redact_secrets(mm["text"])
+                    redacted_messages.append(mm)
+                else:
+                    redacted_messages.append(redact_secrets(str(m)))
+
+            content = '\n\n'.join(
+                m["text"] if isinstance(m, dict) else m for m in redacted_messages
+            )
+            write_log_cache(project_id, content, target_id, pane_driver.id())
+
+            result = {
+                "exists": True,
+                "content": content,
+                "messages": redacted_messages,
+                "path": str(log_file),
+                "session": app.state.current_session,
+                "modified": file_mtime,
+                "truncated": len(messages) >= limit,
+                "agent_type": pane_driver.id(),
+                "agent_log_format": 2,
+            }
+
+            if file_mtime > 0:
+                set_cached_log(project_id, target_id, file_mtime, result)
+
+            return result
+        except Exception as e:
+            logger.error(f"Error reading log file: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
 
         try:
             raw_content = log_file.read_text(errors="replace")
@@ -464,7 +682,17 @@ def register(app: FastAPI, deps):
                                         elif tool_name == 'EnterPlanMode':
                                             conversation.append("📋 Entering plan mode...")
                                         elif tool_name == 'ExitPlanMode':
-                                            conversation.append("✅ Exiting plan mode")
+                                            # Surface the actual plan body so the user can read it
+                                            # in the log view BEFORE answering the interactive
+                                            # selector in tail. Previously we only emitted the
+                                            # bare "Exiting plan mode" header, which left users
+                                            # with the plan text trapped in tail (where it can't
+                                            # be markdown-rendered or scrolled comfortably).
+                                            plan = (tool_input.get('plan') or '').strip()
+                                            if plan:
+                                                conversation.append(f"📋 Plan:\n{plan}")
+                                            else:
+                                                conversation.append("✅ Exiting plan mode")
                                         elif tool_name == 'Task':
                                             # Show agent spawning with description
                                             desc = tool_input.get('description', '')
@@ -530,7 +758,7 @@ def register(app: FastAPI, deps):
             )
 
             # Cache the content for persistence across /clear
-            write_log_cache(project_id, content)
+            write_log_cache(project_id, content, target_id, pane_driver.id())
 
             result = {
                 "exists": True,
@@ -561,13 +789,15 @@ def register(app: FastAPI, deps):
             return {"cleared": False, "error": "No repo path found"}
 
         project_id = get_project_id(repo_path)
-        cache_path = get_log_cache_path(project_id)
-
-        if cache_path.exists():
+        cache_paths = list(LOG_CACHE_DIR.glob(f"{project_id}*.log"))
+        if cache_paths:
+            cleared = []
             try:
-                cache_path.unlink()
-                logger.info(f"Cleared log cache: {cache_path}")
-                return {"cleared": True, "path": str(cache_path)}
+                for cache_path in cache_paths:
+                    cache_path.unlink()
+                    cleared.append(str(cache_path))
+                logger.info(f"Cleared log cache: {cleared}")
+                return {"cleared": True, "paths": cleared}
             except Exception as e:
                 logger.error(f"Error clearing log cache: {e}")
                 return JSONResponse({"error": str(e)}, status_code=500)
@@ -614,6 +844,10 @@ def register(app: FastAPI, deps):
             repo_path = deps.get_current_repo_path()
 
         if not repo_path:
+            return {"exists": False}
+
+        pane_driver = await resolve_driver_for_target(target_id)
+        if pane_driver.id() != "claude":
             return {"exists": False}
 
         project_id = get_project_id(repo_path)
@@ -670,6 +904,72 @@ def register(app: FastAPI, deps):
         repo_path = deps.get_current_repo_path()
         if not repo_path:
             return {"sessions": [], "error": "No repo path found"}
+
+        target_id = app.state.active_target
+        pane_driver = await resolve_driver_for_target(target_id)
+
+        if pane_driver.id() == "codex":
+            from mobile_terminal.drivers.codex import list_codex_log_files
+
+            jsonl_files = list_codex_log_files(repo_path)
+            if not jsonl_files:
+                return {"sessions": [], "current": None, "detection_method": None}
+
+            cached = app.state.target_log_mapping.get(target_id) if target_id else None
+            pinned_path = None
+            if cached:
+                pinned_path = cached["path"] if isinstance(cached, dict) else cached
+            current_log = Path(pinned_path) if pinned_path else pane_driver.find_log_file(repo_path)
+            current_id = current_log.stem if current_log else None
+            is_pinned = bool(cached and isinstance(cached, dict) and cached.get("pinned"))
+
+            sessions = []
+            for log_file in jsonl_files:
+                try:
+                    stat = log_file.stat()
+                    preview = ""
+                    started = None
+                    try:
+                        with open(log_file, "r") as f:
+                            for line in f:
+                                if not line.strip():
+                                    continue
+                                entry = json.loads(line)
+                                if started is None:
+                                    started = entry.get("timestamp")
+                                payload = entry.get("payload", {})
+                                if (
+                                    entry.get("type") == "response_item"
+                                    and isinstance(payload, dict)
+                                    and payload.get("type") == "message"
+                                    and payload.get("role") == "user"
+                                ):
+                                    preview = pane_driver._extract_content_text(
+                                        payload.get("content", [])
+                                    )[:100]
+                                    if preview:
+                                        break
+                    except Exception:
+                        pass
+                    session_id = log_file.stem
+                    sessions.append({
+                        "id": session_id,
+                        "started": started,
+                        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat() + "Z",
+                        "size": stat.st_size,
+                        "preview": preview,
+                        "is_current": session_id == current_id,
+                        "is_pinned": is_pinned and session_id == current_id,
+                    })
+                except Exception as e:
+                    logger.debug(f"Error reading log file {log_file}: {e}")
+
+            sessions.sort(key=lambda s: s.get("modified", ""), reverse=True)
+            return {
+                "sessions": sessions,
+                "current": current_id,
+                "detection_method": "pinned" if is_pinned else "auto",
+            }
 
         project_id = get_project_id(repo_path)
         claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
@@ -745,7 +1045,7 @@ def register(app: FastAPI, deps):
             "detection_method": detection_method,
         }
 
-    def _resolve_log_file(pane_id: Optional[str] = None, session_id: Optional[str] = None) -> Optional[Path]:
+    async def _resolve_log_file(pane_id: Optional[str] = None, session_id: Optional[str] = None) -> Optional[Path]:
         """Resolve the active JSONL log file path.
 
         Used by /api/log and /api/log/tool-output to avoid duplicating
@@ -753,9 +1053,43 @@ def register(app: FastAPI, deps):
         Returns None if no log file can be found.
         """
         target_id = pane_id or app.state.active_target
-        repo_path = deps.get_current_repo_path()
+        repo_path = None
+        if pane_id:
+            try:
+                parts = pane_id.split(":")
+                if len(parts) == 2:
+                    result = await run_subprocess(
+                        [
+                            "tmux",
+                            "display-message",
+                            "-t",
+                            f"{app.state.current_session}:{parts[0]}.{parts[1]}",
+                            "-p",
+                            "#{pane_current_path}",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        repo_path = Path(result.stdout.strip())
+            except Exception:
+                repo_path = None
+        if not repo_path:
+            repo_path = deps.get_current_repo_path()
         if not repo_path:
             return None
+        pane_driver = await resolve_driver_for_target(target_id)
+        if pane_driver.id() != "claude":
+            if session_id and pane_driver.id() == "codex":
+                from mobile_terminal.drivers.codex import list_codex_log_files
+                return next((f for f in list_codex_log_files(repo_path) if f.stem == session_id), None)
+            cached_mapping = app.state.target_log_mapping.get(target_id) if target_id else None
+            if cached_mapping:
+                mapped_path = Path(cached_mapping["path"] if isinstance(cached_mapping, dict) else cached_mapping)
+                if mapped_path.exists():
+                    return mapped_path
+            return pane_driver.find_log_file(repo_path)
         project_id = get_project_id(repo_path)
         claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
         if not claude_projects_dir.exists():
@@ -779,7 +1113,7 @@ def register(app: FastAPI, deps):
         if not tool_use_id:
             return JSONResponse({"error": "tool_use_id required"}, status_code=400)
 
-        log_file = _resolve_log_file(pane_id=pane_id, session_id=session_id)
+        log_file = await _resolve_log_file(pane_id=pane_id, session_id=session_id)
         if not log_file:
             return JSONResponse({"error": "No log file found"}, status_code=404)
 
@@ -793,59 +1127,26 @@ def register(app: FastAPI, deps):
         if cached:
             return cached
 
-        # Reverse-scan JSONL lines for the matching tool_result
         try:
-            raw = log_file.read_text(errors="replace")
-            lines_list = raw.strip().split('\n')
+            pane_driver = await resolve_driver_for_target(pane_id or app.state.active_target)
+            tool_result = pane_driver.get_tool_output(log_file, tool_use_id)
+            if tool_result:
+                result_content = tool_result.get("content", "")
+                is_error = bool(tool_result.get("is_error", False))
+                truncated = len(result_content) > TOOL_OUTPUT_MAX_CHARS
+                if truncated:
+                    result_content = result_content[:TOOL_OUTPUT_MAX_CHARS]
 
-            for line in reversed(lines_list):
-                if not line.strip() or tool_use_id not in line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if entry.get('type') != 'user':
-                    continue
-                content = entry.get('message', {}).get('content', '')
-                if not isinstance(content, list):
-                    continue
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get('type') != 'tool_result':
-                        continue
-                    if block.get('tool_use_id') != tool_use_id:
-                        continue
-                    # Found it
-                    result_content = block.get('content', '')
-                    # Normalize list content to string
-                    if isinstance(result_content, list):
-                        parts = []
-                        for b in result_content:
-                            if isinstance(b, dict):
-                                parts.append(b.get('text', ''))
-                            elif isinstance(b, str):
-                                parts.append(b)
-                        result_content = '\n'.join(parts)
-                    elif not isinstance(result_content, str):
-                        result_content = str(result_content) if result_content else ''
-
-                    is_error = block.get('is_error', False)
-                    truncated = len(result_content) > TOOL_OUTPUT_MAX_CHARS
-                    if truncated:
-                        result_content = result_content[:TOOL_OUTPUT_MAX_CHARS]
-
-                    result = {
-                        "tool_use_id": tool_use_id,
-                        "content": result_content,
-                        "is_error": is_error,
-                        "line_count": len(result_content.split('\n')) if result_content.strip() else 0,
-                        "char_count": len(result_content),
-                        "truncated": truncated,
-                    }
-                    set_cached_tool_output(str(log_file), file_mtime, tool_use_id, result)
-                    return result
+                result = {
+                    "tool_use_id": tool_use_id,
+                    "content": result_content,
+                    "is_error": is_error,
+                    "line_count": len(result_content.split('\n')) if result_content.strip() else 0,
+                    "char_count": len(result_content),
+                    "truncated": truncated,
+                }
+                set_cached_tool_output(str(log_file), file_mtime, tool_use_id, result)
+                return result
 
             return JSONResponse({"error": f"tool_use_id not found: {tool_use_id}"}, status_code=404)
 
@@ -867,6 +1168,32 @@ def register(app: FastAPI, deps):
         if not repo_path:
             return JSONResponse({"error": "No repo path found"}, status_code=400)
 
+        target_id = app.state.active_target
+        if not target_id:
+            return JSONResponse({"error": "No active target selected"}, status_code=400)
+
+        pane_driver = await resolve_driver_for_target(target_id)
+
+        if pane_driver.id() == "codex":
+            from mobile_terminal.drivers.codex import list_codex_log_files
+
+            log_file = next((f for f in list_codex_log_files(repo_path) if f.stem == session_id), None)
+            if not log_file:
+                return JSONResponse({"error": f"Log file not found: {session_id}"}, status_code=404)
+
+            app.state.target_log_mapping[target_id] = {
+                "path": str(log_file),
+                "pinned": True,
+                "agent_type": "codex",
+            }
+            logger.info(f"Pinned codex log file for target {target_id}: {session_id}")
+            return {
+                "success": True,
+                "target": target_id,
+                "session_id": session_id,
+                "pinned": True,
+            }
+
         project_id = get_project_id(repo_path)
         claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
 
@@ -874,12 +1201,12 @@ def register(app: FastAPI, deps):
         if not log_file.exists():
             return JSONResponse({"error": f"Log file not found: {session_id}"}, status_code=404)
 
-        target_id = app.state.active_target
-        if not target_id:
-            return JSONResponse({"error": "No active target selected"}, status_code=400)
-
         # Pin the log file to this target
-        app.state.target_log_mapping[target_id] = {"path": str(log_file), "pinned": True}
+        app.state.target_log_mapping[target_id] = {
+            "path": str(log_file),
+            "pinned": True,
+            "agent_type": "claude",
+        }
         app.state.permission_detector.set_log_file(log_file)
         if hasattr(app.state, 'candidate_detector'):
             app.state.candidate_detector.set_log_file(log_file)
@@ -1077,7 +1404,12 @@ def register(app: FastAPI, deps):
         pane_id: Optional[str] = Query(None),
     ):
         """Activity timeline: structured event feed from JSONL logs."""
-        log_file = _resolve_log_file(pane_id=pane_id)
+        target_id = pane_id or app.state.active_target
+        pane_driver = await resolve_driver_for_target(target_id)
+        if pane_driver.id() != "claude":
+            return {"events": [], "phase": None, "truncated": False, "modified": 0}
+
+        log_file = await _resolve_log_file(pane_id=pane_id)
         if not log_file or not log_file.exists():
             return {"events": [], "phase": None, "truncated": False, "modified": 0}
 

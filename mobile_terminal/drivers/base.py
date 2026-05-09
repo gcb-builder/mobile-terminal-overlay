@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
-from mobile_terminal.helpers import get_project_id
+from mobile_terminal.helpers import get_project_id, strip_ansi
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +147,65 @@ def tail_jsonl(log_file: Path, read_bytes: int = 8192) -> list:
         return []
 
 
+def normalize_tool_content(content) -> str:
+    """Normalize tool output content from JSONL into a display string."""
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    if isinstance(content, str):
+        return content
+    return str(content) if content else ""
+
+
+def summarize_tool_result(tool_name: str, content, is_error: bool) -> str:
+    """Summarize a tool result into the short badge used by the log UI."""
+    text = normalize_tool_content(content)
+
+    if is_error:
+        first_line = ""
+        for ln in text.strip().split("\n"):
+            stripped = strip_ansi(ln).strip()
+            if stripped:
+                first_line = stripped[:60]
+                break
+        return f"ERR: {first_line}" if first_line else "ERR"
+
+    line_count = len(text.split("\n")) if text.strip() else 0
+
+    if tool_name == "Bash":
+        if line_count == 0:
+            return "OK"
+        return f"OK {line_count}L"
+    if tool_name == "Read":
+        if line_count == 0:
+            return "0L"
+        return f"{line_count}L"
+    if tool_name == "Grep":
+        file_count = 0
+        for ln in text.strip().split("\n"):
+            if ln.strip() and not ln.startswith(" "):
+                file_count += 1
+        if line_count == 0:
+            return "0 matches"
+        return f"{file_count}F {line_count}L"
+    if tool_name in ("Edit", "Write"):
+        return "OK"
+    if tool_name == "Glob":
+        file_count = len([ln for ln in text.strip().split("\n") if ln.strip()]) if text.strip() else 0
+        if file_count == 1:
+            return "1 file"
+        return f"{file_count} files"
+
+    if line_count == 0:
+        return "OK"
+    return f"{line_count}L"
+
+
 def find_claude_log_file(repo_path: Path) -> Optional[Path]:
     """Find the most recent Claude JSONL log for a repo path."""
     project_id = get_project_id(repo_path)
@@ -180,6 +239,8 @@ class AgentDriver(Protocol):
     def observe(self, ctx: ObserveContext) -> Observation: ...
     def capabilities(self) -> DriverCapabilities: ...
     def find_log_file(self, repo_path: Path) -> Optional[Path]: ...
+    def parse_log_messages(self, log_file: Path, limit: int = 200) -> list: ...
+    def get_tool_output(self, log_file: Path, tool_use_id: str) -> Optional[dict]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +273,14 @@ class BaseAgentDriver:
     def find_log_file(self, repo_path: Path) -> Optional[Path]:
         """Find the most recent log file for this agent at repo_path.
         Override in subclasses. Default: None (no log lookup)."""
+        return None
+
+    def parse_log_messages(self, log_file: Path, limit: int = 200) -> list:
+        """Parse a driver log into the /api/log messages array."""
+        return []
+
+    def get_tool_output(self, log_file: Path, tool_use_id: str) -> Optional[dict]:
+        """Return full tool output for a tool id, or None when unsupported/not found."""
         return None
 
     async def is_ready(self, session: str, target: str,

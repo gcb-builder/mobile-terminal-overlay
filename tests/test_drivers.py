@@ -35,7 +35,7 @@ from mobile_terminal.drivers.claude import (
     _has_visible_permission_prompt,
     _resolve_context_limit,
 )
-from mobile_terminal.drivers.codex import CodexDriver, find_codex_log_file
+from mobile_terminal.drivers.codex import CodexDriver, find_codex_log_file, list_codex_log_files
 from mobile_terminal.drivers.gemini import GeminiDriver, _extract_title_detail
 from mobile_terminal.drivers.generic import GenericDriver
 
@@ -804,6 +804,112 @@ class TestCodexPhaseClassification:
         assert result["permission_tool"] == "shell"
 
 
+class TestCodexLogParsing:
+    def test_parses_messages_and_function_call_output(self, tmp_path):
+        log_file = _write_jsonl(tmp_path, [
+            json.dumps({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "run tests"}],
+                },
+            }),
+            json.dumps({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "I will run them."}],
+                },
+            }),
+            json.dumps({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "call_123",
+                    "arguments": json.dumps({"cmd": "pytest tests/test_drivers.py"}),
+                },
+            }),
+            json.dumps({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call_123",
+                    "output": "Process exited with code 0\nOutput:\n3 passed",
+                },
+            }),
+        ], filename="rollout-test.jsonl")
+
+        messages = CodexDriver().parse_log_messages(log_file)
+
+        assert messages[0] == "$ run tests"
+        assert messages[1] == "Codex CLI: I will run them."
+        assert isinstance(messages[2], dict)
+        assert messages[2]["text"] == "Codex CLI • exec_command: pytest tests/test_drivers.py"
+        assert messages[2]["tool"]["tool_use_id"] == "call_123"
+        assert messages[2]["tool"]["result_status"] == "ok"
+
+    def test_tool_output_lookup_and_error_detection(self, tmp_path):
+        log_file = _write_jsonl(tmp_path, [
+            json.dumps({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call_bad",
+                    "output": "Process exited with code 2\nOutput:\nfailed",
+                },
+            }),
+        ], filename="rollout-test.jsonl")
+
+        result = CodexDriver().get_tool_output(log_file, "call_bad")
+
+        assert result is not None
+        assert result["is_error"] is True
+        assert "failed" in result["content"]
+
+
+class TestClaudeLogParsing:
+    def test_prefixes_assistant_and_tool_entries(self, tmp_path):
+        log_file = _write_jsonl(tmp_path, [
+            json.dumps({
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "I will inspect it."}],
+                },
+            }),
+            json.dumps({
+                "type": "assistant",
+                "message": {
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "Bash",
+                        "input": {"command": "git status"},
+                    }],
+                },
+            }),
+            json.dumps({
+                "type": "user",
+                "message": {
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "content": "clean",
+                    }],
+                },
+            }),
+        ], filename="claude-test.jsonl")
+
+        messages = ClaudeDriver().parse_log_messages(log_file)
+
+        assert messages[0] == "Claude: I will inspect it."
+        assert isinstance(messages[1], dict)
+        assert messages[1]["text"] == "Claude • Bash: git status"
+        assert messages[1]["tool"]["tool_use_id"] == "toolu_1"
+
+
 class TestCodexLogFile:
     def test_finds_most_recent_rollout(self, tmp_path):
         # Create fake ~/.codex/sessions/2026/02/25/ structure
@@ -834,6 +940,33 @@ class TestCodexLogFile:
         with patch("mobile_terminal.drivers.codex.Path.home", return_value=Path("/nonexistent/home")):
             result = find_codex_log_file()
             assert result is None
+
+    def test_filters_rollouts_by_repo_cwd(self, tmp_path):
+        repo = tmp_path / "repo"
+        other = tmp_path / "other"
+        repo.mkdir()
+        other.mkdir()
+        day_dir = tmp_path / ".codex" / "sessions" / "2026" / "05" / "09"
+        day_dir.mkdir(parents=True)
+
+        repo_file = day_dir / "rollout-repo.jsonl"
+        repo_file.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {"cwd": str(repo)},
+        }) + "\n")
+        other_file = day_dir / "rollout-other.jsonl"
+        other_file.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {"cwd": str(other)},
+        }) + "\n")
+
+        with patch("mobile_terminal.drivers.codex.Path") as mock_path_cls:
+            mock_path_cls.side_effect = Path
+            mock_path_cls.home.return_value = tmp_path
+            files = list_codex_log_files(repo)
+
+        assert repo_file in files
+        assert other_file not in files
 
 
 # ---------------------------------------------------------------------------
