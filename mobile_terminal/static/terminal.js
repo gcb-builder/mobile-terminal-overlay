@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v469 ===');
+console.log('=== TERMINAL.JS v470 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -8759,10 +8759,6 @@ async function _uploadAndInsertPathInner(file, inputEl) {
  */
 async function sendLogCommand() {
     if (isPreviewMode()) return;  // No input in preview mode
-    if (!ctx.socket || ctx.socket.readyState !== WebSocket.OPEN) {
-        showToast('Not connected yet', 'error');
-        return;
-    }
 
     if (inflightUploads.length > 0) {
         const n = inflightUploads.length;
@@ -8771,6 +8767,32 @@ async function sendLogCommand() {
     }
 
     const command = logInput ? logInput.value.trim() : '';
+
+    // Connection-down fallback: durably enqueue instead of dropping the
+    // command. The queue persists to disk on the server, so once the
+    // user reconnects (or the queue auto-fires) the command actually runs.
+    // Empty command means bare Enter — that's only meaningful as a live
+    // PTY keystroke, not as a queue item, so skip the fallback for it.
+    if (!ctx.socket || ctx.socket.readyState !== WebSocket.OPEN) {
+        if (!command) {
+            showToast('Not connected yet', 'error');
+            return;
+        }
+        const ok = await enqueueCommand(command);
+        if (ok) {
+            showToast('Offline — queued for delivery', 'info', 2500);
+            logInput.value = '';
+            logInput.dataset.autoSuggestion = 'false';
+            if (commandHistory[commandHistory.length - 1] !== command) {
+                commandHistory.push(command);
+                if (commandHistory.length > MAX_HISTORY_SIZE) commandHistory.shift();
+                localStorage.setItem('terminalHistory', JSON.stringify(commandHistory));
+            }
+        } else {
+            showToast('Could not queue command — try again', 'error');
+        }
+        return;
+    }
 
     // If empty, just send Enter for confirming prompts
     if (!command) {
@@ -11847,6 +11869,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=469', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=470', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
