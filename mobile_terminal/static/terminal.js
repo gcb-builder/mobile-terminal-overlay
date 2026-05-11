@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v474 ===');
+console.log('=== TERMINAL.JS v475 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -967,6 +967,21 @@ function updateContextFromBackend(data) {
 let lastSuggestion = '';
 let recentSentCommands = new Set();  // Track recent commands to avoid re-suggesting
 
+/* Cross-module hook: mark a command as just-sent so the next chevron
+   echo won't bounce back as a pill suggestion. Used by the queue's
+   queue_sent handler — server-side auto-fires never go through the
+   client's sendLogCommand / sendTextAtomic paths that would otherwise
+   populate recentSentCommands. */
+ctx.markCommandSent = function(text) {
+    if (!text) return;
+    const trimmed = String(text).trim();
+    if (!trimmed) return;
+    recentSentCommands.add(trimmed);
+    if (recentSentCommands.size > 20) {
+        recentSentCommands.delete(recentSentCommands.values().next().value);
+    }
+};
+
 function extractAndSuggestCommand(content) {
     if (!logInput) return;
     if (terminalBusy) return;  // Don't surface a suggestion while ctx.terminal is processing
@@ -984,12 +999,21 @@ function extractAndSuggestCommand(content) {
         const trimmed = line.trim();
 
         // Primary: Command prompt line with ❯ chevron (Claude Code's prompt)
-        // Format: "❯ command text" or "❯ command text    ↵ send"
+        // Format: "❯ command text" or "❯ command text    ↵ send  ctrl+t to show tasks"
         if (/^❯\s+(.+)/.test(trimmed)) {
             const match = trimmed.match(/^❯\s+(.+)/);
             if (match) {
-                // Remove trailing "↵ send" or similar UI elements
-                suggestion = match[1].replace(/\s*↵\s*\w*\s*$/, '').trim();
+                // Strip trailing UI hints — Claude Code appends things like
+                // "↵ send", "ctrl+t to show tasks", "· ⏎ for newline" after
+                // the actual content. Without this, a sent command bouncing
+                // back in the chevron echo wouldn't dedupe against the
+                // recentSentCommands set.
+                suggestion = match[1]
+                    .replace(/\s*↵\s*\w*\s*$/, '')
+                    .replace(/\s+(?:ctrl|cmd|alt|shift|⌘|⌥|⇧|⌃)[+\-]\w+.*$/i, '')
+                    .replace(/\s+[·•]\s.*$/, '')
+                    .replace(/\s+⏎.*$/, '')
+                    .trim();
                 if (suggestion) break;
             }
         }
@@ -11981,6 +12005,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=474', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=475', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

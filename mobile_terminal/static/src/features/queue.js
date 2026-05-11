@@ -841,6 +841,12 @@ export function handleQueueMessage(msg) {
             if (sentIdx >= 0) {
                 queueItems[sentIdx].status = 'sent';
                 queueItems[sentIdx].sentAt = Date.now();
+                // Tell the suggestion pill not to bounce this back —
+                // server-side auto-fires don't otherwise populate the
+                // client's recentSentCommands set.
+                if (typeof ctx.markCommandSent === 'function') {
+                    ctx.markCommandSent(queueItems[sentIdx].text);
+                }
             }
             // The server only broadcasts queue_disarmed on aborted arms,
             // not after a successful fire — so the arming banner would
