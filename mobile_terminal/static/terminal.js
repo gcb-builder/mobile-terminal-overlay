@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v475 ===');
+console.log('=== TERMINAL.JS v476 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1079,8 +1079,33 @@ function setSuggestionPill(text) {
     const hint = document.createElement('span');
     hint.className = 'pill-hint';
     hint.textContent = 'tap to send · hold to edit';
+    const dismiss = document.createElement('span');
+    dismiss.className = 'pill-dismiss';
+    dismiss.textContent = '×';
+    dismiss.setAttribute('role', 'button');
+    dismiss.setAttribute('aria-label', 'Dismiss suggestion');
+    // Stop the pill's tap/long-press handlers from firing when the user
+    // hits the dismiss target. Mark the dismissed text as recently sent
+    // so the same chevron echo doesn't re-spawn the pill on next tail.
+    const stopAll = (e) => { e.stopPropagation(); };
+    dismiss.addEventListener('mousedown', stopAll);
+    dismiss.addEventListener('touchstart', stopAll, { passive: true });
+    dismiss.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const dismissed = suggestionPillEl.dataset.suggestion || '';
+        if (dismissed) {
+            recentSentCommands.add(dismissed);
+            if (recentSentCommands.size > 20) {
+                recentSentCommands.delete(recentSentCommands.values().next().value);
+            }
+        }
+        lastSuggestion = '';
+        clearSuggestionPill();
+    });
     suggestionPillEl.appendChild(label);
     suggestionPillEl.appendChild(hint);
+    suggestionPillEl.appendChild(dismiss);
     suggestionPillEl.classList.remove('hidden');
     suggestionPillEl.removeAttribute('hidden');
 }
@@ -12005,6 +12030,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=475', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=476', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
