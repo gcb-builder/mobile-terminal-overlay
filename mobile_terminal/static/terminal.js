@@ -15,7 +15,8 @@ import { initCollapse, scheduleCollapse, scheduleSuperCollapse, applyCollapseSyn
 import { initQueue, renderQueueList, handleQueueMessage, enqueueCommand,
          reconcileQueue, reloadQueueForTarget, refreshQueueList,
          getQueueItems, isQueuePaused, saveQueueToStorage,
-         popNextQueueItem, requeueItem, removeQueueItem } from './src/features/queue.js?v=459';
+         popNextQueueItem, requeueItem, removeQueueItem,
+         clearArmingBannerForPaneSwitch } from './src/features/queue.js?v=474';
 import { initBacklog, handleBacklogMessage, handleCandidateMessage,
          refreshBacklogList, reloadBacklogForProject, addBacklogItem,
          updateBacklogStatus } from './src/features/backlog.js';
@@ -42,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v473 ===');
+console.log('=== TERMINAL.JS v474 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -3559,6 +3560,7 @@ async function selectTarget(targetId, isInitialSync = false) {
     }
     lastSuggestion = '';
     clearSuggestionPill();
+    clearArmingBannerForPaneSwitch();
     recentSentCommands.clear();
     lastContextPct = -1;
     contextAlertSent = false;
@@ -11979,6 +11981,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=473', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=474', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

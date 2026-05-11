@@ -842,6 +842,10 @@ export function handleQueueMessage(msg) {
                 queueItems[sentIdx].status = 'sent';
                 queueItems[sentIdx].sentAt = Date.now();
             }
+            // The server only broadcasts queue_disarmed on aborted arms,
+            // not after a successful fire — so the arming banner would
+            // otherwise stick around. Hide it here on the matching id.
+            hideArmingBanner(msg.id, 'sent');
             saveQueueToStorage();
             renderQueueList();
             scheduleSentPurge();
@@ -918,6 +922,14 @@ function hideArmingBanner(itemId, reason) {
         clearInterval(armingBannerTimer);
         armingBannerTimer = null;
     }
+}
+
+/* Force-hide the arming banner regardless of which item armed it.
+   Used on pane switch — the banner is intrinsically per-pane and the
+   pane filter would otherwise drop the queue_sent / queue_disarmed
+   broadcast for the previous pane, leaving the banner orphaned. */
+export function clearArmingBannerForPaneSwitch() {
+    hideArmingBanner(null, 'pane_switch');
 }
 
 async function cancelArming() {
