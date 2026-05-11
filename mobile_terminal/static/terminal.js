@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v471 ===');
+console.log('=== TERMINAL.JS v472 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -965,15 +965,13 @@ let recentSentCommands = new Set();  // Track recent commands to avoid re-sugges
 
 function extractAndSuggestCommand(content) {
     if (!logInput) return;
-    if (terminalBusy) return;  // Don't pre-fill while ctx.terminal is processing
-
-    // Don't overwrite if user is typing
-    if (document.activeElement === logInput && logInput.value.length > 0) {
-        return;
-    }
+    if (terminalBusy) return;  // Don't surface a suggestion while ctx.terminal is processing
 
     // Skip Claude's session rating prompt — not actionable
-    if (ctx.agentType === 'claude' && /How is Claude doing/i.test(content)) return;
+    if (ctx.agentType === 'claude' && /How is Claude doing/i.test(content)) {
+        clearSuggestionPill();
+        return;
+    }
 
     const lines = content.split('\n');
     let suggestion = '';
@@ -1011,20 +1009,81 @@ function extractAndSuggestCommand(content) {
     }
 
     // Never re-suggest a recently sent command
-    if (suggestion && recentSentCommands.has(suggestion)) return;
+    if (suggestion && recentSentCommands.has(suggestion)) {
+        clearSuggestionPill();
+        return;
+    }
 
-    // Only update if suggestion changed and input is empty
-    if (suggestion && suggestion !== lastSuggestion && !logInput.value) {
-        lastSuggestion = suggestion;
-        logInput.value = suggestion;
-        logInput.dataset.autoSuggestion = 'true';
-        logInput.select();  // Select so user can easily replace
-    } else if (!suggestion && lastSuggestion) {
-        // Clear auto-suggestion if no suggestion found
-        if (logInput.dataset.autoSuggestion === 'true') {
-            logInput.value = '';
-            lastSuggestion = '';
+    if (suggestion) {
+        if (suggestion !== lastSuggestion) {
+            lastSuggestion = suggestion;
+            setSuggestionPill(suggestion);
         }
+    } else if (lastSuggestion) {
+        lastSuggestion = '';
+        clearSuggestionPill();
+    }
+}
+
+/* Suggestion pill: shows the agent's likely next reply OUTSIDE the input
+   so accidental Send taps can't fire it. Tap pill = commit + send,
+   long-press = commit for editing, Tab on focused input = commit + send. */
+let suggestionPillEl = null;
+let _pillPressTimer = null;
+let _pillLongPressed = false;
+
+function setSuggestionPill(text) {
+    if (!suggestionPillEl) suggestionPillEl = document.getElementById('logSuggestionPill');
+    if (!suggestionPillEl) return;
+    if (!text) { clearSuggestionPill(); return; }
+    // Don't surface the pill while user has typed content — they're
+    // composing their own reply, the suggestion would just clutter.
+    if (logInput && logInput.value && logInput.value.length > 0) {
+        clearSuggestionPill();
+        return;
+    }
+    suggestionPillEl.dataset.suggestion = text;
+    const display = text.length > 60 ? text.slice(0, 57) + '…' : text;
+    suggestionPillEl.innerHTML = '';
+    const label = document.createElement('span');
+    label.className = 'pill-label';
+    label.textContent = '💡 ' + display;
+    const hint = document.createElement('span');
+    hint.className = 'pill-hint';
+    hint.textContent = 'tap to send · hold to edit';
+    suggestionPillEl.appendChild(label);
+    suggestionPillEl.appendChild(hint);
+    suggestionPillEl.classList.remove('hidden');
+    suggestionPillEl.removeAttribute('hidden');
+}
+
+function clearSuggestionPill() {
+    if (!suggestionPillEl) suggestionPillEl = document.getElementById('logSuggestionPill');
+    if (!suggestionPillEl) return;
+    suggestionPillEl.innerHTML = '';
+    delete suggestionPillEl.dataset.suggestion;
+    suggestionPillEl.classList.add('hidden');
+    suggestionPillEl.setAttribute('hidden', '');
+}
+
+function getPillSuggestion() {
+    if (!suggestionPillEl) suggestionPillEl = document.getElementById('logSuggestionPill');
+    return suggestionPillEl ? (suggestionPillEl.dataset.suggestion || '') : '';
+}
+
+function commitSuggestionToInput(send) {
+    const text = getPillSuggestion();
+    if (!text) return;
+    clearSuggestionPill();
+    if (logInput) {
+        logInput.value = text;
+        logInput.dataset.autoSuggestion = 'false';
+    }
+    if (send) {
+        if (typeof sendLogCommand === 'function') sendLogCommand();
+    } else if (logInput) {
+        logInput.focus();
+        logInput.setSelectionRange(text.length, text.length);
     }
 }
 
@@ -3496,6 +3555,7 @@ async function selectTarget(targetId, isInitialSync = false) {
         if (saved) sessionStorage.removeItem(`mto_draft_${targetId}`);
     }
     lastSuggestion = '';
+    clearSuggestionPill();
     recentSentCommands.clear();
     lastContextPct = -1;
     contextAlertSent = false;
@@ -8581,12 +8641,58 @@ async function refreshLogContent(signal) {
 function setupLogInput() {
     if (!logInput || !logSend) return;
 
+    // Suggestion pill: tap = commit + send, long-press = commit for editing.
+    suggestionPillEl = document.getElementById('logSuggestionPill');
+    if (suggestionPillEl) {
+        const startPress = () => {
+            _pillLongPressed = false;
+            if (_pillPressTimer) clearTimeout(_pillPressTimer);
+            _pillPressTimer = setTimeout(() => {
+                _pillLongPressed = true;
+                if (navigator.vibrate) try { navigator.vibrate(10); } catch (_) {}
+                commitSuggestionToInput(false);
+            }, 500);
+        };
+        const cancelPress = () => {
+            if (_pillPressTimer) { clearTimeout(_pillPressTimer); _pillPressTimer = null; }
+        };
+        suggestionPillEl.addEventListener('mousedown', startPress);
+        suggestionPillEl.addEventListener('touchstart', startPress, { passive: true });
+        suggestionPillEl.addEventListener('mouseup', cancelPress);
+        suggestionPillEl.addEventListener('mouseleave', cancelPress);
+        suggestionPillEl.addEventListener('touchend', cancelPress);
+        suggestionPillEl.addEventListener('touchcancel', cancelPress);
+        suggestionPillEl.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            if (!_pillLongPressed) {
+                _pillLongPressed = true;
+                commitSuggestionToInput(false);
+            }
+        });
+        suggestionPillEl.addEventListener('click', (e) => {
+            if (_pillLongPressed) { _pillLongPressed = false; e.preventDefault(); return; }
+            commitSuggestionToInput(true);
+        });
+    }
+
+    // Hide the pill as soon as the user starts typing — the suggestion
+    // should never overwrite hand-composed text.
+    logInput.addEventListener('input', () => {
+        if (logInput.value && logInput.value.length > 0) clearSuggestionPill();
+    });
+
     // Send on Enter, navigate history on ArrowUp/Down
     logInput.addEventListener('keydown', (e) => {
         // Escape → send ESC to terminal (interrupt agent)
         if (e.key === 'Escape') {
             e.preventDefault();
             sendTextAtomic('\x1b', false);
+            return;
+        }
+        // Tab on empty input commits the suggestion pill (desktop accept).
+        if (e.key === 'Tab' && !e.shiftKey && getPillSuggestion() && !logInput.value) {
+            e.preventDefault();
+            commitSuggestionToInput(true);
             return;
         }
         if ((e.key === 'Enter' || e.keyCode === 13) && !e.shiftKey) {
@@ -11870,6 +11976,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=471', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=472', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
