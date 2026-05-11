@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v472 ===');
+console.log('=== TERMINAL.JS v473 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -878,7 +878,10 @@ async function refreshActivePrompt(signal) {
         // Update content (no auto-scroll - let user control scroll position)
         activePromptContent.textContent = content;
 
-        // Suggestion auto-fill disabled — was injecting stale content into input
+        // Surface a suggestion as the opt-in pill above the input.
+        // Safe to re-enable now that the pill never writes to logInput.value
+        // — the user has to tap/Tab/long-press to commit it.
+        extractAndSuggestCommand(content);
 
         // Check if prompt is visible - if so, ctx.terminal is ready
         const extracted = extractPromptContent(content);
@@ -11976,6 +11979,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=472', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=473', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
