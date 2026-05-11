@@ -42,7 +42,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v470 ===');
+console.log('=== TERMINAL.JS v471 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -6262,6 +6262,7 @@ function appendStandardActionButtons(bar) {
 // matters: most-frequent first (top of expanded popover).
 const QUICK_PHRASES = [
     "What's next?",
+    "Status?",
     "Prepare todos",
     "Start implementation",
     "Continue",
@@ -11869,6 +11870,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=470', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=471', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
