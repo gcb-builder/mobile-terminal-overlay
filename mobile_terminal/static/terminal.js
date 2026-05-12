@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v483 ===');
+console.log('=== TERMINAL.JS v484 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1044,21 +1044,50 @@ function extractAndSuggestCommand(content) {
         return;
     }
 
+    // Suppress while Claude is actively processing — visible in tail as
+    // "✻ Determining…", "✦ Working…", "* Sautéing…" etc. (status char +
+    // present-progressive verb + ellipsis). terminalBusy isn't enough:
+    // extractPromptContent flips it false the moment ANY chevron is
+    // seen, but Claude renders the just-submitted user message with a
+    // chevron in conversation history while still working on it.
+    const claudeBusyMarker = /[✻✷✶✦●⏺*]\s+\S+ing(?:…|\.{3})/;
+    if (claudeBusyMarker.test(content)) {
+        clearSuggestionPill();
+        return;
+    }
+
     const lines = content.split('\n');
     let suggestion = '';
 
     // Pass 1: walk BOTTOM-UP for the live chevron prompt. Earlier
     // chevrons in tail scrollback are from previous turns and would
     // pull stale commands forward as suggestions if matched first.
+    // Continuation lines (wrapped input) are joined back into one
+    // string so the dedup against recentSentCommands matches even when
+    // the chevron content wraps across multiple physical lines.
     for (let i = lines.length - 1; i >= 0; i--) {
         const trimmed = lines[i].trim();
         const match = trimmed.match(/^❯\s+(.+)/);
         if (!match) continue;
+
+        const parts = [match[1].trim()];
+        for (let j = i + 1; j < lines.length; j++) {
+            const raw = lines[j];
+            if (!raw.startsWith(' ')) break;
+            const nt = raw.trim();
+            if (!nt) break;
+            // Stop on busy markers, chevrons, or hint lines.
+            if (/^[✻✷✶✦●⏺*]/.test(nt)) break;
+            if (/^❯/.test(nt)) break;
+            if (/^(?:↵|⏎|ctrl|cmd|alt|shift|esc|tab)\b/i.test(nt)) break;
+            parts.push(nt);
+        }
+
         // Strip trailing UI hints — Claude Code appends "↵ send",
         // "ctrl+t to show tasks", "· ⏎ for newline" etc. after the
         // actual content. Without this, a sent command bouncing back
         // in the chevron echo wouldn't dedupe against recentSentCommands.
-        const cleaned = match[1]
+        const cleaned = parts.join(' ')
             .replace(/\s*↵\s*\w*\s*$/, '')
             .replace(/\s+(?:ctrl|cmd|alt|shift|⌘|⌥|⇧|⌃)[+\-]\w+.*$/i, '')
             .replace(/\s+[·•]\s.*$/, '')
@@ -12201,6 +12230,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=483', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=484', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
