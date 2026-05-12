@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v479 ===');
+console.log('=== TERMINAL.JS v480 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -999,6 +999,20 @@ ctx.markCommandSent = function(text) {
 function extractAndSuggestCommand(content) {
     if (!logInput) return;
     if (terminalBusy) return;  // Don't surface a suggestion while ctx.terminal is processing
+
+    // A permission or choice banner is already showing dedicated Allow/
+    // Deny / numbered choice buttons. A pill saying "y" or "1" is
+    // redundant and risky — one stray tap could auto-approve something.
+    if (pendingPrompt && (pendingPrompt.kind === 'permission' ||
+                          pendingPrompt.kind === 'tail-choice' ||
+                          pendingPrompt.kind === 'confirmation')) {
+        clearSuggestionPill();
+        return;
+    }
+    if (typeof activePermissionPayload !== 'undefined' && activePermissionPayload) {
+        clearSuggestionPill();
+        return;
+    }
 
     // Skip Claude's session rating prompt — not actionable
     if (ctx.agentType === 'claude' && /How is Claude doing/i.test(content)) {
@@ -12160,6 +12174,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=479', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=480', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
