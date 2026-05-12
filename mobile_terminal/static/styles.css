@@ -2511,6 +2511,24 @@ html, body {
     transform: scale(0.96);
 }
 
+/* Phrases button: long labels (e.g. "💬 Looks good, proceed") used to
+   push the ••• menu off-screen because the intrinsic min-content was
+   wider than the flex share. min-width:0 lets flexbox shrink past
+   intrinsic, ellipsis truncates the visible text. */
+.action-bar-btn.action-bar-phrases {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ••• menu button: fixed narrow width so it never gets pushed out. */
+.action-bar-btn.action-bar-menu {
+    flex: 0 0 56px;
+    padding: 8px 0;
+    text-align: center;
+    letter-spacing: 2px;
+}
+
 /* FAB menu — vertical floating menu anchored bottom-right above ••• button */
 .fab-menu {
     position: fixed;

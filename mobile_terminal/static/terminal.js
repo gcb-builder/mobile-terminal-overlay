@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v481 ===');
+console.log('=== TERMINAL.JS v482 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -6418,7 +6418,7 @@ function appendStandardActionButtons(bar) {
     bar.appendChild(phrasesBtn);
 
     const menuBtn = document.createElement('button');
-    menuBtn.className = 'action-bar-btn';
+    menuBtn.className = 'action-bar-btn action-bar-menu';
     menuBtn.innerHTML = '&bull;&bull;&bull;';
     menuBtn.addEventListener('click', () => toggleFabMenu());
     bar.appendChild(menuBtn);
@@ -12198,6 +12198,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=481', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=482', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
