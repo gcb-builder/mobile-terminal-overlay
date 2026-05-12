@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v476 ===');
+console.log('=== TERMINAL.JS v477 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -965,7 +965,16 @@ function updateContextFromBackend(data) {
  * Extract suggestion from ctx.terminal output and pre-fill input box
  */
 let lastSuggestion = '';
-let recentSentCommands = new Set();  // Track recent commands to avoid re-suggesting
+// Per-pane dedup sets so commands sent on pane A don't re-suggest after
+// switching to pane B and back. recentSentCommands() always returns the
+// set for the currently-active pane.
+const recentSentByPane = new Map();
+function recentSentCommands() {
+    const key = (ctx && ctx.activeTarget) || '__global__';
+    let set = recentSentByPane.get(key);
+    if (!set) { set = new Set(); recentSentByPane.set(key, set); }
+    return set;
+}
 
 /* Cross-module hook: mark a command as just-sent so the next chevron
    echo won't bounce back as a pill suggestion. Used by the queue's
@@ -976,9 +985,9 @@ ctx.markCommandSent = function(text) {
     if (!text) return;
     const trimmed = String(text).trim();
     if (!trimmed) return;
-    recentSentCommands.add(trimmed);
-    if (recentSentCommands.size > 20) {
-        recentSentCommands.delete(recentSentCommands.values().next().value);
+    recentSentCommands().add(trimmed);
+    if (recentSentCommands().size > 20) {
+        recentSentCommands().delete(recentSentCommands().values().next().value);
     }
 };
 
@@ -1037,7 +1046,7 @@ function extractAndSuggestCommand(content) {
     }
 
     // Never re-suggest a recently sent command
-    if (suggestion && recentSentCommands.has(suggestion)) {
+    if (suggestion && recentSentCommands().has(suggestion)) {
         clearSuggestionPill();
         return;
     }
@@ -1095,9 +1104,9 @@ function setSuggestionPill(text) {
         e.preventDefault();
         const dismissed = suggestionPillEl.dataset.suggestion || '';
         if (dismissed) {
-            recentSentCommands.add(dismissed);
-            if (recentSentCommands.size > 20) {
-                recentSentCommands.delete(recentSentCommands.values().next().value);
+            recentSentCommands().add(dismissed);
+            if (recentSentCommands().size > 20) {
+                recentSentCommands().delete(recentSentCommands().values().next().value);
             }
         }
         lastSuggestion = '';
@@ -1191,7 +1200,7 @@ async function syncPromptToInput() {
 
         if (extracted !== null) {
             // Don't re-fill with the same text we just sent
-            if (extracted && (extracted === lastSuggestion || recentSentCommands.has(extracted))) {
+            if (extracted && (extracted === lastSuggestion || recentSentCommands().has(extracted))) {
                 setTerminalBusy(false);
                 return;
             }
@@ -1246,9 +1255,9 @@ function sendNextUnsafe() {
     // aggressive for queued commands and causes rapid-fire drain.
     // Normal poll cycle will detect the prompt and clear busy state.
     captureSnapshot('queue_send');
-    recentSentCommands.add(item.text);
-    if (recentSentCommands.size > 20) {
-        recentSentCommands.delete(recentSentCommands.values().next().value);
+    recentSentCommands().add(item.text);
+    if (recentSentCommands().size > 20) {
+        recentSentCommands().delete(recentSentCommands().values().next().value);
     }
     if (item.text) addToHistory(item.text);
 }
@@ -3610,7 +3619,9 @@ async function selectTarget(targetId, isInitialSync = false) {
     lastSuggestion = '';
     clearSuggestionPill();
     clearArmingBannerForPaneSwitch();
-    recentSentCommands.clear();
+    // No clear() — recentSentCommands() is now per-pane, so prior sends
+    // on the previous pane stay deduped when we switch back. The new
+    // pane's set is created lazily on first add/has.
     lastContextPct = -1;
     contextAlertSent = false;
     const ctxPill = document.getElementById('contextPill');
@@ -7943,7 +7954,7 @@ function sendPromptChoice(choice) {
         setTerminalBusy(true);
         captureSnapshot('user_send');
 
-        recentSentCommands.add(choiceStr);
+        recentSentCommands().add(choiceStr);
         lastSuggestion = '';
         // Clear terminal tail so the question text doesn't linger
         if (activePromptContent) activePromptContent.textContent = '';
@@ -8976,10 +8987,10 @@ async function sendLogCommand() {
     logInput.value = '';
     logInput.dataset.autoSuggestion = 'false';
     lastSuggestion = command;
-    recentSentCommands.add(command);
+    recentSentCommands().add(command);
     // Cap set size at 20
-    if (recentSentCommands.size > 20) {
-        recentSentCommands.delete(recentSentCommands.values().next().value);
+    if (recentSentCommands().size > 20) {
+        recentSentCommands().delete(recentSentCommands().values().next().value);
     }
 
     // Add to command history
@@ -10484,7 +10495,7 @@ function setupPermissionBanner() {
     document.getElementById('permissionAllow')?.addEventListener('click', () => {
         sendPermissionResponse('y');
         setTerminalBusy(true);
-        recentSentCommands.add('y');
+        recentSentCommands().add('y');
         lastSuggestion = '';
         if (activePromptContent) activePromptContent.textContent = '';
         hidePermissionBanner();
@@ -10493,7 +10504,7 @@ function setupPermissionBanner() {
     document.getElementById('permissionDeny')?.addEventListener('click', () => {
         sendPermissionResponse('n');
         setTerminalBusy(true);
-        recentSentCommands.add('n');
+        recentSentCommands().add('n');
         lastSuggestion = '';
         if (activePromptContent) activePromptContent.textContent = '';
         hidePermissionBanner();
@@ -10509,7 +10520,7 @@ function setupPermissionBanner() {
         }
         sendPermissionResponse('y');
         setTerminalBusy(true);
-        recentSentCommands.add('y');
+        recentSentCommands().add('y');
         lastSuggestion = '';
         if (activePromptContent) activePromptContent.textContent = '';
         hidePermissionBanner();
@@ -10522,7 +10533,7 @@ function setupPermissionBanner() {
         }
         sendPermissionResponse('y');
         setTerminalBusy(true);
-        recentSentCommands.add('y');
+        recentSentCommands().add('y');
         lastSuggestion = '';
         if (activePromptContent) activePromptContent.textContent = '';
         hidePermissionBanner();
@@ -12030,6 +12041,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=476', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=477', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
