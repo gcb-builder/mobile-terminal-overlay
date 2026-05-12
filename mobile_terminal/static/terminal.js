@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v477 ===');
+console.log('=== TERMINAL.JS v478 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -883,6 +883,11 @@ async function refreshActivePrompt(signal) {
         // Safe to re-enable now that the pill never writes to logInput.value
         // — the user has to tap/Tab/long-press to commit it.
         extractAndSuggestCommand(content);
+
+        // Choice prompts from interactive selectors render to TTY only,
+        // so the log-based extractor stays empty until the user answers.
+        // Surface them in the banner from tail too.
+        syncTailChoicePrompt(content);
 
         // Check if prompt is visible - if so, ctx.terminal is ready
         const extracted = extractPromptContent(content);
@@ -7447,6 +7452,107 @@ function clearPendingPrompt() {
 }
 
 /**
+ * Extract a choice prompt from the live tail capture.
+ *
+ * Inquirer/Claude Code interactive selectors render to the TTY only —
+ * they don't hit the JSONL log until the user has answered. The
+ * log-based extractPendingPrompt() therefore stays empty until input
+ * has been given. This tail-based detector surfaces the question +
+ * choices in the same prompt banner immediately.
+ *
+ * Recognised shapes:
+ *   ❯ 1. Yes
+ *     2. No
+ *
+ *   ? Choose an option:
+ *     1) First
+ *     2) Second
+ *
+ * Returns { text, choices } or null.
+ */
+function extractPendingPromptFromTail(content) {
+    if (!content) return null;
+    const lines = content.split('\n');
+    if (lines.length < 2) return null;
+
+    // Walk bottom-up to find the most recent question line. A question
+    // is either an "?" prefix (inquirer) or a line ending with "?".
+    let qIdx = -1;
+    let qText = '';
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const t = lines[i].trim();
+        if (!t) continue;
+        // Inquirer-style: "? Choose an option:"
+        const inq = t.match(/^\?\s+(.+?)[:?]?\s*$/);
+        if (inq && inq[1].length >= 3) {
+            qIdx = i;
+            qText = inq[1].trim();
+            break;
+        }
+        // Plain question: "Do you want to proceed?"
+        if (t.endsWith('?') && t.length >= 5 && t.length <= 200 && !/^\s*\d/.test(t)) {
+            qIdx = i;
+            qText = t.replace(/\?$/, '').trim();
+            break;
+        }
+    }
+    if (qIdx === -1) return null;
+
+    // Collect numbered option lines after the question. Allow a leading
+    // chevron / cursor marker on the first option.
+    const choices = [];
+    for (let i = qIdx + 1; i < lines.length; i++) {
+        const t = lines[i].trim();
+        if (!t) {
+            if (choices.length > 0) break;
+            continue;
+        }
+        const noChevron = t.replace(/^[❯>›▶▸•]\s*/, '');
+        const m = noChevron.match(/^\(?\[?(\d+)\]?\)?\.?\s+(.+?)\s*$/);
+        if (m) {
+            const label = m[2].replace(/\s*\((esc|enter|tab|y|n)\)\s*$/i, '').trim();
+            if (label.length > 0 && label.length <= 120) {
+                choices.push({ num: m[1], label, description: '' });
+            }
+            if (choices.length >= 9) break;
+        } else if (choices.length > 0) {
+            break;
+        }
+    }
+
+    if (choices.length < 2) return null;
+    return { text: qText, choices };
+}
+
+/**
+ * Pipe tail-detected choice prompts into the banner. Coexists with the
+ * log-based extractPendingPrompt — log wins when both detect, since the
+ * log carries richer text. Tail-choice prompts are auto-cleared once
+ * they vanish from tail (covers the "user answered" case).
+ */
+function syncTailChoicePrompt(content) {
+    const detected = extractPendingPromptFromTail(content);
+    if (detected) {
+        const id = simpleHash(detected.text + detected.choices.map(c => c.label).join(''));
+        if (typeof dismissedPrompts !== 'undefined' && dismissedPrompts.has(id)) return;
+        if (pendingPrompt && pendingPrompt.id === id) return;
+        // Don't stomp a richer log-based or permission prompt.
+        if (pendingPrompt && pendingPrompt.kind && pendingPrompt.kind !== 'tail-choice') return;
+        pendingPrompt = {
+            id,
+            kind: 'tail-choice',
+            text: detected.text,
+            choices: detected.choices,
+            answered: false,
+            sentChoice: null,
+        };
+        showPromptBanner();
+    } else if (pendingPrompt && pendingPrompt.kind === 'tail-choice') {
+        clearPendingPrompt();
+    }
+}
+
+/**
  * Extract permission prompts from ctx.terminal capture
  * Detects Claude Code's built-in permission prompts like:
  * "Do you want to proceed?"
@@ -12041,6 +12147,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=477', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=478', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
