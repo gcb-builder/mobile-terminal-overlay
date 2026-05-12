@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v487 ===');
+console.log('=== TERMINAL.JS v488 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1044,11 +1044,12 @@ function extractAndSuggestCommand(content) {
         return;
     }
 
-    // Skip Claude's session rating prompt — not actionable
-    if (ctx.agentType === 'claude' && /How is Claude doing/i.test(content)) {
-        clearSuggestionPill();
-        return;
-    }
+    // (The previous "How is Claude doing" early-return was removed: it
+    // suppressed the pill across the whole tail whenever the rating
+    // prompt was visible, including for real typed chevron content
+    // below it. The selector-cursor guard further down — rejecting
+    // chevron text that starts with a digit followed by . / : — handles
+    // the narrower case of the chevron pointing AT a rating option.)
 
     // Suppress while Claude is actively processing — visible in tail as
     // "✻ Determining…", "✦ Working…", "* Sautéing…" etc. (status char +
@@ -1102,12 +1103,12 @@ function extractAndSuggestCommand(content) {
         if (cleaned) {
             // Reject chevron content that looks like an interactive
             // selector (e.g. "1. Yes", "2. No", "3. Yes, and don't ask
-            // again"). The ❯ in those screens is the option cursor,
-            // NOT a typed-command prompt — surfacing them as a pill
-            // would let one tap commit a permission choice. The
-            // permission/tail-choice banner already provides explicit
-            // buttons for these.
-            if (/^\d+\.\s+/.test(cleaned)) break;
+            // again", "2: Fine"). The ❯ in those screens is the option
+            // cursor, NOT a typed-command prompt — surfacing them as a
+            // pill would let one tap commit a permission / rating
+            // choice. The permission / tail-choice banner already
+            // provides explicit buttons for these.
+            if (/^\d+[.:)\s]/.test(cleaned)) break;
             suggestion = cleaned;
             break;
         }
@@ -12423,6 +12424,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=487', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=488', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
