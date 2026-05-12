@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v482 ===');
+console.log('=== TERMINAL.JS v483 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1047,44 +1047,47 @@ function extractAndSuggestCommand(content) {
     const lines = content.split('\n');
     let suggestion = '';
 
-    for (const line of lines) {
-        const trimmed = line.trim();
-
-        // Primary: Command prompt line with ❯ chevron (Claude Code's prompt)
-        // Format: "❯ command text" or "❯ command text    ↵ send  ctrl+t to show tasks"
-        if (/^❯\s+(.+)/.test(trimmed)) {
-            const match = trimmed.match(/^❯\s+(.+)/);
-            if (match) {
-                // Strip trailing UI hints — Claude Code appends things like
-                // "↵ send", "ctrl+t to show tasks", "· ⏎ for newline" after
-                // the actual content. Without this, a sent command bouncing
-                // back in the chevron echo wouldn't dedupe against the
-                // recentSentCommands set.
-                suggestion = match[1]
-                    .replace(/\s*↵\s*\w*\s*$/, '')
-                    .replace(/\s+(?:ctrl|cmd|alt|shift|⌘|⌥|⇧|⌃)[+\-]\w+.*$/i, '')
-                    .replace(/\s+[·•]\s.*$/, '')
-                    .replace(/\s+⏎.*$/, '')
-                    .trim();
-                if (suggestion) break;
-            }
+    // Pass 1: walk BOTTOM-UP for the live chevron prompt. Earlier
+    // chevrons in tail scrollback are from previous turns and would
+    // pull stale commands forward as suggestions if matched first.
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const trimmed = lines[i].trim();
+        const match = trimmed.match(/^❯\s+(.+)/);
+        if (!match) continue;
+        // Strip trailing UI hints — Claude Code appends "↵ send",
+        // "ctrl+t to show tasks", "· ⏎ for newline" etc. after the
+        // actual content. Without this, a sent command bouncing back
+        // in the chevron echo wouldn't dedupe against recentSentCommands.
+        const cleaned = match[1]
+            .replace(/\s*↵\s*\w*\s*$/, '')
+            .replace(/\s+(?:ctrl|cmd|alt|shift|⌘|⌥|⇧|⌃)[+\-]\w+.*$/i, '')
+            .replace(/\s+[·•]\s.*$/, '')
+            .replace(/\s+⏎.*$/, '')
+            .trim();
+        if (cleaned) {
+            suggestion = cleaned;
+            break;
         }
+    }
 
-        // Numbered options in an interactive choice dialog (? prefix)
-        // Only suggest when there's a question prompt, not plain numbered lists
-        if (/^\?\s/.test(trimmed) || /^\[?\d\]?\)\s/.test(trimmed)) {
-            // Look for numbered options in surrounding lines
-            const hasQuestion = lines.some(l => /^\?\s/.test(l.trim()));
-            if (hasQuestion && /^\[?[1-3]\]?\)?\.?\s+/.test(trimmed)) {
-                suggestion = '1';
+    // Pass 2: numbered choice / y-n prompts (top-down is fine — these
+    // patterns are scoped to active interactive prompts, not chevrons).
+    if (!suggestion) {
+        for (const line of lines) {
+            const trimmed = line.trim();
+
+            if (/^\?\s/.test(trimmed) || /^\[?\d\]?\)\s/.test(trimmed)) {
+                const hasQuestion = lines.some(l => /^\?\s/.test(l.trim()));
+                if (hasQuestion && /^\[?[1-3]\]?\)?\.?\s+/.test(trimmed)) {
+                    suggestion = '1';
+                    break;
+                }
+            }
+
+            if (/\(y\/n\)/i.test(trimmed) || /\[yes\/no\]/i.test(trimmed)) {
+                suggestion = 'y';
                 break;
             }
-        }
-
-        // Yes/No prompts
-        if (/\(y\/n\)/i.test(trimmed) || /\[yes\/no\]/i.test(trimmed)) {
-            suggestion = 'y';
-            break;
         }
     }
 
@@ -12198,6 +12201,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=482', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=483', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
