@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v484 ===');
+console.log('=== TERMINAL.JS v485 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -970,6 +970,12 @@ function updateContextFromBackend(data) {
  * Extract suggestion from ctx.terminal output and pre-fill input box
  */
 let lastSuggestion = '';
+// After a pane switch, anything already in the new pane's chevron is
+// existing state, not a "new" suggestion. For 1.5s after switching we
+// snapshot whatever the chevron extractor finds into the per-pane
+// recentSentCommands set so it can't flash as a pill while the tail
+// settles and the busy-marker check on the next refresh catches it.
+let _paneSwitchSnapshotUntil = 0;
 // Per-pane dedup with TTL so a sent command's brief echo doesn't bounce
 // back as a pill, but typing the same text again later DOES suggest.
 // Each pane gets its own Map<text, expiryTs>; expired entries are
@@ -1122,6 +1128,15 @@ function extractAndSuggestCommand(content) {
 
     // Never re-suggest a recently sent command
     if (suggestion && recentSentCommands().has(suggestion)) {
+        clearSuggestionPill();
+        return;
+    }
+
+    // Pane-switch grace window: snapshot the chevron content as
+    // already-known so it doesn't flash as a fresh suggestion in the
+    // 1.5s after arriving at a pane (before tail / busy-marker settle).
+    if (suggestion && Date.now() < _paneSwitchSnapshotUntil) {
+        recentSentCommands().add(suggestion);
         clearSuggestionPill();
         return;
     }
@@ -3697,6 +3712,11 @@ async function selectTarget(targetId, isInitialSync = false) {
     // No clear() — recentSentCommands() is now per-pane, so prior sends
     // on the previous pane stay deduped when we switch back. The new
     // pane's set is created lazily on first add/has.
+    // Open a 1.5s window where the first chevron content seen on the
+    // new pane gets snapshotted into the dedup set — kills the pill
+    // flicker that previously appeared when arriving at a pane whose
+    // chevron still echoes a previously-submitted command.
+    _paneSwitchSnapshotUntil = Date.now() + 1500;
     lastContextPct = -1;
     contextAlertSent = false;
     const ctxPill = document.getElementById('contextPill');
@@ -12230,6 +12250,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=484', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=485', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
