@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v480 ===');
+console.log('=== TERMINAL.JS v481 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -970,15 +970,39 @@ function updateContextFromBackend(data) {
  * Extract suggestion from ctx.terminal output and pre-fill input box
  */
 let lastSuggestion = '';
-// Per-pane dedup sets so commands sent on pane A don't re-suggest after
-// switching to pane B and back. recentSentCommands() always returns the
-// set for the currently-active pane.
+// Per-pane dedup with TTL so a sent command's brief echo doesn't bounce
+// back as a pill, but typing the same text again later DOES suggest.
+// Each pane gets its own Map<text, expiryTs>; expired entries are
+// culled lazily on access.
+const RECENT_SENT_TTL_MS = 30000;
 const recentSentByPane = new Map();
-function recentSentCommands() {
+function _recentSentMap() {
     const key = (ctx && ctx.activeTarget) || '__global__';
-    let set = recentSentByPane.get(key);
-    if (!set) { set = new Set(); recentSentByPane.set(key, set); }
-    return set;
+    let map = recentSentByPane.get(key);
+    if (!map) { map = new Map(); recentSentByPane.set(key, map); }
+    const now = Date.now();
+    for (const [text, exp] of map) {
+        if (exp < now) map.delete(text);
+    }
+    return map;
+}
+// Compatibility shim for callers that used the prior Set API. Returns a
+// proxy with .has/.add/.delete/.size/.values backed by the TTL map so
+// existing call sites keep working without changes.
+function recentSentCommands() {
+    const map = _recentSentMap();
+    return {
+        has: (t) => map.has(String(t).trim()),
+        add: (t) => {
+            const k = String(t).trim();
+            if (!k) return;
+            map.set(k, Date.now() + RECENT_SENT_TTL_MS);
+            while (map.size > 20) map.delete(map.keys().next().value);
+        },
+        delete: (t) => map.delete(String(t).trim()),
+        get size() { return map.size; },
+        values: () => map.keys(),
+    };
 }
 
 /* Cross-module hook: mark a command as just-sent so the next chevron
@@ -12174,6 +12198,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=480', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=481', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
