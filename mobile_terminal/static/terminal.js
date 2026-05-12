@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v490 ===');
+console.log('=== TERMINAL.JS v491 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1180,12 +1180,11 @@ function setSuggestionPill(text) {
     if (!suggestionPillEl) suggestionPillEl = document.getElementById('logSuggestionPill');
     if (!suggestionPillEl) return;
     if (!text) { clearSuggestionPill(); return; }
-    // Don't surface the pill while user has typed content — they're
-    // composing their own reply, the suggestion would just clutter.
-    if (logInput && logInput.value && logInput.value.length > 0) {
-        clearSuggestionPill();
-        return;
-    }
+    // Pill stays visible even when the user is composing their own
+    // reply — otherwise they can't see that the agent's chevron has
+    // something to commit. The commit handler still replaces the input
+    // value on tap; the long-press path does too. We trust the explicit
+    // tap as user intent.
     suggestionPillEl.dataset.suggestion = text;
     const display = text.length > 60 ? text.slice(0, 57) + '…' : text;
     suggestionPillEl.innerHTML = '';
@@ -9123,11 +9122,12 @@ function setupLogInput() {
         });
     }
 
-    // Hide the pill as soon as the user starts typing — the suggestion
-    // should never overwrite hand-composed text.
-    logInput.addEventListener('input', () => {
-        if (logInput.value && logInput.value.length > 0) clearSuggestionPill();
-    });
+    // (Removed an input-keystroke handler that hid the pill while the
+    // user was typing in #logInput — combined with the auto-suppress
+    // in setSuggestionPill, it permanently hid the pill on desktop
+    // because typing in the input always lost the race against the
+    // tail refresh's setSuggestionPill call. The pill now stays
+    // visible regardless of input state; commit replaces the input.)
 
     // Send on Enter, navigate history on ArrowUp/Down
     logInput.addEventListener('keydown', (e) => {
@@ -12432,6 +12432,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=490', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=491', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
