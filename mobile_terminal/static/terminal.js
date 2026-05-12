@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v488 ===');
+console.log('=== TERMINAL.JS v489 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1028,7 +1028,14 @@ ctx.markCommandSent = function(text) {
 
 function extractAndSuggestCommand(content) {
     if (!logInput) return;
-    if (terminalBusy) return;  // Don't surface a suggestion while ctx.terminal is processing
+    // (Removed `if (terminalBusy) return` — the terminalBusy flag is
+    // tied to the agent-state header pill ("Working") and was firing
+    // false-positives where the agent was producing output but the
+    // user had already pre-typed text into the chevron that we should
+    // surface. The content-based busy-marker check below — looking
+    // for "✻ Determining…", "✦ Working…" patterns directly in tail —
+    // is the more accurate signal for "this exact text is being acted
+    // on now".)
 
     // A permission or choice banner is already showing dedicated Allow/
     // Deny / numbered choice buttons. A pill saying "y" or "1" is
@@ -12424,6 +12431,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=488', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=489', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
