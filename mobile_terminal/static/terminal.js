@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v489 ===');
+console.log('=== TERMINAL.JS v490 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1148,11 +1148,12 @@ function extractAndSuggestCommand(content) {
         return;
     }
 
-    // Pane-switch grace window: snapshot the chevron content as
-    // already-known so it doesn't flash as a fresh suggestion in the
-    // 1.5s after arriving at a pane (before tail / busy-marker settle).
+    // Pane-switch grace window: suppress the pill for ~1.5s after
+    // arriving at a pane so the previous-command echo can't flicker.
+    // Do NOT add to recentSentCommands here — that permanently
+    // dedupe-poisoned typed-but-not-sent chevron content for 30s,
+    // hiding genuine pre-typed text from the user.
     if (suggestion && Date.now() < _paneSwitchSnapshotUntil) {
-        recentSentCommands().add(suggestion);
         clearSuggestionPill();
         return;
     }
@@ -12431,6 +12432,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=489', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=490', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
