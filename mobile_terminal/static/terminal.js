@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v485 ===');
+console.log('=== TERMINAL.JS v486 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7541,6 +7541,176 @@ function clearPendingPrompt() {
     hidePromptBanner();
 }
 
+/* ============================================================
+   Web Share Target confirmation modal
+   ------------------------------------------------------------
+   Boots from terminal.js's URL-action handler when the page is
+   opened with ?share_id=<id>. Fetches the staged file list,
+   shows a destination-pane picker, then on commit moves the
+   files into the chosen pane's .claude/uploads/ and inserts
+   the resolved paths into that pane's #logInput.
+   ============================================================ */
+let _shareSelectedPaneId = null;
+
+async function openShareModal(shareId) {
+    const modal = document.getElementById('shareModal');
+    if (!modal) return;
+    let listResp;
+    try {
+        listResp = await apiFetch('/api/share/list/' + encodeURIComponent(shareId));
+    } catch (e) {
+        showToast('Could not load shared files', 'error');
+        return;
+    }
+    if (!listResp.ok) {
+        showToast('Shared files expired or not found', 'error');
+        return;
+    }
+    const data = await listResp.json();
+    if (!data.files || data.files.length === 0) {
+        showToast('No files in share', 'error');
+        return;
+    }
+
+    // Build preview tiles
+    const previewEl = document.getElementById('sharePreview');
+    while (previewEl.firstChild) previewEl.removeChild(previewEl.firstChild);
+    for (const f of data.files) {
+        const item = document.createElement('div');
+        item.className = 'share-preview-item';
+        if (f.is_image) {
+            const img = document.createElement('img');
+            img.src = `/api/share/preview/${encodeURIComponent(shareId)}/${encodeURIComponent(f.name)}`;
+            img.alt = f.name;
+            item.appendChild(img);
+        } else {
+            const ic = document.createElement('div');
+            ic.className = 'share-preview-icon';
+            ic.textContent = '\u{1F4C4}';
+            item.appendChild(ic);
+        }
+        const nm = document.createElement('span');
+        nm.className = 'share-preview-name';
+        nm.title = f.name;
+        nm.textContent = f.name;
+        item.appendChild(nm);
+        previewEl.appendChild(item);
+    }
+
+    // Build pane list — default-select the active pane
+    const listEl = document.getElementById('sharePaneList');
+    while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
+    const panes = (ctx.targets || []).slice();
+    if (panes.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.color = 'var(--text-muted)';
+        empty.style.padding = '12px';
+        empty.textContent = 'No panes available — open one and try again';
+        listEl.appendChild(empty);
+    }
+    _shareSelectedPaneId = ctx.activeTarget || (panes[0] && panes[0].id) || null;
+    for (const t of panes) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'share-pane-row' + (t.id === _shareSelectedPaneId ? ' selected' : '');
+        row.dataset.paneId = t.id;
+        const name = document.createElement('span');
+        name.className = 'share-pane-name';
+        name.textContent = t.window_name || t.id;
+        const cwd = document.createElement('span');
+        cwd.className = 'share-pane-cwd';
+        cwd.textContent = (t.cwd || '').replace(/^\/home\/[^/]+/, '~');
+        row.appendChild(name);
+        row.appendChild(cwd);
+        row.addEventListener('click', () => {
+            _shareSelectedPaneId = t.id;
+            listEl.querySelectorAll('.share-pane-row').forEach(r => r.classList.remove('selected'));
+            row.classList.add('selected');
+            updateShareModalPrimaryLabel();
+        });
+        listEl.appendChild(row);
+    }
+
+    modal.classList.remove('hidden');
+    updateShareModalPrimaryLabel();
+    wireShareModal(shareId);
+}
+
+function updateShareModalPrimaryLabel() {
+    const btn = document.getElementById('sharePrimaryBtn');
+    if (!btn) return;
+    if (!_shareSelectedPaneId) {
+        btn.textContent = 'Send';
+        btn.disabled = true;
+        return;
+    }
+    const pane = (ctx.targets || []).find(t => t.id === _shareSelectedPaneId);
+    const label = (pane && pane.window_name) || _shareSelectedPaneId;
+    btn.textContent = `Send to ${label}`;
+    btn.disabled = false;
+}
+
+let _shareModalWired = false;
+function wireShareModal(shareId) {
+    if (_shareModalWired) return;
+    _shareModalWired = true;
+    const modal = document.getElementById('shareModal');
+    const cancel = modal.querySelector('.share-modal-cancel');
+    const backdrop = modal.querySelector('.share-modal-backdrop');
+    const primary = document.getElementById('sharePrimaryBtn');
+
+    const close = async (cancelOnServer) => {
+        modal.classList.add('hidden');
+        if (cancelOnServer && shareId) {
+            try {
+                await apiFetch('/api/share/' + encodeURIComponent(shareId), { method: 'DELETE' });
+            } catch (_) {}
+        }
+    };
+    cancel.addEventListener('click', () => close(true));
+    backdrop.addEventListener('click', () => close(true));
+
+    primary.addEventListener('click', async () => {
+        if (!_shareSelectedPaneId) return;
+        primary.disabled = true;
+        const fd = new FormData();
+        fd.append('share_id', shareId);
+        fd.append('pane_id', _shareSelectedPaneId);
+        try {
+            const resp = await apiFetch('/api/share/commit', { method: 'POST', body: fd });
+            if (!resp.ok) {
+                showToast('Share commit failed', 'error');
+                primary.disabled = false;
+                return;
+            }
+            const data = await resp.json();
+            modal.classList.add('hidden');
+            // Switch to the chosen pane (no-op if already active) then
+            // insert the resolved paths into its input box. The user
+            // adds a sentence and hits Send — we don't auto-send so a
+            // mistaken share can't immediately fire commands.
+            if (data.pane_id && data.pane_id !== ctx.activeTarget) {
+                if (typeof selectTarget === 'function') {
+                    await selectTarget(data.pane_id);
+                }
+            }
+            const paths = (data.paths || []).map(p => `"${p}"`).join(' ');
+            if (logInput && paths) {
+                const cur = logInput.value ? logInput.value + ' ' : '';
+                logInput.value = cur + paths + ' ';
+                logInput.dataset.autoSuggestion = 'false';
+                logInput.focus();
+                logInput.setSelectionRange(logInput.value.length, logInput.value.length);
+            }
+            showToast(`Shared ${data.paths.length} file(s)`, 'success', 2000);
+        } catch (e) {
+            console.warn('share commit failed:', e);
+            showToast('Share commit failed', 'error');
+            primary.disabled = false;
+        }
+    });
+}
+
 /**
  * Extract a choice prompt from the live tail capture.
  *
@@ -12201,21 +12371,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const cleanUrl = window.location.pathname + (ctx.token ? `` : '');
                 window.history.replaceState({}, '', cleanUrl);
             }, 2000);
-        } else if (urlParams.get('share')) {
-            // Web Share Target: retrieve shared content and open compose
-            const shareId = urlParams.get('share');
-            setTimeout(async () => {
-                try {
-                    const resp = await apiFetch('/api/share/pending?share_id=' + encodeURIComponent(shareId) + '&token=' + ctx.token);
-                    const data = await resp.json();
-                    if (data.found && data.text) {
-                        prefillCompose(data.text);
-                        showToast('Shared content loaded', 'success');
-                    }
-                } catch (_) {}
-                const cleanUrl = window.location.pathname + (ctx.token ? '' : '');
+        } else if (urlParams.get('share_id')) {
+            // Web Share Target: Android handed files to POST /share which
+            // staged them and bounced us back here. Open the destination-
+            // pane confirmation modal once ctx.targets are loaded.
+            const shareId = urlParams.get('share_id');
+            setTimeout(() => {
+                openShareModal(shareId).catch(e => console.warn('share modal failed:', e));
+                const cleanUrl = window.location.pathname;
                 window.history.replaceState({}, '', cleanUrl);
-            }, 1000);
+            }, 800);
         } else if (deepAction === 'allow' || deepAction === 'deny') {
             // Permission response from push notification when no client was open
             const choice = deepAction === 'allow' ? 'y' : 'n';
@@ -12250,6 +12415,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=485', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=486', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

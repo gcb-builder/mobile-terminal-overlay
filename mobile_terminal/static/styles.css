@@ -3008,6 +3008,117 @@ html, body {
     font-size: 13px;
     color: var(--text);
 }
+
+/* Web Share Target confirmation modal — full-screen sheet shown when
+   the PWA boots with ?share_id=... so the user picks a destination
+   pane before files are committed. */
+.share-modal { position: fixed; inset: 0; z-index: 9000; }
+.share-modal.hidden { display: none; }
+.share-modal-backdrop {
+    position: absolute; inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+}
+.share-modal-sheet {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(420px, 92vw);
+    max-height: 90vh;
+    overflow-y: auto;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+    display: flex; flex-direction: column;
+}
+.share-modal-header {
+    display: flex; align-items: center;
+    padding: 14px 16px; gap: 10px;
+    border-bottom: 1px solid var(--border);
+}
+.share-modal-title { flex: 1; font-weight: 600; font-size: 15px; color: var(--text-primary); }
+.share-modal-cancel {
+    background: transparent; color: var(--text-muted); border: none;
+    font-size: 24px; line-height: 1; cursor: pointer;
+    width: 32px; height: 32px; border-radius: 6px;
+}
+.share-modal-cancel:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); }
+.share-preview {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+}
+.share-preview-item {
+    display: flex; flex-direction: column; align-items: center;
+    width: 90px; max-width: 90px;
+    font-size: 11px; color: var(--text-muted);
+    text-align: center; word-break: break-word;
+}
+.share-preview-item img {
+    width: 80px; height: 80px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    margin-bottom: 4px;
+}
+.share-preview-item .share-preview-icon {
+    width: 80px; height: 80px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg-tertiary);
+    border-radius: 6px;
+    font-size: 28px;
+    margin-bottom: 4px;
+}
+.share-preview-item .share-preview-name {
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.share-pane-list {
+    padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 6px;
+    max-height: 40vh;
+    overflow-y: auto;
+}
+.share-pane-row {
+    display: flex; align-items: center;
+    padding: 12px 14px;
+    background: var(--bg-tertiary);
+    border: 1px solid transparent;
+    border-radius: 8px;
+    cursor: pointer;
+    min-height: 48px;
+    color: var(--text-primary);
+    font-size: 14px;
+    text-align: left;
+}
+.share-pane-row.selected {
+    background: color-mix(in srgb, var(--accent) 16%, var(--bg-tertiary));
+    border-color: var(--accent);
+}
+.share-pane-row .share-pane-name { flex: 1; font-weight: 500; }
+.share-pane-row .share-pane-cwd {
+    color: var(--text-muted); font-size: 11px;
+    margin-left: 8px; max-width: 60%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.share-modal-actions {
+    padding: 12px 16px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    display: flex; gap: 8px;
+}
+.share-primary-btn {
+    flex: 1;
+    background: var(--accent); color: white;
+    border: none; border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 15px; font-weight: 600;
+    min-height: 48px;
+    cursor: pointer;
+}
+.share-primary-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.share-primary-btn:not(:disabled):active { transform: scale(0.98); }
 .queue-arming-banner.hidden { display: none; }
 .queue-arming-icon {
     color: var(--warning);
