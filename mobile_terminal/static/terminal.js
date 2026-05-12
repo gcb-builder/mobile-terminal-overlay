@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v478 ===');
+console.log('=== TERMINAL.JS v479 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -10487,8 +10487,21 @@ function handleTypedMessage(msg) {
             const d = msg.payload;
             const verb = d.decision === 'allow' ? 'Auto-approved' : 'Auto-denied';
             const tgt = (d.target || '').slice(0, 40);
-            const repo = d.repo ? `[${d.repo}] ` : '';
-            ctx.showToast(`${repo}${verb}: ${d.tool} ${tgt}`,
+            // Show pane name in addition to repo so multi-pane repos
+            // (e.g. two Claude sessions in the same project) make it
+            // obvious WHICH pane was auto-approved.
+            const paneTarget = (ctx.targets || []).find(t => t.id === d.pane);
+            const paneName = (paneTarget && paneTarget.window_name) || '';
+            const repoName = d.repo || '';
+            let prefix = '';
+            if (paneName && repoName && paneName !== repoName) {
+                prefix = `[${repoName} · ${paneName}] `;
+            } else if (paneName) {
+                prefix = `[${paneName}] `;
+            } else if (repoName) {
+                prefix = `[${repoName}] `;
+            }
+            ctx.showToast(`${prefix}${verb}: ${d.tool} ${tgt}`,
                 d.decision === 'allow' ? 'info' : 'warning', 4000);
             // Suppress permission banner for a few seconds (terminal still shows old prompt)
             _permAutoApprovedAt = Date.now();
@@ -12147,6 +12160,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=478', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=479', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
