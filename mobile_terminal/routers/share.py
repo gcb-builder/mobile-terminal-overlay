@@ -139,7 +139,16 @@ def register(app: FastAPI, deps) -> None:
         logger.info(f"[share] received share_id={share_id} files={len(saved)} text={bool(text)} url={bool(url)}")
         # Redirect via 303 so the browser switches to GET; PWA's start
         # handler reads ?share_id and opens the confirmation modal.
-        return RedirectResponse(url=f"/?share_id={share_id}", status_code=303)
+        # Prefix with config.base_path so the redirect lands inside
+        # MTO's mount when fronted by a reverse proxy / Tailscale Funnel
+        # — without this, /?share_id=... resolves outside the proxy
+        # mount and the user sees a 502.
+        base = ""
+        try:
+            base = (app.state.config.base_path or "").rstrip("/")
+        except Exception:
+            pass
+        return RedirectResponse(url=f"{base}/?share_id={share_id}", status_code=303)
 
     @app.get("/api/share/list/{share_id}")
     async def share_list(share_id: str):
