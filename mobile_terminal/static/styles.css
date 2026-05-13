@@ -8988,10 +8988,12 @@ html, body {
 
     /* Sessions list in sidebar */
     .sidebar-session-btn {
-        display: flex; align-items: center; gap: 8px;
+        display: flex; flex-direction: column; align-items: flex-start;
+        gap: 1px;
         padding: 6px 12px; background: transparent; border: none;
         color: var(--text-secondary); font-size: 12px; cursor: pointer;
         text-align: left; width: 100%; min-height: 32px;
+        line-height: 1.2;
     }
     .sidebar-session-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
     .sidebar-session-btn.current {
@@ -9001,6 +9003,21 @@ html, body {
     .sidebar-session-btn.cycle-preview {
         color: var(--accent); background: rgba(55, 148, 255, 0.12);
         border-left: 2px solid var(--accent); font-weight: 600;
+    }
+    /* Two-line session row: project on top, pane window_name beneath
+       so two panes in the same repo can be told apart. */
+    .sidebar-session-primary {
+        display: block; width: 100%;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .sidebar-session-secondary {
+        display: block; width: 100%;
+        font-size: 10.5px; color: var(--text-muted);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    }
+    .sidebar-session-btn.current .sidebar-session-secondary {
+        color: var(--text-secondary);
     }
 
     /* Sidebar tool content (replaces default when secondary tool opened) */

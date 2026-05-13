@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v502 ===');
+console.log('=== TERMINAL.JS v503 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -11532,9 +11532,28 @@ function populateSidebarSessions() {
         const isActive = target.id === ctx.activeTarget;
         const btn = document.createElement('button');
         btn.className = 'sidebar-session-btn' + (isActive ? ' current' : '');
-        const label = target.project || target.window_name || target.id;
-        btn.textContent = label;
-        btn.title = target.cwd || target.id;
+
+        // Primary line: project label. Secondary line: pane window_name
+        // when it differs from the project (otherwise redundant). The
+        // secondary line lets you tell two panes in the same repo apart
+        // — e.g. ShareSafe / "backend" vs ShareSafe / "frontend".
+        const primary = target.project || target.window_name || target.id;
+        const secondary = (target.window_name && target.window_name !== primary)
+            ? target.window_name
+            : '';
+
+        const primaryEl = document.createElement('span');
+        primaryEl.className = 'sidebar-session-primary';
+        primaryEl.textContent = primary;
+        btn.appendChild(primaryEl);
+        if (secondary) {
+            const secondaryEl = document.createElement('span');
+            secondaryEl.className = 'sidebar-session-secondary';
+            secondaryEl.textContent = secondary;
+            btn.appendChild(secondaryEl);
+        }
+        btn.title = (target.cwd || target.id) + (secondary ? ' · ' + secondary : '');
+
         if (!isActive) {
             btn.addEventListener('click', () => selectTarget(target.id));
         }
@@ -12632,6 +12651,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=502', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=503', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
