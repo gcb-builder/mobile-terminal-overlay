@@ -92,6 +92,12 @@ def _looks_real(value):
     """
     if len(value) < 8:
         return False
+    # CRITICAL: never match our own redaction marker. Otherwise a
+    # subsequent re-run treats [REDACTED] as a candidate and then
+    # fuzzy-derives "redacted" as a base token, cascading false
+    # replacements across every log that mentions the word.
+    if REDACT_TOKEN in value or "redacted" in value.lower() or "[REDACT" in value.upper():
+        return False
     if PLACEHOLDER_RE.match(value):
         return False
     if len(set(value)) < 5:                         # too repetitive
@@ -240,6 +246,10 @@ def derive_base_tokens(value):
     for r in runs:
         lower = r.lower()
         if lower in COMMON_WORDS:
+            continue
+        # Never derive "redacted" or "redact" as a base token — it'd
+        # cascade-scrub every prior redaction marker on the next run.
+        if lower in {"redact", "redacted"}:
             continue
         # Drop tokens with too little char variety (e.g. "aaaaaa")
         if len(set(lower)) < 4:
