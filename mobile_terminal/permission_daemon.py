@@ -128,6 +128,14 @@ class PermCandidate:
     target: str             # command / file_path / pattern
     repo_path: str          # cwd-derived repo, used by policy
     signal: str             # "jsonl_visible_correlated" | "pre_check_visible_only"
+    # Cross-path dedup key (v=514). When the SAME visible permission box
+    # is correlated via multiple paths on different ticks (Case 1: JSONL
+    # tool_use_id, Case 2: visible-only precheck:<hash>), stable_id and
+    # pane_key BOTH differ — neither dedup catches the duplicate. Setting
+    # this to the precheck-style hash of visible.body+question whenever a
+    # visible is available means every path stamps the same third key,
+    # blocking the duplicate fire.
+    visible_dedup_key: str = ""
 
 
 @dataclass
@@ -335,6 +343,17 @@ def _parse_visible_prompt(capture: str) -> Optional[VisiblePrompt]:
     )
 
 
+def _compute_visible_dedup_key(visible: VisiblePrompt) -> str:
+    """Cross-path dedup key derived purely from the visible TUI box.
+    Same formula as the Case 2 / Case 3 stable_id so a Case 1 fire
+    (jsonl tool_use_id) and a follow-up Case 2 fire (precheck:hash)
+    of the SAME visible prompt collide on this key and the second
+    one is suppressed. v=514."""
+    content = _normalize_for_hash(visible.body + "|" + visible.question)
+    digest = hashlib.md5(content.encode("utf-8")).hexdigest()
+    return f"precheck:{digest[:16]}"
+
+
 def _correlate(
     pane: str,
     repo_path: str,
@@ -353,6 +372,7 @@ def _correlate(
                 target=jsonl_unresolved.get("target", ""),
                 repo_path=repo_path,
                 signal="jsonl_visible_correlated",
+                visible_dedup_key=_compute_visible_dedup_key(visible),
             )
         # 1b: pre-check + JSONL combo. Claude sometimes shows a pre-check
         # warning ("Command appears to be an incomplete fragment", etc.)
@@ -373,6 +393,7 @@ def _correlate(
                 target=jsonl_unresolved.get("target", ""),
                 repo_path=repo_path,
                 signal="jsonl_visible_correlated_precheck",
+                visible_dedup_key=_compute_visible_dedup_key(visible),
             )
         # JSONL says unresolved but visible's command doesn't match the
         # tool_use's target. Without a sessions/ confirmation this is
@@ -407,6 +428,7 @@ def _correlate(
             target=visible.body[:200],
             repo_path=repo_path,
             signal="session_waiting",
+            visible_dedup_key=f"precheck:{digest[:16]}",
         )
 
     # Case 2: visible only with PRE-CHECK marker. Claude doesn't write the
@@ -435,6 +457,7 @@ def _correlate(
             target=visible.body[:200],
             repo_path=repo_path,
             signal="pre_check_visible_only",
+            visible_dedup_key=f"precheck:{digest[:16]}",
         )
 
     # All other cases: skip. Conservative — missed perm > stray fire.
@@ -774,7 +797,13 @@ class PermissionDaemon:
         confirmed bug where the same precheck:8cbd80b re-fired exactly
         31s after the first fire and landed in chat input)."""
         pane_key = derive_pane_key(perm.pane, perm.tool, perm.target)
-        if was_recently_fired(self.app, perm.stable_id, pane_key):
+        # v=514: visible_dedup_key is identical across paths that detect
+        # the SAME visible TUI box. stable_id and pane_key both differ
+        # between Case 1 (jsonl id / md5(jsonl_target)) and Case 2
+        # (precheck:hash / md5(visible.body)) for the same prompt;
+        # without this third key the daemon double-fires "1" and the
+        # frontend shows two Auto-approved toasts.
+        if was_recently_fired(self.app, perm.stable_id, pane_key, perm.visible_dedup_key):
             return
         if perm.signal == "pre_check_visible_only" and was_recently_fired(
             self.app, perm.stable_id, ttl=PRECHECK_REFIRE_TTL
@@ -803,7 +832,7 @@ class PermissionDaemon:
         async with self._fire_lock:
             # Re-check inside the lock — another tick could have fired
             # while we were waiting on the lock.
-            if was_recently_fired(self.app, perm.stable_id, pane_key):
+            if was_recently_fired(self.app, perm.stable_id, pane_key, perm.visible_dedup_key):
                 return
 
             # v=435: pre-fire sanity, ALL inside the lock + immediately
@@ -836,7 +865,7 @@ class PermissionDaemon:
                     f"[perm_daemon] skip fire — queue mode at send time "
                     f"({perm.signal} {perm.stable_id[:16]} pane={perm.pane})"
                 )
-                mark_fired(self.app, perm.stable_id, pane_key)
+                mark_fired(self.app, perm.stable_id, pane_key, perm.visible_dedup_key)
                 return
             if perm.signal in ("session_waiting", "jsonl_visible_correlated_precheck"):
                 try:
@@ -852,7 +881,7 @@ class PermissionDaemon:
                 except Exception:
                     pass
 
-            mark_fired(self.app, perm.stable_id, pane_key)
+            mark_fired(self.app, perm.stable_id, pane_key, perm.visible_dedup_key)
 
             runtime = self.app.state.runtime
             try:
@@ -986,9 +1015,13 @@ class PermissionDaemon:
         fired_perms with a short-lived 'banner:<id>' key so we don't
         re-banner the same prompt every 2s."""
         banner_key = f"banner:{perm.stable_id}"
-        if was_recently_fired(self.app, banner_key):
+        # v=514: same cross-path dedup as the auto-fire path. Without
+        # the visible_dedup_key, Case 1 (jsonl id) and a follow-up
+        # Case 2 (precheck:hash) emit two banners for the same prompt.
+        visible_banner_key = f"banner:{perm.visible_dedup_key}" if perm.visible_dedup_key else ""
+        if was_recently_fired(self.app, banner_key, visible_banner_key):
             return
-        mark_fired(self.app, banner_key)
+        mark_fired(self.app, banner_key, visible_banner_key)
 
         try:
             from mobile_terminal.transport import broadcast_typed
