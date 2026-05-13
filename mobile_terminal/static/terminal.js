@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v504 ===');
+console.log('=== TERMINAL.JS v506 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7877,6 +7877,28 @@ function extractPendingPromptFromTail(content) {
     }
 
     if (choices.length < 2) return null;
+
+    // Sanity gates against false positives — code diff hunks commonly
+    // hit "<lineno>. <code>" which the option regex above happily
+    // matches but is clearly NOT a real selector. Real options:
+    //   - Start at a small number (1, occasionally 0).
+    //   - Numbers are sequential and bounded (max <= 9).
+    //   - Question text is short and not "the X" / fragment style.
+    const nums = choices.map(c => parseInt(c.num, 10)).filter(n => !isNaN(n));
+    const firstNum = nums[0];
+    const maxNum = Math.max(...nums);
+    if (firstNum > 3) return null;            // 148. ... ⇒ definitely not a choice
+    if (maxNum > 9) return null;              // sequential code lines like 148–156
+    // Sequential gap check: 1,2,3,5 OK; 1,2,148 NO. Each step <= 1.
+    for (let k = 1; k < nums.length; k++) {
+        if (nums[k] - nums[k - 1] > 2) return null;
+    }
+    // Question must look intentional — discard fragment headers like
+    // "the size" that happen to follow a "?" earlier in tail.
+    const wordCount = qText.split(/\s+/).filter(Boolean).length;
+    const hasIntent = /\b(choose|pick|select|which|what|how|why|do you|would you|should|can you|is this|are you|continue|proceed|prefer|want|ready)\b/i.test(qText);
+    if (wordCount < 4 && !hasIntent) return null;
+
     return { text: qText, choices };
 }
 
@@ -12684,6 +12706,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=504', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=506', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
