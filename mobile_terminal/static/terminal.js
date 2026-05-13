@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v503 ===');
+console.log('=== TERMINAL.JS v504 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7404,6 +7404,13 @@ function extractPendingPrompt(content) {
             return;
         }
 
+        // Don't downgrade a richer permission prompt — the tail-side
+        // extractPermissionPrompt has more context (tool, target, source
+        // pane, dedicated Always/Always-Repo buttons). Without this guard
+        // the log parser overwrites the permission with a generic
+        // 'question' kind and a second log card gets pinned.
+        if (pendingPrompt && pendingPrompt.kind === 'permission') return;
+
         pendingPrompt = {
             id: promptId,
             kind: 'question',
@@ -7500,6 +7507,9 @@ function extractPendingPrompt(content) {
             if (pendingPrompt && pendingPrompt.id === promptId) {
                 return;
             }
+            // Same kind-priority guard as the question branch: don't
+            // downgrade a richer permission prompt.
+            if (pendingPrompt && pendingPrompt.kind === 'permission') return;
 
             pendingPrompt = {
                 id: promptId,
@@ -7573,6 +7583,8 @@ function extractPendingPrompt(content) {
                     if (pendingPrompt && pendingPrompt.id === promptId) {
                         return;  // Same prompt already showing
                     }
+                    // Don't downgrade a richer permission prompt.
+                    if (pendingPrompt && pendingPrompt.kind === 'permission') return;
 
                     pendingPrompt = {
                         id: promptId,
@@ -7912,6 +7924,27 @@ function pinPromptToLog(prompt) {
     if (!logContent) return;
     const cardId = 'logPromptCard-' + prompt.id;
     if (document.getElementById(cardId)) return;  // already pinned for this id
+
+    // Defensive dedup: different detectors (extractPermissionPrompt,
+    // extractPendingPrompt log-side, syncTailChoicePrompt tail-side)
+    // hash the same underlying question with different inputs and
+    // therefore generate different ids. Without this, the same
+    // permission prompt can render as two pinned cards. If we find an
+    // unresolved card with the same normalised question text, remove
+    // it before adding the new one — the new pin is the most recent
+    // detection so it wins.
+    const _norm = (s) => String(s || '').toLowerCase().replace(/[\s?]+/g, ' ').trim().slice(0, 120);
+    const promptKey = _norm(prompt.text);
+    if (promptKey) {
+        const existing = logContent.querySelectorAll('.log-tail-choice-card:not(.resolved)');
+        for (const e of existing) {
+            const eText = _norm(e.querySelector('.log-tail-choice-q')?.textContent || '');
+            if (eText && eText === promptKey) {
+                e.remove();
+                break;
+            }
+        }
+    }
 
     const card = document.createElement('div');
     card.id = cardId;
@@ -12651,6 +12684,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=503', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=504', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
