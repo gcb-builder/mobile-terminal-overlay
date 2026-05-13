@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v508 ===');
+console.log('=== TERMINAL.JS v511 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7951,6 +7951,15 @@ function syncTailChoicePrompt(content) {
  */
 function pinPromptToLog(prompt) {
     if (!prompt || !prompt.id) return;
+    // Skip 'question' kind: AskUserQuestion already gets an inline
+    // .log-question-card from the log-message render loop (createQuestionCard,
+    // called at terminal.js:7184). The inline card is positioned where the
+    // question was actually asked in the conversation; pinning a second
+    // .log-tail-choice-card at the bottom of the log was redundant and made
+    // the surfaces feel unsynchronised. Banner + inline card share state
+    // via dismissedPrompts; permission/tail-choice/confirmation kinds
+    // still need to pin because they have no inline counterpart.
+    if (prompt.kind === 'question') return;
     const logContent = document.getElementById('logContent');
     if (!logContent) return;
     const cardId = 'logPromptCard-' + prompt.id;
@@ -8064,15 +8073,36 @@ function pinPromptToLog(prompt) {
  * audit trail rather than being removed.
  */
 function markPromptCardResolved(promptId, label, isError) {
+    // 1) The pinned tail-choice card (id-keyed by element id)
     const card = document.getElementById('logPromptCard-' + promptId);
-    if (!card) return;
-    card.classList.add('resolved');
-    if (isError) card.classList.add('resolved-error');
-    const status = card.querySelector('.log-tail-choice-status');
-    if (status) status.textContent = label || '✓ resolved';
-    card.querySelectorAll('button.log-tail-choice-option').forEach(b => {
-        b.disabled = true;
-        b.style.cursor = 'default';
+    if (card) {
+        card.classList.add('resolved');
+        if (isError) card.classList.add('resolved-error');
+        const status = card.querySelector('.log-tail-choice-status');
+        if (status) status.textContent = label || '✓ resolved';
+        card.querySelectorAll('button.log-tail-choice-option').forEach(b => {
+            b.disabled = true;
+            b.style.cursor = 'default';
+        });
+    }
+    // 2) Inline log-question-cards (createQuestionCard) carry the same
+    // promptId via data-prompt-id. There can be multiple if the question
+    // appears more than once in the rendered conversation tail.
+    document.querySelectorAll('.log-question-card[data-prompt-id="' + promptId + '"]').forEach(qc => {
+        qc.classList.add('resolved');
+        if (isError) qc.classList.add('resolved-error');
+        qc.querySelectorAll('button.question-choice-btn').forEach(b => {
+            b.disabled = true;
+            b.style.cursor = 'default';
+        });
+        // Reuse the .log-tail-choice-status convention if present, else inject one
+        let status = qc.querySelector('.log-tail-choice-status');
+        if (!status) {
+            status = document.createElement('span');
+            status.className = 'log-tail-choice-status';
+            qc.appendChild(status);
+        }
+        status.textContent = label || '✓ resolved';
     });
 }
 
@@ -8537,8 +8567,8 @@ function setupPromptBannerHandlers() {
 /**
  * Send user's choice to ctx.terminal (idempotent)
  */
-function sendPromptChoice(choice) {
-    console.log('[sendPromptChoice] called with:', choice, 'pendingPrompt:', pendingPrompt);
+function sendPromptChoice(choice, explicitInfo) {
+    console.log('[sendPromptChoice] called with:', choice, 'pendingPrompt:', pendingPrompt, 'explicitInfo:', explicitInfo);
 
     // Always send - don't bail if pendingPrompt was cleared by race condition
     // The user clicked the button, so they clearly want to send this choice
@@ -8554,24 +8584,32 @@ function sendPromptChoice(choice) {
     // text the next poll cycle (Claude TUI keeps rendering the prompt
     // for a moment after we send the answer; without this guard the
     // banner snaps back as soon as clearPendingPrompt's 1.5s elapses).
+    //
+    // explicitInfo lets the inline AskUserQuestion card (createQuestionCard)
+    // pass its own promptId when pendingPrompt isn't set yet — the inline
+    // card can fire BEFORE extractPendingPrompt has detected the prompt,
+    // and without an explicit id the dismissal would be lost on the next
+    // refresh and the banner would re-pop.
+    const dismissId = (pendingPrompt && pendingPrompt.id) ||
+                      (explicitInfo && explicitInfo.id) || null;
     if (pendingPrompt) {
         pendingPrompt.answered = true;
         pendingPrompt.sentChoice = choice;
-        if (dismissedPrompts.size > 500) dismissedPrompts.clear();
-        dismissedPrompts.add(pendingPrompt.id);
-        // Mirror the resolution onto the pinned log card so a banner
-        // tap and a card tap leave identical audit trails.
-        if (typeof markPromptCardResolved === 'function') {
-            markPromptCardResolved(pendingPrompt.id, '✓ You chose ' + choice, false);
-        }
-        // Hide the floating banner immediately — doesn't matter
-        // whether the answer came from the banner or the pinned log
-        // card. Without this, a refresh cycle that already had
-        // showPromptBanner() in flight (or a banner left visible
-        // from before the user tapped the log option) would still
-        // be on screen after the answer was sent.
-        if (typeof hidePromptBanner === 'function') hidePromptBanner();
     }
+    if (dismissId) {
+        if (dismissedPrompts.size > 500) dismissedPrompts.clear();
+        dismissedPrompts.add(dismissId);
+        if (typeof markPromptCardResolved === 'function') {
+            markPromptCardResolved(dismissId, '✓ You chose ' + choice, false);
+        }
+    }
+    // Hide the floating banner immediately — doesn't matter whether the
+    // answer came from the banner, the pinned log card, or the inline
+    // log-question-card. Without this, a refresh cycle that already had
+    // showPromptBanner() in flight (or a banner left visible from before
+    // the user tapped the log option) would still be on screen after the
+    // answer was sent.
+    if (typeof hidePromptBanner === 'function') hidePromptBanner();
 
     // Update button UI to show selected state (without full re-render)
     if (promptBanner) {
@@ -11288,6 +11326,24 @@ function createQuestionCard(text) {
     const question = lines[0].replace(/^❓\s*/, '');
     const options = lines.slice(1).filter(l => /^\s+\d+\./.test(l));
 
+    // Parse choices the same way extractPendingPrompt Method 1 does so the
+    // computed promptId matches what the banner / pinPromptToLog paths use.
+    // Without this the inline card and the banner live in separate id
+    // namespaces and can't deduplicate.
+    const parsedChoices = [];
+    for (const opt of options) {
+        const m = opt.match(/^\s*(\d+)\.\s*(.+?)(?:\s+-\s+(.+))?$/);
+        if (m) parsedChoices.push({ num: m[1], label: m[2].trim() });
+    }
+    const promptId = (typeof simpleHash === 'function')
+        ? simpleHash(question + parsedChoices.map(c => c.label).join(''))
+        : null;
+    if (promptId != null) card.dataset.promptId = String(promptId);
+
+    const alreadyDismissed = promptId != null
+        && typeof dismissedPrompts !== 'undefined'
+        && dismissedPrompts.has(promptId);
+
     const questionDiv = document.createElement('div');
     questionDiv.className = 'question-text';
     questionDiv.textContent = question;
@@ -11304,8 +11360,22 @@ function createQuestionCard(text) {
             btn.className = 'question-choice-btn';
             btn.textContent = match[2].split(' - ')[0];  // Label only
             btn.title = match[2];  // Full text on long-press
+            if (alreadyDismissed) {
+                btn.disabled = true;
+                btn.style.cursor = 'default';
+            }
             btn.onclick = () => {
-                sendTextAtomic(match[1], true);
+                // Route through sendPromptChoice so dismissedPrompts gets
+                // updated, the banner hides, and any pinned tail-choice
+                // card with the same id gets marked resolved. Pass the
+                // id explicitly because pendingPrompt may not be set yet
+                // (the inline card can render before extractPendingPrompt
+                // has run on this refresh).
+                if (typeof sendPromptChoice === 'function') {
+                    sendPromptChoice(match[1], promptId != null ? { id: promptId } : null);
+                } else {
+                    sendTextAtomic(match[1], true);
+                }
                 btnRow.querySelectorAll('button').forEach(b => b.disabled = true);
                 btn.classList.add('selected');
             };
@@ -11313,6 +11383,14 @@ function createQuestionCard(text) {
         });
 
         card.appendChild(btnRow);
+    }
+
+    if (alreadyDismissed) {
+        card.classList.add('resolved');
+        const status = document.createElement('span');
+        status.className = 'log-tail-choice-status';
+        status.textContent = '✓ resolved';
+        card.appendChild(status);
     }
 
     return card;
@@ -12722,6 +12800,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=508', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=511', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
