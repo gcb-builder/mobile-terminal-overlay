@@ -870,7 +870,14 @@ class PermissionDaemon:
                     #      - if still waiting → "1" hasn't been consumed,
                     #        send Enter to commit the selection.
                     await runtime.send_keys(tmux_t, "1", literal=True)
-                    await asyncio.sleep(0.06)
+                    # 60ms was too aggressive — sessions/{pid}.json lags
+                    # Claude's actual prompt resolution by 50–200ms, so
+                    # the recheck below frequently saw "still waiting"
+                    # against an already-resolved prompt and the Enter
+                    # submitted "1" as a chat message. 200ms gives the
+                    # status file room to catch up while keeping the
+                    # auto-approve interactively snappy.
+                    await asyncio.sleep(0.20)
                     try:
                         # force=True: bypass the 1.5s cache so the recheck
                         # actually reflects post-keypress state.
