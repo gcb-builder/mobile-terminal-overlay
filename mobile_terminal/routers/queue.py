@@ -237,6 +237,17 @@ def register(app: FastAPI, deps):
                 {"error": "Auto-fire switch is OFF; turn it ON first"},
                 status_code=409,
             )
+        # Refuse if no queued items have the ⚡ flag — Run would silently
+        # spin forever otherwise. Common confusion: users see ⚡ badges on
+        # already-sent items in the Previous list and assume Run will fire
+        # them. Surface this explicitly.
+        items = app.state.command_queue.list_items(session, pane_id)
+        eligible = [i for i in items if i.status == "queued" and i.auto_eligible]
+        if not eligible:
+            return JSONResponse(
+                {"error": "No queued items marked with ⚡. Tap the ⚡ icon on a queued item first."},
+                status_code=409,
+            )
         app.state.command_queue.start_auto_drain(session, pane_id)
         await broadcast_raw(app, {
             "type": "queue_state",

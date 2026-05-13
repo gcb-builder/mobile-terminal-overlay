@@ -2984,13 +2984,24 @@ html, body {
     margin-left: 6px;
 }
 
+/* Sent-item auto-fired badge — visually distinct from .queue-auto-btn
+   (the toggle on queued items) so users don't tap it expecting it to
+   do something. Outline-only, dim, no fill. */
 .queue-item-auto-fired-badge {
-    color: var(--warning);
-    font-size: 12px;
-    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 6px;
+    color: var(--text-muted, #888);
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: 3px;
+    font-size: 10px;
     line-height: 1;
+    flex-shrink: 0;
     align-self: center;
-    opacity: 0.9;
+    opacity: 0.7;
+    cursor: default;
 }
 
 /* Auto-fire countdown banner — appears above the queue list when the

@@ -154,7 +154,9 @@ function renderQueueRowHtml(item) {
         actions += '<button class="queue-edit-btn" data-id="' + eid + '">Edit</button>';
     } else if (isSent) {
         if (item.auto_fired) {
-            actions += '<span class="queue-item-auto-fired-badge" title="Auto-fired by the queue processor">&#x26A1;</span>';
+            // Outline-only badge so users don't confuse it with the
+            // interactive ⚡ toggle on queued items.
+            actions += '<span class="queue-item-auto-fired-badge" title="This item was auto-fired by the queue processor">&#x26A1; fired</span>';
         }
         actions += '<button class="queue-item-requeue" data-id="' + eid + '" title="Re-queue">&#x21BA;</button>';
     }
@@ -576,6 +578,14 @@ async function toggleAutoDrain() {
         if (!resp.ok) {
             queueRunning = !willRun;
             updateRunButton();
+            // Surface the server's reason — usually "no ⚡ items" or
+            // "switch is OFF" — so Run isn't a silent no-op.
+            try {
+                const data = await resp.json();
+                if (data && data.error && typeof ctx.showToast === 'function') {
+                    ctx.showToast(data.error, 'warning', 4000);
+                }
+            } catch (_) {}
         }
     } catch (e) {
         console.error('Failed to toggle auto-drain:', e);
