@@ -5157,6 +5157,11 @@ html, body {
     border-color: rgba(55, 148, 255, 0.4);
 }
 
+.docs-share-btn {
+    color: var(--success, #6abf6a);
+    border-color: rgba(106, 191, 106, 0.4);
+}
+
 .docs-plan-select {
     width: 100%;
     padding: 10px 12px;

@@ -242,6 +242,7 @@ export function initDocs() {
                         <button class="file-back-btn" id="fileBackBtn">&larr; Back</button>
                         <span class="file-viewer-path">${escapeHtml(filePath)}</span>
                         <button class="docs-copy-btn" id="docsFileCopyBtn">Copy</button>
+                        <button class="docs-copy-btn docs-share-btn" id="docsFileShareBtn">Share</button>
                     </div>
                     <div class="file-viewer-content ${isMarkdown ? 'markdown-content' : 'code-content'}">
                         ${isMarkdown ? marked.parse(data.content || '') : `<pre>${escapeHtml(data.content || '')}</pre>`}
@@ -249,6 +250,7 @@ export function initDocs() {
                 </div>
             `;
             wireDocCopy('docsFileCopyBtn', data.content || '');
+            wireDocShare('docsFileShareBtn', filePath.split('/').pop(), data.content || '');
 
             document.getElementById('fileBackBtn').addEventListener('click', () => {
                 loadSearchTab();
@@ -322,6 +324,7 @@ export function initDocs() {
                 lastPlanRawContent = data.content;
                 const copyBtn = '<div class="docs-plan-actions">'
                     + '<button class="docs-copy-btn" id="docsPlanCopyBtn">Copy</button>'
+                    + '<button class="docs-copy-btn docs-share-btn" id="docsPlanShareBtn">Share</button>'
                     + '<button class="docs-copy-btn docs-challenge-btn" id="docsPlanChallengeBtn">Challenge</button>'
                     + '</div>';
                 let rendered;
@@ -332,6 +335,7 @@ export function initDocs() {
                 }
                 contentDiv.innerHTML = copyBtn + rendered;
                 document.getElementById('docsPlanCopyBtn').addEventListener('click', copyPlanContent);
+                wireDocShare('docsPlanShareBtn', filename, data.content);
                 const challBtn = document.getElementById('docsPlanChallengeBtn');
                 if (challBtn) challBtn.addEventListener('click', () => {
                     const cb = document.getElementById('challengeBtn');
@@ -359,10 +363,18 @@ export function initDocs() {
 
     // v=451: shared "Copy raw doc text" affordance for context, touch,
     // session viewer, and file viewer — same shape as plan copy button.
-    function docCopyButtonHtml(btnId) {
-        return '<div class="docs-plan-actions">'
-            + `<button class="docs-copy-btn" id="${btnId}">Copy</button>`
-            + '</div>';
+    // v=515: optional Share button next to Copy — invokes Web Share API
+    // so Android users can route the doc to email / WhatsApp / etc.
+    // Pass shareBtnId=null to skip the share button (desktop, or contexts
+    // without a meaningful title).
+    function docCopyButtonHtml(copyBtnId, shareBtnId) {
+        let html = '<div class="docs-plan-actions">'
+            + `<button class="docs-copy-btn" id="${copyBtnId}">Copy</button>`;
+        if (shareBtnId) {
+            html += `<button class="docs-copy-btn docs-share-btn" id="${shareBtnId}">Share</button>`;
+        }
+        html += '</div>';
+        return html;
     }
     function wireDocCopy(btnId, rawText) {
         const btn = document.getElementById(btnId);
@@ -375,6 +387,27 @@ export function initDocs() {
                 setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
             } catch (e) {
                 ctx.showToast?.('Copy failed', 'error');
+            }
+        });
+    }
+    // Web Share API wiring. Hides the button if the browser doesn't
+    // support it (desktop Chrome on http, Firefox, etc.) so the user
+    // doesn't tap a button that does nothing.
+    function wireDocShare(btnId, title, rawText) {
+        const btn = document.getElementById(btnId);
+        if (!btn) return;
+        if (typeof navigator.share !== 'function') {
+            btn.style.display = 'none';
+            return;
+        }
+        btn.addEventListener('click', async () => {
+            if (!rawText) return;
+            try {
+                await navigator.share({ title: title || 'Document', text: rawText });
+            } catch (e) {
+                // User cancelled the share sheet — not an error.
+                if (e && (e.name === 'AbortError' || e.name === 'NotAllowedError')) return;
+                ctx.showToast?.('Share failed', 'error');
             }
         });
     }
@@ -392,8 +425,9 @@ export function initDocs() {
                 } catch (e) {
                     rendered = `<pre>${escapeHtml(data.content)}</pre>`;
                 }
-                docsModalBody.innerHTML = docCopyButtonHtml('docsContextCopyBtn') + rendered;
+                docsModalBody.innerHTML = docCopyButtonHtml('docsContextCopyBtn', 'docsContextShareBtn') + rendered;
                 wireDocCopy('docsContextCopyBtn', data.content);
+                wireDocShare('docsContextShareBtn', 'CONTEXT.md', data.content);
             } else {
                 docsModalBody.innerHTML = '<div class="docs-empty">No .claude/CONTEXT.md found</div>';
             }
@@ -416,8 +450,9 @@ export function initDocs() {
                 } catch (e) {
                     rendered = `<pre>${escapeHtml(data.content)}</pre>`;
                 }
-                docsModalBody.innerHTML = docCopyButtonHtml('docsTouchCopyBtn') + rendered;
+                docsModalBody.innerHTML = docCopyButtonHtml('docsTouchCopyBtn', 'docsTouchShareBtn') + rendered;
                 wireDocCopy('docsTouchCopyBtn', data.content);
+                wireDocShare('docsTouchShareBtn', 'touch-summary.md', data.content);
             } else {
                 docsModalBody.innerHTML = '<div class="docs-empty">No .claude/touch-summary.md found</div>';
             }
@@ -547,14 +582,17 @@ export function initDocs() {
 
             const hasContent = data.exists && data.content;
             if (hasContent) {
-                html += docCopyButtonHtml('docsSessionCopyBtn');
+                html += docCopyButtonHtml('docsSessionCopyBtn', 'docsSessionShareBtn');
                 html += `<pre style="white-space: pre-wrap; font-size: 12px; line-height: 1.5;">${escapeHtml(data.content)}</pre>`;
             } else {
                 html += '<div class="docs-empty">Session log is empty or not found</div>';
             }
 
             docsModalBody.innerHTML = html;
-            if (hasContent) wireDocCopy('docsSessionCopyBtn', data.content);
+            if (hasContent) {
+                wireDocCopy('docsSessionCopyBtn', data.content);
+                wireDocShare('docsSessionShareBtn', `Session ${shortId}`, data.content);
+            }
 
             document.getElementById('docsSessionBack')?.addEventListener('click', () => {
                 viewingSessionId = null;
