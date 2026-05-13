@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v507 ===');
+console.log('=== TERMINAL.JS v508 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -8564,6 +8564,13 @@ function sendPromptChoice(choice) {
         if (typeof markPromptCardResolved === 'function') {
             markPromptCardResolved(pendingPrompt.id, '✓ You chose ' + choice, false);
         }
+        // Hide the floating banner immediately — doesn't matter
+        // whether the answer came from the banner or the pinned log
+        // card. Without this, a refresh cycle that already had
+        // showPromptBanner() in flight (or a banner left visible
+        // from before the user tapped the log option) would still
+        // be on screen after the answer was sent.
+        if (typeof hidePromptBanner === 'function') hidePromptBanner();
     }
 
     // Update button UI to show selected state (without full re-render)
@@ -12715,6 +12722,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=507', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=508', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
