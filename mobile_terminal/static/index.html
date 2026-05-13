@@ -22,7 +22,7 @@
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="/static/styles.css?v=494">
+    <link rel="stylesheet" href="/static/styles.css?v=495">
 </head>
 <body>
     <div class="app">
@@ -934,7 +934,7 @@
                 </div>
                 <div class="mcp-add-section">
                     <div class="mcp-add-header" id="envFormHeader">Add Variable</div>
-                    <input id="envKeyInput" class="mcp-input" placeholder="KEY (e.g. API_KEY)" aria-label="Variable name" autocapitalize="characters" autocomplete="off">
+                    <input id="envKeyInput" class="mcp-input" placeholder="KEY (e.g. API_KEY)" aria-label="Variable name" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false">
                     <div class="env-value-wrapper">
                         <!-- Default to plain text so mobile keyboards don't
                              apply password-field behaviour (autofill prompts,
@@ -997,6 +997,6 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script defer src="/static/terminal.js?v=494"></script>
+    <script defer src="/static/terminal.js?v=495"></script>
 </body>
 </html>

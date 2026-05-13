@@ -10,7 +10,13 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
-ENV_KEY_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,127}$')
+# Permissive — only forbid what would actually break the .env file
+# format (=, whitespace, leading #) rather than enforcing POSIX-strict
+# identifier rules. Many tools (Vite, dotenv, npm config) accept dots,
+# hyphens, dollars, colons in keys; users were hitting "Invalid key"
+# on legitimate values like `npm_config_*` aliases or service-prefixed
+# names. The OS-level constraint is just "no = and no null byte".
+ENV_KEY_RE = re.compile(r'^[^\s#=][^\s=]{0,127}$')
 MAX_VALUE_LEN = 4096
 MAX_FILE_SIZE = 64 * 1024  # 64KB
 
@@ -196,7 +202,7 @@ def register(app: FastAPI, deps):
 
         if not key or not ENV_KEY_RE.match(key):
             return JSONResponse(
-                {"error": f"Invalid key: must match {ENV_KEY_RE.pattern}"},
+                {"error": "Invalid key — must not contain '=' or whitespace, and can't start with '#'."},
                 status_code=400,
             )
 
