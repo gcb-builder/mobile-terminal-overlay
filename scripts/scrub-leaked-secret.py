@@ -289,7 +289,7 @@ def find_fuzzy_reuse(base_token, value, roots, max_per_file=5):
     return out
 
 
-def run_reuse_scan(sinks, apply_redact=False, fuzzy=True):
+def run_reuse_scan(sinks, apply_redact=False, fuzzy=True, redact_fuzzy=False):
     """Three-phase scan, single-pass over disk:
       1. Walk all files once, extract candidate secrets from
          high-confidence contexts.
@@ -436,12 +436,60 @@ def run_reuse_scan(sinks, apply_redact=False, fuzzy=True):
             print("  (none)")
             print()
 
-    print(f"Summary: exact redacted={total_redacted}, fuzzy hits surfaced="
-          f"{sum(sum(len(v) for v in fh.values()) for fh in fuzzy_hits.values()) if fuzzy else 0}")
+    fuzzy_hit_count = (sum(sum(len(v) for v in fh.values()) for fh in fuzzy_hits.values())
+                       if fuzzy else 0)
+
+    # Optional: redact every distinct fuzzy variant as a literal. Logs
+    # are local-only and we have backups, so a few false-positive
+    # redactions (project names sharing the base token, etc.) are
+    # acceptable losses against the upside of one-shot cleanup.
+    fuzzy_redacted = 0
+    if apply_redact and redact_fuzzy and fuzzy:
+        all_variants = set()
+        for hits_by_file in fuzzy_hits.values():
+            for hits in hits_by_file.values():
+                for _, _, var in hits:
+                    if len(var) >= 6:
+                        all_variants.add(var)
+        # Build one combined regex of all variants for a single pass
+        # per file (avoids O(V × N) re-reads).
+        if all_variants:
+            print()
+            print(f"Phase 4: redacting {len(all_variants)} distinct fuzzy variants…")
+            big_pat = re.compile("|".join(re.escape(v) for v in all_variants))
+            for f in find_files(sinks):
+                try:
+                    text = f.read_bytes().decode("utf-8")
+                except (UnicodeDecodeError, Exception):
+                    continue
+                if not big_pat.search(text):
+                    continue
+                bak = f.with_suffix(f.suffix + ".scrub-bak")
+                if not bak.exists():
+                    try:
+                        bak.write_bytes(text.encode("utf-8"))
+                    except Exception as e:
+                        print(f"    [error] backup failed for {f}: {e}")
+                        continue
+                new_text, n = big_pat.subn(REDACT_TOKEN, text)
+                if n:
+                    try:
+                        f.write_text(new_text, encoding="utf-8")
+                        fuzzy_redacted += n
+                    except Exception as e:
+                        print(f"    [error] write failed for {f}: {e}")
+            print(f"  fuzzy-variant redactions: {fuzzy_redacted}")
+
+    print()
+    print(f"Summary: exact redacted={total_redacted}, "
+          f"fuzzy redacted={fuzzy_redacted}, "
+          f"fuzzy hits surfaced={fuzzy_hit_count}")
     if not apply_redact:
         print("Re-run with --apply to redact every EXACT match.")
-        print("Fuzzy hits aren't auto-redacted (they're variations, not repeats) —")
-        print("review them, then pass any real ones individually as --literal.")
+        print("Add --include-fuzzy to ALSO redact every fuzzy variant in one shot")
+        print("(may zap project names sharing the base; backups left as .scrub-bak).")
+    elif apply_redact and not redact_fuzzy and fuzzy and fuzzy_hit_count:
+        print("Add --include-fuzzy to redact the fuzzy variants too.")
     return
 
 
@@ -521,6 +569,13 @@ def main():
                           "occurrence of every candidate found.")
     ap.add_argument("--apply", action="store_true",
                     help="Actually write changes. Default is dry-run.")
+    ap.add_argument("--include-fuzzy", action="store_true",
+                    help="With --reuse-scan --apply, also redact every "
+                         "distinct fuzzy variant as a literal. Logs are "
+                         "local-only and backups exist, so the cost of a "
+                         "false positive is just losing some log "
+                         "readability. Variants shorter than 6 chars "
+                         "are skipped as a safety floor.")
     ap.add_argument("--include-uploads", action="store_true",
                     help="Also scrub .claude/uploads/ in --repo (text files only).")
     ap.add_argument("--repo", help="Repo path for --include-uploads (default: cwd).")
@@ -537,14 +592,14 @@ def main():
 
     # --reuse-scan takes its own path — extract candidates then find reuse.
     if args.reuse_scan:
-        print(f"Mode  : REUSE-SCAN  (apply={args.apply})")
+        print(f"Mode  : REUSE-SCAN  (apply={args.apply}, include-fuzzy={args.include_fuzzy})")
         print(f"Sinks :")
         for s in sinks:
             resolved = Path(os.path.expanduser(s))
             marker = "✓" if resolved.exists() else "—"
             print(f"  {marker} {s}")
         print()
-        run_reuse_scan(sinks, apply_redact=args.apply)
+        run_reuse_scan(sinks, apply_redact=args.apply, redact_fuzzy=args.include_fuzzy)
         return
 
     if args.literal:
