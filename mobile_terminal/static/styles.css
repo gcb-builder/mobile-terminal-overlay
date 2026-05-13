@@ -2992,78 +2992,84 @@ html, body {
     margin-left: 6px;
 }
 
-/* Pinned tail-choice card — surfaces structured selectors (Claude
-   Code's "Which option?" prompts) inside the log so the user can act
-   on them after the banner has cleared or the tail truncated. */
+/* Pinned tail-choice content in the log — reads as an inline log
+   entry (no banner background or heavy border), so it doesn't compete
+   visually with the floating prompt banner. The OPTIONS themselves
+   stay tappable as a low-friction shortcut. */
 .log-tail-choice-card {
-    margin: 12px 8px;
-    padding: 12px 14px;
-    background: color-mix(in srgb, var(--accent) 6%, var(--bg-secondary, #1c1c1c));
-    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
-    border-radius: 10px;
-    box-shadow: 0 1px 0 rgba(0,0,0,0.2) inset;
+    margin: 8px 0;
+    padding: 6px 10px;
+    background: transparent;
+    border: none;
+    border-left: 2px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+    border-radius: 0;
+    box-shadow: none;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.5;
 }
 .log-tail-choice-head {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 10px;
+    align-items: baseline;
+    gap: 6px;
+    margin-bottom: 4px;
 }
 .log-tail-choice-icon {
     flex-shrink: 0;
-    font-size: 16px;
+    color: var(--text-muted);
+    font-size: 13px;
 }
 .log-tail-choice-q {
     flex: 1;
     color: var(--text-primary);
-    font-size: 14px;
-    font-weight: 600;
+    font-weight: 500;
 }
 .log-tail-choice-dismiss {
     flex-shrink: 0;
     background: transparent;
     border: none;
     color: var(--text-muted);
-    font-size: 20px;
+    font-size: 16px;
     line-height: 1;
-    width: 28px; height: 28px;
-    border-radius: 6px;
+    width: 24px; height: 24px;
+    border-radius: 4px;
     cursor: pointer;
+    opacity: 0.5;
 }
-.log-tail-choice-dismiss:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); }
+.log-tail-choice-dismiss:hover { background: rgba(255,255,255,0.04); color: var(--text-primary); opacity: 1; }
 .log-tail-choice-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 2px;
 }
 .log-tail-choice-option {
     display: block;
     width: 100%;
     text-align: left;
-    padding: 10px 12px;
-    background: var(--bg-tertiary, #232323);
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    padding: 4px 8px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
     color: var(--text-primary);
-    font-size: 14px;
+    font-family: inherit;
+    font-size: inherit;
     cursor: pointer;
-    transition: background 100ms ease, border-color 100ms ease;
+    transition: background 80ms ease;
 }
 .log-tail-choice-option:hover {
-    background: color-mix(in srgb, var(--accent) 10%, var(--bg-tertiary, #232323));
-    border-color: var(--accent);
+    background: rgba(255, 255, 255, 0.04);
+    border-color: color-mix(in srgb, var(--accent) 25%, transparent);
 }
-.log-tail-choice-option:active { transform: scale(0.99); }
 .log-tail-choice-num {
     display: inline-block;
     margin-right: 8px;
-    color: var(--accent);
-    font-weight: 700;
+    color: var(--text-muted);
+    font-weight: 600;
     min-width: 18px;
 }
 .log-tail-choice-label { color: var(--text-primary); }
 .log-tail-choice-desc {
-    margin-top: 6px;
+    margin-top: 2px;
     margin-left: 26px;
     font-size: 12px;
     line-height: 1.45;

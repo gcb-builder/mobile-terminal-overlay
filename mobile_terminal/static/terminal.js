@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v498 ===');
+console.log('=== TERMINAL.JS v499 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7909,7 +7909,10 @@ function renderLogTailChoiceCard(detected, id) {
 
     const card = document.createElement('div');
     card.id = 'logTailChoiceCard';
-    card.className = 'log-card log-tail-choice-card';
+    // Intentionally NOT .log-card — that class adds padded/bordered
+    // card styling that makes the pinned selector look like a second
+    // banner. We want plain inline log content.
+    card.className = 'log-tail-choice-card';
     card.dataset.id = String(id);
 
     const head = document.createElement('div');
@@ -12578,6 +12581,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=498', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=499', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
