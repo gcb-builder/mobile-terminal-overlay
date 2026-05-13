@@ -93,8 +93,9 @@ function cancelEnvEdit() {
     const toggle = document.getElementById('envValueToggle');
 
     if (keyInput) { keyInput.value = ''; keyInput.disabled = false; }
-    if (valueInput) { valueInput.value = ''; valueInput.type = 'password'; }
-    if (toggle) toggle.textContent = 'Show';
+    // Reset to plain text — see HTML default. User can re-mask via Hide.
+    if (valueInput) { valueInput.value = ''; valueInput.type = 'text'; }
+    if (toggle) toggle.textContent = 'Hide';
     if (header) header.textContent = 'Add Variable';
     if (addBtn) addBtn.textContent = 'Set';
     if (cancelBtn) cancelBtn.classList.add('hidden');
@@ -217,9 +218,11 @@ export function initEnv() {
         const input = document.getElementById('envValueInput');
         const btn = document.getElementById('envValueToggle');
         if (input && btn) {
-            const show = input.type === 'password';
-            input.type = show ? 'text' : 'password';
-            btn.textContent = show ? 'Hide' : 'Show';
+            // text → password (mask), password → text (reveal). Default
+            // is text so the button initial label is "Hide".
+            const masking = input.type === 'text';
+            input.type = masking ? 'password' : 'text';
+            btn.textContent = masking ? 'Show' : 'Hide';
         }
     });
 
