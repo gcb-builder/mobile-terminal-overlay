@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v511 ===');
+console.log('=== TERMINAL.JS v513 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1099,12 +1099,27 @@ function extractAndSuggestCommand(content) {
         for (let j = i + 1; j < lines.length && parts.length <= CONT_MAX_LINES; j++) {
             const raw = lines[j];
             if (!raw.startsWith(' ')) break;
+            // True wrap-continuations are indented to align under the
+            // chevron content — Claude Code wraps at column ~2. Anything
+            // deeply indented is a TUI bottom-bar hint sharing the input
+            // box (right-aligned shortcuts like "new task?", token-budget
+            // info, etc.), not actual user-typed continuation text.
+            const leadingSpaces = raw.length - raw.trimStart().length;
+            if (leadingSpaces > 6) break;
             const nt = raw.trim();
             if (!nt) break;
             // Stop on busy markers, chevrons, or hint lines.
             if (/^[✻✷✶✦●⏺*]/.test(nt)) break;
             if (/^❯/.test(nt)) break;
             if (/^(?:↵|⏎|ctrl|cmd|alt|shift|esc|tab)\b/i.test(nt)) break;
+            // Reject Claude Code slash-command hints ("/clear to save Xk
+            // tokens", "/help", etc.) that render inside the input box.
+            // Wrapped user input rarely starts a new visual line with a
+            // bare slash command, and the false-positive risk dominates.
+            if (/^\/[a-z]+(?:\s|$)/i.test(nt)) break;
+            // Reject "X tokens" bottom-bar info lines (e.g. "685.9k
+            // tokens", "12 messages") that wrap inside the box.
+            if (/^[\d.]+k?\s+(?:tokens?|messages?|files?)\b/i.test(nt)) break;
             parts.push(nt);
         }
 
@@ -12800,6 +12815,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=511', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=513', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
