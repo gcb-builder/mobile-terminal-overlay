@@ -80,6 +80,24 @@ function editEnvVar(key, value) {
     if (header) header.textContent = 'Edit Variable';
     if (addBtn) addBtn.textContent = 'Save';
     if (cancelBtn) cancelBtn.classList.remove('hidden');
+
+    // Scroll the form into view + focus the value input. The form
+    // sits at the bottom of the env tab; without this the row's Edit
+    // tap looked like a no-op because the form populated off-screen.
+    const formEl = header || addBtn;
+    if (formEl && typeof formEl.scrollIntoView === 'function') {
+        try { formEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
+    }
+    if (valueInput) {
+        // Defer focus a tick so the scroll has started; otherwise
+        // mobile keyboards can swallow the focus.
+        setTimeout(() => {
+            try {
+                valueInput.focus();
+                valueInput.setSelectionRange(valueInput.value.length, valueInput.value.length);
+            } catch (_) {}
+        }, 80);
+    }
 }
 
 function cancelEnvEdit() {
