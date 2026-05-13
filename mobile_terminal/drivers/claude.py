@@ -363,18 +363,37 @@ class ClaudeDriver(BaseAgentDriver):
         last_tool = None
         last_tool_detail = ""
         active_form = ""
-        # Track whether the NEWEST assistant entry contains any tool_use.
-        # If it doesn't (text-only response), the agent's turn is complete
-        # and it's waiting for the user — phase must collapse to idle even
-        # if older entries had tool calls. Without this, the header sticks
-        # on "Working" indefinitely after every tool-using response, which
-        # also suppresses the suggestion pill (terminal.js:1040).
-        # None = haven't seen an assistant entry yet.
+        # Newest-assistant-entry tool_use signal (v=509). None until we
+        # see one assistant entry. Used to distinguish "agent's last
+        # response was text-only → turn complete" from "newest assistant
+        # message dispatched a tool → still mid-turn".
         newest_assistant_had_tool_use = None
+        # User-text-after-newest-assistant signal (v=510). If we see a
+        # user TEXT message (not a tool_result) before any assistant
+        # entry while walking newest-first, the user has just submitted
+        # and Claude hasn't written its response entry yet — phase is
+        # working even though the most recent JSONL state still shows
+        # the previous turn's text-only response. Without this the
+        # header sits on "Idle" while the tail shows "Brewing…".
+        user_submitted_after_response = False
 
         for entry in entries:
             msg = entry.get("message", {})
             msg_type = entry.get("type", "")
+
+            if msg_type == "user" and newest_assistant_had_tool_use is None:
+                # Walking newest-first AND haven't hit an assistant entry yet
+                # → this user entry is newer than any assistant response.
+                # Only count text/image messages, not tool_result-only entries.
+                _u_content = msg.get("content")
+                if isinstance(_u_content, str) and _u_content.strip():
+                    user_submitted_after_response = True
+                elif isinstance(_u_content, list) and any(
+                    isinstance(b, dict) and b.get("type") in ("text", "image")
+                    for b in _u_content
+                ):
+                    user_submitted_after_response = True
+                continue
 
             if msg_type != "assistant":
                 continue
@@ -437,17 +456,25 @@ class ClaudeDriver(BaseAgentDriver):
                     last_tool_detail = self._extract_tool_detail(tool_name, tool_input)
 
         # Determine phase from collected data.
-        # If the newest assistant entry was text-only (no tool_use), the
-        # agent's turn is complete — collapse "working"/"running_task" to
-        # idle. Plan mode is intentionally exempt: it's a session-level
-        # state that persists across text-only turns (the user is still
-        # IN plan mode, just between assistant messages).
+        # agent_turn_complete: newest assistant entry was text-only.
+        #   → collapse "working"/"running_task" to idle (v=509).
+        # user_submitted_after_response: user message newer than newest
+        #   assistant entry, agent hasn't responded yet.
+        #   → phase is working even though no JSONL tool_use exists yet
+        #     (Claude only writes its assistant entry after the response
+        #     is complete; the "❋ Brewing…" tail indicator is the only
+        #     mid-turn signal). Beats agent_turn_complete (v=510).
+        # Plan mode is exempt from both: it's a session-level state.
         agent_turn_complete = newest_assistant_had_tool_use is False
 
         if plan_mode:
             result["phase"] = "planning"
             result["detail"] = active_form or "Planning..."
             result["tool"] = "EnterPlanMode"
+        elif user_submitted_after_response:
+            result["phase"] = "working"
+            result["detail"] = "Processing..."
+            result["tool"] = ""
         elif last_tool == "Task" and not agent_turn_complete:
             result["phase"] = "running_task"
             result["detail"] = active_form or last_tool_detail or "Running agent..."
