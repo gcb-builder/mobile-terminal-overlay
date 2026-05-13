@@ -363,6 +363,14 @@ class ClaudeDriver(BaseAgentDriver):
         last_tool = None
         last_tool_detail = ""
         active_form = ""
+        # Track whether the NEWEST assistant entry contains any tool_use.
+        # If it doesn't (text-only response), the agent's turn is complete
+        # and it's waiting for the user — phase must collapse to idle even
+        # if older entries had tool calls. Without this, the header sticks
+        # on "Working" indefinitely after every tool-using response, which
+        # also suppresses the suggestion pill (terminal.js:1040).
+        # None = haven't seen an assistant entry yet.
+        newest_assistant_had_tool_use = None
 
         for entry in entries:
             msg = entry.get("message", {})
@@ -370,6 +378,13 @@ class ClaudeDriver(BaseAgentDriver):
 
             if msg_type != "assistant":
                 continue
+
+            if newest_assistant_had_tool_use is None:
+                _content = msg.get("content", [])
+                newest_assistant_had_tool_use = isinstance(_content, list) and any(
+                    isinstance(b, dict) and b.get("type") == "tool_use"
+                    for b in _content
+                )
 
             # Extract token usage + model from most recent assistant entry
             if result["context_used"] is None:
@@ -421,21 +436,29 @@ class ClaudeDriver(BaseAgentDriver):
                     last_tool = tool_name
                     last_tool_detail = self._extract_tool_detail(tool_name, tool_input)
 
-        # Determine phase from collected data
+        # Determine phase from collected data.
+        # If the newest assistant entry was text-only (no tool_use), the
+        # agent's turn is complete — collapse "working"/"running_task" to
+        # idle. Plan mode is intentionally exempt: it's a session-level
+        # state that persists across text-only turns (the user is still
+        # IN plan mode, just between assistant messages).
+        agent_turn_complete = newest_assistant_had_tool_use is False
+
         if plan_mode:
             result["phase"] = "planning"
             result["detail"] = active_form or "Planning..."
             result["tool"] = "EnterPlanMode"
-        elif last_tool == "Task":
+        elif last_tool == "Task" and not agent_turn_complete:
             result["phase"] = "running_task"
             result["detail"] = active_form or last_tool_detail or "Running agent..."
             result["tool"] = last_tool
-        elif last_tool in ("Edit", "Write", "Bash", "Read", "Glob", "Grep", "TodoWrite",
-                           "NotebookEdit", "TaskCreate", "TaskUpdate"):
+        elif (last_tool in ("Edit", "Write", "Bash", "Read", "Glob", "Grep", "TodoWrite",
+                            "NotebookEdit", "TaskCreate", "TaskUpdate")
+                and not agent_turn_complete):
             result["phase"] = "working"
             result["detail"] = active_form or (f"{last_tool}: {last_tool_detail}" if last_tool_detail else "Working...")
             result["tool"] = last_tool
-        elif last_tool:
+        elif last_tool and not agent_turn_complete:
             result["phase"] = "working"
             result["detail"] = active_form or last_tool_detail or f"Using {last_tool}"
             result["tool"] = last_tool
