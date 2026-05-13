@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v491 ===');
+console.log('=== TERMINAL.JS v493 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1028,14 +1028,19 @@ ctx.markCommandSent = function(text) {
 
 function extractAndSuggestCommand(content) {
     if (!logInput) return;
-    // (Removed `if (terminalBusy) return` — the terminalBusy flag is
-    // tied to the agent-state header pill ("Working") and was firing
-    // false-positives where the agent was producing output but the
-    // user had already pre-typed text into the chevron that we should
-    // surface. The content-based busy-marker check below — looking
-    // for "✻ Determining…", "✦ Working…" patterns directly in tail —
-    // is the more accurate signal for "this exact text is being acted
-    // on now".)
+    // Server-driven phase is the authoritative "agent is producing"
+    // signal. While working / streaming, anything in the chevron is
+    // unreliable — it could be the just-sent echo, a wrapped line of
+    // agent output picked up by the continuation-walk, or stale
+    // history — and surfacing it risks accidental re-send.
+    // terminalBusy was removed in v=489 because it was a UI side-effect
+    // flag; lastPhase from the WS phase channel actually tracks the
+    // agent's processing state and is what the header pill shows.
+    const _phase = (typeof lastPhase === 'object' && lastPhase) ? lastPhase.phase : null;
+    if (_phase === 'working' || _phase === 'streaming') {
+        clearSuggestionPill();
+        return;
+    }
 
     // A permission or choice banner is already showing dedicated Allow/
     // Deny / numbered choice buttons. A pill saying "y" or "1" is
@@ -1073,19 +1078,25 @@ function extractAndSuggestCommand(content) {
     const lines = content.split('\n');
     let suggestion = '';
 
-    // Pass 1: walk BOTTOM-UP for the live chevron prompt. Earlier
-    // chevrons in tail scrollback are from previous turns and would
-    // pull stale commands forward as suggestions if matched first.
-    // Continuation lines (wrapped input) are joined back into one
-    // string so the dedup against recentSentCommands matches even when
-    // the chevron content wraps across multiple physical lines.
-    for (let i = lines.length - 1; i >= 0; i--) {
+    // Pass 1: walk BOTTOM-UP for the live chevron prompt. Only consider
+    // chevrons within the LAST_N_LINES of the tail to be "live" — earlier
+    // chevrons are from conversation history (sent user-message bubbles
+    // in Claude Code) and pull stale text forward as suggestions.
+    // Continuation lines (wrapped input) are joined back into one string
+    // so the dedup against recentSentCommands matches even when the
+    // chevron content wraps across multiple physical lines. Cap at
+    // CONT_MAX_LINES so we don't accidentally absorb agent output that
+    // happens to be indented.
+    const CHEVRON_BOTTOM_WINDOW = 8;
+    const CONT_MAX_LINES = 3;
+    const startScan = Math.max(0, lines.length - CHEVRON_BOTTOM_WINDOW);
+    for (let i = lines.length - 1; i >= startScan; i--) {
         const trimmed = lines[i].trim();
         const match = trimmed.match(/^❯\s+(.+)/);
         if (!match) continue;
 
         const parts = [match[1].trim()];
-        for (let j = i + 1; j < lines.length; j++) {
+        for (let j = i + 1; j < lines.length && parts.length <= CONT_MAX_LINES; j++) {
             const raw = lines[j];
             if (!raw.startsWith(' ')) break;
             const nt = raw.trim();
@@ -12432,6 +12443,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=491', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=493', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
