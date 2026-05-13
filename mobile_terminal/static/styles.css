@@ -3076,6 +3076,45 @@ html, body {
     color: var(--text-muted);
 }
 
+/* Hybrid prompt-card status + resolved styling.
+   Cards stay in scrollback as audit trail after the prompt resolves —
+   options become inert, the status text shows what happened. */
+.log-tail-choice-status {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+}
+.log-tail-choice-card.resolved {
+    opacity: 0.65;
+}
+.log-tail-choice-card.resolved .log-tail-choice-q {
+    text-decoration: line-through;
+    text-decoration-color: rgba(255, 255, 255, 0.35);
+}
+.log-tail-choice-card.resolved .log-tail-choice-status {
+    color: var(--success, #6abf6a);
+    font-weight: 600;
+}
+.log-tail-choice-card.resolved.resolved-error .log-tail-choice-status {
+    color: var(--error, #f14c4c);
+}
+.log-tail-choice-card.resolved .log-tail-choice-option {
+    cursor: default;
+    pointer-events: none;
+}
+.log-tail-choice-card.resolved .log-tail-choice-option:hover {
+    background: transparent;
+    border-color: transparent;
+}
+/* Subtle kind hint on the left rail */
+.log-tail-choice-card.kind-permission {
+    border-left-color: color-mix(in srgb, var(--warning, #e5b400) 60%, var(--border));
+}
+.log-tail-choice-card.kind-confirmation {
+    border-left-color: color-mix(in srgb, var(--accent-cyan, #4ec9b0) 50%, var(--border));
+}
+
 /* Sent-item auto-fired badge — visually distinct from .queue-auto-btn
    (the toggle on queued items) so users don't tap it expecting it to
    do something. Outline-only, dim, no fill. */

@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v500 ===');
+console.log('=== TERMINAL.JS v502 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7413,6 +7413,7 @@ function extractPendingPrompt(content) {
             sentChoice: null
         };
 
+        pinPromptToLog(pendingPrompt);
         showPromptBanner();
         return;
     }
@@ -7509,6 +7510,7 @@ function extractPendingPrompt(content) {
                 sentChoice: null
             };
 
+            pinPromptToLog(pendingPrompt);
             showPromptBanner();
             return;
         }
@@ -7584,6 +7586,7 @@ function extractPendingPrompt(content) {
                         sentChoice: null
                     };
 
+                    pinPromptToLog(pendingPrompt);
                     showPromptBanner();
                     return;
                 }
@@ -7875,17 +7878,7 @@ function syncTailChoicePrompt(content) {
     const detected = extractPendingPromptFromTail(content);
     if (detected) {
         const id = simpleHash(detected.text + detected.choices.map(c => c.label).join(''));
-        // Honor dismiss state from EITHER the banner × or the pinned
-        // card × — both share dismissedPrompts.
-        if (typeof dismissedPrompts !== 'undefined' && dismissedPrompts.has(id)) {
-            const stale = document.getElementById('logTailChoiceCard');
-            if (stale && stale.dataset.id === String(id)) stale.remove();
-            return;
-        }
-        // Pin a copy of the selector in the log so the user can act
-        // on it after the banner clears or the tail truncates below
-        // the fold. The pinned card is independent of the banner state.
-        renderLogTailChoiceCard(detected, id);
+        if (typeof dismissedPrompts !== 'undefined' && dismissedPrompts.has(id)) return;
         if (pendingPrompt && pendingPrompt.id === id) return;
         // Don't stomp a richer log-based or permission prompt.
         if (pendingPrompt && pendingPrompt.kind && pendingPrompt.kind !== 'tail-choice') return;
@@ -7897,6 +7890,9 @@ function syncTailChoicePrompt(content) {
             answered: false,
             sentChoice: null,
         };
+        // Pin to log AND show banner — hybrid: banner for immediate
+        // action, log card as audit-trail / fallback if banner clears.
+        pinPromptToLog(pendingPrompt);
         showPromptBanner();
     } else if (pendingPrompt && pendingPrompt.kind === 'tail-choice') {
         clearPendingPrompt();
@@ -7910,31 +7906,43 @@ function syncTailChoicePrompt(content) {
  * or the tail scrolls past. Each unique selector renders once; tapping
  * an option fires the same sendPromptChoice the banner uses.
  */
-function renderLogTailChoiceCard(detected, id) {
+function pinPromptToLog(prompt) {
+    if (!prompt || !prompt.id) return;
     const logContent = document.getElementById('logContent');
     if (!logContent) return;
-    const existing = document.getElementById('logTailChoiceCard');
-    if (existing && existing.dataset.id === String(id)) return;
-    if (existing) existing.remove();
+    const cardId = 'logPromptCard-' + prompt.id;
+    if (document.getElementById(cardId)) return;  // already pinned for this id
 
     const card = document.createElement('div');
-    card.id = 'logTailChoiceCard';
-    // Intentionally NOT .log-card — that class adds padded/bordered
-    // card styling that makes the pinned selector look like a second
-    // banner. We want plain inline log content.
-    card.className = 'log-tail-choice-card';
-    card.dataset.id = String(id);
+    card.id = cardId;
+    // Intentionally NOT .log-card (avoid the boxed banner look).
+    card.className = 'log-tail-choice-card kind-' + (prompt.kind || 'unknown');
+    card.dataset.id = String(prompt.id);
+    card.dataset.kind = String(prompt.kind || 'unknown');
 
     const head = document.createElement('div');
     head.className = 'log-tail-choice-head';
     const icon = document.createElement('span');
     icon.className = 'log-tail-choice-icon';
-    icon.textContent = '❔';
+    icon.textContent = prompt.kind === 'permission' ? '🔒'
+                     : prompt.kind === 'confirmation' ? '⚠'
+                     : '❔';
     const q = document.createElement('span');
     q.className = 'log-tail-choice-q';
-    q.textContent = detected.text;
+    let qText = prompt.text || '';
+    if (prompt.kind === 'permission') {
+        const tool = prompt.tool || 'tool';
+        const tgt = (prompt.target || '').slice(0, 80);
+        qText = qText || `Allow ${tool}${tgt ? ' — ' + tgt : ''}?`;
+    }
+    q.textContent = qText || 'Question';
     head.appendChild(icon);
     head.appendChild(q);
+
+    const status = document.createElement('span');
+    status.className = 'log-tail-choice-status';
+    head.appendChild(status);
+
     const dismiss = document.createElement('button');
     dismiss.className = 'log-tail-choice-dismiss';
     dismiss.setAttribute('aria-label', 'Dismiss');
@@ -7942,11 +7950,9 @@ function renderLogTailChoiceCard(detected, id) {
     dismiss.addEventListener('click', (e) => {
         e.stopPropagation();
         card.remove();
-        // Persist the dismiss so the syncTailChoicePrompt poll doesn't
-        // immediately re-pop the card on the next refresh.
         if (typeof dismissedPrompts !== 'undefined') {
             if (dismissedPrompts.size > 500) dismissedPrompts.clear();
-            dismissedPrompts.add(id);
+            dismissedPrompts.add(prompt.id);
         }
     });
     head.appendChild(dismiss);
@@ -7954,7 +7960,7 @@ function renderLogTailChoiceCard(detected, id) {
 
     const list = document.createElement('div');
     list.className = 'log-tail-choice-list';
-    for (const c of detected.choices) {
+    for (const c of (prompt.choices || [])) {
         const row = document.createElement('button');
         row.type = 'button';
         row.className = 'log-tail-choice-option';
@@ -7978,13 +7984,32 @@ function renderLogTailChoiceCard(detected, id) {
             if (typeof sendPromptChoice === 'function') {
                 sendPromptChoice(String(c.num));
             }
-            card.remove();
+            markPromptCardResolved(prompt.id, '✓ You chose ' + c.num);
         });
         list.appendChild(row);
     }
     card.appendChild(list);
 
     logContent.appendChild(card);
+}
+
+/**
+ * Mark a pinned prompt card as resolved — visually struck through,
+ * options disabled, status text shown ("✓ Auto-approved", "✓ You
+ * chose 2", "✗ Denied", etc.). The card stays in scrollback as an
+ * audit trail rather than being removed.
+ */
+function markPromptCardResolved(promptId, label, isError) {
+    const card = document.getElementById('logPromptCard-' + promptId);
+    if (!card) return;
+    card.classList.add('resolved');
+    if (isError) card.classList.add('resolved-error');
+    const status = card.querySelector('.log-tail-choice-status');
+    if (status) status.textContent = label || '✓ resolved';
+    card.querySelectorAll('button.log-tail-choice-option').forEach(b => {
+        b.disabled = true;
+        b.style.cursor = 'default';
+    });
 }
 
 /**
@@ -8191,6 +8216,10 @@ function extractPermissionPrompt(terminalContent) {
         tool: permTool,
         target: permTarget,
     };
+    // Hybrid: pin permission to log too. Banner stays for immediate
+    // action; the card serves as the audit trail (and gets a "✓ Auto-
+    // approved" label later when permission_auto fires).
+    pinPromptToLog(pendingPrompt);
 
     // v=432: ask the server whether Claude actually has a permission
     // pending in the active pane's cwd. The scraper finds prompt-shape
@@ -8466,6 +8495,11 @@ function sendPromptChoice(choice) {
         pendingPrompt.sentChoice = choice;
         if (dismissedPrompts.size > 500) dismissedPrompts.clear();
         dismissedPrompts.add(pendingPrompt.id);
+        // Mirror the resolution onto the pinned log card so a banner
+        // tap and a card tap leave identical audit trails.
+        if (typeof markPromptCardResolved === 'function') {
+            markPromptCardResolved(pendingPrompt.id, '✓ You chose ' + choice, false);
+        }
     }
 
     // Update button UI to show selected state (without full re-render)
@@ -10952,6 +10986,12 @@ function handleTypedMessage(msg) {
                 if (pendingPrompt.id) {
                     if (dismissedPrompts.size > 500) dismissedPrompts.clear();
                     dismissedPrompts.add(pendingPrompt.id);
+                    // Mark the pinned log card as resolved so the audit
+                    // trail shows what auto-fired and on which pane,
+                    // instead of just relying on the 4s toast.
+                    const verbLbl = (d.decision === 'allow' ? '✓ Auto-approved' : '✗ Auto-denied')
+                        + (prefix ? ' ' + prefix.trim() : '');
+                    markPromptCardResolved(pendingPrompt.id, verbLbl, d.decision !== 'allow');
                 }
                 clearPendingPrompt();
             }
@@ -11015,6 +11055,7 @@ function handlePermissionRequest(payload) {
         target,
         source_pane: payload.source_pane || null,
     };
+    pinPromptToLog(pendingPrompt);
     showPromptBanner();
 }
 
@@ -12591,6 +12632,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=500', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=502', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
