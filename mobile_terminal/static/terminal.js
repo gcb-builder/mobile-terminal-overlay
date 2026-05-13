@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v506 ===');
+console.log('=== TERMINAL.JS v507 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7842,8 +7842,7 @@ function extractPendingPromptFromTail(content) {
     // chevron / cursor marker on the first option. Indented non-numbered
     // lines after a numbered option are treated as DESCRIPTION text for
     // that option (Claude Code's selector renders multi-line descriptions
-    // under each choice). Without this the loop used to break after the
-    // first option's description line and the banner never appeared.
+    // under each choice).
     const choices = [];
     for (let i = qIdx + 1; i < lines.length; i++) {
         const raw = lines[i];
@@ -7862,10 +7861,20 @@ function extractPendingPromptFromTail(content) {
             if (choices.length >= 9) break;
             continue;
         }
-        // Non-numbered line — if indented and we're inside the options
-        // block, attach as description to the last choice. If at column
-        // zero, the options block has ended.
-        if (choices.length > 0 && /^\s{2,}/.test(raw)) {
+        // Non-numbered line.
+        if (choices.length === 0) {
+            // PROXIMITY GATE: a real selector has its options directly
+            // under the question (only blank-line separators allowed).
+            // If we hit prose before the first option, the "?"-line
+            // wasn't actually heading a selector — bail. Without this,
+            // a user message ending in "?" can pair with a far-below
+            // numbered list (e.g. an agent's enumerated answer) and
+            // produce a bogus banner.
+            return null;
+        }
+        // Already inside options block — attach indented prose as
+        // description; break on any unindented line.
+        if (/^\s{2,}/.test(raw)) {
             const last = choices[choices.length - 1];
             const more = t.length > 200 ? t.slice(0, 200) + '…' : t;
             last.description = last.description
@@ -7873,7 +7882,7 @@ function extractPendingPromptFromTail(content) {
                 : more;
             continue;
         }
-        if (choices.length > 0) break;
+        break;
     }
 
     if (choices.length < 2) return null;
@@ -12706,6 +12715,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=506', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=507', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
