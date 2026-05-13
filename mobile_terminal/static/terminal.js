@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v496 ===');
+console.log('=== TERMINAL.JS v497 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7814,10 +7814,15 @@ function extractPendingPromptFromTail(content) {
     if (qIdx === -1) return null;
 
     // Collect numbered option lines after the question. Allow a leading
-    // chevron / cursor marker on the first option.
+    // chevron / cursor marker on the first option. Indented non-numbered
+    // lines after a numbered option are treated as DESCRIPTION text for
+    // that option (Claude Code's selector renders multi-line descriptions
+    // under each choice). Without this the loop used to break after the
+    // first option's description line and the banner never appeared.
     const choices = [];
     for (let i = qIdx + 1; i < lines.length; i++) {
-        const t = lines[i].trim();
+        const raw = lines[i];
+        const t = raw.trim();
         if (!t) {
             if (choices.length > 0) break;
             continue;
@@ -7830,9 +7835,20 @@ function extractPendingPromptFromTail(content) {
                 choices.push({ num: m[1], label, description: '' });
             }
             if (choices.length >= 9) break;
-        } else if (choices.length > 0) {
-            break;
+            continue;
         }
+        // Non-numbered line — if indented and we're inside the options
+        // block, attach as description to the last choice. If at column
+        // zero, the options block has ended.
+        if (choices.length > 0 && /^\s{2,}/.test(raw)) {
+            const last = choices[choices.length - 1];
+            const more = t.length > 200 ? t.slice(0, 200) + '…' : t;
+            last.description = last.description
+                ? (last.description + ' ' + more).slice(0, 240)
+                : more;
+            continue;
+        }
+        if (choices.length > 0) break;
     }
 
     if (choices.length < 2) return null;
@@ -12471,6 +12487,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=496', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=497', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
