@@ -1339,20 +1339,28 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 20px;
+    /* Bumped from 20px so the handle is a comfortable mobile tap
+       target — tap toggles compact/expanded, drag still fine-tunes. */
+    height: 28px;
     background: var(--bg-primary);
-    cursor: ns-resize;
+    cursor: pointer;
     touch-action: none;
     user-select: none;
     -webkit-user-select: none;
     position: relative;
+    transition: background 120ms ease;
+}
+.tail-resize-handle:hover,
+.tail-resize-handle:active,
+.tail-resize-handle.active {
+    background: rgba(255, 255, 255, 0.04);
 }
 
 .tail-resize-grip {
     font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-muted);
-    opacity: 0.4;
+    opacity: 0.7;
     letter-spacing: 1px;
 }
 

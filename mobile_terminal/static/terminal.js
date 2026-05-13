@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v493 ===');
+console.log('=== TERMINAL.JS v496 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -6215,8 +6215,12 @@ function setupTailResize() {
     if (!handle || !output) return;
 
     const MIN_HEIGHT = 60;
-    const MAX_HEIGHT = Math.round(window.innerHeight * 0.5);
+    const MAX_HEIGHT = Math.round(window.innerHeight * 0.7);
+    const COMPACT_HEIGHT = 120;
+    const EXPANDED_HEIGHT = MAX_HEIGHT;
     const STORAGE_KEY = 'mto_tail_height';
+    const TAP_MS = 250;
+    const TAP_PX = 8;
 
     // Restore saved height
     const saved = parseInt(localStorage.getItem(STORAGE_KEY));
@@ -6224,14 +6228,26 @@ function setupTailResize() {
         output.style.height = saved + 'px';
     }
 
+    // Surface the toggle affordance — the bare "── live ──" label
+    // looked decorative, users didn't realise it was interactive.
+    const grip = handle.querySelector('.tail-resize-grip');
+    if (grip) {
+        grip.textContent = '── live · tap to expand ──';
+        handle.title = 'Tap to toggle tail size · drag to fine-tune';
+    }
+
     let dragging = false;
     let startY = 0;
     let startHeight = 0;
+    let startedAt = 0;
+    let movedPx = 0;
 
     function onStart(e) {
         dragging = true;
         startY = e.touches ? e.touches[0].clientY : e.clientY;
         startHeight = output.offsetHeight;
+        startedAt = Date.now();
+        movedPx = 0;
         handle.classList.add('active');
         e.preventDefault();
     }
@@ -6239,8 +6255,8 @@ function setupTailResize() {
     function onMove(e) {
         if (!dragging) return;
         const y = e.touches ? e.touches[0].clientY : e.clientY;
-        // Dragging up = larger tail, dragging down = smaller tail
         const delta = startY - y;
+        movedPx = Math.max(movedPx, Math.abs(delta));
         const newHeight = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, startHeight + delta));
         output.style.height = newHeight + 'px';
     }
@@ -6249,6 +6265,18 @@ function setupTailResize() {
         if (!dragging) return;
         dragging = false;
         handle.classList.remove('active');
+        const wasTap = (Date.now() - startedAt) < TAP_MS && movedPx < TAP_PX;
+        if (wasTap) {
+            // Single tap toggles between compact and expanded — gives
+            // a discoverable way to see truncated tail content (e.g.
+            // long agent analyses, choice lists below the fold) without
+            // having to discover the drag gesture.
+            const cur = output.offsetHeight;
+            const target = (cur < (COMPACT_HEIGHT + EXPANDED_HEIGHT) / 2)
+                ? EXPANDED_HEIGHT
+                : COMPACT_HEIGHT;
+            output.style.height = target + 'px';
+        }
         const h = output.offsetHeight;
         localStorage.setItem(STORAGE_KEY, h.toString());
     }
@@ -12443,6 +12471,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=493', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=496', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
