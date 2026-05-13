@@ -86,18 +86,41 @@ PLACEHOLDER_RE = re.compile(
 
 
 def _looks_real(value):
-    """Cheap entropy + placeholder sanity check on a candidate secret."""
-    if len(value) < 6:
+    """Heuristic: does this string look like a real password/secret?
+    Real secrets typically have entropy AND character-class mixing.
+    English words, identifiers, and placeholders should be rejected.
+    """
+    if len(value) < 8:
         return False
     if PLACEHOLDER_RE.match(value):
         return False
-    # Must have some character variety — pure repeats are placeholders
-    # (aaaaaaa, 1234567, abcabcabc).
-    if len(set(value)) < 4:
+    if len(set(value)) < 5:                         # too repetitive
         return False
-    # Drop strings that look like UUIDs (they're identifiers, not secrets)
+    # UUIDs aren't secrets
     if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value, re.I):
         return False
+    # Character-class mixing: secrets normally have ≥2 of the four
+    # classes (lower / upper / digit / symbol). Exception: long opaque
+    # strings (key tokens like sk-abc... already filtered by the
+    # caller) — those bypass via class count >= 1 plus high entropy.
+    cls = sum([
+        bool(re.search(r"[a-z]", value)),
+        bool(re.search(r"[A-Z]", value)),
+        bool(re.search(r"[0-9]", value)),
+        bool(re.search(r"[^A-Za-z0-9]", value)),
+    ])
+    entropy_proxy = len(set(value)) / len(value)
+    if cls < 2 and entropy_proxy < 0.55:
+        return False
+    # Reject if the WHOLE value is a single English-word candidate
+    # (location, credentials, settings, configuration, …). Use the
+    # extended COMMON_WORDS list (defined later in file).
+    if value.isalpha():
+        try:
+            if value.lower() in COMMON_WORDS:
+                return False
+        except NameError:
+            pass
     return True
 
 
@@ -155,53 +178,275 @@ def _mask(s, keep=4):
     return s[:keep] + "…(len " + str(len(s)) + ")"
 
 
-def run_reuse_scan(sinks, apply_redact=False):
-    """Two-phase scan: extract candidates from high-confidence contexts,
-    then look for the same literal value used anywhere else."""
+# Common English words and code identifiers we should NOT treat as a
+# password "base word" when fuzzy-matching — these appear everywhere
+# and would produce thousands of false positives.
+COMMON_WORDS = frozenset((
+    # Placeholders / config primitives
+    "true false null none undefined value data type name list main "
+    "test example sample placeholder password passwd secret token "
+    "default user admin root host localhost server client request "
+    "response config setting option string object array number "
+    # Programming
+    "func function class method return import export module package "
+    "async await error result success status code message body header "
+    "json yaml toml http https socket port path file dir folder "
+    "param argument context state input output query result schema "
+    "model field column index fetch update delete create insert "
+    "select where order group limit offset filter map reduce filter "
+    "iter loop while break continue yield catch throw raise pass "
+    "lambda print logger logging debug info warn warning critical "
+    "request response handler middleware route router redirect "
+    # Auth / domain
+    "key public private auth session login logout cookie bearer "
+    "scope grant token access refresh allow deny role tenant "
+    # English common (high-frequency words, 5+ chars)
+    "about above across after again against along among around "
+    "because before below between during except inside opposite "
+    "outside through under within without again always before "
+    "behind below beside cannot enough every first follow given "
+    "given going great large later level might never never night "
+    "often other place point right since small still their there "
+    "these those today under until value where which while world "
+    "would write written years young location locations setting "
+    "settings credentials configuration information description "
+    "operation operations execution implementation development "
+    "production environment variable variables structure project "
+    "projects request response message messages session sessions "
+    "section sections content contents window windows process "
+    "processes service services component components feature features "
+    "system systems control controls option options module modules "
+    "interface interfaces function functions container containers "
+    "instance instances element elements property properties "
+    "pattern patterns matches matching default standard generic "
+    "global local remote network database table tables record records "
+    "history version versions update updates change changes history "
+    "primary secondary public private internal external"
+).split())
+
+
+def derive_base_tokens(value):
+    """Extract meaningful base tokens from a password value — the
+    longest non-placeholder alphabetic runs we can use as a fuzzy
+    "fingerprint" to grep for variations elsewhere.
+
+    "fearless1234!"   → {"fearless"}
+    "Fearless_2024"   → {"fearless"}
+    "MyToken_v2"      → {"mytoken"} (skips "v")
+    "secret123"       → {} (only "secret" is alpha, in COMMON_WORDS)
+    """
+    runs = re.findall(r"[A-Za-z]{5,}", value)
+    out = set()
+    for r in runs:
+        lower = r.lower()
+        if lower in COMMON_WORDS:
+            continue
+        # Drop tokens with too little char variety (e.g. "aaaaaa")
+        if len(set(lower)) < 4:
+            continue
+        out.add(lower)
+    return out
+
+
+def find_fuzzy_reuse(base_token, value, roots, max_per_file=5):
+    """Find all occurrences of base_token (case-insensitive substring)
+    across all sinks. Skips lines that are ONLY the original candidate —
+    those are already covered by exact reuse. Returns Path → list of
+    (line_no, line_text, matched_substring)."""
+    pat = re.compile(re.escape(base_token), re.IGNORECASE)
+    out = {}
+    for f in find_files(roots):
+        try:
+            text = f.read_bytes().decode("utf-8")
+        except (UnicodeDecodeError, Exception):
+            continue
+        if not pat.search(text):
+            continue
+        hits = []
+        for ln_no, ln in enumerate(text.split("\n"), start=1):
+            m = pat.search(ln)
+            if not m:
+                continue
+            # Pull the surrounding "word" containing the match — this
+            # is the candidate variation (e.g. "Fearless2024_DB").
+            ws = max(0, m.start() - 1)
+            while ws > 0 and ln[ws - 1] not in " \t\n\r\"'`,;|<>(){}[]":
+                ws -= 1
+            we = m.end()
+            while we < len(ln) and ln[we] not in " \t\n\r\"'`,;|<>(){}[]":
+                we += 1
+            variant = ln[ws:we]
+            # Skip if variant IS the original candidate (exact-reuse
+            # path already handles those).
+            if variant == value:
+                continue
+            trimmed = ln if len(ln) <= 200 else ln[:197] + "…"
+            hits.append((ln_no, trimmed, variant))
+            if len(hits) >= max_per_file:
+                break
+        if hits:
+            out[f] = hits
+    return out
+
+
+def run_reuse_scan(sinks, apply_redact=False, fuzzy=True):
+    """Three-phase scan, single-pass over disk:
+      1. Walk all files once, extract candidate secrets from
+         high-confidence contexts.
+      2. Filter candidates (entropy, character classes, placeholder).
+      3. Walk all files ONE MORE TIME, searching for every candidate's
+         exact value AND fuzzy base token in a single read per file."""
     print("Phase 1: extracting candidate secrets from high-confidence contexts…")
     candidates = extract_candidates(sinks)
     if not candidates:
         print("  No candidates found. Nothing to cross-check.")
         return 0
+    print(f"  {len(candidates)} unique candidate(s) found (post-filter).")
+    if len(candidates) > 100:
+        print(f"  WARNING: {len(candidates)} is high — extractors may be too loose.")
 
-    print(f"  {len(candidates)} unique candidate(s) found.")
+    # Build the lookup tables once.
+    exact_pats = {v: re.compile(re.escape(v)) for v in candidates}
+    fuzzy_tokens = {}  # base_token → originating candidate value
+    if fuzzy:
+        for value in candidates:
+            for tok in derive_base_tokens(value):
+                # Last write wins on collision — fine, we only need
+                # *some* originating value for display.
+                fuzzy_tokens[tok] = value
+    fuzzy_pats = {tok: re.compile(re.escape(tok), re.IGNORECASE) for tok in fuzzy_tokens}
+
+    # Aggregators
+    exact_hits = {v: {} for v in candidates}     # value → {path → [(ln, ln_text)]}
+    fuzzy_hits = {tok: {} for tok in fuzzy_tokens}  # token → {path → [(ln, ln_text, variant)]}
+
     print()
-    print("Phase 2: searching all sinks for re-use of those values…")
+    print(f"Phase 2: scanning sinks (single-pass over each file)…")
+    n_files = 0
+    for f in find_files(sinks):
+        n_files += 1
+        try:
+            text = f.read_bytes().decode("utf-8")
+        except (UnicodeDecodeError, Exception):
+            continue
+        # Exact value matches (line-level for context)
+        lines = None
+        for value, pat in exact_pats.items():
+            if value not in text:
+                continue
+            if lines is None:
+                lines = text.split("\n")
+            hits = []
+            for ln_no, ln in enumerate(lines, start=1):
+                if pat.search(ln):
+                    trimmed = ln if len(ln) <= 200 else ln[:197] + "…"
+                    hits.append((ln_no, trimmed))
+                    if len(hits) >= 5:
+                        break
+            if hits:
+                exact_hits[value][f] = hits
+        # Fuzzy token matches
+        for tok, pat in fuzzy_pats.items():
+            if not pat.search(text):
+                continue
+            if lines is None:
+                lines = text.split("\n")
+            hits = []
+            for ln_no, ln in enumerate(lines, start=1):
+                m = pat.search(ln)
+                if not m:
+                    continue
+                ws = max(0, m.start() - 1)
+                while ws > 0 and ln[ws - 1] not in " \t\n\r\"'`,;|<>(){}[]":
+                    ws -= 1
+                we = m.end()
+                while we < len(ln) and ln[we] not in " \t\n\r\"'`,;|<>(){}[]":
+                    we += 1
+                variant = ln[ws:we]
+                if variant == fuzzy_tokens[tok]:
+                    continue   # exact-match path covers it
+                trimmed = ln if len(ln) <= 200 else ln[:197] + "…"
+                hits.append((ln_no, trimmed, variant))
+                if len(hits) >= 5:
+                    break
+            if hits:
+                fuzzy_hits[tok][f] = hits
+    print(f"  scanned {n_files} files.")
     print()
 
+    # Report exact reuse
+    print("Phase 3a: EXACT reuse")
+    print()
     total_redacted = 0
+    any_exact = False
     for value, sources in sorted(candidates.items(), key=lambda kv: -len(kv[1])):
-        reuse = find_reuse(value, sinks)
-        # Only report when value appears in MORE than the originating
-        # extraction site (i.e. some genuine reuse) OR shows up many times.
-        total_hits = sum(len(v) for v in reuse.values())
+        reuse = exact_hits[value]
         if not reuse:
             continue
-
+        any_exact = True
+        total = sum(len(v) for v in reuse.values())
         print(f"━ candidate: {_mask(value)}  (first seen via {sources[0][1]})")
-        print(f"  found {total_hits} occurrence(s) across {len(reuse)} file(s):")
-        for path, hits in list(reuse.items())[:8]:
+        print(f"  exact: {total} occurrence(s) across {len(reuse)} file(s):")
+        for path, hits in list(reuse.items())[:6]:
             print(f"    {path}")
-            for ln_no, ln in hits:
-                print(f"      L{ln_no}: {ln}")
-        if len(reuse) > 8:
-            print(f"    … and {len(reuse) - 8} more file(s)")
+            for ln_no, ln in hits[:2]:
+                print(f"      L{ln_no}: {ln[:140]}")
+        if len(reuse) > 6:
+            print(f"    … and {len(reuse) - 6} more file(s)")
+        print()
+        if apply_redact:
+            for path in reuse:
+                k, _ = scrub_file(path, exact_pats[value], True)
+                total_redacted += k
+    if not any_exact:
+        print("  (none)")
         print()
 
-        if apply_redact:
-            n = 0
-            for path in reuse:
-                k, _ = scrub_file(path, re.compile(re.escape(value)), True)
-                n += k
-            total_redacted += n
-            print(f"  → redacted {n} occurrence(s) of this candidate")
+    # Report fuzzy reuse
+    if fuzzy:
+        print("Phase 3b: FUZZY reuse — variations sharing a base token")
+        print()
+        any_fuzzy = False
+        for tok, hits_by_file in sorted(fuzzy_hits.items(),
+                                         key=lambda kv: -sum(len(v) for v in kv[1].values())):
+            if not hits_by_file:
+                continue
+            any_fuzzy = True
+            distinct_variants = set()
+            total = 0
+            for hits in hits_by_file.values():
+                for _, _, var in hits:
+                    distinct_variants.add(var)
+                    total += 1
+            if not distinct_variants:
+                continue
+            print(f"━ base token: {_mask(tok, keep=6)}  (from candidate {_mask(fuzzy_tokens[tok])})")
+            print(f"  fuzzy: {total} hit(s), {len(hits_by_file)} file(s), "
+                  f"{len(distinct_variants)} distinct variant(s):")
+            for var in list(distinct_variants)[:6]:
+                print(f"    variant: {_mask(var, keep=6)}")
+            for path, hits in list(hits_by_file.items())[:4]:
+                print(f"    {path}")
+                for ln_no, ln, var in hits[:2]:
+                    print(f"      L{ln_no} ({_mask(var, keep=6)}): {ln[:120]}")
+            if len(hits_by_file) > 4:
+                print(f"    … and {len(hits_by_file) - 4} more file(s)")
+            print()
+        if not any_fuzzy:
+            print("  (none)")
             print()
 
+    print(f"Summary: exact redacted={total_redacted}, fuzzy hits surfaced="
+          f"{sum(sum(len(v) for v in fh.values()) for fh in fuzzy_hits.values()) if fuzzy else 0}")
     if not apply_redact:
-        print("Re-run with --apply to redact every occurrence of every candidate above.")
-    else:
-        print(f"Total redacted: {total_redacted}")
-    return total_hits
+        print("Re-run with --apply to redact every EXACT match.")
+        print("Fuzzy hits aren't auto-redacted (they're variations, not repeats) —")
+        print("review them, then pass any real ones individually as --literal.")
+    return
+
+
+# (the older two-phase run_reuse_scan was replaced by the
+# three-phase fuzzy version above)
 
 
 def find_files(roots):
