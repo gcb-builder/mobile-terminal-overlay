@@ -1420,9 +1420,14 @@ html, body {
    Tap = commit + send. Long-press = commit for editing. Tab on focused
    input also commits + sends. Input value stays empty until accepted. */
 .log-suggestion-pill {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+        "label dismiss"
+        "hint  dismiss";
+    column-gap: 8px;
+    row-gap: 2px;
     align-items: center;
-    gap: 6px;
     margin: 4px 10px 0 10px;
     padding: 8px 12px;
     min-height: 36px;
@@ -1446,18 +1451,25 @@ html, body {
 .log-suggestion-pill.hidden {
     display: none;
 }
+.log-suggestion-pill .pill-label {
+    grid-area: label;
+    line-height: 1.35;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
 .log-suggestion-pill .pill-hint {
-    margin-left: auto;
+    grid-area: hint;
     color: var(--text-muted);
     font-size: 11px;
     opacity: 0.75;
-    flex-shrink: 0;
+    line-height: 1.2;
 }
 .log-suggestion-pill .pill-dismiss {
+    grid-area: dismiss;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    margin-left: 4px;
+    align-self: start;
     width: 32px;
     height: 32px;
     border-radius: 6px;
@@ -1465,7 +1477,6 @@ html, body {
     font-size: 20px;
     line-height: 1;
     cursor: pointer;
-    flex-shrink: 0;
     transition: background 120ms ease, color 120ms ease;
 }
 .log-suggestion-pill .pill-dismiss:hover,
