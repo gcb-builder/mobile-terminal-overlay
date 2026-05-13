@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v497 ===');
+console.log('=== TERMINAL.JS v498 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -7865,7 +7865,17 @@ function syncTailChoicePrompt(content) {
     const detected = extractPendingPromptFromTail(content);
     if (detected) {
         const id = simpleHash(detected.text + detected.choices.map(c => c.label).join(''));
-        if (typeof dismissedPrompts !== 'undefined' && dismissedPrompts.has(id)) return;
+        // Honor dismiss state from EITHER the banner × or the pinned
+        // card × — both share dismissedPrompts.
+        if (typeof dismissedPrompts !== 'undefined' && dismissedPrompts.has(id)) {
+            const stale = document.getElementById('logTailChoiceCard');
+            if (stale && stale.dataset.id === String(id)) stale.remove();
+            return;
+        }
+        // Pin a copy of the selector in the log so the user can act
+        // on it after the banner clears or the tail truncates below
+        // the fold. The pinned card is independent of the banner state.
+        renderLogTailChoiceCard(detected, id);
         if (pendingPrompt && pendingPrompt.id === id) return;
         // Don't stomp a richer log-based or permission prompt.
         if (pendingPrompt && pendingPrompt.kind && pendingPrompt.kind !== 'tail-choice') return;
@@ -7881,6 +7891,87 @@ function syncTailChoicePrompt(content) {
     } else if (pendingPrompt && pendingPrompt.kind === 'tail-choice') {
         clearPendingPrompt();
     }
+}
+
+/**
+ * Append a persistent choice card to the log area so structured
+ * selectors (the multi-line numbered prompts Claude Code shows for
+ * "Which option?" questions) remain visible after the banner clears
+ * or the tail scrolls past. Each unique selector renders once; tapping
+ * an option fires the same sendPromptChoice the banner uses.
+ */
+function renderLogTailChoiceCard(detected, id) {
+    const logContent = document.getElementById('logContent');
+    if (!logContent) return;
+    const existing = document.getElementById('logTailChoiceCard');
+    if (existing && existing.dataset.id === String(id)) return;
+    if (existing) existing.remove();
+
+    const card = document.createElement('div');
+    card.id = 'logTailChoiceCard';
+    card.className = 'log-card log-tail-choice-card';
+    card.dataset.id = String(id);
+
+    const head = document.createElement('div');
+    head.className = 'log-tail-choice-head';
+    const icon = document.createElement('span');
+    icon.className = 'log-tail-choice-icon';
+    icon.textContent = '❔';
+    const q = document.createElement('span');
+    q.className = 'log-tail-choice-q';
+    q.textContent = detected.text;
+    head.appendChild(icon);
+    head.appendChild(q);
+    const dismiss = document.createElement('button');
+    dismiss.className = 'log-tail-choice-dismiss';
+    dismiss.setAttribute('aria-label', 'Dismiss');
+    dismiss.textContent = '×';
+    dismiss.addEventListener('click', (e) => {
+        e.stopPropagation();
+        card.remove();
+        // Persist the dismiss so the syncTailChoicePrompt poll doesn't
+        // immediately re-pop the card on the next refresh.
+        if (typeof dismissedPrompts !== 'undefined') {
+            if (dismissedPrompts.size > 500) dismissedPrompts.clear();
+            dismissedPrompts.add(id);
+        }
+    });
+    head.appendChild(dismiss);
+    card.appendChild(head);
+
+    const list = document.createElement('div');
+    list.className = 'log-tail-choice-list';
+    for (const c of detected.choices) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'log-tail-choice-option';
+        row.dataset.num = String(c.num);
+        const num = document.createElement('span');
+        num.className = 'log-tail-choice-num';
+        num.textContent = String(c.num) + '.';
+        const label = document.createElement('span');
+        label.className = 'log-tail-choice-label';
+        label.textContent = c.label;
+        row.appendChild(num);
+        row.appendChild(label);
+        if (c.description) {
+            const desc = document.createElement('div');
+            desc.className = 'log-tail-choice-desc';
+            desc.textContent = c.description;
+            row.appendChild(desc);
+        }
+        row.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (typeof sendPromptChoice === 'function') {
+                sendPromptChoice(String(c.num));
+            }
+            card.remove();
+        });
+        list.appendChild(row);
+    }
+    card.appendChild(list);
+
+    logContent.appendChild(card);
 }
 
 /**
@@ -12487,6 +12578,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=497', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=498', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

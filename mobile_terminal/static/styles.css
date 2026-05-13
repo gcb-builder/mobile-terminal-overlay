@@ -2992,6 +2992,84 @@ html, body {
     margin-left: 6px;
 }
 
+/* Pinned tail-choice card — surfaces structured selectors (Claude
+   Code's "Which option?" prompts) inside the log so the user can act
+   on them after the banner has cleared or the tail truncated. */
+.log-tail-choice-card {
+    margin: 12px 8px;
+    padding: 12px 14px;
+    background: color-mix(in srgb, var(--accent) 6%, var(--bg-secondary, #1c1c1c));
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+    border-radius: 10px;
+    box-shadow: 0 1px 0 rgba(0,0,0,0.2) inset;
+}
+.log-tail-choice-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.log-tail-choice-icon {
+    flex-shrink: 0;
+    font-size: 16px;
+}
+.log-tail-choice-q {
+    flex: 1;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+}
+.log-tail-choice-dismiss {
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 20px;
+    line-height: 1;
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.log-tail-choice-dismiss:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); }
+.log-tail-choice-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.log-tail-choice-option {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 10px 12px;
+    background: var(--bg-tertiary, #232323);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 100ms ease, border-color 100ms ease;
+}
+.log-tail-choice-option:hover {
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg-tertiary, #232323));
+    border-color: var(--accent);
+}
+.log-tail-choice-option:active { transform: scale(0.99); }
+.log-tail-choice-num {
+    display: inline-block;
+    margin-right: 8px;
+    color: var(--accent);
+    font-weight: 700;
+    min-width: 18px;
+}
+.log-tail-choice-label { color: var(--text-primary); }
+.log-tail-choice-desc {
+    margin-top: 6px;
+    margin-left: 26px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-muted);
+}
+
 /* Sent-item auto-fired badge — visually distinct from .queue-auto-btn
    (the toggle on queued items) so users don't tap it expecting it to
    do something. Outline-only, dim, no fill. */
