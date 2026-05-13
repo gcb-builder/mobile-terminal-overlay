@@ -109,12 +109,15 @@ def main() -> int:
     if args.config:
         # Explicit config file
         config = load_config(args.config)
+        config_path = args.config
     elif args.no_discovery:
         # Use defaults only
         config = Config()
+        config_path = None
     else:
         # Auto-discover
         config = discover_project_config()
+        config_path = None
 
     # Apply CLI overrides
     if args.session:
@@ -156,6 +159,11 @@ def main() -> int:
 
     # Create and run app
     app = create_app(config)
+    # Surface the source path so server-side mutations (e.g. add to
+    # startup_layout from the new-window modal) write back to the
+    # right file instead of the default location.
+    if config_path is not None:
+        app.state.config_path = config_path
 
     uvicorn.run(
         app,

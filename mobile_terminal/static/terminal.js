@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v499 ===');
+console.log('=== TERMINAL.JS v500 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -4220,6 +4220,8 @@ async function showNewWindowModal() {
     // Clear previous values
     newWindowName.value = '';
     newWindowAutoStart.checked = false;
+    const addStartup = document.getElementById('newWindowAddToStartup');
+    if (addStartup) addStartup.checked = false;
 
     // Show modal
     newWindowModal.classList.remove('hidden');
@@ -4239,6 +4241,8 @@ async function createNewWindow() {
     const selectValue = newWindowRepo.value;
     const windowName = newWindowName.value.trim();
     const autoStartAgent = newWindowAutoStart.checked;
+    const addStartupEl = document.getElementById('newWindowAddToStartup');
+    const addToStartupLayout = !!(addStartupEl && addStartupEl.checked);
 
     if (!selectValue) {
         showToast('Please select a repo or directory', 'error');
@@ -4248,7 +4252,13 @@ async function createNewWindow() {
     // Build request body based on value prefix
     const bodyObj = {
         window_name: windowName,
-        auto_start_agent: autoStartAgent
+        auto_start_agent: autoStartAgent,
+        // Persist this window in config.startup_layout so MTO recreates
+        // and (if auto-start agent was on) auto-resumes it after a host
+        // restart. Server defaults startup_auto_resume to mirror
+        // auto_start_agent — keep that implicit unless we expose a
+        // separate control.
+        add_to_startup_layout: addToStartupLayout,
     };
     if (selectValue.startsWith('dir:')) {
         bodyObj.path = selectValue.slice(4);
@@ -12581,6 +12591,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=499', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=500', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }

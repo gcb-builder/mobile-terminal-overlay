@@ -614,6 +614,74 @@ def _get_pane_command(pane_id: str) -> Optional[str]:
         return None
 
 
+def _append_startup_layout_entry(config_path: Path, window_name: str,
+                                 path: str, auto_resume: bool) -> None:
+    """Append a window entry under `startup_layout:` in the user's
+    config.yaml. Comment-preserving — operates on the raw text rather
+    than yaml.dump, so the user's header comments and any custom
+    formatting survive. Idempotent: skips the append if a same-named
+    entry is already present.
+
+    Layout (matches the existing user-edited shape):
+      startup_layout:
+        - window_name: <name>
+          path: <path>
+          auto_resume: <bool>
+    """
+    text = config_path.read_text(encoding='utf-8') if config_path.exists() else ''
+
+    # Idempotency: skip if an entry with this window_name already exists
+    # under startup_layout. Cheap regex check; safe because window_name
+    # is sanitized to [a-zA-Z0-9_.-] before reaching here.
+    import re as _re
+    name_re = _re.compile(
+        rf'^\s*-\s*window_name:\s*{_re.escape(window_name)}\s*$',
+        _re.MULTILINE,
+    )
+    if name_re.search(text):
+        return
+
+    new_entry = (
+        f"  - window_name: {window_name}\n"
+        f"    path: {path}\n"
+        f"    auto_resume: {'true' if auto_resume else 'false'}\n"
+    )
+
+    if 'startup_layout:' not in text:
+        # Append a fresh section at end of file.
+        if text and not text.endswith('\n'):
+            text += '\n'
+        text += '\nstartup_layout:\n' + new_entry
+    else:
+        # Insert at the END of the existing startup_layout block —
+        # i.e. just before the next top-level (column-zero) key, or
+        # end of file. Preserves prior entries and surrounding comments.
+        lines = text.split('\n')
+        sl_idx = -1
+        for i, ln in enumerate(lines):
+            if ln.startswith('startup_layout:') or ln.rstrip() == 'startup_layout:':
+                sl_idx = i
+                break
+        if sl_idx == -1:
+            text += '\n' + new_entry
+        else:
+            end_idx = len(lines)
+            for j in range(sl_idx + 1, len(lines)):
+                ln = lines[j]
+                if not ln.strip():
+                    continue
+                # New top-level key encountered
+                if ln[0] not in (' ', '\t'):
+                    end_idx = j
+                    break
+            new_lines = new_entry.rstrip('\n').split('\n')
+            lines = lines[:end_idx] + new_lines + lines[end_idx:]
+            text = '\n'.join(lines)
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(text, encoding='utf-8')
+
+
 def _create_tmux_window(session: str, window_name: str, path: str,
                         retries: int = 3, retry_delay: float = 2.0) -> dict:
     """Create a new tmux window in a session.

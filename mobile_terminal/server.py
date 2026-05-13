@@ -29,7 +29,7 @@ from mobile_terminal.helpers import (
     get_plan_links, save_plan_links, score_plan_for_repo, get_plans_for_repo,
     list_tmux_sessions, _tmux_session_exists, _list_session_windows,
     _match_repo_to_window, _get_pane_command, _create_tmux_window,
-    _send_startup_command, ensure_tmux_setup,
+    _send_startup_command, ensure_tmux_setup, _append_startup_layout_entry,
     _sigchld_handler, _resolve_device,
     STATIC_DIR, PLAN_LINKS_FILE,
 )
@@ -648,6 +648,11 @@ def create_app(config: Config) -> FastAPI:
         dir_path = body.get("path")
         window_name = body.get("window_name", "")
         auto_start_agent = body.get("auto_start_agent", False)
+        add_to_startup_layout = bool(body.get("add_to_startup_layout", False))
+        # auto_resume default mirrors auto_start_agent — if you opted into
+        # starting an agent now, you almost certainly want it resumed on
+        # the next MTO restart too.
+        startup_auto_resume = bool(body.get("startup_auto_resume", auto_start_agent))
 
         repo = None  # Set when using repo_label flow
 
@@ -769,6 +774,36 @@ def create_app(config: Config) -> FastAPI:
 
                 asyncio.create_task(_send_and_audit())
 
+            # Optional: register the new window in startup_layout so MTO
+            # auto-recreates and (if auto_resume) auto-resumes it after
+            # the next host/WSL restart. Persists into config.yaml via
+            # a comment-preserving append.
+            registered = False
+            if add_to_startup_layout:
+                try:
+                    cfg_path = getattr(app.state, "config_path", None) or (
+                        Path.home() / ".config" / "mobile-terminal" / "config.yaml"
+                    )
+                    _append_startup_layout_entry(
+                        Path(cfg_path), final_name, resolved_path, startup_auto_resume,
+                    )
+                    # Reflect in the in-memory config so the rest of the
+                    # session sees the new entry without a restart.
+                    from mobile_terminal.config import StartupWindow
+                    config.startup_layout.append(StartupWindow(
+                        window_name=final_name,
+                        path=resolved_path,
+                        auto_resume=startup_auto_resume,
+                    ))
+                    registered = True
+                    app.state.audit_log.log("startup_layout_add", {
+                        "window_name": final_name,
+                        "path": resolved_path,
+                        "auto_resume": startup_auto_resume,
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to add window to startup_layout: {e}")
+
             return {
                 "success": True,
                 "target_id": target_id,
@@ -777,7 +812,8 @@ def create_app(config: Config) -> FastAPI:
                 "session": session,
                 "repo_label": repo_label,
                 "path": resolved_path,
-                "auto_start_agent": auto_start_agent
+                "auto_start_agent": auto_start_agent,
+                "added_to_startup_layout": registered,
             }
 
         except RuntimeError as e:
