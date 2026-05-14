@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, Query, UploadFile
 from fastapi.responses import JSONResponse
 
-from mobile_terminal.helpers import get_project_id, run_subprocess
+from mobile_terminal.helpers import get_project_id, run_subprocess, safe_upload_name
 
 
 def _agent_memory_dir(repo_path: Path) -> Path:
@@ -337,10 +337,15 @@ def register(app: FastAPI, deps):
         uploads_dir = repo_path / ".claude" / "uploads"
         uploads_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate filename with timestamp
-        ext = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "bin"
+        # Generate filename with timestamp + preserved original name.
+        # "upload-<ms>__<safe-original>" — the upload-<ms> prefix keeps
+        # ordering / log-view conventions; the original name (sanitized)
+        # is retained so anyone reading the uploads dir later still
+        # knows what the user actually shared.
+        ext = file.filename.rsplit(".", 1)[-1] if file.filename and "." in file.filename else "bin"
         timestamp = int(time.time() * 1000)
-        filename = f"upload-{timestamp}.{ext}"
+        safe_name = safe_upload_name(file.filename or "", fallback_ext=ext)
+        filename = f"upload-{timestamp}__{safe_name}"
         filepath = uploads_dir / filename
 
         # Always return absolute path so it resolves regardless of Claude's CWD

@@ -26,7 +26,7 @@ from typing import List, Optional
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
-from mobile_terminal.helpers import run_subprocess
+from mobile_terminal.helpers import run_subprocess, safe_upload_name
 
 logger = logging.getLogger(__name__)
 
@@ -216,13 +216,16 @@ def register(app: FastAPI, deps) -> None:
         for src in sorted(staging_dir.iterdir()):
             if src.name.startswith("_"):
                 continue
-            # Mirror /api/upload's "upload-<ms>.<ext>" naming so the
-            # log view's file detection has a consistent prefix to
-            # latch onto. Each file gets a slightly bumped timestamp
-            # so two simultaneous shares don't collide.
+            # "upload-<ms>__<original-name>" naming: the upload-<ms> prefix
+            # keeps the existing log-view sort/cleanup conventions while
+            # the original name (sanitized) sits after a "__" separator so
+            # whoever opens the file later still knows what it was.
+            # Each file gets a slightly bumped timestamp so two simultaneous
+            # shares don't collide.
             ext = src.suffix.lstrip(".") or "bin"
             ts += 1
-            dest_name = f"upload-{ts}.{ext}"
+            safe_name = safe_upload_name(src.name, fallback_ext=ext)
+            dest_name = f"upload-{ts}__{safe_name}"
             dest = uploads_dir / dest_name
             try:
                 shutil.move(str(src), str(dest))

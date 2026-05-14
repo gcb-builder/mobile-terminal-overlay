@@ -23,6 +23,39 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Upload filename helpers
+# ---------------------------------------------------------------------------
+
+_UPLOAD_NAME_BAD = re.compile(r"[\x00-\x1f/\\:\"*?<>|]")
+_MAX_UPLOAD_NAME = 200  # leaves room for "upload-<13-digit-ts>__" prefix in 255-byte limit
+
+def safe_upload_name(original: str, fallback_ext: str = "bin") -> str:
+    """Sanitize a user-supplied filename so it can be embedded in the
+    on-disk upload name without enabling path traversal or breaking the
+    filesystem. Returns just a basename — strips any directory components,
+    control chars, and OS-reserved characters; collapses whitespace; trims
+    leading dots; caps length. Falls back to f"file.{fallback_ext}" if the
+    sanitized result is empty.
+
+    Used by both /api/upload and /api/share/commit so shared files keep
+    their original name as part of the on-disk filename
+    ("upload-<ts>__photo.jpg" instead of "upload-<ts>.jpg").
+    """
+    if not original:
+        return f"file.{fallback_ext}"
+    name = Path(original).name  # strip any directory components
+    name = _UPLOAD_NAME_BAD.sub("_", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    name = name.lstrip(".")  # no hidden files
+    if len(name) > _MAX_UPLOAD_NAME:
+        # Preserve the extension when truncating
+        ext = Path(name).suffix[:20]
+        stem = Path(name).stem[: _MAX_UPLOAD_NAME - len(ext)]
+        name = stem + ext
+    return name or f"file.{fallback_ext}"
+
+
+# ---------------------------------------------------------------------------
 # ANSI / text helpers
 # ---------------------------------------------------------------------------
 
