@@ -869,6 +869,14 @@ class QueueItem:
     # the Previous list can show what fired without the user watching,
     # and the prune logic can hold those items longer than manual sends.
     auto_fired: bool = False
+    # v=519: pane affinity. The queue is stored per-repo so two panes in
+    # the same cwd share the backlog, but each item is tagged with the
+    # pane it was enqueued from and the auto-drain only fires items
+    # whose pane_id matches the firing pane (or is None = "any pane in
+    # this repo can fire it"). Manual Send/Run paths ignore this field —
+    # they're explicit user actions and the user knows which pane is
+    # active.
+    pane_id: Optional[str] = None
 
 
 class CommandQueue:
@@ -1081,6 +1089,20 @@ class CommandQueue:
             return f"{session}:{pane_id}"
         return session
 
+    @staticmethod
+    def _pause_key(session: str, pane_id: Optional[str] = None) -> str:
+        """Pane-scoped key for pause / auto-drain / arming / cooldown
+        state. v=519: deliberately separate from _queue_key_resolved so
+        pause toggles, in-flight arming, and post-disarm cooldowns are
+        per-pane even when the queue itself is per-repo (two panes in
+        the same cwd share items but each has its own auto-fire
+        switch). Falls back to session-only when pane_id is missing
+        (shouldn't normally happen — every router endpoint passes pane_id).
+        """
+        if pane_id:
+            return f"{session}:{pane_id}"
+        return session
+
     def _get_queue(self, session: str, pane_id: Optional[str] = None) -> List[QueueItem]:
         """Get or create queue for session+pane, loading from disk if
         needed. Pivots to repo-keyed scope if pane's cwd is resolvable;
@@ -1131,6 +1153,7 @@ class CommandQueue:
                     error=data.get("error"),
                     auto_eligible=bool(data.get("auto_eligible", False)),
                     auto_fired=bool(data.get("auto_fired", False)),
+                    pane_id=data.get("pane_id"),
                 )
                 # Only load items that are still queued (not sent/failed)
                 if item.status in ("queued", "pending"):
@@ -1165,6 +1188,7 @@ class CommandQueue:
                         backlog_id=item_dict.get("backlog_id"),
                         auto_eligible=bool(item_dict.get("auto_eligible", False)),
                         auto_fired=bool(item_dict.get("auto_fired", False)),
+                        pane_id=item_dict.get("pane_id"),
                     )
                     cache[sid] = (item, sent_at)
                 except Exception as e:
@@ -1378,14 +1402,16 @@ class CommandQueue:
             status="queued",
             created_at=time.time(),
             backlog_id=backlog_id,
+            pane_id=pane_id,
         )
         queue.append(item)
-        # Safety: any new enqueue forces auto-fire OFF for this pane so a
+        # Safety: any new enqueue forces auto-fire OFF for THIS pane so a
         # freshly-added item never auto-fires without the user explicitly
         # re-enabling. The user has to (a) ⚡-flag the item AND (b) re-arm
         # the master switch — both deliberate actions — before it fires.
-        key = self._queue_key_resolved(session, pane_id)
-        self._paused[key] = True
+        # Pause is per-pane (v=519); enqueueing in pane A doesn't disarm
+        # pane B even when both share a repo-keyed queue.
+        self._paused[self._pause_key(session, pane_id)] = True
         self._save_to_disk(session, pane_id)
         return (item, True)
 
@@ -1496,36 +1522,31 @@ class CommandQueue:
         return True
 
     def pause(self, session: str, pane_id: Optional[str] = None) -> None:
-        """Pause queue processing for a session+pane."""
-        key = self._queue_key_resolved(session, pane_id)
-        self._paused[key] = True
+        """Pause queue processing for a session+pane (per-pane v=519)."""
+        self._paused[self._pause_key(session, pane_id)] = True
 
     def resume(self, session: str, pane_id: Optional[str] = None) -> None:
-        """Resume queue processing for a session+pane."""
-        key = self._queue_key_resolved(session, pane_id)
-        self._paused[key] = False
+        """Resume queue processing for a session+pane (per-pane v=519)."""
+        self._paused[self._pause_key(session, pane_id)] = False
         self._wake()
 
     def is_auto_drain_running(self, session: str, pane_id: Optional[str] = None) -> bool:
         """Whether the user has explicitly tapped Run to begin draining.
         Default False — even with the master switch ON, the processor
-        does NOT fire until this flag is set."""
-        key = self._queue_key_resolved(session, pane_id)
-        return self._auto_drain_running.get(key, False)
+        does NOT fire until this flag is set. Per-pane (v=519)."""
+        return self._auto_drain_running.get(self._pause_key(session, pane_id), False)
 
     def start_auto_drain(self, session: str, pane_id: Optional[str] = None) -> None:
         """Begin processing ⚡-flagged items. Caller should ensure the
         master switch is on (is_paused() False); start has no effect
         otherwise — the processor still gates on both flags."""
-        key = self._queue_key_resolved(session, pane_id)
-        self._auto_drain_running[key] = True
+        self._auto_drain_running[self._pause_key(session, pane_id)] = True
         self._wake()
 
     def stop_auto_drain(self, session: str, pane_id: Optional[str] = None) -> None:
         """Stop the active drain. Items stay queued/⚡-flagged for the
         next Run tap. Does not touch the master switch."""
-        key = self._queue_key_resolved(session, pane_id)
-        self._auto_drain_running[key] = False
+        self._auto_drain_running[self._pause_key(session, pane_id)] = False
 
     def is_paused(self, session: str, pane_id: Optional[str] = None) -> bool:
         """Check if auto-fire is disabled for this pane.
@@ -1534,10 +1555,9 @@ class CommandQueue:
         it via Resume / Auto-fire ON. This is the safety inversion: the
         old default let the processor fire ⚡-flagged items the moment the
         user marked them, which surprised users who thought ⚡ alone was
-        not enough to trigger a send.
+        not enough to trigger a send. Per-pane (v=519).
         """
-        key = self._queue_key_resolved(session, pane_id)
-        return self._paused.get(key, True)
+        return self._paused.get(self._pause_key(session, pane_id), True)
 
     def flush(self, session: str, pane_id: Optional[str] = None) -> int:
         """Clear all queued items. Returns count cleared."""
@@ -1809,14 +1829,17 @@ class CommandQueue:
                 elif not await self._check_ready(session, pane_id):
                     disarm_reason = "not_ready"
 
+            # v=519: arming/cooldown bookkeeping is per-pane so two panes
+            # in the same repo don't block each other.
+            pause_key = self._pause_key(session, pane_id)
             if disarm_reason is not None:
-                self._disarm_cooldown[key] = time.time() + self.DISARM_COOLDOWN_SECONDS
+                self._disarm_cooldown[pause_key] = time.time() + self.DISARM_COOLDOWN_SECONDS
                 # User-driven disarm (typed input or hit Cancel) means
                 # stop the whole drain — they've expressed intent to take
                 # over. System-driven disarm (not_ready / item_changed)
                 # keeps the drain running so the next loop cycle retries.
                 if disarm_reason in ("user_input", "manual_cancel"):
-                    self._auto_drain_running[key] = False
+                    self._auto_drain_running[pause_key] = False
                     await broadcast_raw(self._app, {
                         "type": "queue_state",
                         "session": session,
@@ -1835,13 +1858,19 @@ class CommandQueue:
                 return
 
             await self._send_item(session, item, pane_id, auto=True)
-            # If no more queued+eligible items remain, auto-stop the drain
-            # so the Run button reverts to "▶ Run" and the user gets a
-            # clear "batch done" signal.
+            # If no more pane-affinity-matching items remain, auto-stop
+            # the drain for THIS pane so its Run button reverts to "▶ Run"
+            # and the user gets a "batch done" signal. Items destined for
+            # other panes don't count.
             remaining = self._queues.get(key) or []
-            more = any(i.status == "queued" and i.auto_eligible for i in remaining)
+            more = any(
+                i.status == "queued"
+                and i.auto_eligible
+                and (i.pane_id is None or i.pane_id == pane_id)
+                for i in remaining
+            )
             if not more:
-                self._auto_drain_running[key] = False
+                self._auto_drain_running[pause_key] = False
                 await broadcast_raw(self._app, {
                     "type": "queue_state",
                     "session": session,
@@ -1852,9 +1881,11 @@ class CommandQueue:
                 })
         except Exception as e:
             logger.warning(f"_arm_and_fire failed for id={item.id[:8]}: {e}")
-            self._disarm_cooldown[key] = time.time() + self.DISARM_COOLDOWN_SECONDS
+            self._disarm_cooldown[self._pause_key(session, pane_id)] = (
+                time.time() + self.DISARM_COOLDOWN_SECONDS
+            )
         finally:
-            self._arming.pop(key, None)
+            self._arming.pop(self._pause_key(session, pane_id), None)
 
     async def send_next_unsafe(self, session: str, item_id: Optional[str] = None, pane_id: Optional[str] = None) -> Optional[QueueItem]:
         """Manually send the next unsafe item (or specific item)."""
@@ -1922,11 +1953,12 @@ class CommandQueue:
             # dict.
             keys = list(self._queues.keys())
 
-            # For repo-keyed scopes we need to map back to a live pane
-            # in the current session. Build {repo_key -> pane_id} once
-            # per pass so we don't re-shell out per key.
+            # For repo-keyed scopes we need to map back to live panes in
+            # the current session. v=519: each repo can map to MULTIPLE
+            # panes (e.g. two Claude sessions in the same cwd) and each
+            # pane fires its own auto-eligible items independently.
             from mobile_terminal.helpers import _list_session_windows
-            repo_to_pane: Dict[str, str] = {}
+            repo_to_panes: Dict[str, List[str]] = {}
             try:
                 wins = _list_session_windows(current_session)
                 for w in wins:
@@ -1934,11 +1966,7 @@ class CommandQueue:
                     cwd = w.get("cwd")
                     if cwd:
                         rk = repo_key_for_cwd(current_session, cwd)
-                        # Prefer the active_target's pane when multiple
-                        # panes share the same cwd.
-                        active = getattr(self._app.state, "active_target", None)
-                        if rk not in repo_to_pane or pane == active:
-                            repo_to_pane[rk] = pane
+                        repo_to_panes.setdefault(rk, []).append(pane)
             except Exception as e:
                 logger.debug(f"_process_loop pane-map failed: {e}")
 
@@ -1949,59 +1977,60 @@ class CommandQueue:
                 # Runtime is bound to one tmux session — skip foreign queues.
                 if session != current_session:
                     continue
-                # Resolve pane to deliver to: legacy keys carry it inline;
-                # repo-keyed scopes look it up in repo_to_pane.
-                pane_id = parsed_pane or repo_to_pane.get(key)
-                if not pane_id:
-                    # No live pane currently maps to this repo — skip.
-                    # The queue is preserved on disk for whenever a
-                    # pane in that cwd next exists.
-                    continue
-                if self.is_paused(session, pane_id):
-                    continue
-
-                # Two-step gate: master switch must be ON (above) AND the
-                # user must have explicitly tapped Run (below). This is
-                # the safety pause between "armed" and "actually firing".
-                if not self.is_auto_drain_running(session, pane_id):
-                    continue
-
-                # Skip panes that already have an arm task in flight or
-                # are in the post-disarm cooldown window.
-                if key in self._arming:
-                    continue
-                cooldown_until = self._disarm_cooldown.get(key, 0)
-                if cooldown_until and time.time() < cooldown_until:
+                # Resolve panes to deliver to: legacy keys carry inline,
+                # repo-keyed scopes can have multiple panes (v=519).
+                if parsed_pane:
+                    candidate_panes: List[str] = [parsed_pane]
+                else:
+                    candidate_panes = list(repo_to_panes.get(key) or [])
+                if not candidate_panes:
+                    # No live pane maps here — queue is preserved on
+                    # disk for whenever a pane in that cwd next exists.
                     continue
 
                 queue = self._queues.get(key) or []
                 if not queue:
                     continue
 
-                # First queued item the user opted into auto-send for.
-                # The ⚡ flag IS the safety gate — by tapping it the user
-                # has taken explicit responsibility for that command, so
-                # the picker no longer enforces policy=='safe'. Without
-                # ⚡ nothing auto-fires regardless of policy.
-                item = next(
-                    (i for i in queue
-                     if i.status == "queued"
-                     and i.auto_eligible),
-                    None,
-                )
-                if not item:
-                    continue
+                for pane_id in candidate_panes:
+                    if not self._running:
+                        break
+                    pause_key = self._pause_key(session, pane_id)
+                    if self.is_paused(session, pane_id):
+                        continue
+                    # Two-step gate: master switch ON + user tapped Run.
+                    if not self.is_auto_drain_running(session, pane_id):
+                        continue
+                    # Per-pane arming + cooldown so two panes in the same
+                    # repo don't block each other (v=519).
+                    if pause_key in self._arming:
+                        continue
+                    cooldown_until = self._disarm_cooldown.get(pause_key, 0)
+                    if cooldown_until and time.time() < cooldown_until:
+                        continue
 
-                # Ready gate per-pane (different panes can be busy
-                # independently; e.g. one waiting at a [y/n], another idle).
-                if not await self._check_ready(session, pane_id):
-                    continue
+                    # First queued item with ⚡ flag whose pane affinity
+                    # matches THIS pane (or is unset = "any pane in repo").
+                    item = next(
+                        (i for i in queue
+                         if i.status == "queued"
+                         and i.auto_eligible
+                         and (i.pane_id is None or i.pane_id == pane_id)),
+                        None,
+                    )
+                    if not item:
+                        continue
 
-                # Spawn the arm-and-fire task and continue the loop.
-                # The task broadcasts a countdown banner, waits for any
-                # user input or item-state change to abort, then fires.
-                self._arming[key] = item.id
-                asyncio.create_task(self._arm_and_fire(session, item, pane_id, key))
+                    # Ready gate per-pane (different panes can be busy
+                    # independently; e.g. one at a [y/n], another idle).
+                    if not await self._check_ready(session, pane_id):
+                        continue
+
+                    # Spawn arm-and-fire. _arm_and_fire still uses the
+                    # repo-keyed `key` for queue lookups but reports
+                    # disarm-cooldown / arming under the per-pane key.
+                    self._arming[pause_key] = item.id
+                    asyncio.create_task(self._arm_and_fire(session, item, pane_id, key))
 
     def start(self):
         """Start the processor loop."""

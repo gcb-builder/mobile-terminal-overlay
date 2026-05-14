@@ -96,10 +96,21 @@ function loadQueueFromStorage() {
 
 function updatePauseButton() {
     if (!queuePauseBtn) return;
-    queuePauseBtn.textContent = queuePaused ? 'Auto-fire OFF' : 'Auto-fire ON';
+    // v=519: pause toggle is per-pane on the server. Show the pane label
+    // when there's more than one target so it's obvious WHICH pane the
+    // toggle controls. Single-pane setups stay clean ("Auto-fire ON/OFF").
+    const targets = (typeof ctx === 'object' && ctx.targets) || [];
+    const showPane = targets.length > 1 && ctx.activeTarget;
+    let paneSuffix = '';
+    if (showPane) {
+        const t = targets.find(x => x.id === ctx.activeTarget);
+        const label = (t && (t.window_name || t.id)) || ctx.activeTarget;
+        paneSuffix = ` · ${label}`;
+    }
+    queuePauseBtn.textContent = (queuePaused ? 'Auto-fire OFF' : 'Auto-fire ON') + paneSuffix;
     queuePauseBtn.title = queuePaused
-        ? 'Auto-fire is OFF. ⚡-flagged items wait. Tap to enable, then press Run to start.'
-        : 'Auto-fire is ON (armed). Tap Run to start firing ⚡-flagged items.';
+        ? `Auto-fire is OFF for this pane${paneSuffix ? ' (' + paneSuffix.slice(3) + ')' : ''}. ⚡-flagged items wait. Tap to enable, then press Run to start.`
+        : `Auto-fire is ON (armed) for this pane${paneSuffix ? ' (' + paneSuffix.slice(3) + ')' : ''}. Tap Run to start firing ⚡-flagged items.`;
     queuePauseBtn.classList.toggle('paused', queuePaused);
     updateRunButton();
 }
@@ -968,6 +979,11 @@ async function cancelArming() {
 export function reloadQueueForTarget() {
     queueItems = loadQueueFromStorage();
     renderQueueList();
+    // v=519: pull the new pane's pause/drain state from the server so the
+    // Auto-fire button reflects per-pane scope (was per-repo before).
+    // Without this the button kept showing the OLD pane's state until
+    // the next periodic refresh, confusing per-pane toggle UX.
+    refreshQueueList();
 }
 
 // ── Getters used by terminal.js (manual Run path) ───────────────────
