@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v516 ===');
+console.log('=== TERMINAL.JS v518 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -5049,13 +5049,28 @@ function setupComposeMode() {
         });
     }
 
-    // Handle file selection from attach button
+    // Handle file selection from attach button. Input has `multiple`
+    // so the user can pick a batch from gallery / files in one shot.
     if (composeFileInput) {
         composeFileInput.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            composeFileInput.value = '';
-            await uploadAttachment(file, composeAttach);
+            const files = Array.from(e.target.files || []);
+            composeFileInput.value = '';  // reset so re-picking the same file fires `change`
+            if (files.length === 0) return;
+            // Toggle the attach icon's "uploading" state once around the
+            // whole batch — uploadAttachment(file, btn) toggles per call,
+            // which would flicker on/off N times for a multi-select.
+            if (composeAttach) composeAttach.classList.add('uploading');
+            try {
+                // Sequential so attachments land in pendingAttachments in
+                // the user's selection order. Parallel uploads complete in
+                // unpredictable order and that scrambles both the preview
+                // row and the appended-paths list at send time.
+                for (const file of files) {
+                    await uploadAttachment(file);
+                }
+            } finally {
+                if (composeAttach) composeAttach.classList.remove('uploading');
+            }
         });
     }
 
@@ -12837,6 +12852,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=516', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=518', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
