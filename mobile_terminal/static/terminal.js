@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v513 ===');
+console.log('=== TERMINAL.JS v516 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1094,6 +1094,28 @@ function extractAndSuggestCommand(content) {
         const trimmed = lines[i].trim();
         const match = trimmed.match(/^❯\s+(.+)/);
         if (!match) continue;
+
+        // v=516: structural "already-consumed" check. A LIVE input chevron
+        // is at the bottom of the tail with nothing below it except the
+        // typed wrap (small leading whitespace) or empty bottom-bar. If
+        // we see agent output (●/❋/✻/*/⏺ status markers, another chevron,
+        // or any non-indented prose) BELOW this chevron, the user already
+        // submitted it and the agent has moved on — surfacing it as a
+        // pill would re-send a duplicate. Older chevrons above are also
+        // necessarily consumed, so break out of the bottom-up scan.
+        let consumed = false;
+        for (let j = i + 1; j < lines.length; j++) {
+            const raw = lines[j];
+            const nt = raw.trim();
+            if (!nt) continue;
+            // Indented = possible wrap continuation, not agent output.
+            if (raw.startsWith(' ')) continue;
+            // Non-indented status-marker / chevron / prose line below
+            // the chevron = the chevron has been consumed.
+            consumed = true;
+            break;
+        }
+        if (consumed) break;
 
         const parts = [match[1].trim()];
         for (let j = i + 1; j < lines.length && parts.length <= CONT_MAX_LINES; j++) {
@@ -12815,6 +12837,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=513', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=516', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
