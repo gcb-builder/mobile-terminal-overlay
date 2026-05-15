@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v519 ===');
+console.log('=== TERMINAL.JS v520 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -8352,6 +8352,36 @@ function extractPermissionPrompt(terminalContent) {
 
     console.debug('[PermissionPrompt] Detected:', questionLine, choices, 'tool:', permTool, 'target:', permTarget);
 
+    // v=520: only claim this as a tool-PERMISSION prompt if it actually
+    // looks like one. extractPermissionPrompt scans the tail for
+    // "question? + ❯ numbered options" — but an AskUserQuestion selector
+    // has that exact shape. Misclaiming an AskUserQuestion as a
+    // permission slaps a 🔒 + Always·Repo/Always banner on it AND the
+    // "don't downgrade a permission" guard then blocks the correct
+    // ❓-based question banner from ever rendering (user only saw the
+    // real options after answering). Discriminators of a REAL permission
+    // prompt: a known tool name above the box, OR a proceed/wants-to
+    // question, OR yes/no/allow/don't-ask option labels. An
+    // AskUserQuestion ("Scope for this first sweep pass?" → "Mechanical-
+    // only" / "Include LLM-judge now") hits none of these.
+    const permQuestionRe = /\b(?:do you want to (?:proceed|continue|create|run|make|edit|allow)|wants? to (?:use|run|edit|create|read|fetch|make)|allow .+ to)\b/i;
+    const permOptionRe = /^(?:\d+[.):]\s*)?(?:yes|no)\b|don'?t ask|allow all/i;
+    const looksLikePermission =
+        !!permTool ||
+        permQuestionRe.test(questionLine) ||
+        choices.some(c => permOptionRe.test(c.label));
+    if (!looksLikePermission) {
+        console.debug('[PermissionPrompt] not permission-shaped — releasing to ❓/tail-choice detectors:', questionLine);
+        // If a prior cycle (or stale pre-v520 JS) mis-built a permission
+        // banner for THIS prompt, tear it down so the ❓ detector can
+        // claim it. Scoped to the same id so an unrelated live
+        // permission banner isn't disturbed.
+        if (pendingPrompt && pendingPrompt.kind === 'permission' && pendingPrompt.id === promptId) {
+            clearPendingPrompt();
+        }
+        return;
+    }
+
     pendingPrompt = {
         id: promptId,
         kind: 'permission',
@@ -12852,6 +12882,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=519', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=520', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
