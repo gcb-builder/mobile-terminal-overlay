@@ -176,7 +176,7 @@ def register(app: FastAPI, deps):
         try:
             sessions = _load_waiting_sessions()
         except Exception:
-            return {"waiting": False, "tool": None, "sessionId": None}
+            sessions = {}
         if cwd in sessions:
             entry = sessions[cwd]
             return {
@@ -184,6 +184,36 @@ def register(app: FastAPI, deps):
                 "tool": entry.get("tool"),
                 "sessionId": entry.get("sessionId"),
             }
+
+        # v=521: session-file fallback. ~/.claude/sessions/{pid}.json can
+        # lag the TUI, or report status='busy' / a waitingFor value that
+        # isn't "approve <Tool>" (observed: "dialog open"), even while a
+        # real permission prompt is on screen. Confirmed in the wild on
+        # the gcbbuilder pane (cwd=/home/gcbbuilder): live Claude's
+        # session file said status='busy' so this endpoint returned
+        # waiting=False and the client suppressed a genuine banner.
+        #
+        # Fall back to a direct capture-pane scan with the SAME parser
+        # the daemon trusts (_parse_visible_prompt) — it requires a live
+        # ❯-selector plus a permission question/marker near it, which is
+        # far stricter than the client scraper the v=432 gate was built
+        # to suppress. So this fixes the false-negative without
+        # reopening the false-positive class.
+        try:
+            from mobile_terminal.permission_daemon import _parse_visible_prompt
+            cap = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-t", tmux_t, "-S", "-40"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if cap.returncode == 0 and _parse_visible_prompt(cap.stdout) is not None:
+                return {
+                    "waiting": True,
+                    "tool": None,
+                    "sessionId": None,
+                    "source": "visible",
+                }
+        except Exception:
+            pass
         return {"waiting": False, "tool": None, "sessionId": None}
 
     # Phase 4 (2026-04-25): /api/permissions/decide endpoint removed.
