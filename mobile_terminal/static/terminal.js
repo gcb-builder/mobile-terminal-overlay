@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v521 ===');
+console.log('=== TERMINAL.JS v522 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1133,15 +1133,22 @@ function extractAndSuggestCommand(content) {
             // Stop on busy markers, chevrons, or hint lines.
             if (/^[✻✷✶✦●⏺*]/.test(nt)) break;
             if (/^❯/.test(nt)) break;
+            // Claude Code's bottom status bar starts with ⏵ (⏵⏵ accept
+            // edits on / ⏵ plan mode). Its tokens — "⏵⏵ accept edits on",
+            // "1 shell", "ctrl+t to hide tasks" — must never bleed into a
+            // suggestion.
+            if (/^⏵/.test(nt)) break;
             if (/^(?:↵|⏎|ctrl|cmd|alt|shift|esc|tab)\b/i.test(nt)) break;
             // Reject Claude Code slash-command hints ("/clear to save Xk
             // tokens", "/help", etc.) that render inside the input box.
             // Wrapped user input rarely starts a new visual line with a
             // bare slash command, and the false-positive risk dominates.
             if (/^\/[a-z]+(?:\s|$)/i.test(nt)) break;
-            // Reject "X tokens" bottom-bar info lines (e.g. "685.9k
-            // tokens", "12 messages") that wrap inside the box.
-            if (/^[\d.]+k?\s+(?:tokens?|messages?|files?)\b/i.test(nt)) break;
+            // Reject bottom-bar info lines that wrap inside the box:
+            // "685.9k tokens", "12 messages", "1 shell" (background-shell
+            // count). v=522 added shells? after a "1 shell ·" fragment
+            // leaked into a committed "push it 1 shell ·" command.
+            if (/^[\d.]+k?\s+(?:tokens?|messages?|files?|shells?)\b/i.test(nt)) break;
             parts.push(nt);
         }
 
@@ -1154,6 +1161,10 @@ function extractAndSuggestCommand(content) {
             .replace(/\s+(?:ctrl|cmd|alt|shift|⌘|⌥|⇧|⌃)[+\-]\w+.*$/i, '')
             .replace(/\s+[·•]\s.*$/, '')
             .replace(/\s+⏎.*$/, '')
+            // Trailing bare separator — the prior rule needs content
+            // after the · ; a "· " whose remainder wrapped to the next
+            // line leaves a dangling "foo ·". Strip it. (v=522)
+            .replace(/\s*[·•]\s*$/, '')
             .trim();
         if (cleaned) {
             // Reject chevron content that looks like an interactive
@@ -12882,6 +12893,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=521', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=522', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
