@@ -199,7 +199,17 @@ def _load_waiting_sessions(now: Optional[float] = None, force: bool = False) -> 
         if data.get("status") != "waiting":
             continue
         waiting_for = data.get("waitingFor", "")
-        if not waiting_for.startswith("approve "):
+        # v=523: accept BOTH waitingFor formats. Older Claude Code wrote
+        # "approve <Tool>" (e.g. "approve Bash"); newer builds write a
+        # generic "permission prompt" with no tool name. A reboot picked
+        # up the new build and every pane's session_waiting detection
+        # silently died — the daemon's auto-fire stopped firing while the
+        # banner (v=521 capture-pane fallback, format-independent) kept
+        # working. Other waiting reasons that are NOT permission waits
+        # (e.g. "dialog open") stay excluded.
+        wf_low = waiting_for.lower()
+        is_perm_wait = wf_low.startswith("approve ") or "permission" in wf_low
+        if not is_perm_wait:
             continue
         # PID-aliveness instead of updatedAt age (see SESSION_WAITING_MAX_AGE
         # comment): a long-pending prompt with a live process is exactly
@@ -210,8 +220,11 @@ def _load_waiting_sessions(now: Optional[float] = None, force: bool = False) -> 
         cwd = data.get("cwd", "")
         if not cwd:
             continue
-        # waitingFor format: "approve Bash" / "approve Edit" / etc.
-        tool = waiting_for[len("approve "):].strip()
+        # Tool name only present in the legacy "approve <Tool>" form. The
+        # generic "permission prompt" form carries no tool — leave it ""
+        # and let _correlate Case 3 fall back to the JSONL tool_use name
+        # (or Bash) so policy evaluation still has a tool to match on.
+        tool = waiting_for[len("approve "):].strip() if waiting_for.startswith("approve ") else ""
         out[cwd] = {
             "sessionId": data.get("sessionId", ""),
             "pid": data.get("pid", 0),
@@ -415,7 +428,13 @@ def _correlate(
     #   - session.updatedAt MUST be recent (handled by _load_waiting_sessions)
     # The tool comes from session["tool"] (parsed from waitingFor).
     if visible and session_waiting:
-        tool = session_waiting.get("tool", "Bash")
+        # Tool resolution (v=523): legacy "approve <Tool>" gave the tool
+        # directly; the new generic "permission prompt" form leaves it "".
+        # Fall back to the JSONL unresolved tool_use's name when present,
+        # else Bash — so policy.evaluate still has a real tool to match.
+        tool = (session_waiting.get("tool")
+                or (jsonl_unresolved or {}).get("name")
+                or "Bash")
         # stable_id = visible body+question hash (same shape as Case 2)
         # so the existing PRECHECK_REFIRE_TTL dedup applies and we don't
         # re-fire the same prompt for an hour.
