@@ -420,31 +420,69 @@ export function initDocs() {
             }
         });
     }
-    // Web Share API wiring — shares the actual FILE (attachment) when the
-    // platform supports file-sharing, else falls back to inline text.
-    // Hides the button entirely if Web Share is unavailable (desktop
-    // Chrome on http, Firefox) so it isn't a dead tap.
+    // Trigger a device download of the doc as a file (Blob object-URL).
+    // Returns true on success. No secure-context requirement — works on
+    // plain http too, so it's the universal fallback.
+    function _downloadDoc(filename, rawText) {
+        try {
+            const url = URL.createObjectURL(_docFile(filename, rawText));
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename || 'document.txt';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // Web Share API wiring. Robust chain: share the actual FILE →
+    // inline-text → download. v=525: previously a single try/catch that
+    // SILENTLY swallowed NotAllowedError — on an installed PWA, file
+    // share frequently throws NotAllowedError (file-type / activation
+    // quirks), so the tap died with no feedback and no fallback
+    // ("tap does nothing" bug). Now only AbortError counts as a genuine
+    // user cancel; anything else advances to the next fallback, and the
+    // button always does *something*. If Web Share is unavailable
+    // entirely, the button downloads instead of being hidden.
     function wireDocShare(btnId, filename, rawText) {
         const btn = document.getElementById(btnId);
         if (!btn) return;
         if (typeof navigator.share !== 'function') {
-            btn.style.display = 'none';
+            btn.textContent = 'Download';   // no Web Share → repurpose
+            btn.addEventListener('click', () => {
+                if (rawText) _downloadDoc(filename, rawText);
+            });
             return;
         }
         btn.addEventListener('click', async () => {
             if (!rawText) return;
             const file = _docFile(filename, rawText);
-            try {
-                if (typeof navigator.canShare === 'function'
-                        && navigator.canShare({ files: [file] })) {
+            // 1) Share the actual file (attachment).
+            if (typeof navigator.canShare === 'function'
+                    && navigator.canShare({ files: [file] })) {
+                try {
                     await navigator.share({ files: [file], title: filename || 'Document' });
-                } else {
-                    // Platform can't share files (some iOS/desktop) —
-                    // fall back to inline text so Share still does something.
-                    await navigator.share({ title: filename || 'Document', text: rawText });
+                    return;
+                } catch (e) {
+                    if (e && e.name === 'AbortError') return;  // user cancelled
+                    // else fall through to text share
                 }
+            }
+            // 2) Inline-text share.
+            try {
+                await navigator.share({ title: filename || 'Document', text: rawText });
+                return;
             } catch (e) {
-                if (e && (e.name === 'AbortError' || e.name === 'NotAllowedError')) return;
+                if (e && e.name === 'AbortError') return;
+            }
+            // 3) Last resort — download to device.
+            if (_downloadDoc(filename, rawText)) {
+                ctx.showToast?.('Share unavailable — downloaded instead', 'info');
+            } else {
                 ctx.showToast?.('Share failed', 'error');
             }
         });
@@ -455,16 +493,7 @@ export function initDocs() {
         if (!btn) return;
         btn.addEventListener('click', () => {
             if (!rawText) return;
-            try {
-                const url = URL.createObjectURL(_docFile(filename, rawText));
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = filename || 'document.txt';
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                setTimeout(() => URL.revokeObjectURL(url), 1000);
-            } catch (e) {
+            if (!_downloadDoc(filename, rawText)) {
                 ctx.showToast?.('Download failed', 'error');
             }
         });

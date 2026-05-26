@@ -22,7 +22,7 @@ import { initBacklog, handleBacklogMessage, handleCandidateMessage,
          updateBacklogStatus } from './src/features/backlog.js';
 import { initPermissions, loadPermissions } from './src/features/permissions.js';
 import { initMarkdown, scheduleMarkdownParse, schedulePlanPreviews } from './src/features/markdown.js?v=445';
-import { initDocs } from './src/features/docs.js?v=524';
+import { initDocs } from './src/features/docs.js?v=525';
 import { initToolOutput } from './src/features/tool-output.js';
 import { initHistory, loadHistory, loadGitStatus } from './src/features/history.js';
 import { initTeam, activateTeamView, startTeamCardRefresh, stopTeamCardRefresh,
@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v524 ===');
+console.log('=== TERMINAL.JS v525 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -12893,6 +12893,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=524', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=525', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
