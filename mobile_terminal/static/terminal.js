@@ -43,7 +43,7 @@ import { initActivity, loadActivity, stopActivity } from './src/features/activit
 // 5. Initial load of active tab/view
 
 // VERSION DIAGNOSTIC — synced from scripts/version.txt by sync-version.js
-console.log('=== TERMINAL.JS v525 ===');
+console.log('=== TERMINAL.JS v526 ===');
 console.log('Mode epoch system active: stale writes will be cancelled');
 console.log('SSE fallback transport available');
 
@@ -1149,6 +1149,11 @@ function extractAndSuggestCommand(content) {
             // count). v=522 added shells? after a "1 shell ·" fragment
             // leaked into a committed "push it 1 shell ·" command.
             if (/^[\d.]+k?\s+(?:tokens?|messages?|files?|shells?)\b/i.test(nt)) break;
+            // Claude Code's "? for shortcuts" / "? to dismiss"-style help
+            // hint inside the input box (v=526). Typed user input rarely
+            // starts a fresh visual line with "?" followed by for/to, so
+            // the false-positive risk dominates here too.
+            if (/^\?\s+(?:for|to)\b/i.test(nt)) break;
             parts.push(nt);
         }
 
@@ -12893,6 +12898,6 @@ if ('serviceWorker' in navigator) {
         }
     });
 
-    navigator.serviceWorker.register(_bp + '/sw.js?v=525', { scope: correctScope })
+    navigator.serviceWorker.register(_bp + '/sw.js?v=526', { scope: correctScope })
         .catch(err => console.log('SW registration failed:', err));
 }
