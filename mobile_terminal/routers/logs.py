@@ -312,33 +312,66 @@ def register(app: FastAPI, deps):
                     p = Path(mapping["path"]) if isinstance(mapping, dict) else Path(mapping)
                     claimed_paths.add(str(p))
 
+        # Compute the current foreground sessionId once so we can also
+        # validate any cached mapping against it (so a stale by-sessionId
+        # claim from a now-dead foreground PID doesn't survive).
+        cur_sid: Optional[str] = None
+        if target_id and session_name:
+            try:
+                from mobile_terminal.helpers import foreground_sessionid_for_pane
+                cur_sid = foreground_sessionid_for_pane(session_name, target_id)
+            except Exception as e:
+                logger.debug(f"sessionId resolve for {target_id} failed: {e}")
+
         # Check if we have a mapping for this target (pinned or detected)
         if target_id:
             cached = app.state.target_log_mapping.get(target_id)
             if cached:
                 cached_path = Path(cached["path"]) if isinstance(cached, dict) else Path(cached)
-                if cached_path.exists():
+                stale_by_sid = (
+                    isinstance(cached, dict)
+                    and cached.get("by_sessionid")
+                    and cur_sid
+                    and cached_path.stem != cur_sid
+                )
+                if cached_path.exists() and not stale_by_sid:
                     logger.debug(f"Using mapped log file for target {target_id}: {cached_path.name}")
                     return cached_path
+                if stale_by_sid:
+                    logger.debug(
+                        f"Evicting stale by-sessionid mapping for {target_id}: "
+                        f"cached {cached_path.stem[:8]} vs current {cur_sid[:8]}"
+                    )
+                    del app.state.target_log_mapping[target_id]
+                    # rebuild claimed_paths since we just removed an entry
+                    claimed_paths = set()
+                    for tid, mapping in app.state.target_log_mapping.items():
+                        if tid != target_id:
+                            p = Path(mapping["path"]) if isinstance(mapping, dict) else Path(mapping)
+                            claimed_paths.add(str(p))
 
-        # v=527 + v=528 guard: sessionId match, only if not already claimed
-        # by another target.
-        if target_id and session_name:
-            try:
-                from mobile_terminal.helpers import foreground_sessionid_for_pane
-                sid = foreground_sessionid_for_pane(session_name, target_id)
-                if sid:
-                    sid_path = claude_projects_dir / f"{sid}.jsonl"
-                    if sid_path.exists() and str(sid_path) not in claimed_paths:
-                        logger.debug(f"Resolved {target_id} → sessionId {sid[:8]} → {sid_path.name}")
-                        return sid_path
-                    elif sid_path.exists():
-                        logger.debug(
-                            f"sessionId {sid[:8]} already claimed by another target — "
-                            f"falling through for {target_id}"
-                        )
-            except Exception as e:
-                logger.debug(f"sessionId resolve for {target_id} failed: {e}")
+        # v=527 + v=528 + v=529 guard: sessionId match, only if not already
+        # claimed by another target. v=529: AUTO-CLAIM into
+        # target_log_mapping so a sibling pane sharing the sessionId
+        # (claude --continue) sees the claim on its next resolve and falls
+        # through. Without auto-claim, two concurrent requests with empty
+        # mappings both bypass the claim check and the user sees the same
+        # JSONL in both panes' log drawers.
+        if cur_sid:
+            sid_path = claude_projects_dir / f"{cur_sid}.jsonl"
+            if sid_path.exists() and str(sid_path) not in claimed_paths:
+                logger.debug(f"Resolved {target_id} → sessionId {cur_sid[:8]} → {sid_path.name} (auto-claim)")
+                app.state.target_log_mapping[target_id] = {
+                    "path": str(sid_path),
+                    "pinned": False,
+                    "by_sessionid": True,
+                }
+                return sid_path
+            elif sid_path.exists():
+                logger.debug(
+                    f"sessionId {cur_sid[:8]} already claimed by another target — "
+                    f"falling through for {target_id}"
+                )
 
         # Fallback: newest mtime, excluding claimed AND background-plugin
         # JSONLs (security-guidance review sessions etc.).
