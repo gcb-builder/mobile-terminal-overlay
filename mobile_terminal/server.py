@@ -534,11 +534,23 @@ def create_app(config: Config) -> FastAPI:
             # Allow selection even if verification fails
             pass
 
-        # Clear old target's log mapping if not pinned (force re-detection)
+        # Clear old target's log mapping on switch (force re-detection),
+        # EXCEPT pinned mappings (explicit user intent) and v=530:
+        # by_sessionid claims (auto-claimed via foreground sessionId).
+        # The latter is what stops two sibling panes that share a
+        # `claude --continue` session from both resolving to the same
+        # JSONL — if we evict the auto-claim every switch, both panes
+        # alternately re-resolve to the shared file. The cache-validation
+        # at the top of detect_target_log_file already invalidates
+        # by_sessionid claims when the foreground PID changes, so
+        # keeping them across switches is safe.
         old_target = app.state.active_target
         if old_target and old_target in app.state.target_log_mapping:
             old_mapping = app.state.target_log_mapping[old_target]
-            if not (isinstance(old_mapping, dict) and old_mapping.get("pinned")):
+            preserve = isinstance(old_mapping, dict) and (
+                old_mapping.get("pinned") or old_mapping.get("by_sessionid")
+            )
+            if not preserve:
                 del app.state.target_log_mapping[old_target]
 
         # Skip full switch if already on this target (avoids WS disconnect on initial sync)
