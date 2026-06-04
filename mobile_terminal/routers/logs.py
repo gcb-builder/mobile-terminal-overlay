@@ -249,6 +249,34 @@ def register(app: FastAPI, deps):
 
         logger.debug(f"Monitor timeout for target {target_id}, no file changes detected")
 
+    # v=528: detect background-plugin-spawned review JSONLs by their
+    # first user message — these are the asyncRewake sessions written by
+    # security-guidance (and any future plugin that follows the same
+    # template). Cached per (path, mtime) so we don't re-read on every
+    # tick. Used to keep the mtime fallback from latching onto a review
+    # session while it's writing.
+    _BACKGROUND_SESSION_TEMPLATES = (
+        "Review this change for security vulnerabilities",
+    )
+    _bg_session_cache: dict = {}  # (path, mtime) -> bool
+
+    def _is_background_session_log(p: Path) -> bool:
+        try:
+            st = p.stat()
+            k = (str(p), st.st_mtime)
+            cached_bg = _bg_session_cache.get(k)
+            if cached_bg is not None:
+                return cached_bg
+            with open(p, "rb") as fh:
+                head = fh.read(4096).decode("utf-8", "replace")
+            is_bg = any(t in head for t in _BACKGROUND_SESSION_TEMPLATES)
+            if len(_bg_session_cache) > 200:
+                _bg_session_cache.clear()
+            _bg_session_cache[k] = is_bg
+            return is_bg
+        except Exception:
+            return False
+
     def detect_target_log_file(target_id: Optional[str], session_name: str, claude_projects_dir: Path) -> Optional[Path]:
         """
         Detect which .jsonl log file belongs to a specific target pane.
@@ -257,13 +285,32 @@ def register(app: FastAPI, deps):
         1. Check cached mapping (pinned or monitor-detected)
         2. v=527: resolve via the pane's foreground claude PID → sessionId
            — direct, immune to background plugin sessions (e.g. security-
-           guidance's asyncRewake reviews) racing past on mtime.
-        3. Fall back to most recently modified (excluding logs claimed by
-           other team-mode targets).
+           guidance's asyncRewake reviews) racing past on mtime. v=528:
+           skip this step if another target has already claimed the same
+           sessionId-matched file (happens when two panes resume the same
+           Claude session via `claude --continue` — each foreground writes
+           the same sessionId in its session file, so without this guard
+           both panes resolve to the same JSONL and the log drawer looks
+           "merged"). Falling through gives the second pane an old-history
+           JSONL via the mtime fallback below, restoring pre-v=527 per-
+           pane separation for `--continue` siblings.
+        3. Fall back to most recently modified, excluding (a) logs claimed
+           by other team-mode targets and (b) background-plugin sessions
+           — so a security-guidance review writing to the project dir
+           doesn't steal the newest-mtime crown when this fallback fires.
         """
         jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
         if not jsonl_files:
             return None
+
+        # Build set of log files claimed by OTHER targets up front so the
+        # sessionId step can avoid double-claiming.
+        claimed_paths = set()
+        if target_id:
+            for tid, mapping in app.state.target_log_mapping.items():
+                if tid != target_id:
+                    p = Path(mapping["path"]) if isinstance(mapping, dict) else Path(mapping)
+                    claimed_paths.add(str(p))
 
         # Check if we have a mapping for this target (pinned or detected)
         if target_id:
@@ -274,35 +321,43 @@ def register(app: FastAPI, deps):
                     logger.debug(f"Using mapped log file for target {target_id}: {cached_path.name}")
                     return cached_path
 
-        # v=527: ask the OS who is the foreground claude in this pane and
-        # match its sessionId directly. The filename of a Claude JSONL IS
-        # its sessionId, so this is an O(1) lookup with no glob.
+        # v=527 + v=528 guard: sessionId match, only if not already claimed
+        # by another target.
         if target_id and session_name:
             try:
                 from mobile_terminal.helpers import foreground_sessionid_for_pane
                 sid = foreground_sessionid_for_pane(session_name, target_id)
                 if sid:
                     sid_path = claude_projects_dir / f"{sid}.jsonl"
-                    if sid_path.exists():
+                    if sid_path.exists() and str(sid_path) not in claimed_paths:
                         logger.debug(f"Resolved {target_id} → sessionId {sid[:8]} → {sid_path.name}")
                         return sid_path
+                    elif sid_path.exists():
+                        logger.debug(
+                            f"sessionId {sid[:8]} already claimed by another target — "
+                            f"falling through for {target_id}"
+                        )
             except Exception as e:
                 logger.debug(f"sessionId resolve for {target_id} failed: {e}")
 
-        # Build set of log files claimed by OTHER targets (team members)
-        claimed_paths = set()
-        if target_id:
-            for tid, mapping in app.state.target_log_mapping.items():
-                if tid != target_id:
-                    p = Path(mapping["path"]) if isinstance(mapping, dict) else Path(mapping)
-                    claimed_paths.add(str(p))
-
-        # Prefer unclaimed files (avoids picking a team member's log)
-        unclaimed = [f for f in jsonl_files if str(f) not in claimed_paths]
+        # Fallback: newest mtime, excluding claimed AND background-plugin
+        # JSONLs (security-guidance review sessions etc.).
+        unclaimed = [
+            f for f in jsonl_files
+            if str(f) not in claimed_paths and not _is_background_session_log(f)
+        ]
+        # Last resort: if filtering left nothing, drop the background-session
+        # filter (claim still respected) so we still return something.
+        if not unclaimed:
+            unclaimed = [f for f in jsonl_files if str(f) not in claimed_paths]
         candidates = unclaimed if unclaimed else jsonl_files
 
         newest_file = max(candidates, key=lambda f: f.stat().st_mtime)
-        logger.info(f"Using newest log file: {newest_file.name} (mtime-based fallback, {len(claimed_paths)} claimed by others)")
+        logger.info(
+            f"Using newest log file: {newest_file.name} "
+            f"(mtime fallback, {len(claimed_paths)} claimed, "
+            f"{sum(1 for f in jsonl_files if _is_background_session_log(f))} background sessions filtered)"
+        )
         return newest_file
 
     # Expose functions for use by other modules
