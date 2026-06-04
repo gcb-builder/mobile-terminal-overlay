@@ -56,6 +56,119 @@ def safe_upload_name(original: str, fallback_ext: str = "bin") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Pane → foreground Claude → sessionId resolver (v=527)
+# ---------------------------------------------------------------------------
+#
+# Background: ~/.claude/projects/<repo>/<sessionId>.jsonl is THE log for one
+# Claude conversation. The historical resolver picked "newest mtime in the
+# project dir" — fine until plugins (e.g. security-guidance's asyncRewake
+# review pass) started spawning background Claude sessions in the SAME repo,
+# which sail past the foreground pane's JSONL on mtime while the review runs.
+# This resolver instead asks: "which Claude process is foreground for this
+# tmux pane?" and returns its sessionId — direct, immune to sidecar churn.
+
+_FG_SESSION_CACHE: Dict[tuple, tuple] = {}  # (session, pane) -> (sessionId, expiry_ts)
+_FG_SESSION_TTL_SECONDS = 2.5  # daemon tick is 2s; cache survives one cycle
+
+
+def _walk_descendants(root_pid: int) -> list:
+    """Return all descendant PIDs of root_pid (DFS via /proc/*/stat).
+    Returns [] on error or if /proc isn't usable."""
+    try:
+        children: Dict[int, list] = {}
+        for d in os.listdir("/proc"):
+            if not d.isdigit():
+                continue
+            try:
+                with open(f"/proc/{d}/stat") as fh:
+                    parts = fh.read().split()
+                # field 4 is PPID (1-indexed in proc(5))
+                ppid = int(parts[3])
+                children.setdefault(ppid, []).append(int(d))
+            except Exception:
+                continue
+    except Exception:
+        return []
+    out = []
+    stack = [root_pid]
+    seen = set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        for c in children.get(pid, ()):
+            out.append(c)
+            stack.append(c)
+    return out
+
+
+def _comm(pid: int) -> str:
+    try:
+        with open(f"/proc/{pid}/comm") as fh:
+            return fh.read().strip()
+    except Exception:
+        return ""
+
+
+def foreground_sessionid_for_pane(session: str, pane_id: str) -> Optional[str]:
+    """Return the Claude sessionId for the foreground process in a tmux pane,
+    or None if it can't be resolved. Result is short-cached so daemon/scanner
+    ticks don't re-walk /proc each call.
+
+    Algorithm:
+      1. tmux display-message -p -t <session>:<pane> '#{pane_pid}'  → shell PID
+      2. Walk /proc to find a descendant with comm='claude'
+      3. Read ~/.claude/sessions/<claude_pid>.json → 'sessionId'
+
+    Used by find_claude_log_file() to lock onto THIS pane's JSONL even when
+    a background plugin session (e.g. security-guidance asyncRewake review)
+    writes to the same project directory with a fresher mtime.
+    """
+    if not session or not pane_id:
+        return None
+    cache_key = (session, pane_id)
+    now = time.time()
+    hit = _FG_SESSION_CACHE.get(cache_key)
+    if hit and hit[1] > now:
+        return hit[0]
+
+    sid: Optional[str] = None
+    try:
+        tmux_t = get_tmux_target(session, pane_id)
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", tmux_t, "#{pane_pid}"],
+            capture_output=True, text=True, timeout=1.5,
+        )
+        if r.returncode == 0 and r.stdout.strip().isdigit():
+            shell_pid = int(r.stdout.strip())
+            # Prefer claude processes; fall back to any descendant matching.
+            for d in _walk_descendants(shell_pid):
+                if _comm(d) == "claude":
+                    fp = Path.home() / ".claude" / "sessions" / f"{d}.json"
+                    if fp.exists():
+                        try:
+                            data = json.loads(fp.read_text(encoding="utf-8"))
+                            cand = data.get("sessionId")
+                            if cand:
+                                sid = cand
+                                break
+                        except Exception:
+                            continue
+    except Exception as e:
+        logger.debug(f"foreground_sessionid_for_pane({session}:{pane_id}) failed: {e}")
+        sid = None
+
+    _FG_SESSION_CACHE[cache_key] = (sid, now + _FG_SESSION_TTL_SECONDS)
+    # Bounded cleanup so a long-lived process doesn't accumulate stale entries.
+    if len(_FG_SESSION_CACHE) > 200:
+        cutoff = now
+        for k in [k for k, v in _FG_SESSION_CACHE.items() if v[1] < cutoff]:
+            _FG_SESSION_CACHE.pop(k, None)
+    return sid
+
+
+# ---------------------------------------------------------------------------
 # ANSI / text helpers
 # ---------------------------------------------------------------------------
 

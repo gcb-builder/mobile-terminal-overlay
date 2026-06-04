@@ -26,6 +26,7 @@ from .base import (
     summarize_tool_result,
     tail_jsonl,
 )
+from mobile_terminal.helpers import foreground_sessionid_for_pane
 
 logger = logging.getLogger(__name__)
 
@@ -257,9 +258,19 @@ class ClaudeDriver(BaseAgentDriver):
         self.is_running(ctx, obs)
 
         # 2. Find log file
+        # v=527: resolve via the pane's foreground claude PID → sessionId
+        # instead of newest-mtime in the project dir. The mtime heuristic
+        # mis-targets while background plugin sessions (e.g. security-
+        # guidance asyncRewake review passes) write to the same project
+        # directory — the resolver would briefly point at the review's
+        # JSONL and the header phase / log drawer would reflect THAT
+        # conversation, not the pane's. Sessionid lookup is O(1) (filename
+        # is the sessionId); the helper caches the PID→sessionId map for
+        # ~2.5s to amortise the /proc walk across daemon ticks.
         log_file = None
         if ctx.repo_path:
-            log_file = find_claude_log_file(ctx.repo_path)
+            session_id = foreground_sessionid_for_pane(ctx.session_name, ctx.target)
+            log_file = find_claude_log_file(ctx.repo_path, session_id=session_id)
             if log_file:
                 obs.log_paths = [log_file]
 

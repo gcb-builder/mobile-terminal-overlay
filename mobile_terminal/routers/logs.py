@@ -255,7 +255,11 @@ def register(app: FastAPI, deps):
 
         Strategy:
         1. Check cached mapping (pinned or monitor-detected)
-        2. Fall back to most recently modified (only among non-team logs)
+        2. v=527: resolve via the pane's foreground claude PID → sessionId
+           — direct, immune to background plugin sessions (e.g. security-
+           guidance's asyncRewake reviews) racing past on mtime.
+        3. Fall back to most recently modified (excluding logs claimed by
+           other team-mode targets).
         """
         jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
         if not jsonl_files:
@@ -270,6 +274,21 @@ def register(app: FastAPI, deps):
                     logger.debug(f"Using mapped log file for target {target_id}: {cached_path.name}")
                     return cached_path
 
+        # v=527: ask the OS who is the foreground claude in this pane and
+        # match its sessionId directly. The filename of a Claude JSONL IS
+        # its sessionId, so this is an O(1) lookup with no glob.
+        if target_id and session_name:
+            try:
+                from mobile_terminal.helpers import foreground_sessionid_for_pane
+                sid = foreground_sessionid_for_pane(session_name, target_id)
+                if sid:
+                    sid_path = claude_projects_dir / f"{sid}.jsonl"
+                    if sid_path.exists():
+                        logger.debug(f"Resolved {target_id} → sessionId {sid[:8]} → {sid_path.name}")
+                        return sid_path
+            except Exception as e:
+                logger.debug(f"sessionId resolve for {target_id} failed: {e}")
+
         # Build set of log files claimed by OTHER targets (team members)
         claimed_paths = set()
         if target_id:
@@ -283,7 +302,7 @@ def register(app: FastAPI, deps):
         candidates = unclaimed if unclaimed else jsonl_files
 
         newest_file = max(candidates, key=lambda f: f.stat().st_mtime)
-        logger.info(f"Using newest log file: {newest_file.name} (mtime-based, {len(claimed_paths)} claimed by others)")
+        logger.info(f"Using newest log file: {newest_file.name} (mtime-based fallback, {len(claimed_paths)} claimed by others)")
         return newest_file
 
     # Expose functions for use by other modules

@@ -206,12 +206,31 @@ def summarize_tool_result(tool_name: str, content, is_error: bool) -> str:
     return f"{line_count}L"
 
 
-def find_claude_log_file(repo_path: Path) -> Optional[Path]:
-    """Find the most recent Claude JSONL log for a repo path."""
+def find_claude_log_file(repo_path: Path, session_id: Optional[str] = None) -> Optional[Path]:
+    """Find the Claude JSONL log for a repo path.
+
+    v=527: when a `session_id` is provided, return `<project>/<session_id>.jsonl`
+    directly — this is the deterministic answer when we know which conversation
+    a pane belongs to (via foreground_sessionid_for_pane). Falls back to the
+    historical newest-mtime heuristic when the named file doesn't exist yet
+    (timing: a brand-new session may not have flushed its first entry) or no
+    session_id is known.
+
+    Pre-v=527 behaviour was newest-mtime only, which is wrong whenever the
+    project dir contains background sessions written by plugins
+    (e.g. security-guidance's asyncRewake review sessions) — their churn
+    races past the foreground pane's JSONL.
+    """
     project_id = get_project_id(repo_path)
     claude_projects_dir = Path.home() / ".claude" / "projects" / project_id
     if not claude_projects_dir.exists():
         return None
+    if session_id:
+        candidate = claude_projects_dir / f"{session_id}.jsonl"
+        if candidate.exists():
+            return candidate
+        # else fall through — caller asked for this sessionId but the file
+        # hasn't materialised; use the mtime fallback so we still return *something*.
     jsonl_files = list(claude_projects_dir.glob("*.jsonl"))
     if not jsonl_files:
         return None
